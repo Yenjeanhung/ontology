@@ -25,7 +25,9 @@ from providers.graph_store import (
 )
 from providers.parser import get_parser
 from providers.vector_store import create_vector_store, get_vector_store_provider_name
+from services.entity_service import EntityService
 from services.graph_extraction_service import GraphExtractionService
+from services.ontology_service import OntologyService
 
 logger = logging.getLogger(__name__)
 
@@ -788,6 +790,23 @@ class FileService:
                 relation_count = 0
 
                 if extract_graph:
+                    # 加载知识库绑定的本体约束（无绑定时返回 None，抽取服务回退到自由抽取模式）
+                    ontology_constraint = await OntologyService.get_kb_extraction_constraints(
+                        db, file.kb_id
+                    )
+                    has_constraint = bool(
+                        ontology_constraint and ontology_constraint.get("ontologies")
+                    )
+                    if has_constraint:
+                        logger.info(
+                            "Ontology constraint loaded: file_id=%s kb_id=%s category=%s ontologies=%s constraints=%s",
+                            file.id,
+                            file.kb_id,
+                            ontology_constraint.get("category_name"),
+                            len(ontology_constraint.get("ontologies", [])),
+                            len(ontology_constraint.get("constraints", [])),
+                        )
+
                     # Set up KB + Document metadata and clear old graph data first
                     await asyncio.to_thread(
                         upsert_document_graph,
@@ -807,6 +826,15 @@ class FileService:
 
                     async def batch_result_callback(batch_chunks: list):
                         FileService._check_cancelled(file_id)
+                        # 本体约束模式：先将实体/关系写入 SQLite（权威存储），回填实例 id
+                        # 再写 Kùzu（upsert_document_graph 使用回填的 id，保证双库一致）
+                        if has_constraint:
+                            await FileService._persist_extraction_to_sqlite(
+                                db,
+                                file_id=file.id,
+                                kb_id=file.kb_id,
+                                batch_chunks=batch_chunks,
+                            )
                         await asyncio.to_thread(
                             upsert_document_graph,
                             file.kb_id,
@@ -925,6 +953,7 @@ class FileService:
                         log_callback=extraction_log_callback,
                         batch_result_callback=batch_result_callback,
                         cancel_check=lambda: FileService._check_cancelled(file_id),
+                        ontology_constraint=ontology_constraint if has_constraint else None,
                     )
                     FileService._check_cancelled(file_id)
                     entity_count = sum(len(chunk.entities) for chunk in graph_chunks)
@@ -1059,6 +1088,105 @@ class FileService:
                                 await new_db.commit()
                     except Exception as new_exc:
                         logger.exception("Failed to update file status in new session: file_id=%s error=%s", file_id, new_exc)
+
+    @staticmethod
+    async def _persist_extraction_to_sqlite(
+        db: AsyncSession,
+        *,
+        file_id: str,
+        kb_id: str,
+        batch_chunks: list,
+    ):
+        """将抽取校验后的实体/关系实例写入 SQLite（权威存储），并回填实例 id 到 GraphEntity/GraphRelation。
+
+        本方法在 batch_result_callback 中、写 Kùzu 之前调用，保证：
+        1. SQLite 先写入实体实例（upsert by kb_id+entity_type+name），拿到实例 id
+        2. 回填 GraphEntity.id，使后续 upsert_document_graph 在 Kùzu 中使用同一 id
+        3. SQLite 写入关系实例（需要起终点实体 id），回填 GraphRelation.id / source_entity_id / target_entity_id
+
+        EntityService.create_entity / create_relation 内部已 best-effort 同步 Kùzu（upsert_entity/upsert_relation），
+        与 upsert_document_graph 的 MERGE 语义一致，不会冲突。
+        """
+        for chunk in batch_chunks:
+            # 1. 写实体实例，回填 id
+            for entity in chunk.entities:
+                if entity.id:
+                    continue  # 已回填（同批次内 chunk 间去重）
+                if not entity.ontology_id:
+                    continue  # 无本体归属（不应发生，后处理已过滤）
+                # 解析 properties JSON → dict
+                props_dict = None
+                if entity.properties:
+                    try:
+                        props_dict = json.loads(entity.properties)
+                    except (json.JSONDecodeError, TypeError):
+                        props_dict = None
+                try:
+                    result = await EntityService.create_entity(
+                        db,
+                        kb_id=kb_id,
+                        ontology_id=entity.ontology_id,
+                        entity_type=entity.entity_type,
+                        name=entity.name,
+                        description=entity.description or "",
+                        properties=props_dict,
+                        source_file_id=file_id,
+                        source_chunk_id=chunk.chunk_id,
+                    )
+                    entity.id = result.get("id")
+                except Exception:
+                    logger.exception(
+                        "Persist entity to SQLite failed: kb_id=%s entity_type=%s name=%s",
+                        kb_id, entity.entity_type, entity.name,
+                    )
+
+            # 2. 写关系实例，回填 id + 起终点实体 id
+            #    构建本 chunk 内 (name, entity_type) → entity_id 的查找表
+            entity_id_lookup: dict[tuple[str, str], str] = {}
+            for entity in chunk.entities:
+                if entity.id:
+                    entity_id_lookup[(entity.name, entity.entity_type)] = entity.id
+
+            for relation in chunk.relations:
+                if relation.id:
+                    continue  # 已回填
+                source_id = entity_id_lookup.get(
+                    (relation.source_name, relation.source_type)
+                )
+                target_id = entity_id_lookup.get(
+                    (relation.target_name, relation.target_type)
+                )
+                if not source_id or not target_id:
+                    logger.warning(
+                        "Skip relation (endpoint entity not found in chunk): "
+                        "source=%s(%s) target=%s(%s) relation=%s",
+                        relation.source_name, relation.source_type,
+                        relation.target_name, relation.target_type,
+                        relation.relation_type,
+                    )
+                    continue
+                if not relation.relation_def_id:
+                    continue  # 无关系定义归属（不应发生，后处理已过滤）
+                try:
+                    result = await EntityService.create_relation(
+                        db,
+                        kb_id=kb_id,
+                        relation_def_id=relation.relation_def_id,
+                        relation_type=relation.relation_type,
+                        source_entity_id=source_id,
+                        target_entity_id=target_id,
+                        description=relation.description or "",
+                        source_file_id=file_id,
+                        source_chunk_id=chunk.chunk_id,
+                    )
+                    relation.id = result.get("id")
+                    relation.source_entity_id = source_id
+                    relation.target_entity_id = target_id
+                except Exception:
+                    logger.exception(
+                        "Persist relation to SQLite failed: kb_id=%s relation=%s source=%s target=%s",
+                        kb_id, relation.relation_type, relation.source_name, relation.target_name,
+                    )
 
     @staticmethod
     async def list_all(db: AsyncSession) -> list[dict]:

@@ -25,6 +25,14 @@ class GraphEntity:
     entity_type: str
     description: str = ""
     aliases: list[str] = field(default_factory=list)
+    # 可选：由调用方（抽取流程写完 SQLite 后）回填的实例 id。
+    # 提供时 upsert_document_graph 直接用它作为 Kùzu Entity.id，
+    # 保证实体管理菜单的编辑/删除能同步到图；未提供时回退到 hash id。
+    id: str | None = None
+    # 抽取的属性值（JSON 字符串），写入 Kùzu Entity.properties 与 SQLite entities.properties
+    properties: str = ""
+    # 可选：归属本体 id（写入 Kùzu Entity.ontology_id）
+    ontology_id: str | None = None
 
 
 @dataclass
@@ -35,6 +43,13 @@ class GraphRelation:
     target_type: str
     relation_type: str
     description: str = ""
+    # 同 GraphEntity.id：调用方回填的 SQLite relation.id
+    id: str | None = None
+    # 归属关系定义 id（写入 Kùzu Relation.relation_def_id）
+    relation_def_id: str | None = None
+    # 起终点实体实例 id（由调用方在写完 SQLite 后回填，写入 Kùzu Relation.source_entity_id/target_entity_id）
+    source_entity_id: str | None = None
+    target_entity_id: str | None = None
 
 
 @dataclass
@@ -94,6 +109,43 @@ class GraphStoreAdapter(ABC):
         entity_query: str | None = None,
         relation_type: str | None = None,
     ) -> dict:
+        raise NotImplementedError
+
+    # ===== 实体/关系实例级别同步（供"实体管理"菜单 CRUD 使用）=====
+    # 设计：Kùzu Entity.id / Relation.id 直接复用 SQLite 实体/关系实例的 id，
+    # 以 SQLite 为权威存储，Kùzu 仅承担图谱可视化与图遍历职责。
+
+    @abstractmethod
+    def upsert_entity(
+        self,
+        entity_id: str,
+        kb_id: str,
+        ontology_id: str,
+        entity_type: str,
+        name: str,
+        description: str = "",
+        properties: str = "",
+    ):
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_entity(self, entity_id: str):
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_relation(
+        self,
+        relation_id: str,
+        kb_id: str,
+        relation_type: str,
+        description: str,
+        source_entity_id: str,
+        target_entity_id: str,
+    ):
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_relation(self, relation_id: str):
         raise NotImplementedError
 
 
@@ -179,6 +231,19 @@ class KuzuGraphAdapter(GraphStoreAdapter):
                 self._execute(statement)
             except Exception:
                 # Kuzu raises if the table already exists.
+                pass
+        # 在已有表上补充实例层字段（首次升级到含实体管理菜单的版本时执行）
+        # ALTER TABLE 不支持 IF NOT EXISTS，重复执行会抛错，忽略即可
+        for alter in (
+            "ALTER TABLE Entity ADD COLUMN ontology_id STRING DEFAULT ''",
+            "ALTER TABLE Entity ADD COLUMN properties STRING DEFAULT ''",
+            "ALTER TABLE Relation ADD COLUMN relation_def_id STRING DEFAULT ''",
+            "ALTER TABLE Relation ADD COLUMN source_entity_id STRING DEFAULT ''",
+            "ALTER TABLE Relation ADD COLUMN target_entity_id STRING DEFAULT ''",
+        ):
+            try:
+                self._execute(alter)
+            except Exception:
                 pass
 
     def delete_document_graph(self, file_id: str):
@@ -303,12 +368,15 @@ class KuzuGraphAdapter(GraphStoreAdapter):
                 for entity in chunk.entities:
                     entity_name = _normalize_text(entity.name)
                     entity_type = _normalize_text(entity.entity_type, "UNKNOWN")
-                    entity_id = _entity_id(kb_id, entity_name, entity_type)
+                    # 优先使用调用方回填的 SQLite 实体 id；未提供时回退到 hash id
+                    entity_id = entity.id or _entity_id(kb_id, entity_name, entity_type)
                     self._execute_internal(
                         """
                         MERGE (e:Entity {id: $entity_id})
-                        ON CREATE SET e.kb_id = $kb_id, e.name = $entity_name, e.entity_type = $entity_type, e.description = $description
-                        ON MATCH SET e.description = CASE WHEN e.description = '' THEN $description ELSE e.description END
+                        ON CREATE SET e.kb_id = $kb_id, e.name = $entity_name, e.entity_type = $entity_type, e.description = $description,
+                                      e.ontology_id = $ontology_id, e.properties = $properties
+                        ON MATCH SET e.description = CASE WHEN e.description = '' THEN $description ELSE e.description END,
+                                     e.ontology_id = $ontology_id, e.properties = $properties
                         """,
                         {
                             "entity_id": entity_id,
@@ -316,6 +384,8 @@ class KuzuGraphAdapter(GraphStoreAdapter):
                             "entity_name": entity_name,
                             "entity_type": entity_type,
                             "description": _normalize_text(entity.description),
+                            "ontology_id": entity.ontology_id or "",
+                            "properties": entity.properties or "",
                         },
                     )
                     self._execute_internal(
@@ -332,9 +402,10 @@ class KuzuGraphAdapter(GraphStoreAdapter):
                     target_name = _normalize_text(relation.target_name)
                     target_type = _normalize_text(relation.target_type, "UNKNOWN")
                     relation_type = _normalize_text(relation.relation_type, "RELATED_TO")
-                    source_id = _entity_id(kb_id, source_name, source_type)
-                    target_id = _entity_id(kb_id, target_name, target_type)
-                    relation_id = _relation_id(
+                    # 优先使用回填的 SQLite 实体 id（起终点）与关系实例 id
+                    source_id = relation.source_entity_id or _entity_id(kb_id, source_name, source_type)
+                    target_id = relation.target_entity_id or _entity_id(kb_id, target_name, target_type)
+                    relation_id = relation.id or _relation_id(
                         kb_id,
                         source_name,
                         source_type,
@@ -370,14 +441,21 @@ class KuzuGraphAdapter(GraphStoreAdapter):
                     self._execute_internal(
                         """
                         MERGE (r:Relation {id: $relation_id})
-                        ON CREATE SET r.kb_id = $kb_id, r.relation_type = $relation_type, r.description = $description
-                        ON MATCH SET r.description = CASE WHEN r.description = '' THEN $description ELSE r.description END
+                        ON CREATE SET r.kb_id = $kb_id, r.relation_type = $relation_type, r.description = $description,
+                                      r.relation_def_id = $relation_def_id,
+                                      r.source_entity_id = $source_entity_id, r.target_entity_id = $target_entity_id
+                        ON MATCH SET r.description = CASE WHEN r.description = '' THEN $description ELSE r.description END,
+                                     r.relation_def_id = $relation_def_id,
+                                     r.source_entity_id = $source_entity_id, r.target_entity_id = $target_entity_id
                         """,
                         {
                             "relation_id": relation_id,
                             "kb_id": kb_id,
                             "relation_type": relation_type,
                             "description": _normalize_text(relation.description),
+                            "relation_def_id": relation.relation_def_id or "",
+                            "source_entity_id": source_id,
+                            "target_entity_id": target_id,
                         },
                     )
                     self._execute_internal(
@@ -744,6 +822,173 @@ class KuzuGraphAdapter(GraphStoreAdapter):
             "records": chunk_records,
         }
 
+    # ===== 实体/关系实例级别同步 =====
+
+    def upsert_entity(
+        self,
+        entity_id: str,
+        kb_id: str,
+        ontology_id: str,
+        entity_type: str,
+        name: str,
+        description: str = "",
+        properties: str = "",
+    ):
+        """以 SQLite entity.id 作为 Kùzu Entity.id 进行 upsert。
+
+        与抽取流程的 hash-based id 共存：手动管理的实体使用 SQLite id，
+        抽取流程产出的实体在阶段二B改造后也使用 SQLite id。
+        """
+        with _kuzu_write_lock:
+            self._execute_internal(
+                """
+                MERGE (e:Entity {id: $entity_id})
+                ON CREATE SET e.kb_id = $kb_id, e.name = $name,
+                              e.entity_type = $entity_type, e.description = $description,
+                              e.ontology_id = $ontology_id, e.properties = $properties
+                ON MATCH SET e.kb_id = $kb_id, e.name = $name,
+                             e.entity_type = $entity_type, e.description = $description,
+                             e.ontology_id = $ontology_id, e.properties = $properties
+                """,
+                {
+                    "entity_id": entity_id,
+                    "kb_id": kb_id,
+                    "name": _normalize_text(name),
+                    "entity_type": _normalize_text(entity_type, "UNKNOWN"),
+                    "description": _normalize_text(description),
+                    "ontology_id": ontology_id or "",
+                    "properties": properties or "",
+                },
+            )
+
+    def delete_entity(self, entity_id: str):
+        """删除 Kùzu Entity 节点（DETACH DELETE 一并清除入边出边）。
+
+        同时删除该实体参与的所有 Relation 节点（作为 source 或 target），
+        保持与 SQLite 级联语义一致（删除实体时其相关关系实例也会被清理）。
+        """
+        with _kuzu_write_lock:
+            # 先删除该实体参与的 Relation 节点（防止孤儿关系节点）
+            self._execute_internal(
+                """
+                MATCH (r:Relation)-[:RELATION_SOURCE]->(e:Entity {id: $entity_id})
+                DETACH DELETE r
+                """,
+                {"entity_id": entity_id},
+            )
+            self._execute_internal(
+                """
+                MATCH (r:Relation)-[:RELATION_TARGET]->(e:Entity {id: $entity_id})
+                DETACH DELETE r
+                """,
+                {"entity_id": entity_id},
+            )
+            self._execute_internal(
+                """
+                MATCH (e:Entity {id: $entity_id})
+                DETACH DELETE e
+                """,
+                {"entity_id": entity_id},
+            )
+
+    def upsert_relation(
+        self,
+        relation_id: str,
+        kb_id: str,
+        relation_type: str,
+        description: str,
+        source_entity_id: str,
+        target_entity_id: str,
+    ):
+        """以 SQLite relation.id 作为 Kùzu Relation.id 进行 upsert，并重建起终点连边。"""
+        with _kuzu_write_lock:
+            self._execute_internal(
+                """
+                MERGE (r:Relation {id: $relation_id})
+                ON CREATE SET r.kb_id = $kb_id, r.relation_type = $relation_type,
+                              r.description = $description,
+                              r.source_entity_id = $source_entity_id,
+                              r.target_entity_id = $target_entity_id
+                ON MATCH SET r.kb_id = $kb_id, r.relation_type = $relation_type,
+                             r.description = $description,
+                             r.source_entity_id = $source_entity_id,
+                             r.target_entity_id = $target_entity_id
+                """,
+                {
+                    "relation_id": relation_id,
+                    "kb_id": kb_id,
+                    "relation_type": _normalize_text(relation_type, "RELATED_TO"),
+                    "description": _normalize_text(description),
+                    "source_entity_id": source_entity_id,
+                    "target_entity_id": target_entity_id,
+                },
+            )
+            # 重建起终点连边（先删后建，避免遗留旧连边）
+            self._execute_internal(
+                """
+                MATCH (r:Relation {id: $relation_id})
+                OPTIONAL MATCH (r)-[old_src:RELATION_SOURCE]->()
+                DELETE old_src
+                """,
+                {"relation_id": relation_id},
+            )
+            self._execute_internal(
+                """
+                MATCH (r:Relation {id: $relation_id})
+                OPTIONAL MATCH (r)-[old_tgt:RELATION_TARGET]->()
+                DELETE old_tgt
+                """,
+                {"relation_id": relation_id},
+            )
+            self._execute_internal(
+                """
+                MATCH (r:Relation {id: $relation_id}), (s:Entity {id: $source_entity_id})
+                MERGE (r)-[:RELATION_SOURCE]->(s)
+                """,
+                {"relation_id": relation_id, "source_entity_id": source_entity_id},
+            )
+            self._execute_internal(
+                """
+                MATCH (r:Relation {id: $relation_id}), (t:Entity {id: $target_entity_id})
+                MERGE (r)-[:RELATION_TARGET]->(t)
+                """,
+                {"relation_id": relation_id, "target_entity_id": target_entity_id},
+            )
+            # 直接 RELATES 边（用于图遍历）
+            self._execute_internal(
+                """
+                MATCH (s:Entity {id: $source_entity_id}), (t:Entity {id: $target_entity_id})
+                MERGE (s)-[rel:RELATES]->(t)
+                ON CREATE SET rel.relation_id = $relation_id, rel.relation_type = $relation_type
+                ON MATCH SET rel.relation_id = $relation_id, rel.relation_type = $relation_type
+                """,
+                {
+                    "source_entity_id": source_entity_id,
+                    "target_entity_id": target_entity_id,
+                    "relation_id": relation_id,
+                    "relation_type": _normalize_text(relation_type, "RELATED_TO"),
+                },
+            )
+
+    def delete_relation(self, relation_id: str):
+        """删除 Kùzu Relation 节点及其 RELATES 直连边。"""
+        with _kuzu_write_lock:
+            # 删除对应的 RELATES 直连边（按 relation_id 过滤）
+            self._execute_internal(
+                """
+                MATCH (s:Entity)-[rel:RELATES {relation_id: $relation_id}]->(t:Entity)
+                DELETE rel
+                """,
+                {"relation_id": relation_id},
+            )
+            self._execute_internal(
+                """
+                MATCH (r:Relation {id: $relation_id})
+                DETACH DELETE r
+                """,
+                {"relation_id": relation_id},
+            )
+
 
 class Neo4jGraphAdapter(GraphStoreAdapter):
     provider_name = "neo4j"
@@ -882,12 +1127,13 @@ class Neo4jGraphAdapter(GraphStoreAdapter):
             for entity in chunk.entities:
                 entity_name = _normalize_text(entity.name)
                 entity_type = _normalize_text(entity.entity_type, "UNKNOWN")
-                entity_id = _entity_id(kb_id, entity_name, entity_type)
+                entity_id = entity.id or _entity_id(kb_id, entity_name, entity_type)
                 self._execute(
                     """
                     MERGE (e:Entity {id: $entity_id})
                     SET e.kb_id = $kb_id, e.name = $entity_name, e.entity_type = $entity_type
                     SET e.description = CASE WHEN coalesce(e.description, '') = '' THEN $description ELSE e.description END
+                    SET e.ontology_id = $ontology_id, e.properties = $properties
                     WITH e
                     MATCH (c:Chunk {id: $chunk_id})
                     MERGE (c)-[:MENTIONS]->(e)
@@ -898,6 +1144,8 @@ class Neo4jGraphAdapter(GraphStoreAdapter):
                         "entity_name": entity_name,
                         "entity_type": entity_type,
                         "description": _normalize_text(entity.description),
+                        "ontology_id": entity.ontology_id or "",
+                        "properties": entity.properties or "",
                         "chunk_id": chunk.chunk_id,
                     },
                 )
@@ -908,9 +1156,9 @@ class Neo4jGraphAdapter(GraphStoreAdapter):
                 target_name = _normalize_text(relation.target_name)
                 target_type = _normalize_text(relation.target_type, "UNKNOWN")
                 relation_type = _normalize_text(relation.relation_type, "RELATED_TO")
-                source_id = _entity_id(kb_id, source_name, source_type)
-                target_id = _entity_id(kb_id, target_name, target_type)
-                relation_id = _relation_id(
+                source_id = relation.source_entity_id or _entity_id(kb_id, source_name, source_type)
+                target_id = relation.target_entity_id or _entity_id(kb_id, target_name, target_type)
+                relation_id = relation.id or _relation_id(
                     kb_id,
                     source_name,
                     source_type,
@@ -927,6 +1175,9 @@ class Neo4jGraphAdapter(GraphStoreAdapter):
                     MERGE (relNode:Relation {id: $relation_id})
                     SET relNode.kb_id = $kb_id, relNode.relation_type = $relation_type
                     SET relNode.description = CASE WHEN coalesce(relNode.description, '') = '' THEN $description ELSE relNode.description END
+                    SET relNode.relation_def_id = $relation_def_id,
+                        relNode.source_entity_id = $source_entity_id,
+                        relNode.target_entity_id = $target_entity_id
                     WITH source, target, relNode
                     MATCH (c:Chunk {id: $chunk_id})
                     MERGE (c)-[:HAS_RELATION]->(relNode)
@@ -945,6 +1196,9 @@ class Neo4jGraphAdapter(GraphStoreAdapter):
                         "relation_id": relation_id,
                         "relation_type": relation_type,
                         "description": _normalize_text(relation.description),
+                        "relation_def_id": relation.relation_def_id or "",
+                        "source_entity_id": source_id,
+                        "target_entity_id": target_id,
                         "chunk_id": chunk.chunk_id,
                         "kb_id": kb_id,
                     },
@@ -975,6 +1229,99 @@ class Neo4jGraphAdapter(GraphStoreAdapter):
         relation_type: str | None = None,
     ) -> dict:
         return KuzuGraphAdapter.fetch_graph_view(self, kb_id, file_id, entity_query, relation_type)
+
+    # ===== 实体/关系实例级别同步（Neo4j 实现）=====
+
+    def upsert_entity(
+        self,
+        entity_id: str,
+        kb_id: str,
+        ontology_id: str,
+        entity_type: str,
+        name: str,
+        description: str = "",
+        properties: str = "",
+    ):
+        self._execute(
+            """
+            MERGE (e:Entity {id: $entity_id})
+            SET e.kb_id = $kb_id, e.name = $name, e.entity_type = $entity_type,
+                e.description = $description, e.ontology_id = $ontology_id,
+                e.properties = $properties
+            """,
+            {
+                "entity_id": entity_id,
+                "kb_id": kb_id,
+                "name": _normalize_text(name),
+                "entity_type": _normalize_text(entity_type, "UNKNOWN"),
+                "description": _normalize_text(description),
+                "ontology_id": ontology_id or "",
+                "properties": properties or "",
+            },
+        )
+
+    def delete_entity(self, entity_id: str):
+        self._execute(
+            """
+            MATCH (r:Relation)-[:RELATION_SOURCE|RELATION_TARGET]->(e:Entity {id: $entity_id})
+            DETACH DELETE r
+            """,
+            {"entity_id": entity_id},
+        )
+        self._execute(
+            """
+            MATCH (e:Entity {id: $entity_id})
+            DETACH DELETE e
+            """,
+            {"entity_id": entity_id},
+        )
+
+    def upsert_relation(
+        self,
+        relation_id: str,
+        kb_id: str,
+        relation_type: str,
+        description: str,
+        source_entity_id: str,
+        target_entity_id: str,
+    ):
+        self._execute(
+            """
+            MERGE (r:Relation {id: $relation_id})
+            SET r.kb_id = $kb_id, r.relation_type = $relation_type, r.description = $description,
+                r.source_entity_id = $source_entity_id, r.target_entity_id = $target_entity_id
+            WITH r
+            MATCH (s:Entity {id: $source_entity_id}), (t:Entity {id: $target_entity_id})
+            MERGE (r)-[:RELATION_SOURCE]->(s)
+            MERGE (r)-[:RELATION_TARGET]->(t)
+            MERGE (s)-[rel:RELATES]->(t)
+            SET rel.relation_id = $relation_id, rel.relation_type = $relation_type
+            """,
+            {
+                "relation_id": relation_id,
+                "kb_id": kb_id,
+                "relation_type": _normalize_text(relation_type, "RELATED_TO"),
+                "description": _normalize_text(description),
+                "source_entity_id": source_entity_id,
+                "target_entity_id": target_entity_id,
+            },
+        )
+
+    def delete_relation(self, relation_id: str):
+        self._execute(
+            """
+            MATCH (s:Entity)-[rel:RELATES {relation_id: $relation_id}]->(t:Entity)
+            DELETE rel
+            """,
+            {"relation_id": relation_id},
+        )
+        self._execute(
+            """
+            MATCH (r:Relation {id: $relation_id})
+            DETACH DELETE r
+            """,
+            {"relation_id": relation_id},
+        )
 
 
 _adapter: GraphStoreAdapter | None = None
@@ -1036,3 +1383,41 @@ def fetch_graph_view(
     relation_type: str | None = None,
 ) -> dict:
     return _get_adapter().fetch_graph_view(kb_id, file_id, entity_query, relation_type)
+
+
+# ===== 实体/关系实例级别同步（模块级便捷函数）=====
+
+
+def upsert_entity(
+    entity_id: str,
+    kb_id: str,
+    ontology_id: str,
+    entity_type: str,
+    name: str,
+    description: str = "",
+    properties: str = "",
+):
+    _get_adapter().upsert_entity(
+        entity_id, kb_id, ontology_id, entity_type, name, description, properties
+    )
+
+
+def delete_entity(entity_id: str):
+    _get_adapter().delete_entity(entity_id)
+
+
+def upsert_relation(
+    relation_id: str,
+    kb_id: str,
+    relation_type: str,
+    description: str,
+    source_entity_id: str,
+    target_entity_id: str,
+):
+    _get_adapter().upsert_relation(
+        relation_id, kb_id, relation_type, description, source_entity_id, target_entity_id
+    )
+
+
+def delete_relation(relation_id: str):
+    _get_adapter().delete_relation(relation_id)

@@ -41,13 +41,21 @@ async def init_db():
 
     async with engine.begin() as conn:
         # 全量建表（IF NOT EXISTS，逐条执行）
+        # 注意：schema.sql 中部分 CREATE TABLE 前有 `--` 注释行，
+        # 简单的 `stmt.startswith("--")` 会把"注释 + CREATE"整段跳过，
+        # 导致全新数据库上漏建表。这里先剔除注释行再判断。
         schema_file = SQL_DIR / "schema.sql"
         if schema_file.exists():
             raw = schema_file.read_text(encoding="utf-8")
             for stmt in raw.split(";"):
-                stmt = stmt.strip()
-                if stmt and not stmt.startswith("--"):
-                    await conn.execute(text(stmt))
+                # 移除整行注释，保留语句本身
+                code_lines = [
+                    ln for ln in stmt.splitlines()
+                    if not ln.strip().startswith("--")
+                ]
+                clean = "\n".join(code_lines).strip()
+                if clean:
+                    await conn.execute(text(clean))
 
         # 迁移记录表
         await conn.execute(text(

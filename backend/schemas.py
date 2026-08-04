@@ -47,3 +47,154 @@ class CreateCrawlJobRequest(BaseModel):
     auto_process: bool = False
     extract_graph: bool = True
     analysis_depth: str = "medium"
+
+
+# ===== 本体管理 =====
+
+
+class CreateOntologyCategoryRequest(BaseModel):
+    name: str
+    description: str | None = ""
+
+
+class UpdateOntologyCategoryRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class CreateOntologyRequest(BaseModel):
+    name: str
+    description: str | None = ""
+    color: str | None = None
+    sort_order: int = 0
+
+
+class UpdateOntologyRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    color: str | None = None
+    sort_order: int | None = None
+
+
+class BatchCreateOntologiesRequest(BaseModel):
+    ontologies: list[CreateOntologyRequest]
+
+
+class CreateOntologyAttributeRequest(BaseModel):
+    name: str
+    data_type: str  # string/number/boolean/date/datetime/text/enum
+    description: str | None = ""
+    is_required: bool = False
+    default_value: str | None = None
+    enum_values: list[str] | None = None
+    sort_order: int = 0
+
+
+class UpdateOntologyAttributeRequest(BaseModel):
+    name: str | None = None
+    data_type: str | None = None
+    description: str | None = None
+    is_required: bool | None = None
+    default_value: str | None = None
+    enum_values: list[str] | None = None
+    sort_order: int | None = None
+
+
+class BatchSaveAttributesRequest(BaseModel):
+    attributes: list[CreateOntologyAttributeRequest]
+
+
+class CreateOntologyRelationRequest(BaseModel):
+    name: str
+    description: str | None = ""
+
+
+class UpdateOntologyRelationRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class BatchCreateRelationsRequest(BaseModel):
+    relations: list[CreateOntologyRelationRequest]
+
+
+class CreateRelationConstraintRequest(BaseModel):
+    source_ontology_id: str
+    relation_id: str
+    target_ontology_id: str
+    description: str | None = ""
+
+
+class UpdateRelationConstraintRequest(BaseModel):
+    source_ontology_id: str | None = None
+    relation_id: str | None = None
+    target_ontology_id: str | None = None
+    description: str | None = None
+
+
+class BatchCreateConstraintsRequest(BaseModel):
+    constraints: list[CreateRelationConstraintRequest]
+
+
+class BindKbOntologyRequest(BaseModel):
+    category_id: str
+
+
+class CreateAttributeTemplateRequest(BaseModel):
+    name: str
+    description: str | None = ""
+
+
+class UpdateAttributeTemplateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class CreateTemplateAttributeRequest(BaseModel):
+    name: str
+    data_type: str
+    description: str | None = ""
+    is_required: bool = False
+    default_value: str | None = None
+    enum_values: list[str] | None = None
+    sort_order: int = 0
+
+
+class BatchSaveTemplateAttributesRequest(BaseModel):
+    attributes: list[CreateTemplateAttributeRequest]
+
+
+class BindOntologyTemplatesRequest(BaseModel):
+    template_ids: list[str]
+
+
+# ===== 实体/关系实例管理 =====
+
+
+class UpdateEntityRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    properties: dict | None = None
+
+
+class UpdateRelationRequest(BaseModel):
+    relation_type: str | None = None
+    description: str | None = None
+
+
+class CreateEntityRequest(BaseModel):
+    kb_id: str
+    ontology_id: str
+    entity_type: str
+    name: str
+    description: str | None = ""
+    properties: dict | None = None
+
+
+class CreateRelationRequest(BaseModel):
+    kb_id: str
+    relation_def_id: str
+    relation_type: str
+    source_entity_id: str
+    target_entity_id: str
+    description: str | None = ""

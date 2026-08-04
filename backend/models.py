@@ -110,3 +110,150 @@ class CrawlJob(Base):
     logs = Column(Text, nullable=True)
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     finished_at = Column(String, nullable=True)
+
+
+# ===== 本体定义层（无外键，逻辑关联由 service 层维护）=====
+
+class OntologyCategory(Base):
+    __tablename__ = "ontology_categories"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String, nullable=False)
+    description = Column(Text, default="")
+    is_system = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class Ontology(Base):
+    __tablename__ = "ontologies"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    category_id = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(String, default="")
+    color = Column(String, nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class OntologyAttribute(Base):
+    __tablename__ = "ontology_attributes"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    ontology_id = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    data_type = Column(String, nullable=False)
+    description = Column(String, default="")
+    is_required = Column(Integer, nullable=False, default=0)
+    default_value = Column(String, nullable=True)
+    enum_values = Column(Text, nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class OntologyRelation(Base):
+    __tablename__ = "ontology_relations"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    category_id = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class OntologyRelationConstraint(Base):
+    __tablename__ = "ontology_relation_constraints"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    category_id = Column(String, nullable=False)
+    source_ontology_id = Column(String, nullable=False)
+    relation_id = Column(String, nullable=False)
+    target_ontology_id = Column(String, nullable=False)
+    description = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class KbOntologyBinding(Base):
+    __tablename__ = "kb_ontology_bindings"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    kb_id = Column(String, nullable=False)
+    category_id = Column(String, nullable=False)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+# ===== 属性模板（全局，跨本体类别复用）=====
+
+class OntologyAttributeTemplate(Base):
+    __tablename__ = "ontology_attribute_templates"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String, nullable=False)
+    description = Column(String, default="")
+    is_system = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class OntologyTemplateAttribute(Base):
+    __tablename__ = "ontology_template_attributes"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    template_id = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    data_type = Column(String, nullable=False)
+    description = Column(String, default="")
+    is_required = Column(Integer, nullable=False, default=0)
+    default_value = Column(String, nullable=True)
+    enum_values = Column(Text, nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class OntologyTemplateBinding(Base):
+    __tablename__ = "ontology_template_bindings"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    ontology_id = Column(String, nullable=False)
+    template_id = Column(String, nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+# ===== 实体实例层（抽取后生成，无外键）=====
+
+class Entity(Base):
+    __tablename__ = "entities"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    kb_id = Column(String, nullable=False)
+    ontology_id = Column(String, nullable=False)
+    entity_type = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(String, default="")
+    properties = Column(Text, nullable=True)
+    source_file_id = Column(String, nullable=True)
+    source_chunk_id = Column(String, nullable=True)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class Relation(Base):
+    __tablename__ = "relations"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    kb_id = Column(String, nullable=False)
+    relation_def_id = Column(String, nullable=False)
+    relation_type = Column(String, nullable=False)
+    source_entity_id = Column(String, nullable=False)
+    target_entity_id = Column(String, nullable=False)
+    description = Column(String, default="")
+    source_file_id = Column(String, nullable=True)
+    source_chunk_id = Column(String, nullable=True)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())

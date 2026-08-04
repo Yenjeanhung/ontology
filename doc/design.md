@@ -26,16 +26,17 @@ KnowSource 是一个基于 RAG + 知识图谱的知识库系统，前端使用 V
 | **本体类别**   | Ontology Category   | 定义层 | 顶层容器，一个领域本体方案，如"金融领域本体"。知识库绑定到本体类别            |
 | **本体**     | Ontology（类型定义）      | 定义层 | 归属到本体类别的类型定义，如"人物"、"组织"。每个本体可有多个属性            |
 | **本体属性**   | Ontology Attribute  | 定义层 | 本体的字段定义，如"姓名(string,必填)"、"年龄(number)"         |
+| **属性模板**   | Attribute Template  | 定义层 | 可复用的属性组（**全局**，不归属任何本体类别），如"自然人基础属性"。本体可引用一个或多个模板 + 补充自有属性，抽取时合并为完整属性 |
 | **本体关系定义** | Ontology Relation   | 定义层 | 关系字典中的一项，如"任职于"。仅含名称与描述，不绑定起终点                |
 | **本体关系设置** | Relation Constraint | 定义层 | 由"起点本体 + 关系 + 终点本体"组成的三元组约束，如 `(人物)-任职于→(组织)` |
 | **实体**     | Entity              | 实例层 | 抽取后生成的实例数据，存 SQLite `entities`/`relations` 表（权威）并同步 Kùzu，通过 `ontology_id`/`entity_type` 归属到某个本体（类型） |
 
-> 前五个术语（定义层）对应本体管理界面上的四个功能模块；实体/关系（实例层）由文件处理抽取自动生成，并可在"实体管理"菜单浏览与编辑（详见第六章）。
+> 前六个术语（定义层）对应本体管理界面上的功能模块（其中"属性模板"为全局模块，不归属某个本体类别）；实体/关系（实例层）由文件处理抽取自动生成，并可在"实体管理"菜单浏览与编辑（详见第六章）。
 
 ### 1.4 设计原则
 
 - 本体管理功能直接在现有 Python (FastAPI) 后端中实现
-- 复用现有的 SQLite 数据库，新增 8 张表（6 张本体定义层 + 2 张实体实例层），**不使用数据库外键**，关联由 service 层维护
+- 复用现有的 SQLite 数据库，新增 11 张表（6 张本体定义层 + 3 张属性模板 + 2 张实体实例层），**不使用数据库外键**，关联由 service 层维护
 - 抽取后的实体/关系实例以 SQLite 为权威存储（供实体管理菜单），并同步写入 Kùzu 图数据库（供图谱可视化与图遍历）
 - 图谱抽取服务根据本体约束动态构建 Prompt（含本体属性与三元组约束），并增加后处理校验
 - 无本体绑定时保持现有行为不变，完全向后兼容
@@ -70,7 +71,7 @@ KnowSource 是一个基于 RAG + 知识图谱的知识库系统，前端使用 V
 │           │                                                  │
 │           ▼                                                  │
 │  ┌────────────────────┐                                      │
-│  │   SQLite 数据库     │  ← 新增 8 张表(6 本体+2 实体)         │
+│  │   SQLite 数据库     │  ← 新增 11 张表(6 本体+3 模板+2 实体)  │
 │  │  (models.py)       │                                      │
 │  └────────────────────┘                                      │
 │                                                              │
@@ -102,7 +103,7 @@ FastAPI router (files.py)
 
 ## 三、数据库设计（Python SQLite 新增表）
 
-在现有 SQLite 数据库（`backend/data/knowsource.db`）中新增 8 张表：6 张**本体定义层**表（本体类别、本体、本体属性、本体关系定义、本体关系设置、知识库绑定）+ 2 张**实体实例层**表（实体、关系）。
+在现有 SQLite 数据库（`backend/data/knowsource.db`）中新增 11 张表：6 张**本体定义层**表（本体类别、本体、本体属性、本体关系定义、本体关系设置、知识库绑定）+ 3 张**属性模板**表（跨领域属性复用，全局）+ 2 张**实体实例层**表（实体、关系）。
 
 > **不使用数据库外键约束**：所有表间关联通过 `*_id` 字段做**逻辑关联**，由 `services/ontology_service.py` 在应用层维护引用一致性与级联删除（如删除本体类别时，由 service 层主动删除其下全部本体、属性、关系、三元组、绑定）。SQLite 仅保留 `UNIQUE` 约束用于防重。
 
@@ -165,7 +166,65 @@ CREATE TABLE IF NOT EXISTS ontology_attributes (
 
 > **`data_type`** **取值**：`string`（字符串）、`number`（数字）、`boolean`（布尔）、`date`（日期）、`datetime`（日期时间）、`text`（长文本）、`enum`（枚举，配合 `enum_values`）。
 
-### 3.4 本体关系定义表 `ontology_relations`
+### 3.4 属性模板表（跨领域属性复用，全局）
+
+属性模板用于解决跨领域共性属性重复定义的问题（如"人物"在军工、银行领域都有姓名、性别、住址，但各自又有军衔 / 信用评分等特有属性）。模板是**全局**的，不归属任何本体类别；一个本体可引用一个或多个模板，本体最终属性 = 模板属性（合并）+ 本体自有属性。
+
+#### 3.4.1 属性模板表 `ontology_attribute_templates`
+
+```sql
+CREATE TABLE IF NOT EXISTS ontology_attribute_templates (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR(100) NOT NULL,       -- 模板名，如"自然人基础属性"
+    description     VARCHAR(500) DEFAULT '',
+    is_system       INTEGER NOT NULL DEFAULT 0,  -- 是否系统内置（内置模板不可删）
+    created_at      VARCHAR,
+    updated_at      VARCHAR,
+    UNIQUE(name)
+);
+```
+
+#### 3.4.2 模板属性表 `ontology_template_attributes`
+
+模板下的属性定义，结构与 `ontology_attributes` 一致。
+
+```sql
+CREATE TABLE IF NOT EXISTS ontology_template_attributes (
+    id              VARCHAR PRIMARY KEY,
+    template_id     VARCHAR NOT NULL,          -- 归属模板（逻辑关联 ontology_attribute_templates.id）
+    name            VARCHAR(50) NOT NULL,
+    data_type       VARCHAR(20) NOT NULL,      -- string/number/boolean/date/datetime/text/enum
+    description     VARCHAR(500) DEFAULT '',
+    is_required     INTEGER NOT NULL DEFAULT 0,
+    default_value   VARCHAR(200) DEFAULT NULL,
+    enum_values     TEXT DEFAULT NULL,         -- JSON 数组，仅 data_type=enum 时使用
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    created_at      VARCHAR,
+    updated_at      VARCHAR,
+    UNIQUE(template_id, name)
+);
+```
+
+#### 3.4.3 本体-模板关联表 `ontology_template_bindings`（多对多）
+
+```sql
+CREATE TABLE IF NOT EXISTS ontology_template_bindings (
+    id              VARCHAR PRIMARY KEY,
+    ontology_id     VARCHAR NOT NULL,          -- 引用模板的本体（逻辑关联 ontologies.id）
+    template_id     VARCHAR NOT NULL,          -- 被引用的模板（逻辑关联 ontology_attribute_templates.id）
+    sort_order      INTEGER NOT NULL DEFAULT 0, -- 模板属性合并顺序
+    created_at      VARCHAR,
+    UNIQUE(ontology_id, template_id)
+);
+```
+
+> **属性合并规则**：本体最终属性 = 按 `sort_order` 合并各绑定模板的属性 + 本体自有属性（`ontology_attributes`）。同名冲突时，**本体自有属性优先**（覆盖模板同名属性），service 层合并时检测并提示冲突。抽取时以合并后的完整属性列表注入 Prompt 与后处理校验。
+>
+> **删除规则**：删除模板仅解除所有本体的引用（删除 `ontology_template_bindings` 中相关记录），不影响本体自有属性与已抽取的实体数据；系统内置模板（`is_system=1`）不可删除。
+>
+> **使用示例**：全局建一个"自然人基础属性"模板（姓名、性别、住址、身份证号），军工领域的"人物"本体与银行领域的"人物"本体都引用它，再各自补充军衔 / 信用评分等自有属性，避免共性属性重复维护。
+
+### 3.5 本体关系定义表 `ontology_relations`
 
 关系字典，只定义关系名称与含义，**不绑定**具体起终点。同一关系可被多个三元组引用。
 
@@ -181,7 +240,7 @@ CREATE TABLE IF NOT EXISTS ontology_relations (
 );
 ```
 
-### 3.5 本体关系设置表 `ontology_relation_constraints`（三元组）
+### 3.6 本体关系设置表 `ontology_relation_constraints`（三元组）
 
 由"起点本体 + 关系 + 终点本体"组成的三元组约束，是关系抽取的硬性约束。两端指向的是**本体（类型定义）**，不是实体实例。
 
@@ -200,7 +259,7 @@ CREATE TABLE IF NOT EXISTS ontology_relation_constraints (
 
 > 三元组是约束的最小单位。例如 `(人物)-任职于→(组织)`、`(人物)-持有→(金融产品)`、`(组织)-持有→(金融产品)`。同一关系可出现在多条三元组中（如"持有"既可人物→产品，也可组织→产品）。
 
-### 3.6 知识库-本体类别绑定表 `kb_ontology_bindings`
+### 3.7 知识库-本体类别绑定表 `kb_ontology_bindings`
 
 ```sql
 CREATE TABLE IF NOT EXISTS kb_ontology_bindings (
@@ -212,7 +271,7 @@ CREATE TABLE IF NOT EXISTS kb_ontology_bindings (
 );
 ```
 
-### 3.7 实体表 `entities`（实例层）
+### 3.8 实体表 `entities`（实例层）
 
 抽取后生成的实体实例。供"实体管理"菜单浏览/编辑，是实体实例的权威存储。
 
@@ -233,7 +292,7 @@ CREATE TABLE IF NOT EXISTS entities (
 );
 ```
 
-### 3.8 关系表 `relations`（实例层）
+### 3.9 关系表 `relations`（实例层）
 
 抽取后生成的实体间关系实例。
 
@@ -254,7 +313,7 @@ CREATE TABLE IF NOT EXISTS relations (
 );
 ```
 
-### 3.9 实体/关系与 Kùzu 图数据库的关系
+### 3.10 实体/关系与 Kùzu 图数据库的关系
 
 实体实例采用**双库存储**，职责分工：
 
@@ -267,7 +326,7 @@ CREATE TABLE IF NOT EXISTS relations (
 
 > **命名约定**：本体定义层全部 `ontology_*` 命名；实体实例层 `entities`/`relations` 命名。实体通过 `ontology_id`（及冗余的 `entity_type = ontologies.name`）归属本体。
 
-### 3.10 ER 关系
+### 3.11 ER 关系
 
 ```
 [SQLite - 本体定义层]
@@ -279,6 +338,10 @@ ontology_categories 1 ──N kb_ontology_bindings (通过 kb_id 关联 knowledg
 ontologies           1 ──N ontology_attributes
 ontologies           1 ──N ontology_relation_constraints (作为 source / target)
 ontology_relations   1 ──N ontology_relation_constraints
+
+[SQLite - 属性模板（全局，跨本体类别复用）]
+ontology_attribute_templates 1 ──N ontology_template_attributes
+ontologies N ──M ontology_attribute_templates  (通过 ontology_template_bindings；本体最终属性 = 模板属性合并 + 自有属性)
 
 [SQLite - 实体实例层]
 knowledge_bases     1 ──N entities      (通过 kb_id)
@@ -292,12 +355,17 @@ entities  <──>  Kùzu Entity 节点                  (抽取/编辑时双写
 relations <──>  Kùzu Relation 节点 + RELATES 边   (抽取/编辑时双写同步)
 ```
 
-### 3.11 数据示例（金融领域本体）
+### 3.12 数据示例（金融领域本体）
 
 ```
+属性模板（ontology_attribute_templates，全局，不归属本体类别）：
+├─ 自然人基础属性 ─ 属性(ontology_template_attributes): 姓名(string,必填), 性别(enum:男,女), 住址(string), 身份证号(string)
+└─ （可被任意领域本体引用，金融/军工的"人物"均引用它，共性属性只维护一份）
+
 本体类别（ontology_categories）：金融领域本体
 ├─ 本体（ontologies）
-│   ├─ 人物  ─ 属性(ontology_attributes): 姓名(string,必填), 年龄(number), 出生日期(date), 性别(enum:男,女)
+│   ├─ 人物  ─ 引用模板: [自然人基础属性]；自有属性(ontology_attributes): 年龄(number), 出生日期(date)
+│   │        （最终属性 = 姓名,性别,住址,身份证号 + 年龄,出生日期）
 │   ├─ 组织  ─ 属性: 名称(string,必填), 成立时间(date), 行业(string)
 │   └─ 金融产品 ─ 属性: 名称(string,必填), 类型(string), 风险等级(enum:低,中,高)
 ├─ 本体关系定义（ontology_relations）
@@ -310,8 +378,11 @@ relations <──>  Kùzu Relation 节点 + RELATES 边   (抽取/编辑时双�
     ├─ (组织) ─持有→   (金融产品)
     └─ (组织) ─影响→   (金融产品)
 
+跨领域复用对比：军工领域本体的"人物"同样引用 [自然人基础属性]，自有属性补充 军衔(string)、保密等级(enum:公开,内部,机密)，
+   共性属性（姓名/性别/住址/身份证号）无需重复定义，仅维护一份模板即可。
+
 抽取后（SQLite 实体实例层 entities / relations，并同步至 Kùzu）：
-    entities:  { name:"张三",  entity_type:"人物", ontology_id:..., properties:{姓名:..., 年龄:...} }
+    entities:  { name:"张三",  entity_type:"人物", ontology_id:..., properties:{姓名:..., 性别:..., 住址:..., 年龄:..., 出生日期:...} }
     entities:  { name:"A公司", entity_type:"组织", ontology_id:..., properties:{名称:..., 行业:...} }
     relations: { source_entity:"张三"(人物) ─任职于→ target_entity:"A公司"(组织), relation_type:"任职于" }
 ```
@@ -368,6 +439,30 @@ API 按四个功能模块组织，外加知识库绑定。顶层资源 `ontology
 | `PUT`    | `/api/ontology-categories/{categoryId}/constraints/{id}`  | 更新三元组（描述或起终点/关系）          |
 | `DELETE` | `/api/ontology-categories/{categoryId}/constraints/{id}`  | 删除一条三元组                   |
 | `POST`   | `/api/ontology-categories/{categoryId}/constraints/batch` | 批量新增三元组                   |
+
+#### 模块五：属性模板管理（全局，跨本体类别复用）
+
+属性模板不归属任何本体类别，路径独立为 `/api/attribute-templates`。一个本体可通过本体管理接口引用一个或多个模板，最终属性 = 模板属性合并 + 本体自有属性。
+
+| 方法       | 路径                                                  | 说明                              |
+| -------- | --------------------------------------------------- | ------------------------------- |
+| `GET`    | `/api/attribute-templates`                          | 获取属性模板列表（支持 `?q=` 搜索）           |
+| `GET`    | `/api/attribute-templates/{templateId}`             | 获取模板详情（含属性列表）                   |
+| `POST`   | `/api/attribute-templates`                          | 创建属性模板                          |
+| `PUT`    | `/api/attribute-templates/{templateId}`             | 更新模板（名称、描述）                     |
+| `DELETE` | `/api/attribute-templates/{templateId}`             | 删除模板（解除所有本体引用；`is_system=1` 不可删） |
+| `POST`   | `/api/attribute-templates/{templateId}/attributes`  | 给模板添加一个属性                       |
+| `PUT`    | `/api/attribute-templates/{templateId}/attributes/{id}` | 更新模板属性                      |
+| `DELETE` | `/api/attribute-templates/{templateId}/attributes/{id}` | 删除模板属性                      |
+| `PUT`    | `/api/attribute-templates/{templateId}/attributes`  | 整体替换某模板的属性列表（便于前端一次性保存）         |
+
+#### 本体引用属性模板（多对多绑定，嵌套在本体下）
+
+| 方法       | 路径                                                                              | 说明                                       |
+| -------- | ------------------------------------------------------------------------------- | ---------------------------------------- |
+| `GET`    | `/api/ontology-categories/{categoryId}/ontologies/{ontologyId}/templates`        | 获取本体已引用的模板列表                             |
+| `PUT`    | `/api/ontology-categories/{categoryId}/ontologies/{ontologyId}/templates`        | 设置本体引用的模板（整体替换，传 `template_ids` 数组）      |
+| `GET`    | `/api/ontology-categories/{categoryId}/ontologies/{ontologyId}/merged-attributes` | 获取本体合并后的完整属性（模板属性 + 自有属性，含冲突提示，前端预览用） |
 
 #### 知识库绑定本体类别
 
@@ -472,6 +567,56 @@ POST /api/ontology-categories/{categoryId}/constraints
 }
 ```
 
+#### 创建属性模板
+
+```json
+POST /api/attribute-templates
+{
+    "name": "自然人基础属性",
+    "description": "人物通用基础属性，跨领域复用"
+}
+```
+
+#### 给属性模板添加属性
+
+```json
+POST /api/attribute-templates/{templateId}/attributes
+{
+    "name": "住址",
+    "data_type": "string",
+    "description": "常住地址",
+    "is_required": false
+}
+```
+
+#### 设置本体引用的属性模板（整体替换）
+
+```json
+PUT /api/ontology-categories/{categoryId}/ontologies/{ontologyId}/templates
+{
+    "template_ids": ["tpl_person_base"]
+}
+```
+
+#### 获取本体合并后的完整属性（响应示例）
+
+```json
+GET /api/ontology-categories/{categoryId}/ontologies/{ontologyId}/merged-attributes
+{
+    "ontology_id": "ont_person",
+    "attributes": [
+        { "name": "姓名", "data_type": "string", "is_required": true, "source": "template:tpl_person_base" },
+        { "name": "性别", "data_type": "enum", "enum_values": ["男","女"], "source": "template:tpl_person_base" },
+        { "name": "住址", "data_type": "string", "source": "template:tpl_person_base" },
+        { "name": "年龄", "data_type": "number", "source": "self" },
+        { "name": "出生日期", "data_type": "date", "source": "self" }
+    ],
+    "conflicts": []
+}
+```
+
+> `source` 标识属性来源（`template:xxx` 或 `self`）；`conflicts` 列出同名冲突项（自有属性已覆盖模板同名属性时记录）。
+
 #### 获取本体类别详情（响应示例）
 
 ```json
@@ -537,21 +682,21 @@ PUT /api/entities/{entityId}
 | ------------------------------ | ----------------------------- |
 | `routers/ontology.py`          | 本体管理 API 路由                   |
 | `routers/entity.py`            | 实体/关系实例管理 API 路由（实体管理菜单数据源）   |
-| `services/ontology_service.py` | 本体定义层业务逻辑（含逻辑关联与级联删除）         |
+| `services/ontology_service.py` | 本体定义层业务逻辑（含逻辑关联、级联删除、属性模板合并与跨领域复用） |
 | `services/entity_service.py`   | 实体/关系实例 CRUD + Kùzu 双写同步      |
 
 ### 5.2 修改文件
 
 | 文件                                     | 改动                                                                                                                                      |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `models.py`                            | 新增 8 个 ORM 模型：`OntologyCategory`、`Ontology`、`OntologyAttribute`、`OntologyRelation`、`OntologyRelationConstraint`、`KbOntologyBinding`、`Entity`、`Relation` |
+| `models.py`                            | 新增 11 个 ORM 模型：`OntologyCategory`、`Ontology`、`OntologyAttribute`、`OntologyRelation`、`OntologyRelationConstraint`、`KbOntologyBinding`、`OntologyAttributeTemplate`、`OntologyTemplateAttribute`、`OntologyTemplateBinding`、`Entity`、`Relation` |
 | `schemas.py`                           | 新增本体 + 实体/关系相关 Pydantic 请求/响应模型 + `OntologyConstraint` 模型                                                                                |
-| `database.py`                          | 创建表时包含新的 8 张表（不建外键）                                                                                                                      |
+| `database.py`                          | 创建表时包含新的 11 张表（不建外键）                                                                                                                     |
 | `server.py`                            | 注册 `ontology_router`、`entity_router`                                                                                                    |
-| `sql/schema.sql`                       | 新增 8 张表的建表语句                                                                                                                            |
+| `sql/schema.sql`                       | 新增 11 张表的建表语句                                                                                                                           |
 | `sql/migrations.sql`                   | 新增迁移脚本                                                                                                                                  |
 | `services/file_service.py`             | `_process_file_bg` 查绑定的本体类别并传递给图谱抽取                                                                                                     |
-| `services/graph_extraction_service.py` | 接收 `ontology_constraint` 参数，动态构建 Prompt（含本体属性与三元组），后处理校验；校验通过后写入 SQLite `entities`/`relations` 并同步 Kùzu                                          |
+| `services/graph_extraction_service.py` | 接收 `ontology_constraint` 参数，动态构建 Prompt（属性已由 service 层合并模板属性 + 本体自有属性，含三元组），后处理校验；校验通过后写入 SQLite `entities`/`relations` 并同步 Kùzu                          |
 | `providers/graph_store/__init__.py`    | `KuzuGraphAdapter` 扩展 `Entity`/`Relation` 节点 schema 与写入逻辑，承载本体定义的动态属性；提供实体/关系实例的同步增删改接口                                                  |
 
 ### 5.3 Schema 新增
@@ -567,7 +712,7 @@ class OntologyAttributeConstraint(BaseModel):
     enum_values: list[str] | None = None
 
 class OntologyTypeDefConstraint(BaseModel):
-    """单个本体（类型定义）及其属性"""
+    """单个本体（类型定义）及其属性（service 层已合并模板属性 + 本体自有属性）"""
     name: str
     description: str = ""
     attributes: list[OntologyAttributeConstraint] = []
@@ -589,7 +734,7 @@ class OntologyConstraint(BaseModel):
 
 `services/graph_extraction_service.py` 的 `extract` 方法新增可选参数 `ontology_constraint`。
 
-**有约束时的 System Prompt 动态构建**：
+**有约束时的 System Prompt 动态构建**（属性已由 `ontology_service` 合并模板属性 + 本体自有属性后传入）：
 
 ```
 你是知识图谱抽取助手。
@@ -626,7 +771,7 @@ class OntologyConstraint(BaseModel):
 
 - 过滤不在 `ontologies` 列表中的实体类型（实体的 `entity_type` 必须命中某个本体定义的 `name`）。
 - 过滤不匹配任何 `relation_constraints` 三元组的关系（起点类型、关系名、终点类型三者都要匹配）。
-- 对实体属性做轻量校验：剔除未定义的属性键；必填属性缺失时记录告警（不阻断）。
+- 对实体属性做轻量校验：剔除不在合并后属性列表（模板属性 + 自有属性）中的属性键；必填属性缺失时记录告警（不阻断）。
 - 对属性值做类型规整（如 `number` 转浮点失败则置空、`enum` 值不在候选内则置空）。
 - 校验通过的实体/关系**先写入 SQLite**（`entities`/`relations`，`entity_type`/`ontology_id` 对应本体定义），**再同步写入 Kùzu**（`Entity`/`Relation` 节点 + `RELATES` 边），由 `entity_service` 保证双库一致。
 
@@ -653,10 +798,19 @@ class OntologyConstraint(BaseModel):
 | `OntologyCategoryDetail.vue`  | 本体类别详情页，承载四个 Tab                            |
 | `CreateOntologyCategoryModal.vue` | 创建本体类别弹窗                                    |
 | `OntologyEditor.vue`          | Tab 2：本体列表，新增/删除/重命名本体，可展开进入属性编辑            |
-| `OntologyAttributeEditor.vue` | Tab 2 内：某本体的属性表格编辑器（属性名、类型、必填、枚举值），支持整体保存   |
+| `OntologyAttributeEditor.vue` | Tab 2 内：某本体的自有属性编辑器（属性名、类型、必填、枚举值），支持整体保存；配合 `OntologyTemplatePicker` 展示合并后完整属性 |
 | `RelationDictEditor.vue`      | Tab 3：关系字典编辑器（新增/删除/重命名关系，仅名称与描述）           |
 | `ConstraintEditor.vue`        | Tab 4：三元组组合器，三个可搜索下拉选择起点本体/关系/终点本体，新增与删除三元组 |
 | `OntologyCategorySelect.vue`  | 知识库详情页中，绑定的本体类别下拉框                          |
+
+**属性模板管理**（全局，独立菜单，跨本体类别复用）：
+
+| 组件                            | 说明                                          |
+| ----------------------------- | ------------------------------------------- |
+| `AttributeTemplateList.vue`    | 属性模板列表页：CRUD 模板，每个模板可展开编辑其属性（结构同本体属性编辑器）      |
+| `OntologyTemplatePicker.vue`   | Tab 2 内：本体引用属性模板的多选选择器，展示合并后的完整属性预览与同名冲突提示    |
+
+> 属性模板是全局资源，不归属任何本体类别，单独菜单管理。本体编辑时通过 `OntologyTemplatePicker` 引用一个或多个模板，最终属性 = 模板属性 + 本体自有属性（合并预览见 `merged-attributes` 接口）。
 
 **实体管理**（实例层，独立菜单，数据源为 SQLite `entities`/`relations`）：
 
@@ -683,6 +837,11 @@ class OntologyConstraint(BaseModel):
   component: OntologyCategoryDetail
 },
 {
+  path: '/attribute-templates',
+  name: 'AttributeTemplateList',
+  component: AttributeTemplateList
+},
+{
   path: '/entities',
   name: 'EntityListPage',
   component: EntityListPage
@@ -701,12 +860,12 @@ class OntologyConstraint(BaseModel):
 
 ### 6.3 菜单新增
 
-在现有菜单中新增"本体管理"与"实体管理"两个菜单项，放在"知识库"菜单旁边或下方。"实体管理"用于浏览/编辑抽取后的实体与关系实例（数据来自 SQLite `entities`/`relations`）。
+在现有菜单中新增"本体管理"、"属性模板"与"实体管理"三个菜单项，放在"知识库"菜单旁边或下方。"属性模板"为全局模板管理入口（不归属本体类别）；"实体管理"用于浏览/编辑抽取后的实体与关系实例（数据来自 SQLite `entities`/`relations`）。
 
 ### 6.4 API 层新增
 
 ```javascript
-// api/index.js 新增 —— 按四个模块组织
+// api/index.js 新增 —— 按七个模块组织（本体类别/本体/关系定义/关系设置/属性模板/实体实例/关系实例）
 
 // 模块一：本体类别
 fetchOntologyCategories({ q = '' } = {})
@@ -741,18 +900,34 @@ batchAddConstraints(categoryId, items)
 updateConstraint(categoryId, constraintId, data)
 deleteConstraint(categoryId, constraintId)
 
+// 模块五：属性模板管理（全局，跨本体类别复用）
+fetchAttributeTemplates({ q = '' } = {})
+getAttributeTemplate(templateId)
+createAttributeTemplate({ name, description })
+updateAttributeTemplate(templateId, { name, description })
+deleteAttributeTemplate(templateId)
+addTemplateAttribute(templateId, data)
+updateTemplateAttribute(templateId, attrId, data)
+deleteTemplateAttribute(templateId, attrId)
+replaceTemplateAttributes(templateId, { attributes })  // 整体保存
+
+// 本体引用属性模板（多对多）
+getOntologyTemplates(categoryId, ontologyId)
+setOntologyTemplates(categoryId, ontologyId, { template_ids })  // 整体替换
+getMergedAttributes(categoryId, ontologyId)  // 合并后的完整属性预览
+
 // 知识库绑定本体类别
 getKbOntology(kbId)
 setKbOntology(kbId, categoryId)
 removeKbOntology(kbId)
 
-// 模块五：实体实例管理（实体管理菜单数据源，增删改同步 Kùzu）
+// 模块六：实体实例管理（实体管理菜单数据源，增删改同步 Kùzu）
 fetchEntities({ kb_id, ontology_id, q, page, page_size } = {})
 getEntityDetail(entityId)
 updateEntity(entityId, { name, description, properties })
 deleteEntity(entityId)
 
-// 模块六：关系实例管理
+// 模块七：关系实例管理
 fetchRelationInstances({ kb_id, relation_type, q, page, page_size } = {})
 getRelationInstance(relationId)
 deleteRelationInstance(relationId)
@@ -790,12 +965,12 @@ deleteRelationInstance(relationId)
 
 ### 阶段一：后端本体定义层
 
-1. `models.py` 新增 6 个定义层 ORM 模型（`OntologyCategory`、`Ontology`、`OntologyAttribute`、`OntologyRelation`、`OntologyRelationConstraint`、`KbOntologyBinding`）
-2. `schemas.py` 新增本体定义层请求/响应 DTO（含属性与三元组）
-3. `database.py` 建表逻辑包含 8 张表（**不建外键**）
-4. `sql/schema.sql` + `sql/migrations.sql` 新增 8 张表建表语句
-5. 新增 `services/ontology_service.py` 业务逻辑（逻辑关联维护、应用层级联删除、三元组唯一性校验、整树加载）
-6. 新增 `routers/ontology.py` API 路由（资源名 `ontology-categories`，按四个模块 + 绑定组织）
+1. `models.py` 新增 9 个定义层 ORM 模型（`OntologyCategory`、`Ontology`、`OntologyAttribute`、`OntologyRelation`、`OntologyRelationConstraint`、`KbOntologyBinding`、`OntologyAttributeTemplate`、`OntologyTemplateAttribute`、`OntologyTemplateBinding`）
+2. `schemas.py` 新增本体定义层请求/响应 DTO（含属性、属性模板与三元组）
+3. `database.py` 建表逻辑包含 11 张表（**不建外键**）
+4. `sql/schema.sql` + `sql/migrations.sql` 新增 11 张表建表语句
+5. 新增 `services/ontology_service.py` 业务逻辑（逻辑关联维护、应用层级联删除、三元组唯一性校验、属性模板合并与跨领域复用、整树加载）
+6. 新增 `routers/ontology.py` API 路由（资源名 `ontology-categories`，按五个模块（含属性模板）+ 绑定组织）
 7. `server.py` 注册 `ontology_router`
 
 ### 阶段二：后端实体实例层 + 抽取集成
@@ -805,7 +980,7 @@ deleteRelationInstance(relationId)
 3. 新增 `services/entity_service.py` 实体/关系实例 CRUD + Kùzu 双写同步
 4. 新增 `routers/entity.py` 实体/关系实例 API 路由（实体管理菜单数据源）
 5. `server.py` 注册 `entity_router`
-6. `graph_extraction_service.py` 动态 Prompt（含本体属性与三元组）+ 后处理校验；校验通过后写 SQLite `entities`/`relations` 并同步 Kùzu
+6. `graph_extraction_service.py` 动态 Prompt（属性已合并模板属性 + 自有属性，含三元组）+ 后处理校验；校验通过后写 SQLite `entities`/`relations` 并同步 Kùzu
 7. `file_service.py` 处理文件时自动查询 KB 绑定的本体类别并传递约束
 8. 扩展 `KuzuGraphAdapter` 的 `Entity`/`Relation` 节点 schema 与写入逻辑，承载本体定义的动态属性；提供实例同步增删改接口
 
@@ -813,12 +988,13 @@ deleteRelationInstance(relationId)
 
 1. 本体类别列表页 `OntologyCategoryList.vue`
 2. 本体类别详情页 `OntologyCategoryDetail.vue`（四 Tab 框架）
-3. Tab 2 本体管理：`OntologyEditor.vue` + `OntologyAttributeEditor.vue`
+3. Tab 2 本体管理：`OntologyEditor.vue` + `OntologyAttributeEditor.vue` + `OntologyTemplatePicker.vue`（引用属性模板 + 合并预览）
 4. Tab 3 关系定义：`RelationDictEditor.vue`
 5. Tab 4 关系设置（三元组）：`ConstraintEditor.vue`
-6. 知识库详情页增加本体类别绑定区域
-7. `api/index.js` 新增本体相关 API
-8. 路由和菜单新增"本体管理"入口
+6. 属性模板列表页 `AttributeTemplateList.vue`（全局，CRUD 模板与模板属性）
+7. 知识库详情页增加本体类别绑定区域
+8. `api/index.js` 新增本体 + 属性模板相关 API
+9. 路由和菜单新增"本体管理"与"属性模板"入口
 
 ### 阶段四：前端实体管理界面
 
@@ -840,4 +1016,5 @@ deleteRelationInstance(relationId)
 6. **三元组与关系字典的一致性**：删除关系定义或本体时会级联删除引用它的三元组，需在前端给出二次确认提示，避免误删导致约束缺失。
 7. **属性抽取的稳定性**：LLM 对结构化属性（尤其是 `enum`/`date`/`number`）的输出质量不如类型稳定，后处理需做类型规整，并允许部分属性为空。
 8. **向后兼容**：无本体绑定时行为完全不变，已有知识库和文件不受影响。
+9. **属性模板与引用一致性**：属性模板被多个本体引用，修改模板属性（改名、改类型、删除属性）会级联影响所有引用它的本体的合并属性，进而影响后续抽取与已抽取实体的属性对齐。需在模板修改/删除时提示影响范围；同名冲突（模板属性与本体自有属性同名）由 service 层按"自有属性优先"合并并提示。系统内置模板（`is_system=1`）禁止删除以防误操作。
 

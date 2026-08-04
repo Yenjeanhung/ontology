@@ -74,3 +74,139 @@ CREATE TABLE IF NOT EXISTS crawl_jobs (
     created_at VARCHAR,
     finished_at VARCHAR
 );
+
+-- ===== 本体定义层（无外键，逻辑关联由 service 层维护）=====
+
+CREATE TABLE IF NOT EXISTS ontology_categories (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    description TEXT DEFAULT '',
+    is_system INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR,
+    UNIQUE(name)
+);
+
+CREATE TABLE IF NOT EXISTS ontologies (
+    id VARCHAR PRIMARY KEY,
+    category_id VARCHAR NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    color VARCHAR(20) DEFAULT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR,
+    UNIQUE(category_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS ontology_attributes (
+    id VARCHAR PRIMARY KEY,
+    ontology_id VARCHAR NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    data_type VARCHAR(20) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    is_required INTEGER NOT NULL DEFAULT 0,
+    default_value VARCHAR(200) DEFAULT NULL,
+    enum_values TEXT DEFAULT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR,
+    UNIQUE(ontology_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS ontology_relations (
+    id VARCHAR PRIMARY KEY,
+    category_id VARCHAR NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    created_at VARCHAR,
+    updated_at VARCHAR,
+    UNIQUE(category_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS ontology_relation_constraints (
+    id VARCHAR PRIMARY KEY,
+    category_id VARCHAR NOT NULL,
+    source_ontology_id VARCHAR NOT NULL,
+    relation_id VARCHAR NOT NULL,
+    target_ontology_id VARCHAR NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    created_at VARCHAR,
+    UNIQUE(category_id, source_ontology_id, relation_id, target_ontology_id)
+);
+
+CREATE TABLE IF NOT EXISTS kb_ontology_bindings (
+    id VARCHAR PRIMARY KEY,
+    kb_id VARCHAR NOT NULL,
+    category_id VARCHAR NOT NULL,
+    created_at VARCHAR,
+    UNIQUE(kb_id)
+);
+
+-- ===== 属性模板（全局，跨本体类别复用）=====
+
+CREATE TABLE IF NOT EXISTS ontology_attribute_templates (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    is_system INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR,
+    UNIQUE(name)
+);
+
+CREATE TABLE IF NOT EXISTS ontology_template_attributes (
+    id VARCHAR PRIMARY KEY,
+    template_id VARCHAR NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    data_type VARCHAR(20) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    is_required INTEGER NOT NULL DEFAULT 0,
+    default_value VARCHAR(200) DEFAULT NULL,
+    enum_values TEXT DEFAULT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR,
+    UNIQUE(template_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS ontology_template_bindings (
+    id VARCHAR PRIMARY KEY,
+    ontology_id VARCHAR NOT NULL,
+    template_id VARCHAR NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    UNIQUE(ontology_id, template_id)
+);
+
+-- ===== 实体实例层（抽取后生成，无外键）=====
+
+CREATE TABLE IF NOT EXISTS entities (
+    id VARCHAR PRIMARY KEY,
+    kb_id VARCHAR NOT NULL,
+    ontology_id VARCHAR NOT NULL,
+    entity_type VARCHAR(50) NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    description VARCHAR(1000) DEFAULT '',
+    properties TEXT DEFAULT NULL,
+    source_file_id VARCHAR DEFAULT NULL,
+    source_chunk_id VARCHAR DEFAULT NULL,
+    created_at VARCHAR,
+    updated_at VARCHAR,
+    UNIQUE(kb_id, entity_type, name)
+);
+
+CREATE TABLE IF NOT EXISTS relations (
+    id VARCHAR PRIMARY KEY,
+    kb_id VARCHAR NOT NULL,
+    relation_def_id VARCHAR NOT NULL,
+    relation_type VARCHAR(50) NOT NULL,
+    source_entity_id VARCHAR NOT NULL,
+    target_entity_id VARCHAR NOT NULL,
+    description VARCHAR(1000) DEFAULT '',
+    source_file_id VARCHAR DEFAULT NULL,
+    source_chunk_id VARCHAR DEFAULT NULL,
+    created_at VARCHAR,
+    updated_at VARCHAR,
+    UNIQUE(kb_id, source_entity_id, relation_type, target_entity_id)
+);

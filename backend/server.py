@@ -124,7 +124,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from routers import files, graph, kb, library, query, vector_data
+from routers import entity, files, graph, kb, library, ontology, query, vector_data
 
 app.include_router(kb.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
@@ -132,6 +132,8 @@ app.include_router(library.router, prefix="/api")
 app.include_router(graph.router, prefix="/api")
 app.include_router(query.router, prefix="/api")
 app.include_router(vector_data.router, prefix="/api")
+app.include_router(ontology.router, prefix="/api")
+app.include_router(entity.router, prefix="/api")
 
 front_dist = Path(__file__).parent.parent / "front" / "dist"
 if front_dist.exists():
