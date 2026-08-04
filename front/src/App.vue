@@ -21,6 +21,9 @@ const menuItems = computed(() => [
   { to: '/query', label: '问答', exact: false, hint: '问答' },
   { to: '/vectors', label: '向量', exact: false, hint: '向量' },
   { to: '/graph', label: '图谱', exact: false, hint: '图谱' },
+  { to: '/ontology-categories', label: '本体', exact: false, hint: '本体管理' },
+  { to: '/attribute-templates', label: '模板', exact: false, hint: '属性模板' },
+  { to: '/entities', label: '实体', exact: false, hint: '实体管理' },
 ])
 
 function toggleSidebar() {
@@ -201,6 +204,53 @@ onMounted(() => {
               <path d="M8.75 6.5h6.5" />
               <path d="M8.2 8.1 10.3 15.2" />
               <path d="m15.8 8.1-2.1 7.1" />
+            </svg>
+            <svg
+              v-else-if="item.to === '/ontology-categories'"
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="3.25" y="3.25" width="6" height="6" rx="1.5" />
+              <rect x="14.75" y="3.25" width="6" height="6" rx="1.5" />
+              <rect x="9" y="14.75" width="6" height="6" rx="1.5" />
+              <path d="M6.25 9.25v1.75a1.5 1.5 0 0 0 1.5 1.5h1.25" />
+              <path d="M17.75 9.25v1.75a1.5 1.5 0 0 1-1.5 1.5H15.25" />
+            </svg>
+            <svg
+              v-else-if="item.to === '/attribute-templates'"
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="3.25" y="3.25" width="17.5" height="17.5" rx="2.25" />
+              <path d="M3.25 9.25h17.5" />
+              <path d="M9.25 9.25v11.5" />
+              <path d="M15.25 9.25v11.5" />
+            </svg>
+            <svg
+              v-else-if="item.to === '/entities'"
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="12" cy="8.25" r="4.25" />
+              <path d="M4.75 20.25a7.25 7.25 0 0 1 14.5 0" />
             </svg>
             <svg
               v-else

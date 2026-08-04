@@ -14,6 +14,11 @@ import {
   getFileStatus,
   cancelProcessing,
   fetchDirectories,
+  getKbOntology,
+  setKbOntology,
+  removeKbOntology,
+  fetchOntologyCategories,
+  getOntologyCategoryDetail,
 } from '../api'
 
 const CHUNK_SIZE = 512 * 1024
@@ -74,6 +79,14 @@ const selectedAssetIds = ref(new Set())
 const directories = ref([])
 const selectedDirectoryId = ref('')
 const expandedDirectories = ref(new Set())
+
+// 本体类别绑定
+const ontologyBinding = ref(null) // { category_id, category_name, ... } 或 null
+const ontologyCategories = ref([])
+const ontologyDetail = ref(null) // 绑定类别的详情概要
+const showOntologyPicker = ref(false)
+const pickingCategoryId = ref(null)
+const savingOntology = ref(false)
 
 // 构建文件夹树
 const directoryTree = computed(() => {
@@ -174,6 +187,7 @@ onMounted(async () => {
   clockTimer = setInterval(() => {
     nowTick.value = Date.now()
   }, 1000)
+  loadOntologyBinding()
 })
 
 onUnmounted(() => {
@@ -181,6 +195,56 @@ onUnmounted(() => {
   Object.values(statusStreams).forEach(stream => stream.close())
   if (clockTimer) clearInterval(clockTimer)
 })
+
+async function loadOntologyBinding() {
+  try {
+    const binding = await getKbOntology(props.kbId)
+    ontologyBinding.value = binding
+    if (binding && binding.category_id) {
+      const detail = await getOntologyCategoryDetail(binding.category_id)
+      ontologyDetail.value = detail
+    } else {
+      ontologyDetail.value = null
+    }
+  } catch {
+    ontologyBinding.value = null
+    ontologyDetail.value = null
+  }
+}
+
+async function openOntologyPicker() {
+  showOntologyPicker.value = true
+  pickingCategoryId.value = ontologyBinding.value?.category_id || null
+  try {
+    ontologyCategories.value = await fetchOntologyCategories()
+  } catch {
+    ontologyCategories.value = []
+  }
+}
+
+async function confirmOntologyBinding() {
+  if (!pickingCategoryId.value) return
+  savingOntology.value = true
+  try {
+    await setKbOntology(props.kbId, pickingCategoryId.value)
+    showOntologyPicker.value = false
+    await loadOntologyBinding()
+  } catch (e) {
+    alert('绑定失败：' + e.message)
+  } finally {
+    savingOntology.value = false
+  }
+}
+
+async function unbindOntology() {
+  if (!confirm('确认解除该知识库的本体类别绑定？\n解除后新处理的文件将不再受本体约束。')) return
+  try {
+    await removeKbOntology(props.kbId)
+    await loadOntologyBinding()
+  } catch (e) {
+    alert('解绑失败：' + e.message)
+  }
+}
 
 function normalizeFile(file) {
   return {
@@ -775,6 +839,66 @@ function stageIconClass(file, stageName) {
       <span>知识库直接上传的文件会自动进入文件管理的默认目录。</span>
     </div>
 
+    <!-- 本体设置 -->
+    <div class="ontology-bind-section">
+      <div class="ob-head">
+        <span class="ob-title">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.25" y="3.25" width="6" height="6" rx="1.5"/><rect x="14.75" y="3.25" width="6" height="6" rx="1.5"/><rect x="9" y="14.75" width="6" height="6" rx="1.5"/><path d="M6.25 9.25v1.75a1.5 1.5 0 0 0 1.5 1.5h1.25"/><path d="M17.75 9.25v1.75a1.5 1.5 0 0 1-1.5 1.5H15.25"/></svg>
+          本体设置
+        </span>
+        <span class="ob-tip">绑定本体类别后，文件抽取将受本体类型、属性与三元组约束</span>
+      </div>
+      <div v-if="ontologyBinding && ontologyDetail" class="ob-bound">
+        <div class="ob-bound-info">
+          <span class="ob-cat-name">{{ ontologyDetail.name }}</span>
+          <span class="ob-cat-desc" v-if="ontologyDetail.description">{{ ontologyDetail.description }}</span>
+          <div class="ob-stats">
+            <span class="ob-stat">{{ ontologyDetail.ontologies?.length || 0 }} 本体</span>
+            <span class="ob-stat">{{ ontologyDetail.relations?.length || 0 }} 关系</span>
+            <span class="ob-stat">{{ ontologyDetail.constraints?.length || 0 }} 三元组</span>
+          </div>
+        </div>
+        <div class="ob-bound-actions">
+          <button class="btn ob-btn" @click="openOntologyPicker">更换</button>
+          <button class="btn ob-btn danger" @click="unbindOntology">解绑</button>
+        </div>
+      </div>
+      <div v-else class="ob-unbound">
+        <span class="ob-unbound-text">未绑定本体类别，抽取将使用自由模式（无类型约束）</span>
+        <button class="btn primary ob-btn" @click="openOntologyPicker">绑定本体类别</button>
+      </div>
+    </div>
+
+    <!-- 本体类别选择弹窗 -->
+    <div v-if="showOntologyPicker" class="modal-mask" @click.self="showOntologyPicker = false">
+      <div class="modal ob-picker-modal">
+        <h3>选择本体类别</h3>
+        <div class="ob-picker-list">
+          <button
+            v-for="cat in ontologyCategories"
+            :key="cat.id"
+            type="button"
+            class="ob-picker-item"
+            :class="{ active: pickingCategoryId === cat.id }"
+            @click="pickingCategoryId = cat.id"
+          >
+            <span class="ob-picker-name">{{ cat.name }}</span>
+            <span class="ob-picker-meta">{{ cat.ontology_count }} 个本体</span>
+          </button>
+          <div v-if="!ontologyCategories.length" class="ob-picker-empty">
+            暂无本体类别，请先到「本体」菜单创建
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn" @click="showOntologyPicker = false">取消</button>
+          <button class="btn primary" @click="confirmOntologyBinding" :disabled="!pickingCategoryId || savingOntology">
+            <span v-if="savingOntology" class="spinner"></span>
+            {{ savingOntology ? '绑定中...' : '确认绑定' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div class="sec-head">
       <span class="sec-title">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1206,6 +1330,57 @@ h1 { font-size: 18px; font-weight: 700; }
 .source-btn:hover {
   background: var(--c-muted);
 }
+
+/* 本体设置 */
+.ontology-bind-section {
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+  background: var(--c-panel);
+  padding: 14px 16px;
+  margin-bottom: 20px;
+}
+.ob-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.ob-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: var(--c-fg); }
+.ob-tip { font-size: 12px; color: var(--c-secondary); }
+.ob-bound { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ob-bound-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ob-cat-name { font-size: 15px; font-weight: 600; color: var(--c-fg); }
+.ob-cat-desc { font-size: 12px; color: var(--c-secondary); }
+.ob-stats { display: flex; gap: 8px; margin-top: 2px; }
+.ob-stat { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--c-muted); color: var(--c-secondary); }
+.ob-bound-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.ob-unbound { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ob-unbound-text { font-size: 13px; color: var(--c-secondary); }
+.ob-btn { font-size: 12px; padding: 5px 12px; }
+.ob-btn.danger { color: var(--c-danger); }
+.ob-btn.danger:hover { background: rgba(220, 38, 38, 0.1); border-color: var(--c-danger); }
+
+.ob-picker-modal { width: 420px; max-width: 90vw; }
+.ob-picker-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; margin-bottom: 14px; }
+.ob-picker-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--c-border); border-radius: 8px;
+  background: var(--c-panel); color: var(--c-fg); cursor: pointer; text-align: left;
+  font-family: var(--font); transition: background 150ms, border-color 150ms;
+}
+.ob-picker-item:hover { background: var(--c-muted); }
+.ob-picker-item.active { border-color: var(--c-fg); background: var(--c-muted-hover); font-weight: 600; }
+.ob-picker-name { font-size: 14px; }
+.ob-picker-meta { font-size: 11px; color: var(--c-secondary); }
+.ob-picker-empty { padding: 24px; text-align: center; color: var(--c-secondary); font-size: 13px; }
+
+.modal-mask {
+  position: fixed; inset: 0; background: var(--c-overlay);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100; animation: obFadeIn 150ms;
+}
+@keyframes obFadeIn { from { opacity: 0; } to { opacity: 1; } }
+.modal {
+  background: var(--c-panel); border-radius: 10px; padding: 22px;
+  max-width: 90vw; box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+}
+.modal h3 { font-size: 15px; font-weight: 700; margin-bottom: 14px; color: var(--c-fg); }
+.actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 .sec-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .sec-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: var(--c-secondary); text-transform: uppercase; letter-spacing: 0.5px; flex: 1; }

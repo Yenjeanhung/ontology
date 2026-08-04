@@ -335,3 +335,337 @@ export async function fetchAssetContent(assetId) {
   if (!res.ok) throw new Error('Preview failed')
   return res.text()
 }
+
+// ===== 本体管理 API =====
+
+// 模块一：本体类别
+export async function fetchOntologyCategories({ q = '' } = {}) {
+  const params = new URLSearchParams()
+  if (q) params.set('q', q)
+  const res = await fetch(`${API}/api/ontology-categories?${params.toString()}`)
+  if (!res.ok) throw new Error('Fetch ontology categories failed')
+  return res.json()
+}
+
+export async function getOntologyCategoryDetail(categoryId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}`)
+  if (!res.ok) throw new Error('Get ontology category detail failed')
+  return res.json()
+}
+
+export async function createOntologyCategory({ name, description }) {
+  const res = await fetch(`${API}/api/ontology-categories`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description }),
+  })
+  if (!res.ok) throw new Error('Create ontology category failed')
+  return res.json()
+}
+
+export async function updateOntologyCategory(categoryId, { name, description }) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description }),
+  })
+  if (!res.ok) throw new Error('Update ontology category failed')
+  return res.json()
+}
+
+export async function deleteOntologyCategory(categoryId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete ontology category failed')
+  return res.json()
+}
+
+// 模块二：本体 + 属性
+export async function fetchOntologies(categoryId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies`)
+  if (!res.ok) throw new Error('Fetch ontologies failed')
+  return res.json()
+}
+
+export async function createOntology(categoryId, { name, description = '', color = null, sort_order = 0 }) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description, color, sort_order }),
+  })
+  if (!res.ok) throw new Error('Create ontology failed')
+  return res.json()
+}
+
+export async function updateOntology(categoryId, ontologyId, data) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('Update ontology failed')
+  return res.json()
+}
+
+export async function deleteOntology(categoryId, ontologyId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete ontology failed')
+  return res.json()
+}
+
+export async function getOntologyAttributes(categoryId, ontologyId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/attributes`)
+  if (!res.ok) throw new Error('Get ontology attributes failed')
+  return res.json()
+}
+
+export async function addOntologyAttribute(categoryId, ontologyId, data) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/attributes`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('Add ontology attribute failed')
+  return res.json()
+}
+
+export async function updateOntologyAttribute(categoryId, ontologyId, attrId, data) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/attributes/${attrId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('Update ontology attribute failed')
+  return res.json()
+}
+
+export async function deleteOntologyAttribute(categoryId, ontologyId, attrId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/attributes/${attrId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete ontology attribute failed')
+  return res.json()
+}
+
+export async function replaceOntologyAttributes(categoryId, ontologyId, { attributes }) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/attributes`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ attributes }),
+  })
+  if (!res.ok) throw new Error('Replace ontology attributes failed')
+  return res.json()
+}
+
+// 模块三：关系定义（关系字典）
+export async function fetchRelations(categoryId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/relations`)
+  if (!res.ok) throw new Error('Fetch relations failed')
+  return res.json()
+}
+
+export async function createRelation(categoryId, { name, description = '' }) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/relations`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description }),
+  })
+  if (!res.ok) throw new Error('Create relation failed')
+  return res.json()
+}
+
+export async function updateRelation(categoryId, relationId, data) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/relations/${relationId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('Update relation failed')
+  return res.json()
+}
+
+export async function deleteRelation(categoryId, relationId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/relations/${relationId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete relation failed')
+  return res.json()
+}
+
+// 模块四：三元组约束
+export async function fetchConstraints(categoryId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/constraints`)
+  if (!res.ok) throw new Error('Fetch constraints failed')
+  return res.json()
+}
+
+export async function createConstraint(categoryId, { source_ontology_id, relation_id, target_ontology_id, description = '' }) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/constraints`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_ontology_id, relation_id, target_ontology_id, description }),
+  })
+  if (!res.ok) throw new Error('Create constraint failed')
+  return res.json()
+}
+
+export async function deleteConstraint(categoryId, constraintId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/constraints/${constraintId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete constraint failed')
+  return res.json()
+}
+
+// 模块五：属性模板
+export async function fetchAttributeTemplates({ q = '' } = {}) {
+  const params = new URLSearchParams()
+  if (q) params.set('q', q)
+  const res = await fetch(`${API}/api/attribute-templates?${params.toString()}`)
+  if (!res.ok) throw new Error('Fetch attribute templates failed')
+  return res.json()
+}
+
+export async function getAttributeTemplate(templateId) {
+  const res = await fetch(`${API}/api/attribute-templates/${templateId}`)
+  if (!res.ok) throw new Error('Get attribute template failed')
+  return res.json()
+}
+
+export async function createAttributeTemplate({ name, description = '' }) {
+  const res = await fetch(`${API}/api/attribute-templates`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description }),
+  })
+  if (!res.ok) throw new Error('Create attribute template failed')
+  return res.json()
+}
+
+export async function updateAttributeTemplate(templateId, { name, description }) {
+  const res = await fetch(`${API}/api/attribute-templates/${templateId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description }),
+  })
+  if (!res.ok) throw new Error('Update attribute template failed')
+  return res.json()
+}
+
+export async function deleteAttributeTemplate(templateId) {
+  const res = await fetch(`${API}/api/attribute-templates/${templateId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete attribute template failed')
+  return res.json()
+}
+
+export async function addTemplateAttribute(templateId, data) {
+  const res = await fetch(`${API}/api/attribute-templates/${templateId}/attributes`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('Add template attribute failed')
+  return res.json()
+}
+
+export async function updateTemplateAttribute(templateId, attrId, data) {
+  const res = await fetch(`${API}/api/attribute-templates/${templateId}/attributes/${attrId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('Update template attribute failed')
+  return res.json()
+}
+
+export async function deleteTemplateAttribute(templateId, attrId) {
+  const res = await fetch(`${API}/api/attribute-templates/${templateId}/attributes/${attrId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete template attribute failed')
+  return res.json()
+}
+
+export async function replaceTemplateAttributes(templateId, { attributes }) {
+  const res = await fetch(`${API}/api/attribute-templates/${templateId}/attributes`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ attributes }),
+  })
+  if (!res.ok) throw new Error('Replace template attributes failed')
+  return res.json()
+}
+
+// 本体引用属性模板（多对多）
+export async function getOntologyTemplates(categoryId, ontologyId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/templates`)
+  if (!res.ok) throw new Error('Get ontology templates failed')
+  return res.json()
+}
+
+export async function setOntologyTemplates(categoryId, ontologyId, { template_ids }) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/templates`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ template_ids }),
+  })
+  if (!res.ok) throw new Error('Set ontology templates failed')
+  return res.json()
+}
+
+export async function getMergedAttributes(categoryId, ontologyId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/merged-attributes`)
+  if (!res.ok) throw new Error('Get merged attributes failed')
+  return res.json()
+}
+
+// 知识库绑定本体类别
+export async function getKbOntology(kbId) {
+  const res = await fetch(`${API}/api/kb/${kbId}/ontology`)
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error('Get kb ontology failed')
+  return res.json()
+}
+
+export async function setKbOntology(kbId, categoryId) {
+  const res = await fetch(`${API}/api/kb/${kbId}/ontology`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category_id: categoryId }),
+  })
+  if (!res.ok) throw new Error('Set kb ontology failed')
+  return res.json()
+}
+
+export async function removeKbOntology(kbId) {
+  const res = await fetch(`${API}/api/kb/${kbId}/ontology`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Remove kb ontology failed')
+  return res.json()
+}
+
+// 模块六：实体实例管理
+export async function fetchEntities({ kb_id = '', ontology_id = '', q = '', page = 1, page_size = 20 } = {}) {
+  const params = new URLSearchParams()
+  if (kb_id) params.set('kb_id', kb_id)
+  if (ontology_id) params.set('ontology_id', ontology_id)
+  if (q) params.set('q', q)
+  params.set('page', String(page))
+  params.set('page_size', String(page_size))
+  const res = await fetch(`${API}/api/entities?${params.toString()}`)
+  if (!res.ok) throw new Error('Fetch entities failed')
+  return res.json()
+}
+
+export async function getEntityDetail(entityId) {
+  const res = await fetch(`${API}/api/entities/${entityId}`)
+  if (!res.ok) throw new Error('Get entity detail failed')
+  return res.json()
+}
+
+export async function updateEntity(entityId, { name, description, properties }) {
+  const res = await fetch(`${API}/api/entities/${entityId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description, properties }),
+  })
+  if (!res.ok) throw new Error('Update entity failed')
+  return res.json()
+}
+
+export async function deleteEntity(entityId) {
+  const res = await fetch(`${API}/api/entities/${entityId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete entity failed')
+  return res.json()
+}
+
+// 模块七：关系实例管理
+export async function fetchRelationInstances({ kb_id = '', relation_type = '', q = '', page = 1, page_size = 20 } = {}) {
+  const params = new URLSearchParams()
+  if (kb_id) params.set('kb_id', kb_id)
+  if (relation_type) params.set('relation_type', relation_type)
+  if (q) params.set('q', q)
+  params.set('page', String(page))
+  params.set('page_size', String(page_size))
+  const res = await fetch(`${API}/api/relations?${params.toString()}`)
+  if (!res.ok) throw new Error('Fetch relation instances failed')
+  return res.json()
+}
+
+export async function deleteRelationInstance(relationId) {
+  const res = await fetch(`${API}/api/relations/${relationId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete relation instance failed')
+  return res.json()
+}
