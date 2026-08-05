@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     EMBEDDING_PROVIDER: Literal["local", "openai"]
     EMBEDDING_MODEL: str
     EMBEDDING_DIMENSION: int
+    HF_CACHE_DIR: str = ""  # HuggingFace 模型本地缓存目录，为空时走默认下载
     # OpenAI 嵌入（EMBEDDING_PROVIDER=openai 时使用）
     OPENAI_EMBEDDING_MODEL: str
     OPENAI_EMBEDDING_DIMENSION: int

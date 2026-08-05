@@ -15,15 +15,38 @@ const graphProvider = ref('')
 provide('vectorProvider', vectorProvider)
 provide('graphProvider', graphProvider)
 
+const expandedGroups = ref(new Set(['/ontology']))
+
+function isGroupExpanded(groupKey) {
+  return expandedGroups.value.has(groupKey)
+}
+
+function toggleGroup(groupKey) {
+  if (expandedGroups.value.has(groupKey)) {
+    expandedGroups.value.delete(groupKey)
+  } else {
+    expandedGroups.value.add(groupKey)
+  }
+}
+
 const menuItems = computed(() => [
-  { to: '/files', label: '文件', exact: false, hint: '文件管理' },
-  { to: '/kb', label: '知识库', exact: false, hint: '知识库' },
-  { to: '/query', label: '问答', exact: false, hint: '问答' },
-  { to: '/vectors', label: '向量', exact: false, hint: '向量' },
-  { to: '/graph', label: '图谱', exact: false, hint: '图谱' },
-  { to: '/ontology-categories', label: '本体', exact: false, hint: '本体管理' },
-  { to: '/attribute-templates', label: '模板', exact: false, hint: '属性模板' },
-  { to: '/entities', label: '实体', exact: false, hint: '实体管理' },
+  {
+    key: 'ontology',
+    label: '本体',
+    hint: '本体管理',
+    children: [
+      { to: '/ontology/templates', key: 'templates', label: '本体模板', hint: '属性模板复用' },
+      { to: '/ontology/ontologies', key: 'ontologies', label: '本体管理', hint: '本体类别与定义' },
+      { to: '/ontology/relations-dict', key: 'relations-dict', label: '关系字典', hint: '关系类型词汇库' },
+      { to: '/ontology/constraints', key: 'constraints', label: '本体关系', hint: '三元组约束' },
+    ],
+  },
+  { to: '/entities', key: 'entities', label: '实体', exact: false, hint: '实体管理' },
+  { to: '/kb', key: 'kb', label: '知识库', exact: false, hint: '知识库' },
+  { to: '/files', key: 'files', label: '文件', exact: false, hint: '文件管理' },
+  { to: '/query', key: 'query', label: '问答', exact: false, hint: '问答' },
+  { to: '/graph', key: 'graph', label: '图谱', exact: false, hint: '图谱' },
+  { to: '/vectors', key: 'vectors', label: '向量', exact: false, hint: '向量' },
 ])
 
 function toggleSidebar() {
@@ -133,146 +156,105 @@ onMounted(() => {
       </div>
 
       <nav class="side-nav">
-        <router-link
-          v-for="item in menuItems"
-          :key="item.to"
-          :to="item.to"
-          class="side-item"
-          active-class="is-active"
-          :exact-active-class="isExact(item)"
-        >
-          <span class="side-icon-wrap" aria-hidden="true">
-            <svg
-              v-if="item.to === '/files'"
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
+        <template v-for="item in menuItems" :key="item.key">
+          <!-- 有子菜单的分组 -->
+          <div v-if="item.children" class="side-group" :class="{ expanded: isGroupExpanded(item.key) }">
+            <button
+              class="side-item side-group-toggle"
+              :class="{ 'is-active': route.path.startsWith('/ontology') }"
+              @click="toggleGroup(item.key)"
             >
-              <path d="M3.75 7.25A2.25 2.25 0 0 1 6 5h4.25c.57 0 1.12.22 1.54.62l1.14 1.1c.42.4.97.63 1.55.63H18A2.25 2.25 0 0 1 20.25 9.6v7.15A2.25 2.25 0 0 1 18 19H6a2.25 2.25 0 0 1-2.25-2.25Z" />
-              <path d="M3.75 9.25h16.5" />
-            </svg>
-            <svg
-              v-else-if="item.to === '/kb'"
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M4.25 6.75A2.5 2.5 0 0 1 6.75 4.25h10.5a2.5 2.5 0 0 1 2.5 2.5v10.5a2.5 2.5 0 0 1-2.5 2.5H6.75a2.5 2.5 0 0 1-2.5-2.5Z" />
-              <path d="M8 8.75h8" />
-              <path d="M8 12h8" />
-              <path d="M8 15.25h5" />
-            </svg>
-            <svg
-              v-else-if="item.to === '/query'"
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M12 3.25 18.75 7v7.75L12 18.5l-6.75-3.75V7L12 3.25Z" />
-              <path d="M9 9.25h6" />
-              <path d="M9 12.75h3.5" />
-            </svg>
-            <svg
-              v-else-if="item.to === '/graph'"
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <circle cx="6.5" cy="6.5" r="2.25" />
-              <circle cx="17.5" cy="6.5" r="2.25" />
-              <circle cx="12" cy="17.5" r="2.25" />
-              <path d="M8.75 6.5h6.5" />
-              <path d="M8.2 8.1 10.3 15.2" />
-              <path d="m15.8 8.1-2.1 7.1" />
-            </svg>
-            <svg
-              v-else-if="item.to === '/ontology-categories'"
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <rect x="3.25" y="3.25" width="6" height="6" rx="1.5" />
-              <rect x="14.75" y="3.25" width="6" height="6" rx="1.5" />
-              <rect x="9" y="14.75" width="6" height="6" rx="1.5" />
-              <path d="M6.25 9.25v1.75a1.5 1.5 0 0 0 1.5 1.5h1.25" />
-              <path d="M17.75 9.25v1.75a1.5 1.5 0 0 1-1.5 1.5H15.25" />
-            </svg>
-            <svg
-              v-else-if="item.to === '/attribute-templates'"
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <rect x="3.25" y="3.25" width="17.5" height="17.5" rx="2.25" />
-              <path d="M3.25 9.25h17.5" />
-              <path d="M9.25 9.25v11.5" />
-              <path d="M15.25 9.25v11.5" />
-            </svg>
-            <svg
-              v-else-if="item.to === '/entities'"
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <circle cx="12" cy="8.25" r="4.25" />
-              <path d="M4.75 20.25a7.25 7.25 0 0 1 14.5 0" />
-            </svg>
-            <svg
-              v-else
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <rect x="4.25" y="4.25" width="15.5" height="15.5" rx="2.25" />
-              <path d="M8 8.5h8" />
-              <path d="M8 12h8" />
-              <path d="M8 15.5h5" />
-            </svg>
-          </span>
+              <span class="side-icon-wrap" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3.25" y="3.25" width="6" height="6" rx="1.5" />
+                  <rect x="14.75" y="3.25" width="6" height="6" rx="1.5" />
+                  <rect x="9" y="14.75" width="6" height="6" rx="1.5" />
+                  <path d="M6.25 9.25v1.75a1.5 1.5 0 0 0 1.5 1.5h1.25" />
+                  <path d="M17.75 9.25v1.75a1.5 1.5 0 0 1-1.5 1.5H15.25" />
+                </svg>
+              </span>
+              <span class="side-label">{{ item.label }}</span>
+              <span class="side-hint">{{ item.hint }}</span>
+              <svg class="chevron" v-if="!isSidebarCollapsed" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
+            </button>
 
-          <span class="side-label">{{ item.label }}</span>
-          <span class="side-hint">{{ item.hint }}</span>
-        </router-link>
+            <!-- 展开的子菜单（侧边栏未折叠时） -->
+            <div v-if="isGroupExpanded(item.key) && !isSidebarCollapsed" class="side-submenu">
+              <router-link
+                v-for="child in item.children"
+                :key="child.key"
+                :to="child.to"
+                class="side-item side-sub-item"
+                active-class="is-active"
+              >
+                <span class="side-sub-dot"></span>
+                <span class="side-label">{{ child.label }}</span>
+                <span class="side-hint">{{ child.hint }}</span>
+              </router-link>
+            </div>
+
+            <!-- 折叠时的飞出子菜单 -->
+            <div v-if="isSidebarCollapsed" class="side-flyout">
+              <div class="flyout-title">{{ item.hint }}</div>
+              <router-link
+                v-for="child in item.children"
+                :key="child.key"
+                :to="child.to"
+                class="flyout-item"
+                active-class="is-active"
+              >
+                {{ child.label }}
+              </router-link>
+            </div>
+          </div>
+
+          <!-- 普通菜单项 -->
+          <router-link
+            v-else
+            :to="item.to"
+            class="side-item"
+            active-class="is-active"
+            :exact-active-class="isExact(item)"
+          >
+            <span class="side-icon-wrap" aria-hidden="true">
+              <svg v-if="item.key === 'entities'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="8.25" r="4.25" />
+                <path d="M4.75 20.25a7.25 7.25 0 0 1 14.5 0" />
+              </svg>
+              <svg v-else-if="item.key === 'kb'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4.25 6.75A2.5 2.5 0 0 1 6.75 4.25h10.5a2.5 2.5 0 0 1 2.5 2.5v10.5a2.5 2.5 0 0 1-2.5 2.5H6.75a2.5 2.5 0 0 1-2.5-2.5Z" />
+                <path d="M8 8.75h8" />
+                <path d="M8 12h8" />
+                <path d="M8 15.25h5" />
+              </svg>
+              <svg v-else-if="item.key === 'files'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3.75 7.25A2.25 2.25 0 0 1 6 5h4.25c.57 0 1.12.22 1.54.62l1.14 1.1c.42.4.97.63 1.55.63H18A2.25 2.25 0 0 1 20.25 9.6v7.15A2.25 2.25 0 0 1 18 19H6a2.25 2.25 0 0 1-2.25-2.25Z" />
+                <path d="M3.75 9.25h16.5" />
+              </svg>
+              <svg v-else-if="item.key === 'query'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3.25 18.75 7v7.75L12 18.5l-6.75-3.75V7L12 3.25Z" />
+                <path d="M9 9.25h6" />
+                <path d="M9 12.75h3.5" />
+              </svg>
+              <svg v-else-if="item.key === 'graph'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="6.5" cy="6.5" r="2.25" />
+                <circle cx="17.5" cy="6.5" r="2.25" />
+                <circle cx="12" cy="17.5" r="2.25" />
+                <path d="M8.75 6.5h6.5" />
+                <path d="M8.2 8.1 10.3 15.2" />
+                <path d="m15.8 8.1-2.1 7.1" />
+              </svg>
+              <svg v-else width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4.25" y="4.25" width="15.5" height="15.5" rx="2.25" />
+                <path d="M8 8.5h8" />
+                <path d="M8 12h8" />
+                <path d="M8 15.5h5" />
+              </svg>
+            </span>
+            <span class="side-label">{{ item.label }}</span>
+            <span class="side-hint">{{ item.hint }}</span>
+          </router-link>
+        </template>
       </nav>
 
       <button
@@ -513,6 +495,59 @@ onMounted(() => {
   visibility: visible;
   transform: translateY(-50%) translateX(0);
 }
+
+/* 二级菜单 */
+.side-group { display: flex; flex-direction: column; gap: 2px; }
+
+.side-group-toggle { position: relative; width: 100%; }
+.side-group-toggle .chevron {
+  position: absolute; right: 6px; bottom: 6px;
+  color: var(--c-secondary); transition: transform 180ms ease;
+}
+.side-group.expanded .side-group-toggle .chevron { transform: rotate(180deg); }
+
+.side-submenu { display: flex; flex-direction: column; gap: 1px; padding-left: 16px; }
+.side-sub-item { min-height: 36px; padding: 5px 6px; flex-direction: row; gap: 6px; }
+.side-sub-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--c-secondary); flex-shrink: 0; }
+.side-sub-item.is-active .side-sub-dot { background: var(--c-fg); }
+.side-sub-item .side-label { font-size: 11px; font-weight: 500; }
+
+/* 折叠时的飞出子菜单 */
+.side-flyout {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 0;
+  min-width: 160px;
+  padding: 6px;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  background: var(--c-panel-elevated);
+  box-shadow: 0 12px 28px rgba(92, 78, 58, 0.12);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 140ms ease, visibility 140ms ease;
+  z-index: 9999;
+}
+.side-group:hover .side-flyout {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+.flyout-title {
+  font-size: 11px; font-weight: 700; color: var(--c-secondary);
+  padding: 4px 10px 6px; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.flyout-item {
+  display: block; padding: 7px 10px; border-radius: 8px;
+  font-size: 13px; color: var(--c-fg); text-decoration: none;
+  transition: background 120ms;
+}
+.flyout-item:hover { background: var(--c-muted); }
+.flyout-item.is-active { background: var(--c-muted); font-weight: 600; }
+
+.is-collapsed .side-group { position: relative; }
+.is-collapsed .side-submenu { display: none; }
 
 @media (max-width: 640px) {
   .sidebar {
