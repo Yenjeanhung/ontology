@@ -42,6 +42,7 @@ const tplBindingsDirty = ref({})
 
 // 合并属性预览
 const mergedPreview = ref({}) // { ontologyId: { attributes, conflicts, loading } }
+const mergedVisible = ref({}) // { ontologyId: boolean }
 
 const ontologies = computed(() => props.detail?.ontologies || [])
 
@@ -57,14 +58,20 @@ onMounted(async () => {
   for (const ont of ontologies.value) {
     tplBindings.value[ont.id] = [...(ont.template_ids || [])]
   }
+  // 加载每个本体的合并属性预览，用于正确显示属性数量
+  for (const ont of ontologies.value) {
+    await loadMerged(ont)
+  }
 })
 
-// 当 detail 刷新（父组件 changed）后，同步模板绑定
-watch(() => props.detail, () => {
+// 当 detail 刷新（父组件 changed）后，同步模板绑定并刷新合并预览
+watch(() => props.detail, async () => {
   for (const ont of ontologies.value) {
     if (!tplBindings.value[ont.id] || !tplBindingsDirty.value[ont.id]) {
       tplBindings.value[ont.id] = [...(ont.template_ids || [])]
     }
+    // 刷新合并预览以更新属性数量
+    await loadMerged(ont)
   }
 }, { deep: false })
 
@@ -150,10 +157,8 @@ async function saveTplBindings(ont) {
       template_ids: tplBindings.value[ont.id] || [],
     })
     tplBindingsDirty.value[ont.id] = false
-    // 刷新合并预览（如果已展开）
-    if (mergedPreview.value[ont.id]) {
-      await loadMerged(ont)
-    }
+    // 刷新合并预览
+    await loadMerged(ont)
     emit('changed')
   } catch (e) {
     alert('保存模板绑定失败：' + e.message)
@@ -185,10 +190,13 @@ async function loadMerged(ont) {
 }
 
 function toggleMerged(ont) {
-  if (mergedPreview.value[ont.id]) {
-    delete mergedPreview.value[ont.id]
+  if (mergedVisible.value[ont.id]) {
+    mergedVisible.value[ont.id] = false
   } else {
-    loadMerged(ont)
+    mergedVisible.value[ont.id] = true
+    if (!mergedPreview.value[ont.id]) {
+      loadMerged(ont)
+    }
   }
 }
 
@@ -226,7 +234,7 @@ function attrSourceLabel(source) {
         <div class="oe-card-head" @click="toggleExpand(ont)">
           <span class="oe-color-dot" :style="{ background: ont.color || '#A16207' }"></span>
           <span class="oe-name">{{ ont.name }}</span>
-          <span class="oe-count-tag">{{ ont.attributes?.length || 0 }} 属性</span>
+          <span class="oe-count-tag">{{ (mergedPreview[ont.id]?.attributes?.length ?? ont.attributes?.length) || 0 }} 属性</span>
           <span v-if="ont.template_ids?.length" class="oe-count-tag tpl">{{ ont.template_ids.length }} 模板</span>
           <span class="oe-spacer"></span>
           <button class="rm-btn sm" @click.stop="removeOntology(ont)" title="删除">
@@ -322,10 +330,10 @@ function attrSourceLabel(source) {
             <div class="oe-section-head">
               <span class="oe-section-title">合并属性预览</span>
               <button class="btn sm" @click="toggleMerged(ont)">
-                {{ mergedPreview[ont.id] ? '收起' : '查看' }}
+                {{ mergedVisible[ont.id] ? '收起' : '查看' }}
               </button>
             </div>
-            <div v-if="mergedPreview[ont.id]" class="oe-merged">
+            <div v-if="mergedVisible[ont.id] && mergedPreview[ont.id]" class="oe-merged">
               <div v-if="mergedPreview[ont.id].loading" class="oe-merged-loading">
                 <span class="spinner"></span> 加载中...
               </div>
