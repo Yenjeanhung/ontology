@@ -18,7 +18,12 @@ const props = defineProps({
   // 点击遮罩是否关闭
   closeOnMask: {
     type: Boolean,
-    default: true,
+    default: false,
+  },
+  // 是否允许 Esc 键关闭
+  closeOnEsc: {
+    type: Boolean,
+    default: false,
   },
   // 是否显示右上角关闭按钮
   showClose: {
@@ -72,7 +77,7 @@ function onConfirm() {
 }
 
 function handleEsc(e) {
-  if (e.key === 'Escape' && props.modelValue) {
+  if (e.key === 'Escape' && props.modelValue && props.closeOnEsc) {
     close()
   }
 }

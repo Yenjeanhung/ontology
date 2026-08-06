@@ -21,6 +21,8 @@ function isGroupExpanded(groupKey) {
   return expandedGroups.value.has(groupKey)
 }
 
+const hasExpandedGroup = computed(() => expandedGroups.value.size > 0)
+
 function toggleGroup(groupKey) {
   if (expandedGroups.value.has(groupKey)) {
     expandedGroups.value.delete(groupKey)
@@ -35,10 +37,10 @@ const menuItems = computed(() => [
     label: '本体',
     hint: '本体管理',
     children: [
-      { to: '/ontology/templates', key: 'templates', label: '本体模板', hint: '属性模板复用' },
-      { to: '/ontology/ontologies', key: 'ontologies', label: '本体管理', hint: '本体类别与定义' },
-      { to: '/ontology/relations-dict', key: 'relations-dict', label: '关系字典', hint: '关系类型词汇库' },
-      { to: '/ontology/constraints', key: 'constraints', label: '本体关系', hint: '三元组约束' },
+      { to: '/ontology/templates', key: 'templates', label: '本体模板', icon: 'template' },
+      { to: '/ontology/ontologies', key: 'ontologies', label: '本体管理', icon: 'ontology' },
+      { to: '/ontology/relations-dict', key: 'relations-dict', label: '关系字典', icon: 'dict' },
+      { to: '/ontology/constraints', key: 'constraints', label: '本体关系', icon: 'triple' },
     ],
   },
   { to: '/entities', key: 'entities', label: '实体', exact: false, hint: '实体管理' },
@@ -48,6 +50,13 @@ const menuItems = computed(() => [
   { to: '/graph', key: 'graph', label: '图谱', exact: false, hint: '图谱' },
   { to: '/vectors', key: 'vectors', label: '向量', exact: false, hint: '向量' },
 ])
+
+const subIcons = {
+  template: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.25" y="3.25" width="17.5" height="5" rx="1.25"/><rect x="3.25" y="10.75" width="7.5" height="10" rx="1.25"/><rect x="11.25" y="10.75" width="9.5" height="10" rx="1.25"/></svg>',
+  ontology: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 6 7v5c0 3.5 2.5 6.5 6 8 3.5-1.5 6-4.5 6-8V7L12 3.5Z"/></svg>',
+  dict: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v16H6.5A2.5 2.5 0 0 0 4 20.5"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20"/><path d="M8 7h6"/><path d="M8 10.5h4"/></svg>',
+  triple: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.8 7.5 11 16"/></svg>',
+}
 
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
@@ -94,7 +103,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'is-collapsed': isSidebarCollapsed }">
+  <div class="app-shell" :class="{ 'is-collapsed': isSidebarCollapsed, 'has-submenu': hasExpandedGroup && !isSidebarCollapsed }">
     <aside class="sidebar">
       <div class="sidebar-top">
         <button
@@ -175,10 +184,9 @@ onMounted(() => {
               </span>
               <span class="side-label">{{ item.label }}</span>
               <span class="side-hint">{{ item.hint }}</span>
-              <svg class="chevron" v-if="!isSidebarCollapsed" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
             </button>
 
-            <!-- 展开的子菜单（侧边栏未折叠时） -->
+          <!-- 展开的子菜单（侧边栏未折叠时） -->
             <div v-if="isGroupExpanded(item.key) && !isSidebarCollapsed" class="side-submenu">
               <router-link
                 v-for="child in item.children"
@@ -187,9 +195,8 @@ onMounted(() => {
                 class="side-item side-sub-item"
                 active-class="is-active"
               >
-                <span class="side-sub-dot"></span>
+                <span class="side-sub-icon" v-html="subIcons[child.icon] || ''"></span>
                 <span class="side-label">{{ child.label }}</span>
-                <span class="side-hint">{{ child.hint }}</span>
               </router-link>
             </div>
 
@@ -311,6 +318,11 @@ onMounted(() => {
   transition: width 180ms ease, padding 180ms ease;
   overflow: visible;
   z-index: 40;
+}
+
+.app-shell.has-submenu .sidebar {
+  width: 132px;
+  padding: 12px 8px;
 }
 
 .sidebar-top {
@@ -500,17 +512,52 @@ onMounted(() => {
 .side-group { display: flex; flex-direction: column; gap: 2px; }
 
 .side-group-toggle { position: relative; width: 100%; }
-.side-group-toggle .chevron {
-  position: absolute; right: 6px; bottom: 6px;
-  color: var(--c-secondary); transition: transform 180ms ease;
+.side-group.expanded .side-group-toggle {
+  background: var(--c-muted);
+  color: var(--c-fg);
 }
-.side-group.expanded .side-group-toggle .chevron { transform: rotate(180deg); }
 
-.side-submenu { display: flex; flex-direction: column; gap: 1px; padding-left: 16px; }
-.side-sub-item { min-height: 36px; padding: 5px 6px; flex-direction: row; gap: 6px; }
-.side-sub-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--c-secondary); flex-shrink: 0; }
-.side-sub-item.is-active .side-sub-dot { background: var(--c-fg); }
-.side-sub-item .side-label { font-size: 11px; font-weight: 500; }
+.side-submenu { display: flex; flex-direction: column; gap: 2px; padding: 4px 4px 8px; }
+.side-sub-item {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  position: relative;
+  overflow: hidden;
+}
+.side-sub-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-secondary);
+  transition: color 150ms ease;
+}
+.side-sub-item .side-label {
+  font-size: 11px;
+  font-weight: 500;
+  text-align: left;
+  color: var(--c-secondary);
+  transition: color 150ms ease;
+}
+.side-sub-item.is-active {
+  background: var(--c-muted);
+  color: var(--c-fg);
+  font-weight: 600;
+}
+.side-sub-item.is-active .side-sub-icon { color: var(--c-accent); }
+.side-sub-item.is-active .side-label { color: var(--c-fg); }
+.side-sub-item:hover:not(.is-active) {
+  background: var(--c-muted);
+  color: var(--c-fg);
+}
+.side-sub-item:hover:not(.is-active) .side-sub-icon { color: var(--c-fg); }
+.side-sub-item:hover:not(.is-active) .side-label { color: var(--c-fg); }
 
 /* 折叠时的飞出子菜单 */
 .side-flyout {

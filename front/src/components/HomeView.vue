@@ -1,6 +1,15 @@
 <script setup>
 const flowSteps = [
   {
+    key: 'ontology',
+    number: '00',
+    to: '/ontology/ontologies',
+    label: '本体管理',
+    role: '知识定义',
+    line: '定义本体类别、属性、关系和三元组约束，为知识抽取提供结构化模板。',
+    action: '进入本体',
+  },
+  {
     key: 'files',
     number: '01',
     to: '/files',
@@ -95,7 +104,27 @@ const flowSteps = [
                 <path d="M95 204 308 84" />
               </g>
 
-              <g v-if="step.key === 'files'" class="art-scene files-art">
+              <g v-if="step.key === 'ontology'" class="art-scene ontology-art">
+                <ellipse class="art-shadow" cx="180" cy="198" rx="120" ry="17" />
+                <path class="iso-base" d="M58 160 166 101 311 163 203 219Z" />
+                <path class="ontology-hub" d="M140 80 L180 60 L220 80 L220 130 L180 150 L140 130 Z" />
+                <path class="ontology-core" d="M155 88 L180 74 L205 88 L205 118 L180 132 L155 118 Z" />
+                <circle class="ontology-node node-a" cx="100" cy="90" r="18" />
+                <circle class="ontology-node node-b" cx="260" cy="90" r="18" />
+                <circle class="ontology-node node-c" cx="100" cy="150" r="18" />
+                <circle class="ontology-node node-d" cx="260" cy="150" r="18" />
+                <path class="ontology-link" d="M118 90 L155 95" />
+                <path class="ontology-link" d="M205 95 L242 90" />
+                <path class="ontology-link" d="M118 150 L155 125" />
+                <path class="ontology-link" d="M205 125 L242 150" />
+                <path class="attr-bar" d="M85 70 L115 70" />
+                <path class="attr-bar" d="M85 80 L108 80" />
+                <path class="attr-bar" d="M245 70 L275 70" />
+                <path class="attr-bar" d="M245 80 L268 80" />
+                <circle class="token yellow" cx="180" cy="100" r="8" />
+              </g>
+
+              <g v-else-if="step.key === 'files'" class="art-scene files-art">
                 <ellipse class="art-shadow" cx="175" cy="196" rx="118" ry="18" />
                 <path class="iso-base" d="M55 154 150 103 302 165 204 217Z" />
                 <path class="cyan-plate" d="M83 150 154 113 264 160 191 198Z" />
@@ -204,7 +233,8 @@ const flowSteps = [
           <div class="flow-copy">
             <div class="step-meta">
               <span class="step-number">{{ step.number }}</span>
-              <span v-if="step.key === 'files'" class="start-chip">START</span>
+              <span v-if="step.key === 'ontology'" class="define-chip">定义层</span>
+              <span v-else-if="step.key === 'files'" class="start-chip">START</span>
               <span v-else-if="step.key === 'vectors' || step.key === 'graph'" class="branch-chip">知识库支线</span>
             </div>
             <span class="flow-role">{{ step.role }}</span>
@@ -277,22 +307,9 @@ const flowSteps = [
   display: flex;
   align-items: center;
   overflow: hidden;
-  border-top: 1px solid rgba(73, 174, 196, 0.2);
-  border-bottom: 1px solid rgba(73, 174, 196, 0.2);
-  background:
-    linear-gradient(115deg, rgba(229, 250, 250, 0.96), rgba(245, 254, 253, 0.88)),
-    linear-gradient(90deg, rgba(86, 191, 213, 0.13) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(86, 191, 213, 0.13) 1px, transparent 1px);
-  background-size: auto, 72px 72px, 72px 72px;
-}
-
-:root[data-theme='dark'] .flow-band {
-  border-color: rgba(73, 174, 196, 0.22);
-  background:
-    linear-gradient(115deg, rgba(229, 250, 250, 0.98), rgba(245, 254, 253, 0.92)),
-    linear-gradient(90deg, rgba(86, 191, 213, 0.14) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(86, 191, 213, 0.14) 1px, transparent 1px);
-  background-size: auto, 72px 72px, 72px 72px;
+  border-top: 1px solid var(--c-border);
+  border-bottom: 1px solid var(--c-border);
+  background: var(--c-panel);
 }
 
 .flow-map {
@@ -300,53 +317,15 @@ const flowSteps = [
   z-index: 1;
   width: 100%;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  grid-template-rows: minmax(238px, auto) minmax(224px, auto);
-  gap: 30px 22px;
-  max-width: 1120px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: minmax(238px, auto) minmax(238px, auto);
+  gap: 24px;
+  max-width: 1180px;
   margin: 0 auto;
 }
 
 .flow-links {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
-.flow-link {
-  fill: none;
-  stroke: #0e6b85;
-  stroke-width: 4.5;
-  stroke-linecap: round;
-  opacity: 0.42;
-}
-
-.branch-link {
-  stroke-dasharray: 9 10;
-}
-
-#flow-arrow path {
-  fill: #0e6b85;
-  opacity: 0.72;
-}
-
-.flow-dot {
-  fill: #f6bd4b;
-  stroke: #164456;
-  stroke-width: 3;
-}
-
-.dot-kb,
-.dot-vector,
-.dot-graph {
-  fill: #86c957;
-}
-
-:root[data-theme='dark'] .flow-dot {
-  stroke: #164456;
+  display: none;
 }
 
 .flow-card {
@@ -356,87 +335,35 @@ const flowSteps = [
   flex-direction: column;
   min-height: 206px;
   padding: 12px;
-  border: 1px solid rgba(13, 86, 108, 0.16);
+  border: 1px solid var(--c-border);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.88);
-  color: #102b36;
+  background: var(--c-panel-elevated);
+  color: var(--c-fg);
   text-decoration: none;
-  box-shadow: 0 18px 42px rgba(35, 106, 116, 0.12);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
   transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
-}
-
-.flow-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  box-shadow: inset 0 0 0 0 rgba(14, 107, 133, 0);
-  transition: box-shadow 160ms ease;
 }
 
 .flow-card:hover,
 .flow-card:focus-visible {
-  transform: translateY(-6px);
-  border-color: rgba(14, 107, 133, 0.44);
-  background: rgba(255, 255, 255, 0.97);
-  box-shadow: 0 22px 52px rgba(35, 106, 116, 0.2);
+  transform: translateY(-4px);
+  border-color: var(--c-accent);
+  background: var(--c-panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   outline: none;
-}
-
-.flow-card:hover::before,
-.flow-card:focus-visible::before {
-  box-shadow: inset 0 0 0 2px rgba(14, 107, 133, 0.18);
-}
-
-.flow-card:hover .menu-art,
-.flow-card:focus-visible .menu-art {
-  transform: translateY(-5px) scale(1.03);
 }
 
 .flow-card:hover .flow-action,
 .flow-card:focus-visible .flow-action {
-  transform: translateX(3px);
+  color: var(--c-accent);
 }
 
-:root[data-theme='dark'] .flow-card {
-  border-color: rgba(13, 86, 108, 0.18);
-  background: rgba(255, 255, 255, 0.9);
-  color: #102b36;
-  box-shadow: 0 18px 42px rgba(35, 106, 116, 0.14);
-}
-
-:root[data-theme='dark'] .flow-card:hover,
-:root[data-theme='dark'] .flow-card:focus-visible {
-  border-color: rgba(14, 107, 133, 0.44);
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 22px 52px rgba(35, 106, 116, 0.2);
-}
-
-.step-files {
-  grid-column: 1 / 3;
-  grid-row: 1;
-}
-
-.step-kb {
-  grid-column: 3 / 5;
-  grid-row: 1;
-}
-
-.step-query {
-  grid-column: 5 / 7;
-  grid-row: 1;
-}
-
-.step-vectors {
-  grid-column: 2 / 4;
-  grid-row: 2;
-}
-
-.step-graph {
-  grid-column: 4 / 6;
-  grid-row: 2;
-}
+.step-ontology { grid-column: 1; grid-row: 1; }
+.step-files { grid-column: 2; grid-row: 1; }
+.step-kb { grid-column: 3; grid-row: 1; }
+.step-query { grid-column: 1; grid-row: 2; }
+.step-vectors { grid-column: 2; grid-row: 2; }
+.step-graph { grid-column: 3; grid-row: 2; }
 
 .art-panel {
   height: 126px;
@@ -496,6 +423,13 @@ const flowSteps = [
   box-shadow: inset 0 0 0 1px rgba(112, 70, 7, 0.18);
 }
 
+.define-chip {
+  padding: 0 9px;
+  background: rgba(14, 107, 133, 0.15);
+  color: #0e6b85;
+  box-shadow: inset 0 0 0 1px rgba(14, 107, 133, 0.2);
+}
+
 .branch-chip {
   padding: 0 9px;
   background: rgba(134, 201, 87, 0.2);
@@ -504,13 +438,13 @@ const flowSteps = [
 }
 
 .flow-role {
-  color: #0f7893;
+  color: var(--c-secondary);
   font-size: 11px;
   font-weight: 800;
 }
 
 :root[data-theme='dark'] .flow-role {
-  color: #0f7893;
+  color: var(--c-secondary);
 }
 
 .flow-copy h2 {
@@ -522,13 +456,13 @@ const flowSteps = [
 
 .flow-copy p {
   margin: 7px 0 0;
-  color: #49616a;
+  color: var(--c-secondary);
   font-size: 13px;
   line-height: 1.55;
 }
 
 :root[data-theme='dark'] .flow-copy p {
-  color: #49616a;
+  color: var(--c-secondary);
 }
 
 .flow-action {
@@ -537,7 +471,7 @@ const flowSteps = [
   gap: 5px;
   margin-top: auto;
   padding-top: 10px;
-  color: #0c6680;
+  color: var(--c-accent);
   font-size: 13px;
   font-weight: 800;
   transition: transform 160ms ease;
@@ -554,7 +488,7 @@ const flowSteps = [
 }
 
 :root[data-theme='dark'] .flow-action {
-  color: #0c6680;
+  color: var(--c-accent);
 }
 
 .workflow-text {
@@ -829,6 +763,35 @@ const flowSteps = [
   fill: #f3feff;
 }
 
+/* 本体管理插画样式 */
+.ontology-hub {
+  fill: rgba(14, 107, 133, 0.2);
+  stroke: #0e6b85;
+  stroke-width: 2;
+}
+.ontology-core {
+  fill: #83dce1;
+  stroke: #0e6b85;
+  stroke-width: 2;
+}
+.ontology-node {
+  fill: #86c957;
+  stroke: #15313d;
+  stroke-width: 2;
+}
+.ontology-link {
+  fill: none;
+  stroke: #0e6b85;
+  stroke-width: 2;
+  stroke-dasharray: 4 3;
+}
+.attr-bar {
+  fill: none;
+  stroke: #0e6b85;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
 :root[data-theme='dark'] .iso-base,
 :root[data-theme='dark'] .paper,
 :root[data-theme='dark'] .bubble,
@@ -846,21 +809,11 @@ const flowSteps = [
     max-width: 520px;
   }
 
-  .flow-map::before {
-    content: '';
-    position: absolute;
-    top: 40px;
-    bottom: 40px;
-    left: 28px;
-    width: 3px;
-    border-radius: 999px;
-    background: rgba(14, 107, 133, 0.22);
-  }
-
   .flow-links {
     display: none;
   }
 
+  .step-ontology,
   .step-files,
   .step-kb,
   .step-query,
@@ -870,25 +823,12 @@ const flowSteps = [
     grid-row: auto;
   }
 
-  .step-files {
-    order: 1;
-  }
-
-  .step-kb {
-    order: 2;
-  }
-
-  .step-query {
-    order: 3;
-  }
-
-  .step-vectors {
-    order: 4;
-  }
-
-  .step-graph {
-    order: 5;
-  }
+  .step-ontology { order: 1; }
+  .step-files { order: 2; }
+  .step-kb { order: 3; }
+  .step-query { order: 4; }
+  .step-vectors { order: 5; }
+  .step-graph { order: 6; }
 }
 
 @media (max-width: 640px) {
