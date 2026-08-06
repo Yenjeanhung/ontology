@@ -13,9 +13,11 @@ from models import (
     OntologyCategory,
     OntologyRelation,
     OntologyRelationConstraint,
+    OntologySuggestion,
     OntologyTemplateAttribute,
     OntologyTemplateBinding,
 )
+import json
 
 
 # ---------- 辅助序列化 ----------
@@ -1014,3 +1016,230 @@ class OntologyService:
             "constraints": constraints,
             "constraint_set": constraint_set,
         }
+
+
+# ===== 模块六：本体建议（动态生成 + 审核）=====
+
+class OntologySuggestionService:
+
+    @staticmethod
+    def _to_dict(s: OntologySuggestion) -> dict:
+        try:
+            data = json.loads(s.suggestion_data or "{}")
+        except Exception:
+            data = {}
+        return {
+            "id": s.id,
+            "kb_id": s.kb_id,
+            "file_id": s.file_id,
+            "status": s.status,
+            "source_mode": s.source_mode,
+            "score": s.score,
+            "review_notes": s.review_notes or "",
+            "created_at": s.created_at,
+            "reviewed_at": s.reviewed_at,
+            "reviewer": s.reviewer,
+            "suggestion_data": data,
+        }
+
+    @staticmethod
+    async def list_suggestions(db: AsyncSession, kb_id: str | None = None, status: str | None = None) -> list[dict]:
+        stmt = select(OntologySuggestion).order_by(OntologySuggestion.created_at.desc())
+        if kb_id:
+            stmt = stmt.where(OntologySuggestion.kb_id == kb_id)
+        if status:
+            stmt = stmt.where(OntologySuggestion.status == status)
+        result = await db.execute(stmt)
+        return [OntologySuggestionService._to_dict(s) for s in result.scalars().all()]
+
+    @staticmethod
+    async def get_suggestion(db: AsyncSession, suggestion_id: str) -> dict | None:
+        result = await db.execute(select(OntologySuggestion).where(OntologySuggestion.id == suggestion_id))
+        s = result.scalar_one_or_none()
+        return OntologySuggestionService._to_dict(s) if s else None
+
+    @staticmethod
+    async def create_suggestion(db: AsyncSession, kb_id: str, file_id: str | None,
+                                suggestion_data: dict, source_mode: str = "free_extraction",
+                                score: float = 0.0) -> dict:
+        s = OntologySuggestion(
+            kb_id=kb_id,
+            file_id=file_id,
+            status="ready",
+            source_mode=source_mode,
+            suggestion_data=json.dumps(suggestion_data, ensure_ascii=False),
+            score=score,
+        )
+        db.add(s)
+        await db.commit()
+        await db.refresh(s)
+        return OntologySuggestionService._to_dict(s)
+
+    @staticmethod
+    async def update_suggestion(db: AsyncSession, suggestion_id: str,
+                                suggestion_data: dict | None = None,
+                                status: str | None = None,
+                                review_notes: str | None = None,
+                                score: float | None = None) -> dict | None:
+        result = await db.execute(select(OntologySuggestion).where(OntologySuggestion.id == suggestion_id))
+        s = result.scalar_one_or_none()
+        if not s:
+            return None
+        if suggestion_data is not None:
+            s.suggestion_data = json.dumps(suggestion_data, ensure_ascii=False)
+        if status:
+            s.status = status
+        if review_notes is not None:
+            s.review_notes = review_notes
+        if score is not None:
+            s.score = score
+        s.reviewed_at = datetime.now().isoformat()
+        await db.commit()
+        await db.refresh(s)
+        return OntologySuggestionService._to_dict(s)
+
+    @staticmethod
+    async def delete_suggestion(db: AsyncSession, suggestion_id: str) -> bool:
+        result = await db.execute(select(OntologySuggestion).where(OntologySuggestion.id == suggestion_id))
+        s = result.scalar_one_or_none()
+        if not s:
+            return False
+        await db.delete(s)
+        await db.commit()
+        return True
+
+    @staticmethod
+    async def reject_suggestion(db: AsyncSession, suggestion_id: str,
+                                reviewer: str | None = None,
+                                review_notes: str = "") -> dict | None:
+        return await OntologySuggestionService.update_suggestion(
+            db, suggestion_id, status="rejected", review_notes=review_notes,
+        )
+
+    @staticmethod
+    async def approve_suggestion(db: AsyncSession, suggestion_id: str,
+                                 reviewer: str | None = None) -> dict:
+        """审核通过：将 suggestion 内容写入正式本体表 + 自动绑定到知识库"""
+        result = await db.execute(select(OntologySuggestion).where(OntologySuggestion.id == suggestion_id))
+        s = result.scalar_one_or_none()
+        if not s:
+            raise ValueError("建议不存在")
+        if s.status == "approved":
+            raise ValueError("该建议已审核通过")
+
+        try:
+            data = json.loads(s.suggestion_data or "{}")
+        except Exception:
+            data = {}
+
+        cat_info = data.get("category") or {}
+        cat_name = (cat_info.get("name") or "").strip()
+        if not cat_name:
+            raise ValueError("类别名称不能为空")
+
+        cat_desc = (cat_info.get("description") or "").strip()
+
+        # --- 1. 创建类别 ---
+        category = OntologyCategory(
+            name=cat_name, description=cat_desc,
+        )
+        db.add(category)
+        await db.flush()
+
+        # --- 2. 创建本体 ---
+        ont_list = data.get("ontologies") or []
+        ont_id_by_name: dict[str, str] = {}
+        for ont in ont_list:
+            ont_name = (ont.get("name") or "").strip()
+            if not ont_name:
+                continue
+            o = Ontology(
+                category_id=category.id, name=ont_name,
+                description=(ont.get("description") or "").strip(),
+            )
+            db.add(o)
+            await db.flush()
+            ont_id_by_name[ont_name] = o.id
+            # 创建属性
+            attrs = ont.get("attributes") or []
+            seen_codes: set = set()
+            for i, at in enumerate(attrs):
+                a_name = (at.get("name") or "").strip()
+                if not a_name:
+                    continue
+                a_code = (at.get("code") or "").strip() or None
+                if a_code:
+                    if a_code in seen_codes:
+                        a_code = None
+                    else:
+                        seen_codes.add(a_code)
+                a = OntologyAttribute(
+                    ontology_id=o.id, name=a_name, code=a_code,
+                    data_type=(at.get("data_type") or "string").strip() or "string",
+                    description=(at.get("description") or "").strip(),
+                    is_required=bool(at.get("is_required", False)),
+                    sort_order=i,
+                )
+                db.add(a)
+
+        # --- 3. 创建关系字典 ---
+        rel_list = data.get("relations") or []
+        rel_id_by_name: dict[str, str] = {}
+        seen_rel_codes: set = set()
+        for rel in rel_list:
+            r_name = (rel.get("name") or "").strip()
+            if not r_name:
+                continue
+            r_code = (rel.get("code") or "").strip() or None
+            if r_code:
+                if r_code in seen_rel_codes:
+                    r_code = None
+                else:
+                    seen_rel_codes.add(r_code)
+            r = OntologyRelation(
+                category_id=category.id, name=r_name, code=r_code,
+                description=(rel.get("description") or "").strip(),
+            )
+            db.add(r)
+            await db.flush()
+            rel_id_by_name[r_name] = r.id
+
+        # --- 4. 创建三元组约束 ---
+        cons_list = data.get("constraints") or []
+        for c in cons_list:
+            src_ont = (c.get("source") or "").strip()
+            rel_name = (c.get("relation") or "").strip()
+            tgt_ont = (c.get("target") or "").strip()
+            if not (src_ont and rel_name and tgt_ont):
+                continue
+            src_id = ont_id_by_name.get(src_ont)
+            tgt_id = ont_id_by_name.get(tgt_ont)
+            rel_id = rel_id_by_name.get(rel_name)
+            if not (src_id and tgt_id and rel_id):
+                continue
+            cons = OntologyRelationConstraint(
+                category_id=category.id,
+                source_ontology_id=src_id, relation_id=rel_id, target_ontology_id=tgt_id,
+                description=(c.get("description") or "").strip(),
+            )
+            db.add(cons)
+
+        # --- 5. 自动绑定到知识库 ---
+        existing = await db.execute(
+            select(KbOntologyBinding).where(KbOntologyBinding.kb_id == s.kb_id)
+        )
+        if not existing.scalar_one_or_none():
+            db.add(KbOntologyBinding(kb_id=s.kb_id, category_id=category.id))
+
+        # --- 6. 更新建议状态 ---
+        s.status = "approved"
+        s.reviewed_at = datetime.now().isoformat()
+        s.reviewer = reviewer or "system"
+        await db.commit()
+        await db.refresh(s)
+
+        ret = OntologySuggestionService._to_dict(s)
+        ret["approved_category_id"] = category.id
+        ret["ontology_count"] = len(ont_id_by_name)
+        ret["relation_count"] = len(rel_id_by_name)
+        return ret

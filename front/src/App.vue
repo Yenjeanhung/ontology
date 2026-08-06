@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, provide, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { fetchConfig } from './api'
+import { fetchConfig, fetchOntologySuggestions } from './api'
 
 const router = useRouter()
 const route = useRoute()
@@ -11,6 +11,7 @@ const THEME_STORAGE_KEY = 'knowsource.theme'
 const theme = ref('dark')
 const vectorProvider = ref('')
 const graphProvider = ref('')
+const pendingSuggestionCount = ref(0) // 全局待审核建议数
 
 provide('vectorProvider', vectorProvider)
 provide('graphProvider', graphProvider)
@@ -41,6 +42,7 @@ const menuItems = computed(() => [
       { to: '/ontology/ontologies', key: 'ontologies', label: '本体管理', icon: 'ontology' },
       { to: '/ontology/relations-dict', key: 'relations-dict', label: '关系字典', icon: 'dict' },
       { to: '/ontology/constraints', key: 'constraints', label: '本体关系', icon: 'triple' },
+      { to: '/ontology/suggestions', key: 'suggestions', label: '本体建议', icon: 'suggestion' },
     ],
   },
   { to: '/entities', key: 'entities', label: '实体', exact: false, hint: '实体管理' },
@@ -56,6 +58,7 @@ const subIcons = {
   ontology: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 6 7v5c0 3.5 2.5 6.5 6 8 3.5-1.5 6-4.5 6-8V7L12 3.5Z"/></svg>',
   dict: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v16H6.5A2.5 2.5 0 0 0 4 20.5"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20"/><path d="M8 7h6"/><path d="M8 10.5h4"/></svg>',
   triple: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.8 7.5 11 16"/></svg>',
+  suggestion: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>',
 }
 
 function toggleSidebar() {
@@ -98,6 +101,11 @@ onMounted(() => {
   fetchConfig().then(cfg => {
     vectorProvider.value = cfg.vector_provider || ''
     graphProvider.value = cfg.graph_provider || ''
+  }).catch(() => {})
+
+  // 全局检查待审核本体建议数
+  fetchOntologySuggestions({ status: 'ready' }).then(list => {
+    pendingSuggestionCount.value = list.length
   }).catch(() => {})
 })
 </script>
@@ -197,6 +205,7 @@ onMounted(() => {
               >
                 <span class="side-sub-icon" v-html="subIcons[child.icon] || ''"></span>
                 <span class="side-label">{{ child.label }}</span>
+                <span v-if="child.key === 'suggestions' && pendingSuggestionCount > 0" class="nav-badge">{{ pendingSuggestionCount }}</span>
               </router-link>
             </div>
 
@@ -211,6 +220,7 @@ onMounted(() => {
                 active-class="is-active"
               >
                 {{ child.label }}
+                <span v-if="child.key === 'suggestions' && pendingSuggestionCount > 0" class="nav-badge flyout-badge">{{ pendingSuggestionCount }}</span>
               </router-link>
             </div>
           </div>
@@ -592,6 +602,24 @@ onMounted(() => {
 }
 .flyout-item:hover { background: var(--c-muted); }
 .flyout-item.is-active { background: var(--c-muted); font-weight: 600; }
+
+/* 导航徽章 */
+.nav-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 9px; background: #e74c3c; color: #fff;
+  font-size: 11px; font-weight: 700; line-height: 1;
+  margin-left: auto; flex-shrink: 0;
+  animation: badge-pulse 2s ease-in-out infinite;
+}
+.side-sub-item { position: relative; }
+.side-sub-item .nav-badge { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
+.flyout-item { position: relative; display: flex; align-items: center; gap: 6px; }
+.flyout-badge { position: static; transform: none; }
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
 
 .is-collapsed .side-group { position: relative; }
 .is-collapsed .side-submenu { display: none; }

@@ -27,7 +27,7 @@ from providers.parser import get_parser
 from providers.vector_store import create_vector_store, get_vector_store_provider_name
 from services.entity_service import EntityService
 from services.graph_extraction_service import GraphExtractionService
-from services.ontology_service import OntologyService
+from services.ontology_service import OntologyService, OntologySuggestionService
 
 logger = logging.getLogger(__name__)
 
@@ -978,6 +978,32 @@ class FileService:
                         relation_count,
                         extraction_ms,
                     )
+                    # 自由模式：基于抽取结果自动生成候选本体建议（后台异步，不阻塞主流程）
+                    if not has_constraint and graph_chunks and entity_count > 0:
+                        try:
+                            suggestion_data = await GraphExtractionService.generate_ontology_suggestion(
+                                file.name, graph_chunks, kb_name=kb.name,
+                            )
+                            if suggestion_data:
+                                score = float(
+                                    (suggestion_data.get("stats") or {}).get("confidence", 0.7) or 0.7
+                                )
+                                await OntologySuggestionService.create_suggestion(
+                                    db, kb_id=file.kb_id, file_id=file.id,
+                                    suggestion_data=suggestion_data,
+                                    source_mode="free_extraction",
+                                    score=score,
+                                )
+                                logger.info(
+                                    "Ontology suggestion created: kb_id=%s file_id=%s ont=%s rels=%s score=%.2f",
+                                    file.kb_id, file.id,
+                                    len(suggestion_data.get("ontologies") or []),
+                                    len(suggestion_data.get("relations") or []),
+                                    score,
+                                )
+                        except Exception:
+                            logger.exception("Auto ontology suggestion creation failed (non-critical)")
+
                     await FileService._commit_runtime_state(
                         db,
                         file,

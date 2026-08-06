@@ -25,7 +25,11 @@ def _parse_migrations(sql_text: str) -> list[tuple[str, str]]:
         m = re.match(r"^-- (migration_\w+)", part)
         if m:
             version = m.group(1)
-            stmt = re.sub(r"-- migration_\w+\s*", "", part).strip()
+            # 去除版本标记行（整行，不管后面有无 : 描述），再过滤注释行
+            code_lines = [ln for ln in part.splitlines()
+                         if not re.match(r"^--\s*migration_\w+", ln)
+                         and not ln.strip().startswith("--")]
+            stmt = "\n".join(code_lines).strip()
             if stmt:
                 migrations.append((version, stmt))
     return migrations

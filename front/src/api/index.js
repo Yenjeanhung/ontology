@@ -454,12 +454,15 @@ export async function fetchRelations(categoryId) {
   return res.json()
 }
 
-export async function createRelation(categoryId, { name, description = '' }) {
+export async function createRelation(categoryId, { name, code, description = '' }) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/relations`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description }),
+    body: JSON.stringify({ name, code, description }),
   })
-  if (!res.ok) throw new Error('Create relation failed')
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Create relation failed')
+  }
   return res.json()
 }
 
@@ -667,5 +670,55 @@ export async function fetchRelationInstances({ kb_id = '', relation_type = '', q
 export async function deleteRelationInstance(relationId) {
   const res = await fetch(`${API}/api/relations/${relationId}`, { method: 'DELETE' })
   if (!res.ok) throw new Error('Delete relation instance failed')
+  return res.json()
+}
+
+// ===== 模块八：本体建议（动态生成 + 审核）=====
+export async function fetchOntologySuggestions({ kbId, status } = {}) {
+  const params = new URLSearchParams()
+  if (kbId) params.set('kb_id', kbId)
+  if (status) params.set('status', status)
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  const res = await fetch(`${API}/api/ontology-suggestions${qs}`)
+  if (!res.ok) throw new Error('Fetch ontology suggestions failed')
+  return res.json()
+}
+
+export async function getOntologySuggestion(suggestionId) {
+  const res = await fetch(`${API}/api/ontology-suggestions/${suggestionId}`)
+  if (!res.ok) throw new Error('Get ontology suggestion failed')
+  return res.json()
+}
+
+export async function updateOntologySuggestion(suggestionId, data) {
+  const res = await fetch(`${API}/api/ontology-suggestions/${suggestionId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('Update ontology suggestion failed')
+  return res.json()
+}
+
+export async function approveOntologySuggestion(suggestionId, { reviewer } = {}) {
+  const res = await fetch(`${API}/api/ontology-suggestions/${suggestionId}/approve`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reviewer }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Approve suggestion failed')
+  }
+  return res.json()
+}
+
+export async function rejectOntologySuggestion(suggestionId) {
+  const res = await fetch(`${API}/api/ontology-suggestions/${suggestionId}/reject`, { method: 'POST' })
+  if (!res.ok) throw new Error('Reject suggestion failed')
+  return res.json()
+}
+
+export async function deleteOntologySuggestion(suggestionId) {
+  const res = await fetch(`${API}/api/ontology-suggestions/${suggestionId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete suggestion failed')
   return res.json()
 }

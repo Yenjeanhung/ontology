@@ -19,6 +19,7 @@ import {
   removeKbOntology,
   fetchOntologyCategories,
   getOntologyCategoryDetail,
+  fetchOntologySuggestions,
 } from '../api'
 
 const CHUNK_SIZE = 512 * 1024
@@ -87,6 +88,14 @@ const ontologyDetail = ref(null) // 绑定类别的详情概要
 const showOntologyPicker = ref(false)
 const pickingCategoryId = ref(null)
 const savingOntology = ref(false)
+const pendingSuggestionCount = ref(0) // 待审核的本体建议数量
+
+async function checkPendingSuggestions() {
+  try {
+    const list = await fetchOntologySuggestions({ kbId: props.kbId, status: 'ready' })
+    pendingSuggestionCount.value = list.length
+  } catch { /* 静默 */ }
+}
 
 // 构建文件夹树
 const directoryTree = computed(() => {
@@ -188,6 +197,7 @@ onMounted(async () => {
     nowTick.value = Date.now()
   }, 1000)
   loadOntologyBinding()
+  checkPendingSuggestions()
 })
 
 onUnmounted(() => {
@@ -554,6 +564,7 @@ async function syncFileStatus(fileId, timer = null) {
         delete processing.value[fileId]
         // 处理完成后自动折叠面板
         collapsedFiles.value.add(fileId)
+        checkPendingSuggestions()
       }
       return true
     }
@@ -608,9 +619,10 @@ function startStatusWatch(fileId) {
         stream.close()
         delete statusStreams[fileId]
         if (data.status === 'indexed') {
-          delete processing.value[fileId]
-          collapsedFiles.value.add(fileId)
-        }
+        delete processing.value[fileId]
+        collapsedFiles.value.add(fileId)
+        checkPendingSuggestions()
+      }
       }
     } catch {}
   }
@@ -837,6 +849,13 @@ function stageIconClass(file, stageName) {
         从文件管理选择
       </button>
       <span>知识库直接上传的文件会自动进入文件管理的默认目录。</span>
+    </div>
+
+    <!-- 本体建议提示 -->
+    <div v-if="pendingSuggestionCount > 0" class="suggestion-banner" @click="router.push('/ontology/suggestions')">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      <span>已生成 <strong>{{ pendingSuggestionCount }}</strong> 条本体建议，待审核后可正式入库</span>
+      <button class="btn sm suggestion-btn" @click.stop="router.push('/ontology/suggestions')">去审核</button>
     </div>
 
     <!-- 本体设置 -->
@@ -2365,5 +2384,26 @@ h1 { font-size: 18px; font-weight: 700; }
 .expand-spacer {
   width: 22px;
   flex-shrink: 0;
+}
+.suggestion-banner {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 18px; border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, rgba(99, 140, 220, 0.15), rgba(231, 76, 60, 0.1));
+  border: 1px solid rgba(99, 140, 220, 0.4);
+  color: var(--c-fg); font-size: 14px; cursor: pointer; transition: background 150ms;
+  animation: banner-glow 3s ease-in-out infinite;
+}
+.suggestion-banner:hover { background: linear-gradient(135deg, rgba(99, 140, 220, 0.22), rgba(231, 76, 60, 0.15)); }
+.suggestion-banner svg { flex-shrink: 0; color: #6e9fd8; }
+.suggestion-banner strong { color: #8bb5f5; font-size: 16px; }
+.suggestion-btn {
+  margin-left: auto; flex-shrink: 0;
+  background: rgba(99, 140, 220, 0.2); border-color: rgba(99, 140, 220, 0.4);
+  color: #8bb5f5; font-weight: 600;
+}
+.suggestion-btn:hover { background: rgba(99, 140, 220, 0.3); }
+@keyframes banner-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 140, 220, 0); }
+  50% { box-shadow: 0 0 12px 2px rgba(99, 140, 220, 0.15); }
 }
 </style>

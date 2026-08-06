@@ -142,6 +142,55 @@ class BindKbOntologyRequest(BaseModel):
     category_id: str
 
 
+class SuggestOntologyAttr(BaseModel):
+    name: str
+    code: str | None = None
+    data_type: str = "string"
+    is_required: bool = False
+
+
+class SuggestOntology(BaseModel):
+    name: str
+    description: str | None = ""
+    attributes: list[SuggestOntologyAttr] = []
+
+
+class SuggestRelation(BaseModel):
+    name: str
+    code: str | None = None
+    description: str | None = ""
+
+
+class SuggestConstraint(BaseModel):
+    source: str
+    relation: str
+    target: str
+
+
+class SuggestionData(BaseModel):
+    category: dict | None = None
+    ontologies: list[SuggestOntology] = []
+    relations: list[SuggestRelation] = []
+    constraints: list[SuggestConstraint] = []
+    stats: dict | None = None
+
+
+class GenerateOntologySuggestionRequest(BaseModel):
+    kb_id: str
+    file_id: str | None = None
+
+
+class UpdateOntologySuggestionRequest(BaseModel):
+    suggestion_data: SuggestionData | None = None
+    status: str | None = None
+    review_notes: str | None = None
+    score: float | None = None
+
+
+class ApproveSuggestionRequest(BaseModel):
+    reviewer: str | None = None
+
+
 class CreateAttributeTemplateRequest(BaseModel):
     name: str
     description: str | None = ""

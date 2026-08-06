@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from schemas import (
+    ApproveSuggestionRequest,
     BatchCreateConstraintsRequest,
     BatchCreateOntologiesRequest,
     BatchCreateRelationsRequest,
@@ -17,14 +18,16 @@ from schemas import (
     CreateOntologyRequest,
     CreateRelationConstraintRequest,
     CreateTemplateAttributeRequest,
+    GenerateOntologySuggestionRequest,
     UpdateAttributeTemplateRequest,
     UpdateOntologyAttributeRequest,
     UpdateOntologyCategoryRequest,
     UpdateOntologyRelationRequest,
     UpdateOntologyRequest,
+    UpdateOntologySuggestionRequest,
     UpdateRelationConstraintRequest,
 )
-from services.ontology_service import OntologyService
+from services.ontology_service import OntologyService, OntologySuggestionService
 
 router = APIRouter()
 
@@ -349,3 +352,98 @@ async def bind_kb_ontology(kb_id: str, req: BindKbOntologyRequest, db: AsyncSess
 async def unbind_kb_ontology(kb_id: str, db: AsyncSession = Depends(get_db)):
     await OntologyService.unbind_kb(db, kb_id)
     return {"status": "unbound"}
+
+
+# ===== 模块七：本体建议（动态生成 + 审核）=====
+
+@router.get("/ontology-suggestions")
+async def list_suggestions(kb_id: str | None = None, status: str | None = None, db: AsyncSession = Depends(get_db)):
+    return await OntologySuggestionService.list_suggestions(db, kb_id=kb_id, status=status)
+
+
+@router.post("/ontology-suggestions/generate")
+async def generate_suggestion(req: GenerateOntologySuggestionRequest, db: AsyncSession = Depends(get_db)):
+    """手动触发：基于某知识库/某文件的已有图谱抽取数据生成候选本体建议"""
+    from providers.graph_store import fetch_graph_view
+    import asyncio
+    try:
+        view = await asyncio.to_thread(
+            fetch_graph_view, req.kb_id, req.file_id or "", "", ""
+        )
+    except Exception:
+        view = {}
+    # TODO: 当已经有 graph_view 中的实体/关系存在时可以直接统计
+    # 否则返回空，引导用户先上传文件
+    entities = (view or {}).get("entities") or []
+    relations = (view or {}).get("relations") or []
+    from providers.graph_store import ChunkGraphData, GraphEntity, GraphRelation
+
+    entity_objs = [GraphEntity(name=e.get("name"), entity_type=e.get("entity_type"),
+                               description=e.get("description") or "", properties=e.get("properties") or "")
+                   for e in entities]
+    chunk = ChunkGraphData(chunk_id="__suggest__", content="", entities=entity_objs,
+                           relations=[GraphRelation(
+                               source_name=r.get("source"), source_type=r.get("source_type"),
+                               target_name=r.get("target"), target_type=r.get("target_type"),
+                               relation_type=r.get("relation"))
+                               for r in relations])
+    from services.graph_extraction_service import GraphExtractionService
+    suggestion_data = await GraphExtractionService.generate_ontology_suggestion(
+        req.file_id or "", [chunk], kb_name=""
+    )
+    if not suggestion_data:
+        raise _bad_request("未能生成建议，请确保知识库或文件下存在已抽取的实体/关系")
+    score = float((suggestion_data.get("stats") or {}).get("confidence", 0.7) or 0.7)
+    return await OntologySuggestionService.create_suggestion(
+        db, kb_id=req.kb_id, file_id=req.file_id,
+        suggestion_data=suggestion_data, source_mode="auto_cluster", score=score,
+    )
+
+
+@router.get("/ontology-suggestions/{suggestion_id}")
+async def get_suggestion(suggestion_id: str, db: AsyncSession = Depends(get_db)):
+    res = await OntologySuggestionService.get_suggestion(db, suggestion_id)
+    if not res:
+        raise _nf("Suggestion not found")
+    return res
+
+
+@router.put("/ontology-suggestions/{suggestion_id}")
+async def update_suggestion(suggestion_id: str, req: UpdateOntologySuggestionRequest, db: AsyncSession = Depends(get_db)):
+    data_dict = req.suggestion_data.model_dump() if req.suggestion_data else None
+    res = await OntologySuggestionService.update_suggestion(
+        db, suggestion_id,
+        suggestion_data=data_dict,
+        status=req.status, review_notes=req.review_notes, score=req.score,
+    )
+    if not res:
+        raise _nf("Suggestion not found")
+    return res
+
+
+@router.post("/ontology-suggestions/{suggestion_id}/approve")
+async def approve_suggestion(suggestion_id: str, req: ApproveSuggestionRequest | None = None, db: AsyncSession = Depends(get_db)):
+    try:
+        return await OntologySuggestionService.approve_suggestion(
+            db, suggestion_id, reviewer=req.reviewer if req else None,
+        )
+    except ValueError as e:
+        raise _bad_request(str(e))
+
+
+@router.post("/ontology-suggestions/{suggestion_id}/reject")
+async def reject_suggestion(suggestion_id: str, req: ApproveSuggestionRequest | None = None, db: AsyncSession = Depends(get_db)):
+    res = await OntologySuggestionService.reject_suggestion(
+        db, suggestion_id, reviewer=req.reviewer if req else None,
+        review_notes=req.reviewer if req else "",
+    )
+    if not res:
+        raise _nf("Suggestion not found")
+    return res
+
+
+@router.delete("/ontology-suggestions/{suggestion_id}")
+async def delete_suggestion(suggestion_id: str, db: AsyncSession = Depends(get_db)):
+    if not await OntologySuggestionService.delete_suggestion(db, suggestion_id):
+        raise _nf("Suggestion not found")
+    return {"status": "deleted"}

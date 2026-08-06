@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import uuid
 
-from sqlalchemy import Column, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 
@@ -185,6 +185,24 @@ class KbOntologyBinding(Base):
     kb_id = Column(String, nullable=False)
     category_id = Column(String, nullable=False)
     created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+# ===== 本体建议（动态生成 + 审核）=====
+
+class OntologySuggestion(Base):
+    __tablename__ = "ontology_suggestions"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    kb_id = Column(String, nullable=False)
+    file_id = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="generating")  # generating | ready | approved | rejected
+    source_mode = Column(String, nullable=False, default="free_extraction")  # free_extraction | auto_cluster | manual
+    suggestion_data = Column(Text, nullable=False, default="{}")  # JSON blob: category/ontologies/relations/constraints/stats
+    score = Column(Float, default=0.0)
+    review_notes = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    reviewed_at = Column(String, nullable=True)
+    reviewer = Column(String, nullable=True)
 
 
 # ===== 属性模板（全局，跨本体类别复用）=====

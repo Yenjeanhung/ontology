@@ -10,6 +10,7 @@ import AttributeTemplateList from '../components/ontology/AttributeTemplateList.
 import OntologyManagePage from '../components/ontology/OntologyManagePage.vue'
 import RelationDictPage from '../components/ontology/RelationDictPage.vue'
 import ConstraintPage from '../components/ontology/ConstraintPage.vue'
+import SuggestionListPage from '../components/ontology/SuggestionListPage.vue'
 import EntityListPage from '../components/entity/EntityListPage.vue'
 import EntityDetailPage from '../components/entity/EntityDetailPage.vue'
 import RelationListPage from '../components/entity/RelationListPage.vue'
@@ -21,6 +22,7 @@ const routes = [
   { path: '/ontology/ontologies', name: 'ontology-ontologies', component: OntologyManagePage, meta: { keepAlive: true } },
   { path: '/ontology/relations-dict', name: 'ontology-relations-dict', component: RelationDictPage, meta: { keepAlive: true } },
   { path: '/ontology/constraints', name: 'ontology-constraints', component: ConstraintPage, meta: { keepAlive: true } },
+  { path: '/ontology/suggestions', name: 'ontology-suggestions', component: SuggestionListPage, meta: { keepAlive: true } },
   // 实体管理
   { path: '/entities', name: 'entities', component: EntityListPage, meta: { keepAlive: true } },
   { path: '/entities/:entityId', name: 'entity-detail', component: EntityDetailPage, props: true },

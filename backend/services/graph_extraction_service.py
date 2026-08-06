@@ -13,6 +13,49 @@ from config import settings
 from providers.graph_store import ChunkGraphData, GraphEntity, GraphRelation
 from providers.llm import create_llm
 
+ONTOLOGY_SUGGESTION_PROMPT = """你是一个知识建模专家。以下是从文档中抽取的实体类型与关系类型统计：
+
+【实体类型统计】
+{entity_type_stats}
+
+【关系类型统计】
+{relation_type_stats}
+
+【关系元组样本】
+{relation_samples}
+
+请基于以上信息，归纳出最合适的本体类别结构，输出严格的 JSON 格式，不要输出任何额外文字，必须用 ```json ... ``` 包裹。
+结构模板：
+```json
+{{
+  "category": {{"name": "类别名称，如：华为事件分析", "description": "一句话描述该类别的适用场景"}},
+  "ontologies": [
+    {{"name": "人物", "description": "", "attributes": [
+      {{"name": "姓名", "code": "name", "data_type": "string", "is_required": true}},
+      {{"name": "年龄", "code": "age", "data_type": "number", "is_required": false}}
+    ]}},
+    {{"name": "组织", "description": "", "attributes": []}}
+  ],
+  "relations": [
+    {{"name": "任职于", "code": "works_at", "description": ""}},
+    {{"name": "导致", "code": "causes", "description": "因果关系"}}
+  ],
+  "constraints": [
+    {{"source": "人物", "relation": "任职于", "target": "组织"}},
+    {{"source": "事件", "relation": "导致", "target": "事件"}}
+  ],
+  "stats": {{"confidence": 0.85}}
+}}
+```
+要求：
+1. 类别名称简洁，能覆盖文档主要领域
+2. 每个出现频次 >=2 的实体类型建议为独立本体
+3. 只给那些抽取中出现 >= 2 次的属性建议保留，频次 1 的属性可不加
+4. code 字段建议用下划线英文，必须在本体/关系内唯一
+5. data_type 只能是 string/text/number/boolean/date/datetime 六种之一
+6. constraints 只保留语义成立的三元组（人物-担任->公司 成立，但人物-发表->日期 不成立）
+"""
+
 logger = logging.getLogger(__name__)
 
 # ===== 自由抽取模式（无本体约束，向后兼容）=====
@@ -362,6 +405,248 @@ class GraphExtractionService:
         if log_callback:
             await log_callback("大模型实体与关系抽取阶段完成")
         return chunks
+
+    @staticmethod
+    async def generate_ontology_suggestion(
+        file_name: str,
+        chunks: list[ChunkGraphData],
+        kb_name: str = "",
+    ) -> dict | None:
+        """基于自由抽取的结果，用 LLM 归纳生成候选本体类别。
+
+        返回 suggestion_data 字典，或 None （无实体/关系时）。
+        """
+        # --- 统计实体类型 ---
+        entity_type_map: dict[str, dict] = {}
+        rel_type_map: dict[str, int] = {}
+        rel_samples: list[tuple[str, str, str]] = []
+        seen_samples: set = set()
+        valid_data_types = {"string", "text", "number", "boolean", "date", "datetime"}
+
+        for c in chunks:
+            for e in (c.entities or []):
+                et = (e.entity_type or "").strip() or "未知"
+                info = entity_type_map.setdefault(et, {"count": 0, "samples": set(), "attrs": {}})
+                info["count"] += 1
+                if len(info["samples"]) < 5:
+                    info["samples"].add(e.name or "")
+                # 收集属性键
+                try:
+                    props = json.loads(e.properties or "{}") if isinstance(e.properties, str) else (e.properties or {})
+                    if isinstance(props, dict):
+                        for k, v in props.items():
+                            attr = info["attrs"].setdefault(k, {"count": 0, "type": "string"})
+                            attr["count"] += 1
+                            # 推断类型
+                            if attr["count"] <= 3:
+                                if isinstance(v, bool):
+                                    attr["type"] = "boolean"
+                                elif isinstance(v, (int, float)):
+                                    attr["type"] = "number"
+                                elif isinstance(v, str) and len(v) > 200:
+                                    attr["type"] = "text"
+                except Exception:
+                    pass
+
+            for r in (c.relations or []):
+                rt = (r.relation_type or "").strip() or "未知"
+                rel_type_map[rt] = rel_type_map.get(rt, 0) + 1
+                sample_key = (r.source_type, rt, r.target_type)
+                if sample_key not in seen_samples:
+                    seen_samples.add(sample_key)
+                    rel_samples.append(sample_key)
+
+        if not entity_type_map:
+            return None
+
+        # --- 构造提示文本 ---
+        et_lines = []
+        for et, info in sorted(entity_type_map.items(), key=lambda x: -x[1]["count"]):
+            samples = ", ".join([s for s in info["samples"] if s][:3])
+            attrs = ", ".join([
+                f"{k}(x{v['count']},{v['type']})"
+                for k, v in sorted(info["attrs"].items(), key=lambda x: -x[1]["count"])
+            ])
+            et_lines.append(f"- {et}: x{info['count']} 样本=[{samples}] 属性=[{attrs}]")
+        entity_type_stats = "\n".join(et_lines)
+
+        rt_lines = []
+        for rt, cnt in sorted(rel_type_map.items(), key=lambda x: -x[1]):
+            rt_lines.append(f"- {rt}: x{cnt}")
+        relation_type_stats = "\n".join(rt_lines) or "（无）"
+
+        rs_lines = []
+        for s, rt, t in rel_samples[:30]:
+            rs_lines.append(f"- ({s}) ─{rt}→ ({t})")
+        relation_samples = "\n".join(rs_lines) or "（无）"
+
+        # --- 调用 LLM ---
+        llm = create_llm()
+        prompt = ONTOLOGY_SUGGESTION_PROMPT.format(
+            entity_type_stats=entity_type_stats,
+            relation_type_stats=relation_type_stats,
+            relation_samples=relation_samples,
+        )
+        try:
+            resp = await llm.ainvoke([
+                SystemMessage(content="你是一个严谨的知识建模专家，严格按 JSON 输出。"),
+                HumanMessage(content=prompt),
+            ])
+        except Exception as e:
+            logger.exception("LLM ontology suggestion failed: %s", e)
+            # LLM 失败时退化为启发式建议
+            return GraphExtractionService._heuristic_suggestion(
+                entity_type_map, rel_type_map, rel_samples, file_name, kb_name,
+            )
+
+        text = (resp.content if hasattr(resp, "content") else str(resp)) or ""
+        # 提取 JSON
+        m = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", text)
+        if m:
+            json_text = m.group(1)
+        else:
+            m2 = re.search(r"(\{[\s\S]*\})", text)
+            json_text = m2.group(1) if m2 else ""
+        try:
+            data = json.loads(json_text)
+        except Exception as e:
+            logger.exception("Parse ontology suggestion JSON failed: %s", e)
+            return GraphExtractionService._heuristic_suggestion(
+                entity_type_map, rel_type_map, rel_samples, file_name, kb_name,
+            )
+
+        # 数据规范化 + 字段兜底
+        ontologies = []
+        for ont in (data.get("ontologies") or []):
+            oname = (ont.get("name") or "").strip()
+            if not oname:
+                continue
+            attrs = []
+            seen_codes: set = set()
+            for at in (ont.get("attributes") or []):
+                an = (at.get("name") or "").strip()
+                if not an:
+                    continue
+                code = (at.get("code") or "").strip() or None
+                if code and code in seen_codes:
+                    code = None
+                if code:
+                    seen_codes.add(code)
+                dt = (at.get("data_type") or "string").strip().lower()
+                if dt not in valid_data_types:
+                    dt = "string"
+                attrs.append({
+                    "name": an, "code": code, "data_type": dt,
+                    "is_required": bool(at.get("is_required", False)),
+                })
+            ontologies.append({
+                "name": oname, "description": (ont.get("description") or "").strip(),
+                "attributes": attrs,
+            })
+
+        relations = []
+        seen_rcodes: set = set()
+        for rel in (data.get("relations") or []):
+            rn = (rel.get("name") or "").strip()
+            if not rn:
+                continue
+            rcode = (rel.get("code") or "").strip() or None
+            if rcode and rcode in seen_rcodes:
+                rcode = None
+            if rcode:
+                seen_rcodes.add(rcode)
+            relations.append({
+                "name": rn, "code": rcode, "description": (rel.get("description") or "").strip(),
+            })
+
+        constraints = []
+        for c in (data.get("constraints") or []):
+            s = (c.get("source") or "").strip()
+            r = (c.get("relation") or "").strip()
+            t = (c.get("target") or "").strip()
+            if s and r and t:
+                constraints.append({"source": s, "relation": r, "target": t})
+
+        cat = data.get("category") or {}
+        stats = data.get("stats") or {}
+
+        total_entities = sum(v["count"] for v in entity_type_map.values())
+        total_relations = sum(rel_type_map.values())
+        stats.setdefault("total_entities", total_entities)
+        stats.setdefault("total_relations", total_relations)
+        stats.setdefault("coverage_ratio", 1.0)
+        stats.setdefault("confidence", float(stats.get("confidence") or 0.7))
+
+        return {
+            "category": {
+                "name": (cat.get("name") or kb_name or file_name or "自动生成的类别").strip(),
+                "description": (cat.get("description") or "").strip(),
+                "type": "auto_generated",
+            },
+            "ontologies": ontologies,
+            "relations": relations,
+            "constraints": constraints,
+            "stats": stats,
+        }
+
+    @staticmethod
+    def _heuristic_suggestion(entity_type_map: dict, rel_type_map: dict,
+                               rel_samples: list, file_name: str, kb_name: str) -> dict:
+        """LLM 失败后的启发式建议（兜底）"""
+        valid_data_types = {"string", "text", "number", "boolean", "date", "datetime"}
+        ontologies = []
+        for et, info in sorted(entity_type_map.items(), key=lambda x: -x[1]["count"])[:15]:
+            if info["count"] < 1:
+                continue
+            attrs = []
+            seen_codes: set = set()
+            for k, v in sorted(info["attrs"].items(), key=lambda x: -x[1]["count"]):
+                if v["count"] < 1:
+                    continue
+                code = k.lower()
+                if code in seen_codes:
+                    code = None
+                if code:
+                    seen_codes.add(code)
+                dt = (v.get("type") or "string").strip().lower()
+                if dt not in valid_data_types:
+                    dt = "string"
+                attrs.append({"name": k, "code": code, "data_type": dt, "is_required": False})
+            ontologies.append({"name": et, "description": "", "attributes": attrs})
+
+        relations = []
+        seen_rcodes: set = set()
+        for rt, cnt in sorted(rel_type_map.items(), key=lambda x: -x[1]):
+            rcode = rt.lower().replace(" ", "_")
+            if rcode in seen_rcodes:
+                rcode = None
+            if rcode:
+                seen_rcodes.add(rcode)
+            relations.append({"name": rt, "code": rcode, "description": ""})
+
+        constraints = []
+        for s, rt, t in rel_samples[:30]:
+            constraints.append({"source": s, "relation": rt, "target": t})
+
+        total_entities = sum(v["count"] for v in entity_type_map.values())
+        total_relations = sum(rel_type_map.values())
+
+        return {
+            "category": {
+                "name": (kb_name or file_name or "自动生成的类别").strip(),
+                "description": "基于抽取结果自动建议的本体类别",
+                "type": "auto_generated",
+            },
+            "ontologies": ontologies,
+            "relations": relations,
+            "constraints": constraints,
+            "stats": {
+                "total_entities": total_entities,
+                "total_relations": total_relations,
+                "coverage_ratio": 1.0,
+                "confidence": 0.6,
+            },
+        }
 
     @staticmethod
     def _render_chunks(chunks: list[ChunkGraphData]) -> str:
