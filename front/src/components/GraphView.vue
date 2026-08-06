@@ -163,18 +163,32 @@ const nodeMap = computed(() => {
 const edgeRenderList = computed(() => {
   const map = nodeMap.value
   return edges.value.map(edge => {
-    const sx = map[edge.source]?.x || 0
-    const sy = map[edge.source]?.y || 0
-    const tx = map[edge.target]?.x || 0
-    const ty = map[edge.target]?.y || 0
-    const mx = (sx + tx) / 2
-    const my = (sy + ty) / 2
+    const sn = map[edge.source]
+    const tn = map[edge.target]
+    if (!sn || !tn) return { ...edge, sx: 0, sy: 0, tx: 0, ty: 0, mx: 0, my: 0, cx: 0, cy: 0 }
+    const sx = sn.x
+    const sy = sn.y
+    const tx = tn.x
+    const ty = tn.y
     const dx = tx - sx
     const dy = ty - sy
     const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1)
-    const cx = mx - (dy / dist) * dist * 0.15
-    const cy = my + (dx / dist) * dist * 0.15
-    return { ...edge, sx, sy, tx, ty, mx, my, cx, cy }
+
+    const sr = getNodeRadius(sn) + 2
+    const tr = getNodeRadius(tn) + 2
+    const ux = dx / dist
+    const uy = dy / dist
+
+    const sxo = sx + ux * sr
+    const syo = sy + uy * sr
+    const txo = tx - ux * tr
+    const tyo = ty - uy * tr
+
+    const mx = (sxo + txo) / 2
+    const my = (syo + tyo) / 2
+    const cx = mx - (uy) * dist * 0.15
+    const cy = my + (ux) * dist * 0.15
+    return { ...edge, sx: sxo, sy: syo, tx: txo, ty: tyo, mx, my, cx, cy }
   })
 })
 
@@ -682,8 +696,9 @@ onUnmounted(() => stopSimulation())
                   <feGaussianBlur stdDeviation="5" result="blur" />
                   <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
                 </filter>
-                <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
-                  <polygon points="0 0, 10 4, 0 8" fill="rgba(255,255,255,0.45)" />
+                <marker id="arrowhead" markerWidth="12" markerHeight="10" refX="10" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+                  <polygon points="0 0, 12 5, 0 10" fill="rgba(200,215,230,0.85)" />
+                  <polygon points="2 5, 10 5" fill="none" stroke="rgba(60,80,110,0.6)" stroke-width="1" />
                 </marker>
               </defs>
 
@@ -1019,13 +1034,13 @@ onUnmounted(() => stopSimulation())
 .zoom-btn:nth-child(2) { width: auto; min-width: 44px; font-size: 10px; }
 
 .graph-edge {
-  stroke: rgba(255,255,255,0.22);
-  stroke-width: 1.4;
+  stroke: rgba(255,255,255,0.30);
+  stroke-width: 1.6;
   transition: stroke 250ms, stroke-width 250ms;
 }
 .graph-edge.edge-highlight {
-  stroke: rgba(255,255,255,0.55);
-  stroke-width: 2.4;
+  stroke: rgba(255,255,255,0.65);
+  stroke-width: 2.8;
 }
 
 .edge-label {

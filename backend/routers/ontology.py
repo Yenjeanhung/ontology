@@ -183,12 +183,18 @@ async def batch_create_relations(category_id: str, req: BatchCreateRelationsRequ
 
 @router.post("/ontology-categories/{category_id}/relations")
 async def create_relation(category_id: str, req: CreateOntologyRelationRequest, db: AsyncSession = Depends(get_db)):
-    return await OntologyService.create_relation(db, category_id, req.name, req.description or "")
+    try:
+        return await OntologyService.create_relation(db, category_id, req.name, req.code, req.description or "")
+    except ValueError as e:
+        raise _bad_request(str(e))
 
 
 @router.put("/ontology-categories/{category_id}/relations/{relation_id}")
 async def update_relation(category_id: str, relation_id: str, req: UpdateOntologyRelationRequest, db: AsyncSession = Depends(get_db)):
-    res = await OntologyService.update_relation(db, relation_id, req.name, req.description)
+    try:
+        res = await OntologyService.update_relation(db, relation_id, req.name, req.code, req.description)
+    except ValueError as e:
+        raise _bad_request(str(e))
     if not res:
         raise _nf("Relation not found")
     return res

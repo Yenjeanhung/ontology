@@ -17,3 +17,6 @@ ALTER TABLE files ADD COLUMN logs TEXT DEFAULT NULL;
 -- migration_004: 添加属性编码字段
 ALTER TABLE ontology_attributes ADD COLUMN code VARCHAR(50) DEFAULT NULL;
 ALTER TABLE ontology_template_attributes ADD COLUMN code VARCHAR(50) DEFAULT NULL;
+
+-- migration_005: 添加关系编码字段
+ALTER TABLE ontology_relations ADD COLUMN code VARCHAR(50) DEFAULT NULL;

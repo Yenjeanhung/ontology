@@ -444,32 +444,55 @@ class OntologyService:
             .order_by(OntologyRelation.created_at)
         )
         return [
-            {"id": r.id, "category_id": r.category_id, "name": r.name,
+            {"id": r.id, "category_id": r.category_id, "name": r.name, "code": r.code,
              "description": r.description or "", "created_at": r.created_at}
             for r in result.scalars().all()
         ]
 
     @staticmethod
-    async def create_relation(db: AsyncSession, category_id: str, name: str, description: str = "") -> dict:
-        rel = OntologyRelation(category_id=category_id, name=name.strip(), description=(description or "").strip())
+    async def create_relation(db: AsyncSession, category_id: str, name: str, code: str | None = None, description: str = "") -> dict:
+        code = (code or "").strip() or None
+        if code:
+            existing = await db.execute(
+                select(OntologyRelation.id).where(
+                    OntologyRelation.category_id == category_id,
+                    OntologyRelation.code == code,
+                )
+            )
+            if existing.scalar_one_or_none():
+                raise ValueError(f'编码 "{code}" 在该类别中已存在')
+        rel = OntologyRelation(category_id=category_id, name=name.strip(), code=code, description=(description or "").strip())
         db.add(rel)
         await db.commit()
         await db.refresh(rel)
-        return {"id": rel.id, "name": rel.name, "description": rel.description}
+        return {"id": rel.id, "name": rel.name, "code": rel.code, "description": rel.description}
 
     @staticmethod
-    async def update_relation(db: AsyncSession, relation_id: str, name: str | None, description: str | None) -> dict | None:
+    async def update_relation(db: AsyncSession, relation_id: str, name: str | None, code: str | None, description: str | None) -> dict | None:
         result = await db.execute(select(OntologyRelation).where(OntologyRelation.id == relation_id))
         rel = result.scalar_one_or_none()
         if not rel:
             return None
         if name is not None:
             rel.name = name.strip()
+        if code is not None:
+            new_code = code.strip() or None
+            if new_code and new_code != (rel.code or "").strip():
+                dup = await db.execute(
+                    select(OntologyRelation.id).where(
+                        OntologyRelation.category_id == rel.category_id,
+                        OntologyRelation.code == new_code,
+                        OntologyRelation.id != relation_id,
+                    )
+                )
+                if dup.scalar_one_or_none():
+                    raise ValueError(f'编码 "{new_code}" 在该类别中已存在')
+            rel.code = new_code
         if description is not None:
             rel.description = description.strip()
         rel.updated_at = datetime.now().isoformat()
         await db.commit()
-        return {"id": rel.id, "name": rel.name, "description": rel.description}
+        return {"id": rel.id, "name": rel.name, "code": rel.code, "description": rel.description}
 
     @staticmethod
     async def delete_relation(db: AsyncSession, relation_id: str) -> bool:
@@ -488,12 +511,26 @@ class OntologyService:
     @staticmethod
     async def batch_create_relations(db: AsyncSession, category_id: str, items: list) -> list[dict]:
         out = []
+        seen_codes: set[str] = set()
         for item in items:
+            code = (getattr(item, 'code', None) or '').strip() or None
+            if code:
+                if code in seen_codes:
+                    raise ValueError(f'编码 "{code}" 重复')
+                existing = await db.execute(
+                    select(OntologyRelation.id).where(
+                        OntologyRelation.category_id == category_id,
+                        OntologyRelation.code == code,
+                    )
+                )
+                if existing.scalar_one_or_none():
+                    raise ValueError(f'编码 "{code}" 在该类别中已存在')
+                seen_codes.add(code)
             rel = OntologyRelation(category_id=category_id, name=item.name.strip(),
-                                   description=(item.description or "").strip())
+                                   code=code, description=(getattr(item, 'description', '') or '').strip())
             db.add(rel)
             await db.flush()
-            out.append({"id": rel.id, "name": rel.name})
+            out.append({"id": rel.id, "name": rel.name, "code": rel.code})
         await db.commit()
         return out
 
@@ -951,6 +988,7 @@ class OntologyService:
         relations = await OntologyService.list_relations(db, category_id)
         relation_names = [r["name"] for r in relations]
         relation_id_by_name = {r["name"]: r["id"] for r in relations}
+        relation_code_by_name = {r["name"]: (r.get("code") or "") for r in relations}
 
         constraints_raw = await OntologyService.list_constraints(db, category_id)
         constraints = []
@@ -972,6 +1010,7 @@ class OntologyService:
             "ontology_by_name": ontology_by_name,
             "relation_names": relation_names,
             "relation_id_by_name": relation_id_by_name,
+            "relation_code_by_name": relation_code_by_name,
             "constraints": constraints,
             "constraint_set": constraint_set,
         }

@@ -160,6 +160,7 @@ class OntologyRelation(Base):
     id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
     category_id = Column(String, nullable=False)
     name = Column(String, nullable=False)
+    code = Column(String, nullable=True)
     description = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())

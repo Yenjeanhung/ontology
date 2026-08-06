@@ -10,16 +10,19 @@ const emit = defineEmits(['changed'])
 
 const adding = ref(false)
 const newName = ref('')
+const newCode = ref('')
 const newDesc = ref('')
 const savingNew = ref(false)
 
 const editingId = ref('')
 const editName = ref('')
+const editCode = ref('')
 const editDesc = ref('')
 const savingId = ref('')
 
 function startAdd() {
   newName.value = ''
+  newCode.value = ''
   newDesc.value = ''
   adding.value = true
 }
@@ -28,7 +31,7 @@ async function submitAdd() {
   if (!newName.value.trim()) return
   savingNew.value = true
   try {
-    await createRelation(props.categoryId, { name: newName.value.trim(), description: newDesc.value.trim() })
+    await createRelation(props.categoryId, { name: newName.value.trim(), code: newCode.value.trim(), description: newDesc.value.trim() })
     adding.value = false
     emit('changed')
   } catch (e) {
@@ -41,6 +44,7 @@ async function submitAdd() {
 function startEdit(rel) {
   editingId.value = rel.id
   editName.value = rel.name
+  editCode.value = rel.code || ''
   editDesc.value = rel.description || ''
 }
 
@@ -52,7 +56,7 @@ async function submitEdit(rel) {
   if (!editName.value.trim()) return
   savingId.value = rel.id
   try {
-    await updateRelation(props.categoryId, rel.id, { name: editName.value.trim(), description: editDesc.value.trim() })
+    await updateRelation(props.categoryId, rel.id, { name: editName.value.trim(), code: editCode.value.trim(), description: editDesc.value.trim() })
     editingId.value = ''
     emit('changed')
   } catch (e) {
@@ -90,6 +94,7 @@ async function remove(rel) {
     <div v-if="adding" class="rde-row editing">
       <div class="rde-form">
         <input type="text" v-model="newName" placeholder="关系名称，如：任职于" class="rde-name-input" @keydown.enter="submitAdd">
+        <input type="text" v-model="newCode" placeholder="编码（该类别内唯一）" class="rde-code-input">
         <input type="text" v-model="newDesc" placeholder="描述（可选）" class="rde-desc-input">
       </div>
       <div class="rde-row-actions">
@@ -106,6 +111,7 @@ async function remove(rel) {
         <template v-if="editingId === rel.id">
           <div class="rde-form">
             <input type="text" v-model="editName" class="rde-name-input" @keydown.enter="submitEdit(rel)">
+            <input type="text" v-model="editCode" placeholder="编码（该类别内唯一）" class="rde-code-input">
             <input type="text" v-model="editDesc" placeholder="描述（可选）" class="rde-desc-input">
           </div>
           <div class="rde-row-actions">
@@ -118,6 +124,7 @@ async function remove(rel) {
         <template v-else>
           <div class="rde-row-body">
             <span class="rde-name">{{ rel.name }}</span>
+            <span class="rde-code-tag" v-if="rel.code">{{ rel.code }}</span>
             <span class="rde-desc" v-if="rel.description">{{ rel.description }}</span>
           </div>
           <div class="rde-row-actions">
@@ -152,7 +159,8 @@ async function remove(rel) {
 }
 .rde-row.editing { border-color: var(--c-fg); border-style: dashed; }
 .rde-form { flex: 1; display: flex; gap: 10px; min-width: 0; }
-.rde-name-input { flex: 0 0 200px; }
+.rde-name-input { flex: 0 0 180px; }
+.rde-code-input { flex: 0 0 180px; }
 .rde-desc-input { flex: 1; min-width: 0; }
 .rde-form input {
   width: 100%; padding: 6px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm);
@@ -162,6 +170,11 @@ async function remove(rel) {
 
 .rde-row-body { flex: 1; display: flex; align-items: center; gap: 12px; min-width: 0; }
 .rde-name { font-size: 14px; font-weight: 600; color: var(--c-fg); flex-shrink: 0; }
+.rde-code-tag {
+  font-size: 11px; padding: 2px 7px; border-radius: 10px;
+  background: rgba(99, 140, 220, 0.15); color: #8bb5f5;
+  font-family: var(--font-mono, monospace); flex-shrink: 0;
+}
 .rde-desc { font-size: 12px; color: var(--c-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .rde-row-actions { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .icon-btn.sm {

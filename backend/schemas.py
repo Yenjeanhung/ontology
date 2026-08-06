@@ -106,11 +106,13 @@ class BatchSaveAttributesRequest(BaseModel):
 
 class CreateOntologyRelationRequest(BaseModel):
     name: str
+    code: str | None = None
     description: str | None = ""
 
 
 class UpdateOntologyRelationRequest(BaseModel):
     name: str | None = None
+    code: str | None = None
     description: str | None = None
 
 

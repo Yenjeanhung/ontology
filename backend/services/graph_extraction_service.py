@@ -623,9 +623,14 @@ class GraphExtractionService:
         lines.append("")
         lines.append("允许的关系（仅以下三元组成立，不得越界）：")
         if constraints:
+            rel_code_map = ontology_constraint.get("relation_code_by_name", {})
             for c in constraints:
+                rel_code = rel_code_map.get(c['relation'], '')
+                rel_display = f"{c['relation']}"
+                if rel_code:
+                    rel_display += f"（编码:{rel_code}）"
                 lines.append(
-                    f"  - ({c['source']}) ─{c['relation']}→ ({c['target']})"
+                    f"  - ({c['source']}) ─{rel_display}→ ({c['target']})"
                 )
         else:
             lines.append("  （无三元组约束，不允许抽取任何关系）")

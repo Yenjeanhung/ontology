@@ -233,13 +233,14 @@ class KuzuGraphAdapter(GraphStoreAdapter):
                 # Kuzu raises if the table already exists.
                 pass
         # 在已有表上补充实例层字段（首次升级到含实体管理菜单的版本时执行）
-        # ALTER TABLE 不支持 IF NOT EXISTS，重复执行会抛错，忽略即可
+        # 注意：Kùzu 的 ALTER TABLE 语法是 ADD（不是 ADD COLUMN），与 SQL 标准不同
+        # 重复执行会抛错（列已存在），忽略即可
         for alter in (
-            "ALTER TABLE Entity ADD COLUMN ontology_id STRING DEFAULT ''",
-            "ALTER TABLE Entity ADD COLUMN properties STRING DEFAULT ''",
-            "ALTER TABLE Relation ADD COLUMN relation_def_id STRING DEFAULT ''",
-            "ALTER TABLE Relation ADD COLUMN source_entity_id STRING DEFAULT ''",
-            "ALTER TABLE Relation ADD COLUMN target_entity_id STRING DEFAULT ''",
+            "ALTER TABLE Entity ADD ontology_id STRING DEFAULT ''",
+            "ALTER TABLE Entity ADD properties STRING DEFAULT ''",
+            "ALTER TABLE Relation ADD relation_def_id STRING DEFAULT ''",
+            "ALTER TABLE Relation ADD source_entity_id STRING DEFAULT ''",
+            "ALTER TABLE Relation ADD target_entity_id STRING DEFAULT ''",
         ):
             try:
                 self._execute(alter)
