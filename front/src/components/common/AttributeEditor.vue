@@ -32,7 +32,6 @@ const DATA_TYPES = [
   { value: 'boolean', label: '布尔 (boolean)' },
   { value: 'date', label: '日期 (date)' },
   { value: 'datetime', label: '日期时间 (datetime)' },
-  { value: 'enum', label: '枚举 (enum)' },
 ]
 
 // 工作副本
@@ -45,11 +44,11 @@ function syncFromProps() {
   list.value = (props.attributes || []).map(a => ({
     id: a.id || null,
     name: a.name || '',
+    code: a.code || '',
     data_type: a.data_type || 'string',
     description: a.description || '',
     is_required: !!a.is_required,
     default_value: a.default_value || '',
-    enum_values: Array.isArray(a.enum_values) ? [...a.enum_values] : (a.enum_values ? [String(a.enum_values)] : []),
     sort_order: a.sort_order || 0,
     _dirty: false,
     _isNew: false,
@@ -60,21 +59,6 @@ function syncFromProps() {
 watch(() => props.attributes, syncFromProps, { immediate: true, deep: false })
 
 const dirty = computed(() => list.value.some(a => a._dirty || a._isNew))
-
-const enumInput = ref({}) // { attrIdx: 'comma,separated' }
-
-function getEnumInput(idx) {
-  if (enumInput.value[idx] === undefined) {
-    enumInput.value[idx] = (list.value[idx].enum_values || []).join(', ')
-  }
-  return enumInput.value[idx]
-}
-
-function setEnumInput(idx, val) {
-  enumInput.value[idx] = val
-  list.value[idx].enum_values = val.split(',').map(s => s.trim()).filter(Boolean)
-  markDirty(idx)
-}
 
 function markDirty(idx) {
   list.value[idx]._dirty = true
@@ -97,11 +81,11 @@ function addAttribute() {
   const newAttr = {
     id: null,
     name: '',
+    code: '',
     data_type: 'string',
     description: '',
     is_required: false,
     default_value: '',
-    enum_values: [],
     sort_order: list.value.length,
     _dirty: true,
     _isNew: true,
@@ -141,17 +125,24 @@ async function saveAll() {
       return
     }
   }
+  // 校验编码唯一性
+  const codes = list.value.map(a => a.code?.trim()).filter(Boolean)
+  const dupes = codes.filter((c, i) => codes.indexOf(c) !== i)
+  if (dupes.length) {
+    saveError.value = `编码重复：${[...new Set(dupes)].join('、')}`
+    return
+  }
   saveError.value = ''
   saving.value = true
   try {
     const payload = {
       attributes: list.value.map((a, i) => ({
         name: a.name.trim(),
+        code: a.code?.trim() || null,
         data_type: a.data_type,
         description: a.description.trim(),
         is_required: a.is_required,
         default_value: a.default_value || null,
-        enum_values: a.data_type === 'enum' ? a.enum_values : null,
         sort_order: i,
       })),
     }
@@ -211,6 +202,7 @@ function typeLabel(t) {
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
           </span>
+          <span v-if="attr.code" class="ae-code-tag">{{ attr.code }}</span>
           <span class="ae-name" :class="{ placeholder: !attr.name }">{{ attr.name || '未命名属性' }}</span>
           <span class="ae-type-tag">{{ typeLabel(attr.data_type) }}</span>
           <span v-if="attr.is_required" class="ae-req-tag">必填</span>
@@ -227,14 +219,24 @@ function typeLabel(t) {
         <div v-if="isExpanded(idx)" class="ae-card-body">
           <div class="ae-field-row">
             <div class="ae-field">
+              <label>属性编码</label>
+              <input type="text" v-model="attr.code" @input="markDirty(idx)" placeholder="如：found_date（本体内唯一）">
+            </div>
+            <div class="ae-field">
               <label>属性名称</label>
               <input type="text" v-model="attr.name" @input="markDirty(idx)" placeholder="如：成立时间">
             </div>
+          </div>
+          <div class="ae-field-row">
             <div class="ae-field">
               <label>数据类型</label>
               <select v-model="attr.data_type" @change="markDirty(idx)">
                 <option v-for="d in DATA_TYPES" :key="d.value" :value="d.value">{{ d.label }}</option>
               </select>
+            </div>
+            <div class="ae-field">
+              <label>默认值</label>
+              <input type="text" v-model="attr.default_value" @input="markDirty(idx)" placeholder="（可选）">
             </div>
           </div>
           <div class="ae-field">
@@ -242,11 +244,7 @@ function typeLabel(t) {
             <input type="text" v-model="attr.description" @input="markDirty(idx)" placeholder="该属性的含义说明">
           </div>
           <div class="ae-field-row">
-            <div class="ae-field">
-              <label>默认值</label>
-              <input type="text" v-model="attr.default_value" @input="markDirty(idx)" placeholder="（可选）">
-            </div>
-            <div class="ae-field ae-field-check">
+            <div class="ae-field-check">
               <label>是否必填</label>
               <label class="switch">
                 <input type="checkbox" v-model="attr.is_required" @change="markDirty(idx)">
@@ -254,15 +252,6 @@ function typeLabel(t) {
                 <span class="switch-label">{{ attr.is_required ? '必填' : '可选' }}</span>
               </label>
             </div>
-          </div>
-          <div v-if="attr.data_type === 'enum'" class="ae-field">
-            <label>枚举值（逗号分隔）</label>
-            <input
-              type="text"
-              :value="getEnumInput(idx)"
-              @input="setEnumInput(idx, $event.target.value)"
-              placeholder="如：活跃, 停业, 注销"
-            >
           </div>
         </div>
       </div>
@@ -300,9 +289,14 @@ function typeLabel(t) {
 .drag-btn:hover { color: var(--c-fg); }
 .ae-name { font-size: 13px; font-weight: 600; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
 .ae-name.placeholder { color: var(--c-secondary); font-weight: 500; font-style: italic; }
-.ae-type-tag, .ae-req-tag {
+.ae-type-tag, .ae-req-tag, .ae-code-tag {
   font-size: 11px; padding: 1px 7px; border-radius: 10px;
   background: var(--c-muted); color: var(--c-secondary); flex-shrink: 0;
+}
+.ae-code-tag {
+  font-family: ui-monospace, Consolas, monospace;
+  background: rgba(14, 116, 144, 0.12);
+  color: var(--c-accent);
 }
 .ae-req-tag { background: rgba(220, 38, 38, 0.1); color: var(--c-danger); }
 .ae-dirty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c-accent); flex-shrink: 0; }

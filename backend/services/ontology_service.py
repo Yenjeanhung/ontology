@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime
 
 from sqlalchemy import delete, select
@@ -21,30 +20,15 @@ from models import (
 
 # ---------- 辅助序列化 ----------
 
-def _prepare_enum_values(enum_values) -> str | None:
-    if enum_values is None:
-        return None
-    return json.dumps(list(enum_values), ensure_ascii=False)
-
-
-def _parse_enum_values(raw) -> list[str] | None:
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return None
-
-
 def _serialize_attribute(attr, source: str = "own") -> dict:
     return {
         "id": attr.id,
         "name": attr.name,
+        "code": attr.code,
         "data_type": attr.data_type,
         "description": attr.description or "",
         "is_required": bool(attr.is_required),
         "default_value": attr.default_value,
-        "enum_values": _parse_enum_values(attr.enum_values),
         "sort_order": attr.sort_order,
         "source": source,
     }
@@ -362,10 +346,21 @@ class OntologyService:
 
     @staticmethod
     async def create_attribute(db: AsyncSession, ontology_id: str, req) -> dict:
+        # 校验编码唯一性
+        code = (req.code or "").strip() or None
+        if code:
+            existing = await db.execute(
+                select(OntologyAttribute.id).where(
+                    OntologyAttribute.ontology_id == ontology_id,
+                    OntologyAttribute.code == code,
+                )
+            )
+            if existing.scalar_one_or_none():
+                raise ValueError(f'编码 "{code}" 在该本体中已存在')
         attr = OntologyAttribute(
-            ontology_id=ontology_id, name=req.name.strip(), data_type=req.data_type,
-            description=(req.description or "").strip(), is_required=int(req.is_required),
-            default_value=req.default_value, enum_values=_prepare_enum_values(req.enum_values),
+            ontology_id=ontology_id, name=req.name.strip(), code=code,
+            data_type=req.data_type, description=(req.description or "").strip(),
+            is_required=int(req.is_required), default_value=req.default_value,
             sort_order=req.sort_order,
         )
         db.add(attr)
@@ -381,6 +376,19 @@ class OntologyService:
             return None
         if req.name is not None:
             attr.name = req.name.strip()
+        if req.code is not None:
+            code = req.code.strip() or None
+            if code and code != attr.code:
+                existing = await db.execute(
+                    select(OntologyAttribute.id).where(
+                        OntologyAttribute.ontology_id == attr.ontology_id,
+                        OntologyAttribute.code == code,
+                        OntologyAttribute.id != attr_id,
+                    )
+                )
+                if existing.scalar_one_or_none():
+                    raise ValueError(f'编码 "{code}" 在该本体中已存在')
+            attr.code = code
         if req.data_type is not None:
             attr.data_type = req.data_type
         if req.description is not None:
@@ -389,8 +397,6 @@ class OntologyService:
             attr.is_required = int(req.is_required)
         if req.default_value is not None:
             attr.default_value = req.default_value
-        if req.enum_values is not None:
-            attr.enum_values = _prepare_enum_values(req.enum_values)
         if req.sort_order is not None:
             attr.sort_order = req.sort_order
         attr.updated_at = datetime.now().isoformat()
@@ -409,14 +415,20 @@ class OntologyService:
 
     @staticmethod
     async def batch_save_attributes(db: AsyncSession, ontology_id: str, attributes: list) -> dict:
+        # 校验编码唯一性
+        codes = [(a.code or "").strip() for a in attributes if (a.code or "").strip()]
+        dupes = {c for c in codes if codes.count(c) > 1}
+        if dupes:
+            raise ValueError(f'编码重复：{", ".join(sorted(dupes))}')
         await db.execute(
             delete(OntologyAttribute).where(OntologyAttribute.ontology_id == ontology_id)
         )
         for idx, a in enumerate(attributes):
+            code = (a.code or "").strip() or None
             db.add(OntologyAttribute(
-                ontology_id=ontology_id, name=a.name.strip(), data_type=a.data_type,
-                description=(a.description or "").strip(), is_required=int(a.is_required),
-                default_value=a.default_value, enum_values=_prepare_enum_values(a.enum_values),
+                ontology_id=ontology_id, name=a.name.strip(), code=code,
+                data_type=a.data_type, description=(a.description or "").strip(),
+                is_required=int(a.is_required), default_value=a.default_value,
                 sort_order=a.sort_order if a.sort_order is not None else idx,
             ))
         await db.commit()
@@ -638,7 +650,18 @@ class OntologyService:
 
     @staticmethod
     async def create_template(db: AsyncSession, name: str, description: str = "") -> dict:
-        t = OntologyAttributeTemplate(name=name.strip(), description=(description or "").strip())
+        name = name.strip()
+        if not name:
+            raise ValueError("模板名称不能为空")
+        
+        # 检查名称是否已存在
+        existing = await db.execute(
+            select(OntologyAttributeTemplate).where(OntologyAttributeTemplate.name == name)
+        )
+        if existing.scalar_one_or_none():
+            raise ValueError(f'模板名称 "{name}" 已存在')
+        
+        t = OntologyAttributeTemplate(name=name, description=(description or "").strip())
         db.add(t)
         await db.commit()
         await db.refresh(t)
@@ -653,7 +676,18 @@ class OntologyService:
         if not t:
             return None
         if name is not None:
-            t.name = name.strip()
+            new_name = name.strip()
+            if new_name != t.name:
+                # 检查新名称是否已被其他模板使用
+                existing = await db.execute(
+                    select(OntologyAttributeTemplate).where(
+                        OntologyAttributeTemplate.name == new_name,
+                        OntologyAttributeTemplate.id != template_id
+                    )
+                )
+                if existing.scalar_one_or_none():
+                    raise ValueError(f'模板名称 "{new_name}" 已存在')
+            t.name = new_name
         if description is not None:
             t.description = description.strip()
         t.updated_at = datetime.now().isoformat()
@@ -683,10 +717,20 @@ class OntologyService:
 
     @staticmethod
     async def create_template_attribute(db: AsyncSession, template_id: str, req) -> dict:
+        code = (req.code or "").strip() or None
+        if code:
+            existing = await db.execute(
+                select(OntologyTemplateAttribute.id).where(
+                    OntologyTemplateAttribute.template_id == template_id,
+                    OntologyTemplateAttribute.code == code,
+                )
+            )
+            if existing.scalar_one_or_none():
+                raise ValueError(f'编码 "{code}" 在该模板中已存在')
         attr = OntologyTemplateAttribute(
-            template_id=template_id, name=req.name.strip(), data_type=req.data_type,
-            description=(req.description or "").strip(), is_required=int(req.is_required),
-            default_value=req.default_value, enum_values=_prepare_enum_values(req.enum_values),
+            template_id=template_id, name=req.name.strip(), code=code,
+            data_type=req.data_type, description=(req.description or "").strip(),
+            is_required=int(req.is_required), default_value=req.default_value,
             sort_order=req.sort_order,
         )
         db.add(attr)
@@ -704,6 +748,19 @@ class OntologyService:
             return None
         if req.name is not None:
             attr.name = req.name.strip()
+        if req.code is not None:
+            code = req.code.strip() or None
+            if code and code != attr.code:
+                existing = await db.execute(
+                    select(OntologyTemplateAttribute.id).where(
+                        OntologyTemplateAttribute.template_id == attr.template_id,
+                        OntologyTemplateAttribute.code == code,
+                        OntologyTemplateAttribute.id != attr_id,
+                    )
+                )
+                if existing.scalar_one_or_none():
+                    raise ValueError(f'编码 "{code}" 在该模板中已存在')
+            attr.code = code
         if req.data_type is not None:
             attr.data_type = req.data_type
         if req.description is not None:
@@ -712,8 +769,6 @@ class OntologyService:
             attr.is_required = int(req.is_required)
         if req.default_value is not None:
             attr.default_value = req.default_value
-        if req.enum_values is not None:
-            attr.enum_values = _prepare_enum_values(req.enum_values)
         if req.sort_order is not None:
             attr.sort_order = req.sort_order
         attr.updated_at = datetime.now().isoformat()
@@ -734,14 +789,19 @@ class OntologyService:
 
     @staticmethod
     async def batch_save_template_attributes(db: AsyncSession, template_id: str, attributes: list) -> dict:
+        codes = [(a.code or "").strip() for a in attributes if (a.code or "").strip()]
+        dupes = {c for c in codes if codes.count(c) > 1}
+        if dupes:
+            raise ValueError(f'编码重复：{", ".join(sorted(dupes))}')
         await db.execute(
             delete(OntologyTemplateAttribute).where(OntologyTemplateAttribute.template_id == template_id)
         )
         for idx, a in enumerate(attributes):
+            code = (a.code or "").strip() or None
             db.add(OntologyTemplateAttribute(
-                template_id=template_id, name=a.name.strip(), data_type=a.data_type,
-                description=(a.description or "").strip(), is_required=int(a.is_required),
-                default_value=a.default_value, enum_values=_prepare_enum_values(a.enum_values),
+                template_id=template_id, name=a.name.strip(), code=code,
+                data_type=a.data_type, description=(a.description or "").strip(),
+                is_required=int(a.is_required), default_value=a.default_value,
                 sort_order=a.sort_order if a.sort_order is not None else idx,
             ))
         await db.commit()
@@ -873,9 +933,9 @@ class OntologyService:
             slim_attrs = [
                 {
                     "name": a["name"],
+                    "code": a.get("code"),
                     "data_type": a["data_type"],
                     "is_required": a.get("is_required", False),
-                    "enum_values": a.get("enum_values"),
                     "description": a.get("description", ""),
                 }
                 for a in attrs

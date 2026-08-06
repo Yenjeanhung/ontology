@@ -33,6 +33,10 @@ def _nf(detail: str):
     return HTTPException(status_code=404, detail=detail)
 
 
+def _bad_request(detail: str):
+    return HTTPException(status_code=400, detail=detail)
+
+
 # ===== 模块一：本体类别 CRUD =====
 
 @router.get("/ontology-categories")
@@ -113,17 +117,26 @@ async def list_attributes(category_id: str, ontology_id: str, db: AsyncSession =
 
 @router.post("/ontology-categories/{category_id}/ontologies/{ontology_id}/attributes")
 async def create_attribute(category_id: str, ontology_id: str, req: CreateOntologyAttributeRequest, db: AsyncSession = Depends(get_db)):
-    return await OntologyService.create_attribute(db, ontology_id, req)
+    try:
+        return await OntologyService.create_attribute(db, ontology_id, req)
+    except ValueError as e:
+        raise _bad_request(str(e))
 
 
 @router.put("/ontology-categories/{category_id}/ontologies/{ontology_id}/attributes")
 async def batch_save_attributes(category_id: str, ontology_id: str, req: BatchSaveAttributesRequest, db: AsyncSession = Depends(get_db)):
-    return await OntologyService.batch_save_attributes(db, ontology_id, req.attributes)
+    try:
+        return await OntologyService.batch_save_attributes(db, ontology_id, req.attributes)
+    except ValueError as e:
+        raise _bad_request(str(e))
 
 
 @router.put("/ontology-categories/{category_id}/ontologies/{ontology_id}/attributes/{attr_id}")
 async def update_attribute(category_id: str, ontology_id: str, attr_id: str, req: UpdateOntologyAttributeRequest, db: AsyncSession = Depends(get_db)):
-    res = await OntologyService.update_attribute(db, attr_id, req)
+    try:
+        res = await OntologyService.update_attribute(db, attr_id, req)
+    except ValueError as e:
+        raise _bad_request(str(e))
     if not res:
         raise _nf("Attribute not found")
     return res
@@ -231,7 +244,10 @@ async def list_templates(q: str = "", db: AsyncSession = Depends(get_db)):
 
 @router.post("/attribute-templates")
 async def create_template(req: CreateAttributeTemplateRequest, db: AsyncSession = Depends(get_db)):
-    return await OntologyService.create_template(db, req.name, req.description or "")
+    try:
+        return await OntologyService.create_template(db, req.name, req.description or "")
+    except ValueError as e:
+        raise _bad_request(str(e))
 
 
 @router.get("/attribute-templates/{template_id}")
@@ -244,7 +260,10 @@ async def get_template_detail(template_id: str, db: AsyncSession = Depends(get_d
 
 @router.put("/attribute-templates/{template_id}")
 async def update_template(template_id: str, req: UpdateAttributeTemplateRequest, db: AsyncSession = Depends(get_db)):
-    res = await OntologyService.update_template(db, template_id, req.name, req.description)
+    try:
+        res = await OntologyService.update_template(db, template_id, req.name, req.description)
+    except ValueError as e:
+        raise _bad_request(str(e))
     if not res:
         raise _nf("Attribute template not found")
     return res
@@ -270,12 +289,18 @@ async def list_template_attributes(template_id: str, db: AsyncSession = Depends(
 
 @router.post("/attribute-templates/{template_id}/attributes")
 async def create_template_attribute(template_id: str, req: CreateTemplateAttributeRequest, db: AsyncSession = Depends(get_db)):
-    return await OntologyService.create_template_attribute(db, template_id, req)
+    try:
+        return await OntologyService.create_template_attribute(db, template_id, req)
+    except ValueError as e:
+        raise _bad_request(str(e))
 
 
 @router.put("/attribute-templates/{template_id}/attributes")
 async def batch_save_template_attributes(template_id: str, req: BatchSaveTemplateAttributesRequest, db: AsyncSession = Depends(get_db)):
-    return await OntologyService.batch_save_template_attributes(db, template_id, req.attributes)
+    try:
+        return await OntologyService.batch_save_template_attributes(db, template_id, req.attributes)
+    except ValueError as e:
+        raise _bad_request(str(e))
 
 
 @router.put("/attribute-templates/{template_id}/attributes/{attr_id}")
@@ -283,11 +308,13 @@ async def update_template_attribute(template_id: str, attr_id: str, req: CreateT
     # 复用 CreateTemplateAttributeRequest 作为更新体
     from schemas import UpdateOntologyAttributeRequest
     update_req = UpdateOntologyAttributeRequest(
-        name=req.name, data_type=req.data_type, description=req.description,
-        is_required=req.is_required, default_value=req.default_value,
-        enum_values=req.enum_values, sort_order=req.sort_order,
+        name=req.name, code=req.code, data_type=req.data_type, description=req.description,
+        is_required=req.is_required, default_value=req.default_value, sort_order=req.sort_order,
     )
-    res = await OntologyService.update_template_attribute(db, attr_id, update_req)
+    try:
+        res = await OntologyService.update_template_attribute(db, attr_id, update_req)
+    except ValueError as e:
+        raise _bad_request(str(e))
     if not res:
         raise _nf("Template attribute not found")
     return res

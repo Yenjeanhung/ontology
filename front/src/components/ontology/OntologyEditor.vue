@@ -344,6 +344,7 @@ function attrSourceLabel(source) {
                     class="oe-merged-attr"
                     :class="{ conflict: mergedPreview[ont.id].conflicts?.includes(a.name) }"
                   >
+                    <span v-if="a.code" class="oe-merged-code">{{ a.code }}</span>
                     <span class="oe-merged-name">{{ a.name }}</span>
                     <span class="oe-merged-type">{{ a.data_type }}</span>
                     <span class="oe-merged-src" :class="{ own: a.source === 'own' }">{{ attrSourceLabel(a.source) }}</span>
@@ -448,6 +449,7 @@ function attrSourceLabel(source) {
 .oe-merged-attr.conflict { outline: 1px solid var(--c-accent); }
 .oe-merged-name { font-weight: 600; color: var(--c-fg); flex: 1; }
 .oe-merged-type { color: var(--c-secondary); font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+.oe-merged-code { color: var(--c-accent); font-family: ui-monospace, Consolas, monospace; font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--c-muted); }
 .oe-merged-src { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--c-muted); color: var(--c-secondary); }
 .oe-merged-src.own { background: rgba(161, 98, 7, 0.15); color: var(--c-accent); }
 .oe-merged-empty { padding: 8px; text-align: center; color: var(--c-secondary); font-size: 12px; }

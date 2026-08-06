@@ -82,21 +82,21 @@ class BatchCreateOntologiesRequest(BaseModel):
 
 class CreateOntologyAttributeRequest(BaseModel):
     name: str
-    data_type: str  # string/number/boolean/date/datetime/text/enum
+    code: str | None = None
+    data_type: str  # string/number/boolean/date/datetime/text
     description: str | None = ""
     is_required: bool = False
     default_value: str | None = None
-    enum_values: list[str] | None = None
     sort_order: int = 0
 
 
 class UpdateOntologyAttributeRequest(BaseModel):
     name: str | None = None
+    code: str | None = None
     data_type: str | None = None
     description: str | None = None
     is_required: bool | None = None
     default_value: str | None = None
-    enum_values: list[str] | None = None
     sort_order: int | None = None
 
 
@@ -152,11 +152,11 @@ class UpdateAttributeTemplateRequest(BaseModel):
 
 class CreateTemplateAttributeRequest(BaseModel):
     name: str
+    code: str | None = None
     data_type: str
     description: str | None = ""
     is_required: bool = False
     default_value: str | None = None
-    enum_values: list[str] | None = None
     sort_order: int = 0
 
 

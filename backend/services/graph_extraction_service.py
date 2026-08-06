@@ -606,12 +606,14 @@ class GraphExtractionService:
             if attrs:
                 attr_parts = []
                 for a in attrs:
-                    parts = [a["name"], f"{a['data_type']}"]
+                    code = a.get("code")
+                    parts = []
+                    if code:
+                        parts.append(f"编码:{code}")
+                    parts.append(a["name"])
+                    parts.append(f"{a['data_type']}")
                     if a.get("is_required"):
                         parts.append("必填")
-                    enum_vals = a.get("enum_values")
-                    if enum_vals:
-                        parts.append(f"枚举:{','.join(str(v) for v in enum_vals)}")
                     attr_parts.append("、".join(parts))
                 lines.append(f"      属性：{'；'.join(attr_parts)}")
             else:
@@ -646,7 +648,6 @@ class GraphExtractionService:
 
         - 剔除不在属性定义列表中的属性键
         - number 类型转浮点失败则置空
-        - enum 值不在候选内则置空
         - boolean 转布尔
         """
         if not properties_str:
@@ -665,7 +666,7 @@ class GraphExtractionService:
             if not attr_def:
                 continue  # 剔除未定义的属性键
             data_type = attr_def.get("data_type", "string")
-            normalized_value = GraphExtractionService._coerce_property_value(value, data_type, attr_def.get("enum_values"))
+            normalized_value = GraphExtractionService._coerce_property_value(value, data_type)
             if normalized_value is not None:
                 normalized[key] = normalized_value
 
@@ -673,7 +674,7 @@ class GraphExtractionService:
 
     @staticmethod
     def _coerce_property_value(
-        value: Any, data_type: str, enum_values: list | None = None
+        value: Any, data_type: str
     ) -> Any:
         """按属性类型规整单个属性值，不合法时返回 None。"""
         if value is None:
@@ -691,11 +692,6 @@ class GraphExtractionService:
                     return True
                 if text in ("false", "0", "否", "no"):
                     return False
-                return None
-            if data_type == "enum":
-                text = str(value).strip()
-                if enum_values and text in [str(v) for v in enum_values]:
-                    return text
                 return None
             # string / date / datetime / text → 统一为字符串
             text = str(value).strip()
