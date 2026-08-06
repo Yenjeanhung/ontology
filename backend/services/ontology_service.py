@@ -1119,7 +1119,12 @@ class OntologySuggestionService:
     @staticmethod
     async def approve_suggestion(db: AsyncSession, suggestion_id: str,
                                  reviewer: str | None = None) -> dict:
-        """审核通过：将 suggestion 内容写入正式本体表 + 自动绑定到知识库"""
+        """审核通过：将 suggestion 内容写入正式本体表 + 自动绑定到知识库。
+
+        智能合并策略：
+        - KB 已绑定类别 → 合并到已有类别（跳过同名本体/关系，补充新增的属性）
+        - KB 未绑定类别 → 创建新类别
+        """
         result = await db.execute(select(OntologySuggestion).where(OntologySuggestion.id == suggestion_id))
         s = result.scalar_one_or_none()
         if not s:
@@ -1136,59 +1141,172 @@ class OntologySuggestionService:
         cat_name = (cat_info.get("name") or "").strip()
         if not cat_name:
             raise ValueError("类别名称不能为空")
-
         cat_desc = (cat_info.get("description") or "").strip()
 
-        # --- 1. 创建类别 ---
-        category = OntologyCategory(
-            name=cat_name, description=cat_desc,
+        # ====== 判断是合并还是新建 ======
+        existing_binding = await db.execute(
+            select(KbOntologyBinding).where(KbOntologyBinding.kb_id == s.kb_id)
         )
-        db.add(category)
-        await db.flush()
+        binding = existing_binding.scalar_one_or_none()
+        merge_target_category_id = binding.category_id if binding else None
 
-        # --- 2. 创建本体 ---
+        if merge_target_category_id:
+            # --- 合并模式：使用已有类别 ---
+            category_id = merge_target_category_id
+            # 加载已有本体/关系/属性，用于去重
+            existing_onts = await db.execute(
+                select(Ontology).where(Ontology.category_id == category_id)
+            )
+            existing_ont_names: set[str] = set()
+            existing_ont_id_by_name: dict[str, str] = {}
+            for eo in existing_onts.scalars().all():
+                existing_ont_names.add(eo.name)
+                existing_ont_id_by_name[eo.name] = eo.id
+
+            existing_rels = await db.execute(
+                select(OntologyRelation).where(OntologyRelation.category_id == category_id)
+            )
+            existing_rel_names: set[str] = set()
+            existing_rel_id_by_name: dict[str, str] = {}
+            for er in existing_rels.scalars().all():
+                existing_rel_names.add(er.name)
+                existing_rel_id_by_name[er.name] = er.id
+
+            # 加载已有属性（按 ontology_id 分组）
+            existing_attrs_by_ont: dict[str, set[str]] = {}
+            for ont_id in existing_ont_id_by_name.values():
+                attr_rows = await db.execute(
+                    select(OntologyAttribute.name).where(OntologyAttribute.ontology_id == ont_id)
+                )
+                existing_attrs_by_ont[ont_id] = {row[0] for row in attr_rows.scalars().all()}
+
+            # 加载已有约束
+            existing_constraints_rows = await db.execute(
+                select(OntologyRelationConstraint).where(OntologyRelationConstraint.category_id == category_id)
+            )
+            existing_constraint_keys: set[tuple[str, str, str]] = set()
+            for ec in existing_constraints_rows.scalars().all():
+                src_name = None
+                tgt_name = None
+                src_row = await db.execute(select(Ontology.name).where(Ontology.id == ec.source_ontology_id))
+                tgt_row = await db.execute(select(Ontology.name).where(Ontology.id == ec.target_ontology_id))
+                if src_row.scalar_one_or_none():
+                    src_name = src_row.scalar_one_or_none()[0] if hasattr(src_row.scalar_one_or_none(), '__getitem__') else getattr(src_row.scalar_one_or_none(), 'name', None)
+                if tgt_row.scalar_one_or_none():
+                    tgt_name = tgt_row.scalar_one_or_none()[0] if hasattr(tgt_row.scalar_one_or_none(), '__getitem__') else getattr(tgt_row.scalar_one_or_none(), 'name', None)
+                if src_name and tgt_name:
+                    existing_constraint_keys.add((src_name, ec.relation_id, tgt_name))
+
+            # 补充关系ID映射（用已有 + 新建的）
+            rel_id_by_name = dict(existing_rel_id_by_name)
+
+            skipped_ontologies = 0
+            skipped_relations = 0
+            skipped_constraints = 0
+            added_ontologies = 0
+            added_relations = 0
+            added_constraints = 0
+            added_attributes = 0
+
+        else:
+            # --- 新建模式 ---
+            category = OntologyCategory(name=cat_name, description=cat_desc)
+            db.add(category)
+            await db.flush()
+            category_id = category.id
+            existing_ont_names = set()
+            existing_ont_id_by_name = {}
+            existing_attrs_by_ont = {}
+            existing_rel_names = set()
+            rel_id_by_name = {}
+            existing_constraint_keys = set()
+            skipped_ontologies = 0
+            skipped_relations = 0
+            skipped_constraints = 0
+            added_ontologies = 0
+            added_relations = 0
+            added_constraints = 0
+            added_attributes = 0
+
+        # ====== 统一处理：本体 + 属性 + 关系 + 约束 ======
+        ont_id_by_name = dict(existing_ont_id_by_name)
+
+        # --- 本体 + 属性 ---
         ont_list = data.get("ontologies") or []
-        ont_id_by_name: dict[str, str] = {}
         for ont in ont_list:
             ont_name = (ont.get("name") or "").strip()
             if not ont_name:
                 continue
-            o = Ontology(
-                category_id=category.id, name=ont_name,
-                description=(ont.get("description") or "").strip(),
-            )
-            db.add(o)
-            await db.flush()
-            ont_id_by_name[ont_name] = o.id
-            # 创建属性
-            attrs = ont.get("attributes") or []
-            seen_codes: set = set()
-            for i, at in enumerate(attrs):
-                a_name = (at.get("name") or "").strip()
-                if not a_name:
-                    continue
-                a_code = (at.get("code") or "").strip() or None
-                if a_code:
-                    if a_code in seen_codes:
-                        a_code = None
-                    else:
-                        seen_codes.add(a_code)
-                a = OntologyAttribute(
-                    ontology_id=o.id, name=a_name, code=a_code,
-                    data_type=(at.get("data_type") or "string").strip() or "string",
-                    description=(at.get("description") or "").strip(),
-                    is_required=bool(at.get("is_required", False)),
-                    sort_order=i,
+            if ont_name in existing_ont_names:
+                # 同名本体已存在 → 补充属性
+                skipped_ontologies += 1
+                ont_id = existing_ont_id_by_name[ont_name]
+                existing_attr_names = existing_attrs_by_ont.get(ont_id, set())
+                attrs = ont.get("attributes") or []
+                for i, at in enumerate(attrs):
+                    a_name = (at.get("name") or "").strip()
+                    if not a_name or a_name in existing_attr_names:
+                        continue
+                    a_code = (at.get("code") or "").strip() or None
+                    a = OntologyAttribute(
+                        ontology_id=ont_id, name=a_name, code=a_code,
+                        data_type=(at.get("data_type") or "string").strip() or "string",
+                        description=(at.get("description") or "").strip(),
+                        is_required=bool(at.get("is_required", False)),
+                        sort_order=len(existing_attr_names) + i,
+                    )
+                    db.add(a)
+                    existing_attr_names.add(a_name)
+                    existing_attrs_by_ont.setdefault(ont_id, set()).add(a_name)
+                    added_attributes += 1
+            else:
+                # 新本体 → 创建
+                o = Ontology(
+                    category_id=category_id, name=ont_name,
+                    description=(ont.get("description") or "").strip(),
                 )
-                db.add(a)
+                db.add(o)
+                await db.flush()
+                ont_id_by_name[ont_name] = o.id
+                existing_ont_names.add(ont_name)
+                existing_attrs_by_ont[o.id] = set()
+                added_ontologies += 1
+                attrs = ont.get("attributes") or []
+                seen_codes: set = set()
+                for i, at in enumerate(attrs):
+                    a_name = (at.get("name") or "").strip()
+                    if not a_name:
+                        continue
+                    a_code = (at.get("code") or "").strip() or None
+                    if a_code:
+                        if a_code in seen_codes:
+                            a_code = None
+                        else:
+                            seen_codes.add(a_code)
+                    a = OntologyAttribute(
+                        ontology_id=o.id, name=a_name, code=a_code,
+                        data_type=(at.get("data_type") or "string").strip() or "string",
+                        description=(at.get("description") or "").strip(),
+                        is_required=bool(at.get("is_required", False)),
+                        sort_order=i,
+                    )
+                    db.add(a)
+                    existing_attrs_by_ont.setdefault(o.id, set()).add(a_name)
+                    added_attributes += 1
 
-        # --- 3. 创建关系字典 ---
+        # --- 关系字典 ---
         rel_list = data.get("relations") or []
-        rel_id_by_name: dict[str, str] = {}
         seen_rel_codes: set = set()
+        for rn_code in rel_id_by_name.values():
+            c = rn_code
+            if c:
+                seen_rel_codes.add(c)
         for rel in rel_list:
             r_name = (rel.get("name") or "").strip()
             if not r_name:
+                continue
+            if r_name in existing_rel_names:
+                skipped_relations += 1
                 continue
             r_code = (rel.get("code") or "").strip() or None
             if r_code:
@@ -1197,14 +1315,16 @@ class OntologySuggestionService:
                 else:
                     seen_rel_codes.add(r_code)
             r = OntologyRelation(
-                category_id=category.id, name=r_name, code=r_code,
+                category_id=category_id, name=r_name, code=r_code,
                 description=(rel.get("description") or "").strip(),
             )
             db.add(r)
             await db.flush()
             rel_id_by_name[r_name] = r.id
+            existing_rel_names.add(r_name)
+            added_relations += 1
 
-        # --- 4. 创建三元组约束 ---
+        # --- 三元组约束 ---
         cons_list = data.get("constraints") or []
         for c in cons_list:
             src_ont = (c.get("source") or "").strip()
@@ -1216,22 +1336,27 @@ class OntologySuggestionService:
             tgt_id = ont_id_by_name.get(tgt_ont)
             rel_id = rel_id_by_name.get(rel_name)
             if not (src_id and tgt_id and rel_id):
+                skipped_constraints += 1
+                continue
+            # 去重检查（仅新建模式或合并到不同类别时可能重复）
+            cons_key = (src_ont, rel_id, tgt_ont)
+            if cons_key in existing_constraint_keys:
+                skipped_constraints += 1
                 continue
             cons = OntologyRelationConstraint(
-                category_id=category.id,
+                category_id=category_id,
                 source_ontology_id=src_id, relation_id=rel_id, target_ontology_id=tgt_id,
                 description=(c.get("description") or "").strip(),
             )
             db.add(cons)
+            existing_constraint_keys.add(cons_key)
+            added_constraints += 1
 
-        # --- 5. 自动绑定到知识库 ---
-        existing = await db.execute(
-            select(KbOntologyBinding).where(KbOntologyBinding.kb_id == s.kb_id)
-        )
-        if not existing.scalar_one_or_none():
-            db.add(KbOntologyBinding(kb_id=s.kb_id, category_id=category.id))
+        # --- 绑定到知识库 ---
+        if not merge_target_category_id:
+            db.add(KbOntologyBinding(kb_id=s.kb_id, category_id=category_id))
 
-        # --- 6. 更新建议状态 ---
+        # --- 更新建议状态 ---
         s.status = "approved"
         s.reviewed_at = datetime.now().isoformat()
         s.reviewer = reviewer or "system"
@@ -1239,7 +1364,13 @@ class OntologySuggestionService:
         await db.refresh(s)
 
         ret = OntologySuggestionService._to_dict(s)
-        ret["approved_category_id"] = category.id
-        ret["ontology_count"] = len(ont_id_by_name)
-        ret["relation_count"] = len(rel_id_by_name)
+        ret["approved_category_id"] = category_id
+        ret["mode"] = "merge" if merge_target_category_id else "create"
+        ret["ontology_count"] = added_ontologies
+        ret["skipped_ontologies"] = skipped_ontologies
+        ret["relation_count"] = added_relations
+        ret["skipped_relations"] = skipped_relations
+        ret["constraint_count"] = added_constraints
+        ret["skipped_constraints"] = skipped_constraints
+        ret["added_attributes"] = added_attributes
         return ret
