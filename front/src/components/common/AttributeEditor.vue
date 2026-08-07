@@ -7,6 +7,11 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  // 固有属性（锁定展示，不可编辑/删除/排序，不参与保存）：[{ code, name, data_type, is_required, description }]
+  builtins: {
+    type: Array,
+    default: () => [],
+  },
   // 保存函数：async ({ attributes }) => result；不传则不持久化（由父组件处理）
   saveFn: {
     type: Function,
@@ -40,19 +45,25 @@ const expandedId = ref(null)
 const saving = ref(false)
 const saveError = ref('')
 
+const builtinCodes = computed(() => new Set((props.builtins || []).map(b => b.code).filter(Boolean)))
+
 function syncFromProps() {
-  list.value = (props.attributes || []).map(a => ({
-    id: a.id || null,
-    name: a.name || '',
-    code: a.code || '',
-    data_type: a.data_type || 'string',
-    description: a.description || '',
-    is_required: !!a.is_required,
-    default_value: a.default_value || '',
-    sort_order: a.sort_order || 0,
-    _dirty: false,
-    _isNew: false,
-  }))
+  const codes = builtinCodes.value
+  // 过滤掉与固有属性编码重复的条目（固有属性由 builtins 单独锁定展示，不进编辑副本、不参与保存）
+  list.value = (props.attributes || [])
+    .filter(a => !a.code || !codes.has(a.code))
+    .map(a => ({
+      id: a.id || null,
+      name: a.name || '',
+      code: a.code || '',
+      data_type: a.data_type || 'string',
+      description: a.description || '',
+      is_required: !!a.is_required,
+      default_value: a.default_value || '',
+      sort_order: a.sort_order || 0,
+      _dirty: false,
+      _isNew: false,
+    }))
   expandedId.value = null
 }
 
@@ -124,6 +135,10 @@ async function saveAll() {
       saveError.value = '存在未填写名称的属性'
       return
     }
+    if (a.code?.trim() && builtinCodes.value.has(a.code.trim())) {
+      saveError.value = `编码「${a.code.trim()}」为固有属性保留编码，不可使用`
+      return
+    }
   }
   // 校验编码唯一性
   const codes = list.value.map(a => a.code?.trim()).filter(Boolean)
@@ -182,11 +197,31 @@ function typeLabel(t) {
     </div>
     <div v-if="saveError" class="ae-error">{{ saveError }}</div>
 
-    <div v-if="list.length === 0" class="ae-empty">
+    <div v-if="list.length === 0 && !builtins.length" class="ae-empty">
       暂无{{ title }}，点击「添加属性」开始定义
     </div>
 
     <div class="ae-list">
+      <!-- 固有属性：锁定展示，不可编辑/删除/排序 -->
+      <div
+        v-for="b in builtins"
+        :key="'builtin-' + b.code"
+        class="ae-card builtin"
+      >
+        <div class="ae-card-head">
+          <span class="ae-lock" title="固有属性，不可修改或删除">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </span>
+          <span v-if="b.code" class="ae-code-tag">{{ b.code }}</span>
+          <span class="ae-name">{{ b.name }}</span>
+          <span class="ae-type-tag">{{ typeLabel(b.data_type) }}</span>
+          <span v-if="b.is_required" class="ae-req-tag">必填</span>
+          <span class="ae-builtin-tag">固有</span>
+          <span class="ae-spacer"></span>
+          <span v-if="b.description" class="ae-builtin-desc">{{ b.description }}</span>
+        </div>
+      </div>
+      <!-- 可编辑属性 -->
       <div
         v-for="(attr, idx) in list"
         :key="(attr.id || 'new') + '-' + idx"
@@ -274,6 +309,12 @@ function typeLabel(t) {
 }
 .ae-card.expanded { border-color: var(--c-fg); }
 .ae-card.is-new { border-style: dashed; }
+.ae-card.builtin { border-style: dashed; background: var(--c-muted); }
+.ae-card.builtin .ae-card-head { cursor: default; background: transparent; }
+.ae-card.builtin .ae-card-head:hover { background: transparent; }
+.ae-lock { color: var(--c-secondary); flex-shrink: 0; display: inline-flex; align-items: center; }
+.ae-builtin-tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: rgba(22, 163, 74, 0.12); color: var(--c-success); flex-shrink: 0; }
+.ae-builtin-desc { font-size: 11px; color: var(--c-secondary); font-style: italic; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .ae-card-head {
   display: flex; align-items: center; gap: 8px; padding: 9px 12px;

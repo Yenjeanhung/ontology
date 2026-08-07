@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchEntities, deleteEntity, fetchKbs, fetchOntologyCategories, getOntologyCategoryDetail } from '../../api'
 import SearchableSelect from '../common/SearchableSelect.vue'
@@ -186,6 +186,17 @@ onMounted(async () => {
   try { kbs.value = await fetchKbs() } catch {}
   await loadTree()
   await load()
+})
+
+// keep-alive 重新激活（从详情页等返回）时，轻量刷新列表以反映编辑/删除/新增
+// 首次激活与 onMounted 重合，需跳过以免重复加载
+let firstActivate = true
+onActivated(() => {
+  if (firstActivate) {
+    firstActivate = false
+    return
+  }
+  load()
 })
 </script>
 

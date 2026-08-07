@@ -18,6 +18,18 @@ const emit = defineEmits(['changed'])
 
 const COLOR_PRESETS = ['#A16207', '#2563EB', '#16A34A', '#DC2626', '#9333EA', '#0891B2', '#DB2777', '#475569']
 
+// 所有实体固有的属性：name 是实体表一等字段，用于列表/详情/图谱展示，
+// 不作为普通本体属性存储，因此在编辑器中以"固有"锁定呈现，不可增删改。
+const BUILTIN_ATTRS = [
+  {
+    code: 'name',
+    name: '名称',
+    data_type: 'string',
+    is_required: true,
+    description: '实体固有标识，用于列表/详情/图谱展示',
+  },
+]
+
 const templates = ref([])
 const expandedId = ref(null)
 const savingOnt = ref('')   // 正在保存基础信息的 ontology id
@@ -320,6 +332,7 @@ function attrSourceLabel(source) {
             </div>
             <AttributeEditor
               :attributes="ont.attributes"
+              :builtins="BUILTIN_ATTRS"
               :save-fn="(payload) => saveAttributes(ont, payload)"
               @saved="() => {}"
             />
