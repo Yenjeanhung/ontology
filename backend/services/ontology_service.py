@@ -6,6 +6,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
+    Entity,
     KbOntologyBinding,
     Ontology,
     OntologyAttribute,
@@ -18,6 +19,9 @@ from models import (
     OntologyTemplateBinding,
 )
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ---------- 辅助序列化 ----------
@@ -1373,4 +1377,126 @@ class OntologySuggestionService:
         ret["constraint_count"] = added_constraints
         ret["skipped_constraints"] = skipped_constraints
         ret["added_attributes"] = added_attributes
+
+        # ====== 回填 Kùzu 实体 ontology_id + 写入 SQLite ======
+        try:
+            backfilled = await OntologySuggestionService._backfill_entities_after_approval(
+                db, s.kb_id, ont_id_by_name
+            )
+            ret["backfilled_entities"] = backfilled
+        except Exception as e:
+            logger.exception("回填实体 ontology_id 失败: %s", e)
+            ret["backfilled_entities"] = 0
+
         return ret
+
+    @staticmethod
+    async def _backfill_entities_after_approval(
+        db: AsyncSession,
+        kb_id: str,
+        ont_id_by_name: dict[str, str],
+    ) -> int:
+        """审批后将 Kùzu 中 ontology_id 为空的实体回填 ontology_id 并写入 SQLite。
+
+        匹配策略：Kùzu Entity.entity_type == Ontology.name（精确匹配）。
+        返回成功回填的实体数量。
+        """
+        if not ont_id_by_name:
+            return 0
+
+        from providers.graph_store import _get_adapter
+
+        adapter = _get_adapter()
+
+        # 1. 从 Kùzu 查询该 KB 下 ontology_id 为空的实体
+        try:
+            orphan_rows = adapter._execute_dict(
+                """
+                MATCH (e:Entity {kb_id: $kb_id})
+                WHERE e.ontology_id = '' OR e.ontology_id IS NULL
+                RETURN e.id AS entity_id, e.name AS name, e.entity_type AS entity_type,
+                       e.description AS description, e.properties AS properties
+                """,
+                {"kb_id": kb_id},
+            )
+        except Exception:
+            logger.exception("查询 Kùzu 孤儿实体失败")
+            return 0
+
+        if not orphan_rows:
+            return 0
+
+        # 2. 建立 entity_type → ontology_id 的映射（精确匹配本体名）
+        type_to_ont = {}
+        for ont_name, ont_id in ont_id_by_name.items():
+            type_to_ont[ont_name] = ont_id
+
+        backfilled = 0
+        for row in orphan_rows:
+            et = (row.get("entity_type") or "").strip()
+            ont_id = type_to_ont.get(et)
+            if not ont_id:
+                continue  # 该实体类型没有对应本体
+
+            entity_kuzu_id = row.get("entity_id") or ""
+            entity_name = (row.get("name") or "").strip()
+            entity_desc = (row.get("description") or "").strip()
+            entity_props = (row.get("properties") or "").strip()
+
+            # 3. 更新 Kùzu 中实体的 ontology_id
+            try:
+                adapter._execute(
+                    """
+                    MATCH (e:Entity {id: $entity_id})
+                    SET e.ontology_id = $ontology_id
+                    """,
+                    {"entity_id": entity_kuzu_id, "ontology_id": ont_id},
+                )
+            except Exception:
+                logger.exception("更新 Kùuzu 实体 ontology_id 失败: %s", entity_kuzu_id)
+
+            # 4. 写入 SQLite entities 表（upsert 语义）
+            try:
+                props_dict = None
+                if entity_props:
+                    try:
+                        props_dict = json.loads(entity_props)
+                    except (json.JSONDecodeError, TypeError):
+                        props_dict = None
+
+                # 先检查是否已存在
+                existing = await db.execute(
+                    select(Entity).where(
+                        Entity.kb_id == kb_id,
+                        Entity.entity_type == et,
+                        Entity.name == entity_name,
+                    )
+                )
+                ent = existing.scalar_one_or_none()
+                if ent is None:
+                    ent = Entity(
+                        id=entity_kuzu_id if entity_kuzu_id else None,
+                        kb_id=kb_id,
+                        ontology_id=ont_id,
+                        entity_type=et,
+                        name=entity_name,
+                        description=entity_desc,
+                        properties=json.dumps(props_dict, ensure_ascii=False) if props_dict else None,
+                    )
+                    db.add(ent)
+                else:
+                    if not ent.ontology_id:
+                        ent.ontology_id = ont_id
+                backfilled += 1
+            except Exception:
+                logger.exception("写入 SQLite 实体失败: %s", entity_name)
+
+        if backfilled > 0:
+            try:
+                await db.commit()
+            except Exception:
+                logger.exception("回填 commit 失败")
+                await db.rollback()
+
+        logger.info("回填实体完成: kb_id=%s, 回填数量=%d", kb_id, backfilled)
+        return backfilled
