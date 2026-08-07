@@ -157,7 +157,8 @@ function goPage(p) {
 }
 
 function goDetail(entityId) {
-  router.push('/entities/' + entityId)
+  const from = router.currentRoute.value.fullPath
+  router.push({ path: '/entities/' + entityId, query: { from } })
 }
 
 async function remove(entity, e) {

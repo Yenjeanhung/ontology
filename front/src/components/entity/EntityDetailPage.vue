@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl } from '../../api'
 import { marked } from 'marked'
 
@@ -9,6 +9,7 @@ const props = defineProps({
 })
 
 const router = useRouter()
+const route = useRoute()
 const entity = ref(null)
 const loading = ref(false)
 const loadError = ref('')
@@ -93,10 +94,27 @@ async function remove() {
   if (!confirm(`确认删除实体「${entity.value.name}」？\n关联关系将一并删除，Kùzu 图谱同步更新。`)) return
   try {
     await deleteEntity(props.entityId)
-    router.push('/entities')
+    if (window.history.length > 1) {
+      router.back()
+    } else {
+      router.push('/entities')
+    }
   } catch (e) {
     alert('删除失败：' + e.message)
   }
+}
+
+function goBack() {
+  if (window.history.length > 1) {
+    router.back()
+    return
+  }
+  const from = route.query.from
+  if (typeof from === 'string' && from.trim()) {
+    router.push(from)
+    return
+  }
+  router.push('/entities')
 }
 
 async function load() {
@@ -291,7 +309,7 @@ onMounted(load)
   <div class="page-shell">
     <div class="page-head">
       <div class="title-area">
-        <button class="back-btn" @click="router.push('/entities')" title="返回">
+        <button class="back-btn" @click="goBack" title="返回">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <div class="title-text">
@@ -515,6 +533,8 @@ onMounted(load)
   .preview-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--c-border); }
   .preview-title { font-size: 16px; font-weight: 700; color: var(--c-fg); }
   .preview-sub { font-size: 13px; color: var(--c-secondary); }
+  .icon-btn { width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--c-secondary); cursor: pointer; transition: background 150ms ease, color 150ms ease, border-color 150ms ease; }
+  .icon-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--c-fg); border-color: var(--c-border); }
   .preview-body { padding: 16px; flex: 1; overflow: auto; min-height: 280px; }
   .pdf-frame { width: 100%; min-height: 420px; border: 0; }
   .preview-editor, .preview-text { width: 100%; min-height: 320px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-family: ui-monospace, Consolas, monospace; font-size: 13px; padding: 14px; white-space: pre-wrap; word-break: break-word; }

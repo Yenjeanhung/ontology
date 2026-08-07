@@ -49,6 +49,14 @@ def _dump_properties(value: dict | None) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _normalize_entity_value(value: str, default: str = "") -> str:
+    return (value or "").strip() or default
+
+
+def _entity_key(value: str) -> str:
+    return (value or "").strip().lower()
+
+
 def _serialize_entity(
     ent: Entity,
     *,
@@ -283,11 +291,13 @@ class EntityService:
 
         若 (kb_id, entity_type, name) 已存在，则按 upsert 语义更新已有记录。
         """
+        normalized_name = _normalize_entity_value(name)
+        normalized_type = _normalize_entity_value(entity_type, "UNKNOWN")
         existing_row = await db.execute(
             select(Entity).where(
                 Entity.kb_id == kb_id,
-                Entity.entity_type == entity_type,
-                Entity.name == name,
+                func.lower(Entity.entity_type) == normalized_type.lower(),
+                func.lower(Entity.name) == normalized_name.lower(),
             )
         )
         ent = existing_row.scalar_one_or_none()
@@ -295,8 +305,8 @@ class EntityService:
             ent = Entity(
                 kb_id=kb_id,
                 ontology_id=ontology_id,
-                entity_type=entity_type,
-                name=name.strip(),
+                entity_type=normalized_type,
+                name=normalized_name,
                 description=(description or "").strip(),
                 properties=_dump_properties(properties),
                 source_file_id=source_file_id,
@@ -307,8 +317,8 @@ class EntityService:
         else:
             # upsert：更新本体归属、描述、属性；保留原 source 信息
             ent.ontology_id = ontology_id
-            ent.entity_type = entity_type
-            ent.name = name.strip()
+            ent.entity_type = normalized_type
+            ent.name = normalized_name
             if description is not None:
                 ent.description = description.strip()
             if properties is not None:

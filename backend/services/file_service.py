@@ -1133,13 +1133,19 @@ class FileService:
         EntityService.create_entity / create_relation 内部已 best-effort 同步 Kùzu（upsert_entity/upsert_relation），
         与 upsert_document_graph 的 MERGE 语义一致，不会冲突。
         """
+        entity_key_to_id: dict[tuple[str, str], str] = {}
         for chunk in batch_chunks:
             # 1. 写实体实例，回填 id
             for entity in chunk.entities:
                 if entity.id:
-                    continue  # 已回填（同批次内 chunk 间去重）
+                    entity_key_to_id[(entity.name.strip().lower(), (entity.entity_type or "UNKNOWN").strip().lower())] = entity.id
+                    continue
                 if not entity.ontology_id:
                     continue  # 无本体归属（不应发生，后处理已过滤）
+                key = (entity.name.strip().lower(), (entity.entity_type or "UNKNOWN").strip().lower())
+                if key in entity_key_to_id:
+                    entity.id = entity_key_to_id[key]
+                    continue
                 # 解析 properties JSON → dict
                 props_dict = None
                 if entity.properties:
@@ -1160,6 +1166,8 @@ class FileService:
                         source_chunk_id=chunk.chunk_id,
                     )
                     entity.id = result.get("id")
+                    if entity.id:
+                        entity_key_to_id[key] = entity.id
                 except Exception:
                     logger.exception(
                         "Persist entity to SQLite failed: kb_id=%s entity_type=%s name=%s",
