@@ -380,7 +380,7 @@ function relayout() {
   startSimulation()
 }
 
-// ===== 最佳布局：环形排列 + 最小化连线交叉 =====
+// ===== 调整布局：环形排列 + 最小化连线交叉 =====
 function nodeDeg(id) {
   const n = nodes.value.find(x => x.id === id)
   return n ? n.degree : 0
@@ -590,7 +590,7 @@ function optimizeLayout() {
   }
   viewBox.value = { ...defaultViewBox }
   zoomLevel.value = 1
-  layoutMsg.value = `最佳布局：剩余 ${best.c} 处交叉`
+  layoutMsg.value = `调整布局：剩余 ${best.c} 处交叉`
   clearTimeout(layoutMsgTimer)
   layoutMsgTimer = setTimeout(() => { layoutMsg.value = '' }, 3500)
 }
@@ -858,7 +858,7 @@ onUnmounted(stopSimulation)
           <div class="rg-canvas-tools">
             <button class="rg-tool-btn" @click="optimizeLayout" title="一键最小化连线交叉的最佳环形布局">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9.5 13.9 11.4 12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/><path d="M19 14l.7 1.8L21.5 16.5 19.7 17.2 19 19l-.7-1.8L16.5 16.5l1.8-.7z"/></svg>
-              最佳布局
+              调整布局
             </button>
             <button class="rg-tool-btn" @click="relayout" title="解除手动固定，重新自动布局">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
