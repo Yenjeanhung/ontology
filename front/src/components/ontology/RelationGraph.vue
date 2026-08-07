@@ -4,9 +4,11 @@ import { createConstraint, updateConstraint, deleteConstraint } from '../../api'
 
 const props = defineProps({
   constraints: { type: Array, default: () => [] },
+  allConstraints: { type: Array, default: () => [] },
   categoryId: { type: String, required: true },
   ontologies: { type: Array, default: () => [] },
   relations: { type: Array, default: () => [] },
+  searchQuery: { type: String, default: '' },
 })
 
 const emit = defineEmits(['changed'])
@@ -747,6 +749,7 @@ onUnmounted(stopSimulation)
     <div class="rg-meta">
       <span class="rg-chip">{{ nodes.length }} 个本体</span>
       <span class="rg-chip">{{ edges.length }} 条关系</span>
+      <span v-if="props.searchQuery" class="rg-chip rg-chip-filter">筛选: {{ props.searchQuery }}</span>
       <span class="rg-chip">{{ Math.round(zoomLevel * 100) }}%</span>
       <span class="rg-hint">滚轮缩放 · 拖拽节点/画布 · 点击/右键/双击连线编辑 · 拖动后球会固定在松手处</span>
       <span class="rg-spacer"></span>
@@ -1058,6 +1061,9 @@ onUnmounted(stopSimulation)
 .rg-chip {
   padding: 4px 10px; border: 1px solid var(--c-border); border-radius: 999px;
   background: var(--c-panel); color: var(--c-secondary); font-size: 12px; font-weight: 600;
+}
+.rg-chip-filter {
+  border-color: rgba(99,140,220,0.4); background: rgba(99,140,220,0.1); color: #8bb5f5;
 }
 .rg-hint { font-size: 12px; color: var(--c-secondary); }
 .rg-spacer { flex: 1; min-width: 0; }

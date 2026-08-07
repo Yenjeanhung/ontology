@@ -27,6 +27,19 @@ const error = ref('')
 // 直接用模块级 ref，不需要 computed 包装
 const viewMode = _persistedView
 
+// 搜索
+const searchQuery = ref('')
+
+const filteredConstraints = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return props.constraints
+  return props.constraints.filter(c =>
+    (c.source_ontology_name || '').toLowerCase().includes(q) ||
+    (c.target_ontology_name || '').toLowerCase().includes(q) ||
+    (c.relation_name || '').toLowerCase().includes(q)
+  )
+})
+
 const ontologyOptions = computed(() =>
   props.ontologies.map(o => ({ value: o.id, label: o.name, meta: o.description || '' }))
 )
@@ -96,18 +109,30 @@ function resetForm() {
     </div>
 
     <template v-else>
-      <!-- 视图切换 -->
+      <!-- 视图切换 + 搜索 -->
       <div class="ce-bar">
-        <span class="ce-bar-count">已定义 {{ constraints.length }} 个三元组约束</span>
-        <div class="ce-view-toggle">
-          <button class="ce-vbtn" :class="{ on: viewMode === 'list' }" @click="viewMode = 'list'">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg>
-            列表视图
-          </button>
-          <button class="ce-vbtn" :class="{ on: viewMode === 'graph' }" @click="viewMode = 'graph'">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="7" y1="8.5" x2="11" y2="16"/><line x1="17" y1="8.5" x2="13" y2="16"/></svg>
-            图谱视图
-          </button>
+        <span class="ce-bar-count">已定义 {{ constraints.length }} 个三元组约束<span v-if="searchQuery">，筛选出 {{ filteredConstraints.length }} 个</span></span>
+        <div class="ce-bar-right">
+          <div class="ce-search">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ce-search-icon"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input
+              v-model="searchQuery"
+              type="text"
+              class="ce-search-input"
+              placeholder="搜索本体名或关系名..."
+            />
+            <button v-if="searchQuery" class="ce-search-clear" @click="searchQuery = ''" title="清除">✕</button>
+          </div>
+          <div class="ce-view-toggle">
+            <button class="ce-vbtn" :class="{ on: viewMode === 'list' }" @click="viewMode = 'list'">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg>
+              列表视图
+            </button>
+            <button class="ce-vbtn" :class="{ on: viewMode === 'graph' }" @click="viewMode = 'graph'">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="7" y1="8.5" x2="11" y2="16"/><line x1="17" y1="8.5" x2="13" y2="16"/></svg>
+              图谱视图
+            </button>
+          </div>
         </div>
       </div>
 
@@ -160,8 +185,8 @@ function resetForm() {
       </div>
 
       <!-- 现有约束列表 -->
-      <div class="ce-list" v-if="constraints.length">
-        <div v-for="c in constraints" :key="c.id" class="ce-item">
+      <div class="ce-list" v-if="filteredConstraints.length">
+        <div v-for="c in filteredConstraints" :key="c.id" class="ce-item">
           <div class="ce-tri-display">
             <span class="ce-node">{{ c.source_ontology_name }}</span>
             <span class="ce-rel">—{{ c.relation_name }}→</span>
@@ -174,17 +199,19 @@ function resetForm() {
       </div>
 
       <div v-else class="ce-empty">
-        暂无三元组约束，使用上方表单添加
+        {{ searchQuery ? '未找到匹配的三元组约束' : '暂无三元组约束，使用上方表单添加' }}
       </div>
       </template>
 
       <!-- 图谱视图（v-show 保持挂载，避免数据刷新时跳回列表） -->
       <RelationGraph
         v-show="viewMode === 'graph'"
-        :constraints="constraints"
+        :constraints="filteredConstraints"
+        :all-constraints="constraints"
         :categoryId="categoryId"
         :ontologies="ontologies"
         :relations="relations"
+        :search-query="searchQuery"
         @changed="emit('changed')"
       />
     </template>
@@ -195,8 +222,25 @@ function resetForm() {
 .ce-root { display: flex; flex-direction: column; gap: 16px; }
 
 .ce-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.ce-bar-count { font-size: 13px; font-weight: 600; color: var(--c-secondary); }
-.ce-view-toggle { display: inline-flex; border: 1px solid var(--c-border); border-radius: 10px; overflow: hidden; }
+.ce-bar-count { font-size: 13px; font-weight: 600; color: var(--c-secondary); flex-shrink: 0; }
+.ce-bar-right { display: flex; align-items: center; gap: 10px; }
+.ce-search { position: relative; display: flex; align-items: center; }
+.ce-search-icon { position: absolute; left: 10px; color: var(--c-secondary); pointer-events: none; }
+.ce-search-input {
+  width: 200px; height: 33px; padding: 0 30px 0 30px;
+  border: 1px solid var(--c-border); border-radius: 10px;
+  background: var(--c-panel); color: var(--c-fg); font-size: 12px; outline: none;
+  transition: border-color 150ms, width 200ms;
+}
+.ce-search-input:focus { border-color: #8bb5f5; width: 240px; }
+.ce-search-input::placeholder { color: var(--c-secondary); font-size: 11px; }
+.ce-search-clear {
+  position: absolute; right: 4px; width: 22px; height: 22px; display: inline-flex;
+  align-items: center; justify-content: center; border: 0; border-radius: 6px;
+  background: transparent; color: var(--c-secondary); font-size: 11px; cursor: pointer;
+}
+.ce-search-clear:hover { background: var(--c-muted); color: var(--c-fg); }
+.ce-view-toggle { display: inline-flex; border: 1px solid var(--c-border); border-radius: 10px; overflow: hidden; flex-shrink: 0; }
 .ce-vbtn {
   height: 34px; padding: 0 14px; border: 0; background: transparent;
   color: var(--c-secondary); font-weight: 600; font-size: 12px; cursor: pointer;
