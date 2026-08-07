@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 import hashlib
+import json
 import threading
 
 from config import settings
@@ -111,6 +112,129 @@ class GraphStoreAdapter(ABC):
     ) -> dict:
         raise NotImplementedError
 
+    # ===== OAG 只读检索（供智能体检索融合 / 上下文融合使用）=====
+    # 设计：全部为只读查询，不触碰 _kuzu_write_lock，与抽取/同步流程隔离。
+
+    @abstractmethod
+    def list_kb_entities(self, kb_id: str, limit: int = 5000) -> list[dict]:
+        """列出 KB 下实体（轻量：id/name/entity_type），供实体链接词面匹配。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def entities_mentioned_by_chunks(self, kb_id: str, chunk_ids: list[str]) -> list[dict]:
+        """分片 → 它们 MENTION 的实体（带出现计数），供从向量分片反查实体。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def chunks_mentioning_entities(self, kb_id: str, entity_ids: list[str], limit: int = 12) -> list[dict]:
+        """实体 → 提到它们的分片（含 file_name/content），供图谱召回补向量漏召。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def entity_neighborhood(
+        self, kb_id: str, entity_ids: list[str], hops: int = 1, limit: int = 40,
+    ) -> dict:
+        """实体的 1 跳邻居关系 + 实体属性，返回 {entities, relations}，供图谱事实注入。"""
+        raise NotImplementedError
+
+    # ===== OAG 只读检索实现 =====
+
+    def list_kb_entities(self, kb_id: str, limit: int = 5000) -> list[dict]:
+        rows = self._execute_dict(
+            """
+            MATCH (e:Entity {kb_id: $kb_id})
+            RETURN e.id AS entity_id, e.name AS name, e.entity_type AS entity_type
+            ORDER BY e.name
+            LIMIT $limit
+            """,
+            {"kb_id": kb_id, "limit": limit},
+        )
+        return rows
+
+    def entities_mentioned_by_chunks(self, kb_id: str, chunk_ids: list[str]) -> list[dict]:
+        if not chunk_ids:
+            return []
+        rows = self._execute_dict(
+            """
+            MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)
+            WHERE c.kb_id = $kb_id AND c.id IN $chunk_ids
+            RETURN e.id AS entity_id, e.name AS name, e.entity_type AS entity_type,
+                   e.description AS description, e.properties AS properties,
+                   count(c) AS mention_count
+            ORDER BY mention_count DESC
+            """,
+            {"kb_id": kb_id, "chunk_ids": chunk_ids},
+        )
+        return rows
+
+    def chunks_mentioning_entities(self, kb_id: str, entity_ids: list[str], limit: int = 12) -> list[dict]:
+        if not entity_ids:
+            return []
+        rows = self._execute_dict(
+            """
+            MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)
+            MATCH (d:Document)-[:HAS_CHUNK]->(c)
+            WHERE c.kb_id = $kb_id AND e.id IN $entity_ids
+            RETURN c.id AS chunk_id, c.file_id AS file_id, c.chunk_index AS chunk_index,
+                   c.content AS content, d.name AS file_name
+            LIMIT $limit
+            """,
+            {"kb_id": kb_id, "entity_ids": entity_ids, "limit": limit},
+        )
+        return rows
+
+    def entity_neighborhood(
+        self, kb_id: str, entity_ids: list[str], hops: int = 1, limit: int = 40,
+    ) -> dict:
+        # v1 固定 1 跳（hops 仅用于接口预留）
+        if not entity_ids:
+            return {"entities": [], "relations": []}
+        seed_rows = self._execute_dict(
+            """
+            MATCH (e:Entity)
+            WHERE e.kb_id = $kb_id AND e.id IN $entity_ids
+            RETURN e.id AS entity_id, e.name AS name, e.entity_type AS entity_type,
+                   e.description AS description, e.properties AS properties
+            """,
+            {"kb_id": kb_id, "entity_ids": entity_ids},
+        )
+        entities = [
+            {
+                "id": r.get("entity_id"),
+                "name": r.get("name"),
+                "entity_type": r.get("entity_type"),
+                "description": (r.get("description") or ""),
+                "properties": _safe_props(r.get("properties")),
+            }
+            for r in seed_rows
+        ]
+        rel_rows = self._execute_dict(
+            """
+            MATCH (e:Entity {kb_id: $kb_id})-[r:RELATES]->(n:Entity)
+            WHERE e.id IN $entity_ids
+            RETURN e.id AS source_id, e.name AS source_name, e.entity_type AS source_type,
+                   r.relation_type AS relation_type, r.relation_id AS relation_id,
+                   n.id AS target_id, n.name AS target_name, n.entity_type AS target_type
+            LIMIT $limit
+            """,
+            {"kb_id": kb_id, "entity_ids": entity_ids, "limit": limit},
+        )
+        relations = []
+        seen: set[tuple] = set()
+        for r in rel_rows:
+            key = (r.get("source_id"), r.get("relation_type"), r.get("target_id"))
+            if key in seen:
+                continue
+            seen.add(key)
+            relations.append({
+                "source_name": r.get("source_name"),
+                "source_type": r.get("source_type"),
+                "relation_type": r.get("relation_type"),
+                "target_name": r.get("target_name"),
+                "target_type": r.get("target_type"),
+            })
+        return {"entities": entities, "relations": relations}
+
     # ===== 实体/关系实例级别同步（供"实体管理"菜单 CRUD 使用）=====
     # 设计：Kùzu Entity.id / Relation.id 直接复用 SQLite 实体/关系实例的 id，
     # 以 SQLite 为权威存储，Kùzu 仅承担图谱可视化与图遍历职责。
@@ -172,6 +296,19 @@ def _relation_id(
         f"{relation_type.lower()}|{target_type.lower()}|{target_name.lower()}"
     ).encode("utf-8")
     return "rel_" + hashlib.sha1(payload).hexdigest()[:20]
+
+
+def _safe_props(raw) -> dict:
+    """把 Kùzu/Neo4j 中 Entity.properties（JSON 字符串或 dict）解析为 dict。"""
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
 
 
 class KuzuGraphAdapter(GraphStoreAdapter):
@@ -1231,6 +1368,22 @@ class Neo4jGraphAdapter(GraphStoreAdapter):
     ) -> dict:
         return KuzuGraphAdapter.fetch_graph_view(self, kb_id, file_id, entity_query, relation_type)
 
+    # ===== OAG 只读检索（Neo4j，Cypher 与 Kùzu 兼容，委托复用）=====
+
+    def list_kb_entities(self, kb_id: str, limit: int = 5000) -> list[dict]:
+        return KuzuGraphAdapter.list_kb_entities(self, kb_id, limit)
+
+    def entities_mentioned_by_chunks(self, kb_id: str, chunk_ids: list[str]) -> list[dict]:
+        return KuzuGraphAdapter.entities_mentioned_by_chunks(self, kb_id, chunk_ids)
+
+    def chunks_mentioning_entities(self, kb_id: str, entity_ids: list[str], limit: int = 12) -> list[dict]:
+        return KuzuGraphAdapter.chunks_mentioning_entities(self, kb_id, entity_ids, limit)
+
+    def entity_neighborhood(
+        self, kb_id: str, entity_ids: list[str], hops: int = 1, limit: int = 40,
+    ) -> dict:
+        return KuzuGraphAdapter.entity_neighborhood(self, kb_id, entity_ids, hops, limit)
+
     # ===== 实体/关系实例级别同步（Neo4j 实现）=====
 
     def upsert_entity(
@@ -1384,6 +1537,27 @@ def fetch_graph_view(
     relation_type: str | None = None,
 ) -> dict:
     return _get_adapter().fetch_graph_view(kb_id, file_id, entity_query, relation_type)
+
+
+# ===== OAG 只读检索（模块级便捷函数）=====
+
+
+def list_kb_entities(kb_id: str, limit: int = 5000) -> list[dict]:
+    return _get_adapter().list_kb_entities(kb_id, limit)
+
+
+def entities_mentioned_by_chunks(kb_id: str, chunk_ids: list[str]) -> list[dict]:
+    return _get_adapter().entities_mentioned_by_chunks(kb_id, chunk_ids)
+
+
+def chunks_mentioning_entities(kb_id: str, entity_ids: list[str], limit: int = 12) -> list[dict]:
+    return _get_adapter().chunks_mentioning_entities(kb_id, entity_ids, limit)
+
+
+def entity_neighborhood(
+    kb_id: str, entity_ids: list[str], hops: int = 1, limit: int = 40,
+) -> dict:
+    return _get_adapter().entity_neighborhood(kb_id, entity_ids, hops, limit)
 
 
 # ===== 实体/关系实例级别同步（模块级便捷函数）=====

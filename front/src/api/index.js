@@ -165,6 +165,42 @@ export async function queryRagStream(kbId, query, { onChunks, onToken }) {
   }
 }
 
+// 智能体（OAG）流式问答：比 queryRagStream 多 entities / subgraph 两类事件
+export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, onChunks, onToken }) {
+  const res = await fetch(`${API}/api/agent/query`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, kb_id: kbId }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const payload = line.slice(6)
+      if (payload === '[DONE]') return
+      try {
+        const data = JSON.parse(payload)
+        if (data.type === 'entities') onEntities?.(data.entities)
+        else if (data.type === 'subgraph') onSubgraph?.(data)
+        else if (data.type === 'chunks') onChunks?.(data.chunks)
+        else if (data.type === 'token') onToken?.(data.content)
+      } catch { /* skip malformed lines */ }
+    }
+  }
+}
+
 export function getFilePreviewUrl(fileId) {
   return `${API}/api/files/${fileId}/preview`
 }

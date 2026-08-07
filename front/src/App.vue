@@ -48,9 +48,10 @@ const menuItems = computed(() => [
   { to: '/entities', key: 'entities', label: '实体', exact: false, hint: '实体管理' },
   { to: '/files', key: 'files', label: '文件', exact: false, hint: '文件管理' },
   { to: '/kb', key: 'kb', label: '知识库', exact: false, hint: '知识库' },
-  { to: '/query', key: 'query', label: '问答', exact: false, hint: '问答' },
+  { to: '/query', key: 'query', label: '知识库检索', exact: false, hint: '知识库检索' },
   { to: '/graph', key: 'graph', label: '图谱', exact: false, hint: '图谱' },
   { to: '/vectors', key: 'vectors', label: '向量', exact: false, hint: '向量' },
+  { to: '/agent', key: 'agent', label: '智能体', exact: false, hint: '本体增强问答' },
 ])
 
 const subIcons = {
@@ -252,6 +253,10 @@ onMounted(() => {
                 <path d="M12 3.25 18.75 7v7.75L12 18.5l-6.75-3.75V7L12 3.25Z" />
                 <path d="M9 9.25h6" />
                 <path d="M9 12.75h3.5" />
+              </svg>
+              <svg v-else-if="item.key === 'agent'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3l1.7 4.8L18.5 9.5l-4.8 1.7L12 16l-1.7-4.8L5.5 9.5l4.8-1.7L12 3z" />
+                <path d="M18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z" />
               </svg>
               <svg v-else-if="item.key === 'graph'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="6.5" cy="6.5" r="2.25" />

@@ -16,6 +16,12 @@ class QueryRequest(BaseModel):
     kb_id: str
 
 
+class AgentQueryRequest(BaseModel):
+    """智能体（OAG）查询请求。"""
+    query: str
+    kb_id: str
+
+
 class CreateDirectoryRequest(BaseModel):
     name: str
     parent_id: Optional[str] = None

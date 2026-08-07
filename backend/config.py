@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     # 召回
     SIMILARITY_THRESHOLD: float = 0.3
 
+    # OAG 智能体（本体增强生成）
+    OAG_ENABLED: bool = True              # 总开关
+    OAG_VEC_K: int = 50                   # 向量召回数
+    OAG_TOP_N: int = 12                   # 融合后最终来源分片数
+    OAG_SEED_ENTITY_LIMIT: int = 8        # 种子实体上限
+    OAG_GRAPH_CHUNK_LIMIT: int = 12       # 图谱召回分片上限
+    OAG_RRF_K: int = 60                   # RRF 融合常数
+    OAG_NEIGHBOR_HOPS: int = 1            # 子图跳数（v1 固定 1 跳）
+    OAG_NEIGHBOR_LIMIT: int = 40          # 子图关系条数上限
+    OAG_ENTITY_LIST_LIMIT: int = 5000     # 实体链接词面匹配时加载的实体数上限
+
     # 文件上传
     UPLOAD_DIR: str
     CHUNK_DIR: str
