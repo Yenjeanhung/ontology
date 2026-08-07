@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Entity, Ontology, OntologyRelation, Relation
+from models import Entity, File, Ontology, OntologyRelation, Relation
 from providers.graph_store import (
     delete_entity as kuzu_delete_entity,
     delete_relation as kuzu_delete_relation,
@@ -258,6 +258,11 @@ class EntityService:
             related_relations.append(_serialize_relation(rel, extra))
 
         result = _serialize_entity(ent, ontology_name=ont_name)
+
+        if ent.source_file_id:
+            file_row = await db.execute(select(File.name).where(File.id == ent.source_file_id))
+            result["source_file_name"] = file_row.scalar_one_or_none()
+
         result["relations"] = related_relations
         return result
 

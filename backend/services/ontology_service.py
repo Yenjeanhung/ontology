@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
@@ -98,8 +98,19 @@ class OntologyService:
             .where(Ontology.category_id == category_id)
             .order_by(Ontology.sort_order, Ontology.created_at)
         )
+        ontology_rows = ontologies_result.scalars().all()
+        ont_ids = [ont.id for ont in ontology_rows]
+        entity_counts = {}
+        if ont_ids:
+            counts_result = await db.execute(
+                select(Entity.ontology_id, func.count())
+                .where(Entity.ontology_id.in_(ont_ids))
+                .group_by(Entity.ontology_id)
+            )
+            entity_counts = {row[0]: row[1] for row in counts_result}
+
         ontology_list = []
-        for ont in ontologies_result.scalars().all():
+        for ont in ontology_rows:
             attrs_result = await db.execute(
                 select(OntologyAttribute)
                 .where(OntologyAttribute.ontology_id == ont.id)
@@ -120,6 +131,7 @@ class OntologyService:
                 "sort_order": ont.sort_order,
                 "attributes": attrs,
                 "template_ids": template_ids,
+                "entity_count": int(entity_counts.get(ont.id, 0)),
                 "created_at": ont.created_at,
             })
 
@@ -160,6 +172,7 @@ class OntologyService:
             "description": cat.description or "",
             "is_system": bool(cat.is_system),
             "created_at": cat.created_at,
+            "entity_count": sum(int(entity_counts.get(ont.id, 0)) for ont in ontology_rows),
             "ontologies": ontology_list,
             "relations": relations,
             "constraints": constraints,

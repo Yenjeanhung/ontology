@@ -1,7 +1,8 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { getEntityDetail, updateEntity, deleteEntity } from '../../api'
+import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl } from '../../api'
+import { marked } from 'marked'
 
 const props = defineProps({
   entityId: { type: String, required: true },
@@ -12,6 +13,22 @@ const entity = ref(null)
 const loading = ref(false)
 const loadError = ref('')
 const saving = ref(false)
+
+const previewAsset = ref(null)
+const previewText = ref('')
+const previewLoading = ref(false)
+const previewMode = ref('preview')
+const previewDraft = ref('')
+const previewSaving = ref(false)
+const previewContentRef = ref(null)
+const currentHighlightIndex = ref(0)
+
+const matchCount = computed(() => {
+  if (!entity.value?.name || !previewText.value) return 0
+  const name = entity.value.name.trim()
+  if (!name) return 0
+  return [...previewText.value.matchAll(new RegExp(escapeRegExp(name), 'g'))].length
+})
 
 // 编辑状态
 const editing = ref(false)
@@ -112,7 +129,158 @@ function relOtherName(rel) {
 }
 
 function relOtherType(rel) {
-  return rel.role === 'source' ? rel.target_entity_type : rel.source_entity_type
+  return rel.role === 'source'
+    ? rel.target_entity_type || rel.relation_type || rel.relation_def_name
+    : rel.source_entity_type || rel.relation_type || rel.relation_def_name
+}
+
+async function openSourcePreview() {
+  if (!entity.value?.source_file_id) return
+  previewAsset.value = {
+    id: entity.value.source_file_id,
+    name: entity.value.source_file_name || entity.value.source_file_id,
+    ext: entity.value.source_file_name?.split('.').pop() || '',
+    source_type: '来源文件',
+    size: 0,
+  }
+  previewLoading.value = true
+  previewMode.value = 'preview'
+  previewDraft.value = ''
+  try {
+    previewText.value = await fetchFileContent(entity.value.source_file_id)
+    previewDraft.value = previewText.value
+  } catch (e) {
+    previewText.value = '文件内容加载失败'
+    previewDraft.value = ''
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+function closePreview() {
+  previewAsset.value = null
+  previewText.value = ''
+  previewMode.value = 'preview'
+  previewDraft.value = ''
+  previewSaving.value = false
+}
+
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function buildHighlightedHtml(raw) {
+  if (!entity.value?.name || !raw) return escapeHtml(raw || '')
+  const name = entity.value.name
+  const escapedName = escapeHtml(name)
+  const regex = new RegExp(escapeRegExp(name), 'g')
+  let lastIndex = 0
+  let result = ''
+  let match
+  let idx = 0
+  while ((match = regex.exec(raw)) !== null) {
+    result += escapeHtml(raw.slice(lastIndex, match.index))
+    result += `<mark class="entity-highlight" data-highlight-index="${idx}">${escapedName}</mark>`
+    lastIndex = match.index + match[0].length
+    idx += 1
+  }
+  result += escapeHtml(raw.slice(lastIndex))
+  return result
+}
+
+function highlightText(raw) {
+  return buildHighlightedHtml(raw)
+}
+
+function renderHighlightedMarkdown(raw) {
+  if (!raw) return ''
+  if (!entity.value?.name) return marked.parse(raw)
+  const name = entity.value.name
+  let idx = 0
+  const parsed = raw.replace(new RegExp(escapeRegExp(name), 'g'), () => {
+    const replacement = `<mark class="entity-highlight" data-highlight-index="${idx}">${escapeHtml(name)}</mark>`
+    idx += 1
+    return replacement
+  })
+  return marked.parse(parsed)
+}
+
+const previewHtml = computed(() => {
+  if (!previewText.value) return ''
+  if (isMarkdownAsset(previewAsset.value)) {
+    return renderHighlightedMarkdown(previewText.value)
+  }
+  return highlightText(previewText.value)
+})
+
+function updateHighlightClass() {
+  const container = previewContentRef.value
+  if (!container) return
+  const marks = Array.from(container.querySelectorAll('.entity-highlight'))
+  marks.forEach((el, index) => {
+    el.classList.toggle('current-highlight', index === currentHighlightIndex.value)
+  })
+}
+
+async function scrollToEntityHighlight() {
+  await nextTick()
+  const container = previewContentRef.value
+  if (!container) return
+  updateHighlightClass()
+  const mark = container.querySelector(`.entity-highlight[data-highlight-index="${currentHighlightIndex.value}"]`)
+  if (mark) {
+    mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+}
+
+function gotoHighlight(index) {
+  if (!matchCount.value) return
+  const next = ((index % matchCount.value) + matchCount.value) % matchCount.value
+  currentHighlightIndex.value = next
+}
+
+function gotoNextHighlight() {
+  gotoHighlight(currentHighlightIndex.value + 1)
+}
+
+function gotoPrevHighlight() {
+  gotoHighlight(currentHighlightIndex.value - 1)
+}
+
+watch([previewText, () => entity.value?.name], async () => {
+  currentHighlightIndex.value = 0
+  await nextTick()
+  scrollToEntityHighlight()
+})
+
+watch(currentHighlightIndex, () => {
+  scrollToEntityHighlight()
+})
+
+function togglePreviewMode(mode) {
+  previewMode.value = mode
+}
+
+function isEditableTextAsset(asset) {
+  return ['txt', 'md', 'csv', 'json', 'html'].includes((asset?.ext || '').toLowerCase())
+}
+
+function isMarkdownAsset(asset) {
+  return (asset?.ext || '').toLowerCase() === 'md'
+}
+
+function gotoSourceFile() {
+  if (!entity.value?.source_file_id) return
+  openSourcePreview()
 }
 
 watch(() => props.entityId, load)
@@ -136,7 +304,7 @@ onMounted(load)
     <div v-if="loading" class="loading-state"><span class="spinner"></span> 加载中...</div>
     <div v-else-if="loadError" class="error-state">{{ loadError }}</div>
 
-    <template v-else-if="entity">
+    <div v-else-if="entity">
       <!-- 基本信息 + 属性 -->
       <div class="detail-card">
         <div class="detail-section">
@@ -159,7 +327,7 @@ onMounted(load)
               <span class="info-label">实体名称</span>
               <span class="info-value">
                 <input v-if="editing" type="text" v-model="editName" class="info-input">
-                <template v-else>{{ entity.name }}</template>
+                <span v-else>{{ entity.name }}</span>
               </span>
             </div>
             <div class="info-item">
@@ -170,12 +338,14 @@ onMounted(load)
               <span class="info-label">描述</span>
               <span class="info-value">
                 <input v-if="editing" type="text" v-model="editDesc" class="info-input" placeholder="（无）">
-                <template v-else>{{ entity.description || '—' }}</template>
+                <span v-else>{{ entity.description || '—' }}</span>
               </span>
             </div>
             <div class="info-item">
               <span class="info-label">来源文件</span>
-              <span class="info-value mono">{{ entity.source_file_id || '—' }}</span>
+              <span class="info-value mono clickable" @click="gotoSourceFile">
+                {{ entity.source_file_name || entity.source_file_id || '—' }}
+              </span>
             </div>
             <div class="info-item">
               <span class="info-label">创建时间</span>
@@ -222,7 +392,7 @@ onMounted(load)
           </div>
           <div v-if="entity.relations?.length" class="rel-list">
             <div v-for="rel in entity.relations" :key="rel.id" class="rel-item">
-              <span class="rel-role" :class="rel.role">{{ rel.role === 'source' ? '起' : '终' }}</span>
+              <span class="rel-current">{{ entity.name }}</span>
               <span class="rel-arrow">{{ rel.role === 'source' ? '→' : '←' }}</span>
               <span class="rel-type">{{ rel.relation_def_name || rel.relation_type }}</span>
               <span class="rel-arrow">{{ rel.role === 'source' ? '→' : '←' }}</span>
@@ -235,7 +405,50 @@ onMounted(load)
           <div v-else class="props-empty">无关联关系</div>
         </div>
       </div>
-    </template>
+
+      <div class="modal-mask" v-if="previewAsset" @click.self="closePreview">
+        <div class="preview-modal" @click.stop>
+          <div class="preview-head">
+            <div>
+              <div class="preview-title">{{ previewAsset.name }}</div>
+              <div class="preview-sub">来源文件预览</div>
+            </div>
+            <button class="icon-btn" @click="closePreview">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+          </div>
+          <div class="preview-actions">
+            <div v-if="matchCount > 0" class="preview-occurrence">
+              <button class="small-btn" @click="gotoPrevHighlight" :disabled="matchCount <= 1">上一个</button>
+              <span>{{ currentHighlightIndex + 1 }} / {{ matchCount }}</span>
+              <button class="small-btn" @click="gotoNextHighlight" :disabled="matchCount <= 1">下一个</button>
+            </div>
+          </div>
+          <div class="preview-body">
+            <div v-if="previewLoading" class="empty-state">加载中...</div>
+            <iframe v-else-if="previewAsset.ext === 'pdf'" :src="getFilePreviewUrl(previewAsset.id)" class="pdf-frame"></iframe>
+            <textarea
+              v-else-if="previewMode === 'edit' && isEditableTextAsset(previewAsset)"
+              v-model="previewDraft"
+              class="preview-editor"
+              readonly
+            ></textarea>
+            <div
+              v-else-if="isMarkdownAsset(previewAsset)"
+              ref="previewContentRef"
+              class="preview-markdown markdown-body"
+              v-html="previewHtml"
+            ></div>
+            <pre
+              v-else
+              class="preview-text"
+              ref="previewContentRef"
+              v-html="previewHtml"
+            ></pre>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -267,8 +480,8 @@ onMounted(load)
 .info-label { font-size: 12px; font-weight: 600; color: var(--c-secondary); }
 .info-value { font-size: 14px; color: var(--c-fg); word-break: break-word; }
 .info-value.mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--c-secondary); }
-.info-input { width: 100%; padding: 6px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 13px; font-family: var(--font); outline: none; }
-.info-input:focus { border-color: var(--c-fg); }
+  .info-value.clickable { cursor: pointer; color: var(--c-accent); transition: color 150ms ease, text-decoration 150ms ease; }
+  .info-value.clickable:hover { color: var(--c-fg); text-decoration: underline; }
 
 .props-edit { display: flex; flex-direction: column; gap: 8px; }
 .prop-edit-row { display: flex; gap: 8px; align-items: center; }
@@ -296,4 +509,22 @@ onMounted(load)
 .rel-other { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .rel-other-name { font-weight: 600; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rel-other-type { font-size: 11px; color: var(--c-secondary); }
+
+  .modal-mask { position: fixed; inset: 0; z-index: 999; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.45); padding: 20px; }
+  .preview-modal { width: min(940px, 100%); max-height: min(90vh, 800px); border-radius: 16px; background: var(--c-panel); overflow: hidden; box-shadow: 0 18px 60px rgba(0,0,0,0.22); display: flex; flex-direction: column; }
+  .preview-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--c-border); }
+  .preview-title { font-size: 16px; font-weight: 700; color: var(--c-fg); }
+  .preview-sub { font-size: 13px; color: var(--c-secondary); }
+  .preview-body { padding: 16px; flex: 1; overflow: auto; min-height: 280px; }
+  .pdf-frame { width: 100%; min-height: 420px; border: 0; }
+  .preview-editor, .preview-text { width: 100%; min-height: 320px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-family: ui-monospace, Consolas, monospace; font-size: 13px; padding: 14px; white-space: pre-wrap; word-break: break-word; }
+  .preview-editor { resize: vertical; }
+  .preview-actions { display: flex; align-items: center; justify-content: flex-start; gap: 12px; padding: 0 20px 12px; }
+  .entity-highlight { background: rgba(250, 196, 0, 0.22); color: inherit; border-radius: 4px; padding: 0 2px; transition: background 120ms ease, transform 120ms ease; cursor: default; }
+  .entity-highlight:hover { background: rgba(250, 196, 0, 0.35); }
+  .entity-highlight.current-highlight { background: rgba(250, 196, 0, 0.55); box-shadow: 0 0 0 2px rgba(250, 196, 0, 0.25); }
+  .preview-occurrence { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--c-secondary); }
+  .preview-occurrence .small-btn { padding: 6px 11px; border: 1px solid var(--c-border); border-radius: 999px; background: var(--c-panel); color: var(--c-fg); cursor: pointer; transition: background 150ms ease, border-color 150ms ease; }
+  .preview-occurrence .small-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+  .preview-occurrence .small-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

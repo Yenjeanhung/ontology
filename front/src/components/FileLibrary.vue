@@ -1,5 +1,6 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, nextTick, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { marked } from 'marked'
 import FolderTreeNode from './FolderTreeNode.vue'
 import {
@@ -122,10 +123,14 @@ const directoryTree = computed(() => {
 
 const selectedCount = computed(() => selectedAssets.value.size)
 const readyAssets = computed(() => assets.value.filter(item => item.status === 'ready'))
+const route = useRoute()
 const selectedDirectory = computed(() => directories.value.find(item => item.id === selectedDirectoryId.value) || null)
 const selectedDirectoryName = computed(() => selectedDirectory.value?.name || '全部文件')
 const crawlTargetDirectoryLabel = computed(() => selectedDirectory.value?.name || '采集')
 const isUsingDefaultCrawlDirectory = computed(() => !selectedDirectory.value)
+const highlightInfo = ref({ fileId: '', fileName: '', entityName: '' })
+const highlightedAssetId = ref('')
+const scrollToHighlightedFile = ref(false)
 
 function fmtSize(value = 0) {
   if (value < 1024) return `${value} B`
@@ -173,6 +178,47 @@ function isMarkdownAsset(asset) {
   return (asset?.ext || '').toLowerCase() === 'md'
 }
 
+function scrollToHighlighted() {
+  if (!highlightedAssetId.value) return
+  nextTick(() => {
+    const el = document.querySelector(`[data-asset-id="${highlightedAssetId.value}"]`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      scrollToHighlightedFile.value = false
+    }
+  })
+}
+
+function applyRouteHighlight() {
+  const query = route.query
+  if (!query.file_id && !query.file_name) return
+  const fileId = String(query.file_id || '')
+  const fileName = String(query.file_name || '')
+  const entityName = String(query.entity_name || '')
+  highlightInfo.value = { fileId, fileName, entityName }
+
+  const target = assets.value.find(item => item.id === fileId || item.name === fileName)
+  if (!target) {
+    highlightedAssetId.value = ''
+    return
+  }
+
+  highlightedAssetId.value = target.id
+  scrollToHighlightedFile.value = true
+  if (entityName) {
+    openPreview(target)
+  }
+  if (scrollToHighlightedFile.value) {
+    scrollToHighlighted()
+  }
+}
+
+watch(() => route.query, () => {
+  if (assets.value.length) {
+    applyRouteHighlight()
+  }
+})
+
 function renderMarkdown(text) {
   return marked.parse(text || '')
 }
@@ -186,6 +232,7 @@ async function loadAssets() {
     assets.value = await fetchAssets({ directoryId: selectedDirectoryId.value, q: search.value })
     const ids = new Set(assets.value.map(item => item.id))
     selectedAssets.value = new Set([...selectedAssets.value].filter(id => ids.has(id)))
+    await applyRouteHighlight()
   } catch {}
 }
 
@@ -424,6 +471,7 @@ async function deleteAsset(asset) {
 
 async function openPreview(asset) {
   previewAsset.value = asset
+  highlightedAssetId.value = asset.id
   previewLoading.value = true
   previewMode.value = 'preview'
   previewDraft.value = ''
@@ -745,7 +793,7 @@ onUnmounted(() => {
             <div>操作</div>
           </div>
           <div v-if="assets.length > 0">
-            <div v-for="asset in assets" :key="asset.id" :class="['asset-row', { selected: selectedAssets.has(asset.id) }]">
+            <div v-for="asset in assets" :key="asset.id" :class="['asset-row', { selected: selectedAssets.has(asset.id), highlighted: highlightedAssetId === asset.id }]" :data-asset-id="asset.id">
               <button class="check-btn" @click.stop="toggleAssetSelection(asset.id)" :disabled="asset.status !== 'ready'">
                 {{ selectedAssets.has(asset.id) ? '✓' : '' }}
               </button>

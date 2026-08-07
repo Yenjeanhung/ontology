@@ -67,7 +67,7 @@ async function loadTree() {
     const tree = []
     for (const cat of cats) {
       const detail = await getOntologyCategoryDetail(cat.id)
-      tree.push({ category: cat, ontologies: detail.ontologies || [] })
+      tree.push({ category: { ...cat, entity_count: detail?.entity_count ?? 0 }, ontologies: detail?.ontologies || [] })
       expandedCats.value.add(cat.id)
     }
     ontologyTree.value = tree
@@ -226,7 +226,7 @@ onMounted(async () => {
                 <svg :class="{ rotated: expandedCats.has(g.category.id) }" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
               </button>
               <span class="tree-cat-name">{{ g.category.name }}</span>
-              <span class="tree-count">{{ g.ontologies.length }}</span>
+              <span class="tree-count">{{ g.category.entity_count || 0 }} 实体</span>
             </div>
             <div v-if="expandedCats.has(g.category.id)" class="tree-children">
               <div
@@ -237,7 +237,7 @@ onMounted(async () => {
                 @click="selectOntology(ont.id)"
               >
                 <span class="tree-ont-dot" :style="{ background: ont.color || 'var(--c-accent)' }"></span>
-                <span class="tree-ont-name">{{ ont.name }}</span>
+                <span class="tree-ont-name">{{ ont.name }}<span v-if="ont.entity_count !== undefined">（{{ ont.entity_count }}）</span></span>
               </div>
             </div>
           </div>
