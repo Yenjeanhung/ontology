@@ -25,6 +25,8 @@ const nodes = ref([])
 const edges = ref([])
 const colorMap = ref({})
 const selectedNodeId = ref('')
+const layoutMsg = ref('')
+let layoutMsgTimer = null
 
 const isDragging = ref(false)
 const isPanning = ref(false)
@@ -235,6 +237,230 @@ function relayout() {
   startSimulation()
 }
 
+// ===== 最佳布局：环形排列 + 最小化连线交叉 =====
+function nodeDeg(id) {
+  const n = nodes.value.find(x => x.id === id)
+  return n ? n.degree : 0
+}
+
+// 环形布局下，两条弦(边)交叉当且仅当端点在环上交错
+function chordCrossings(order) {
+  const pos = {}
+  order.forEach((id, i) => { pos[id] = i })
+  const E = edges.value
+  let cross = 0
+  for (let i = 0; i < E.length; i++) {
+    let a = pos[E[i].source], b = pos[E[i].target]
+    if (a > b) { const t = a; a = b; b = t }
+    for (let j = i + 1; j < E.length; j++) {
+      let c = pos[E[j].source], d = pos[E[j].target]
+      if (c > d) { const t = c; c = d; d = t }
+      if (a === c || a === d || b === c || b === d) continue
+      if ((a < c && c < b && b < d) || (c < a && a < d && d < b)) cross++
+    }
+  }
+  return cross
+}
+
+function optimizeOrder(start) {
+  let order = start.slice()
+  let best = chordCrossings(order)
+  let improved = true
+  let guard = 0
+  // 爬山：尝试所有两两交换，保留能减少交叉的交换，直到收敛
+  while (improved && guard++ < 60) {
+    improved = false
+    for (let i = 0; i < order.length; i++) {
+      for (let j = i + 1; j < order.length; j++) {
+        const test = order.slice()
+        const tmp = test[i]; test[i] = test[j]; test[j] = tmp
+        const c = chordCrossings(test)
+        if (c < best) { best = c; order = test; improved = true }
+      }
+    }
+  }
+  return { order, crossings: best }
+}
+
+function shuffleArr(arr) {
+  const a = arr.slice()
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    const t = a[i]; a[i] = a[j]; a[j] = t
+  }
+  return a
+}
+
+function dfsOrder(ids) {
+  const adj = {}
+  ids.forEach(id => { adj[id] = new Set() })
+  for (const e of edges.value) {
+    if (adj[e.source]) adj[e.source].add(e.target)
+    if (adj[e.target]) adj[e.target].add(e.source)
+  }
+  const start = ids.slice().sort((a, b) => nodeDeg(b) - nodeDeg(a))[0]
+  const visited = new Set()
+  const order = []
+  const stack = [start]
+  while (stack.length) {
+    const cur = stack.pop()
+    if (visited.has(cur)) continue
+    visited.add(cur); order.push(cur)
+    const nbrs = [...(adj[cur] || [])].sort((a, b) => nodeDeg(b) - nodeDeg(a))
+    for (const n of nbrs) if (!visited.has(n)) stack.push(n)
+  }
+  for (const id of ids) if (!visited.has(id)) order.push(id)
+  return order
+}
+
+// 计算给定节点位置下的真实线段交叉数（用节点中心连成的直线段）
+function crossingsFromPositions(pos, E) {
+  const ccw = (ax, ay, bx, by, cx, cy) => (cy - ay) * (bx - ax) > (by - ay) * (cx - ax)
+  const inter = (ax, ay, bx, by, cx, cy, dx, dy) => {
+    if ((ax === cx && ay === cy) || (ax === dx && ay === dy) || (bx === cx && by === cy) || (bx === dx && by === dy)) return false
+    return ccw(ax, ay, cx, cy, dx, dy) !== ccw(bx, by, cx, cy, dx, dy) && ccw(ax, ay, bx, by, cx, cy) !== ccw(ax, ay, bx, by, dx, dy)
+  }
+  let c = 0
+  for (let i = 0; i < E.length; i++) {
+    for (let j = i + 1; j < E.length; j++) {
+      const A = pos[E[i].source], B = pos[E[i].target], C = pos[E[j].source], D = pos[E[j].target]
+      if (!A || !B || !C || !D) continue
+      if (inter(A.x, A.y, B.x, B.y, C.x, C.y, D.x, D.y)) c++
+    }
+  }
+  return c
+}
+
+// 纯 JS 力学布局（不依赖 DOM/动画），用于多种子择优
+function forceCandidate(ids, adj, seed) {
+  const cx = WORLD_W / 2, cy = WORLD_H / 2
+  const baseR = Math.min(WORLD_W, WORLD_H) * 0.34
+  const golden = 2.39996
+  const ns = ids.map((id, i) => {
+    const ang = (i + 1) * golden * (1 + seed * 0.37)
+    const rr = baseR * (0.55 + ((i * 7 + seed * 3) % 6) / 14)
+    return { id, x: cx + Math.cos(ang) * rr, y: cy + Math.sin(ang) * rr, vx: 0, vy: 0 }
+  })
+  const byId = {}
+  ns.forEach(n => { byId[n.id] = n })
+  const rep = 15000, att = 0.0035, grav = 0.003, damp = 0.86, minD = 80
+  for (let step = 0; step < 700; step++) {
+    for (let i = 0; i < ns.length; i++) {
+      const a = ns[i]
+      let fx = 0, fy = 0
+      for (let j = 0; j < ns.length; j++) {
+        if (i === j) continue
+        const b = ns[j]
+        const dx = a.x - b.x, dy = a.y - b.y
+        const d = Math.max(minD, Math.hypot(dx, dy))
+        const f = rep / (d * d)
+        fx += dx / d * f; fy += dy / d * f
+      }
+      for (const nid of adj[a.id]) {
+        const b = byId[nid]
+        if (!b) continue
+        fx += (b.x - a.x) * att; fy += (b.y - a.y) * att
+      }
+      fx += (cx - a.x) * grav; fy += (cy - a.y) * grav
+      a.vx = (a.vx + fx) * damp; a.vy = (a.vy + fy) * damp
+      a.x += a.vx; a.y += a.vy
+      a.x = Math.max(60, Math.min(WORLD_W - 60, a.x))
+      a.y = Math.max(60, Math.min(WORLD_H - 60, a.y))
+    }
+  }
+  const pos = {}
+  ns.forEach(n => { pos[n.id] = { x: n.x, y: n.y } })
+  return pos
+}
+
+// 模拟退火：在已有布局上随机扰动节点位置，进一步消除交叉（突破力学布局的局部最优）
+function annealPositions(startPos, E, ids) {
+  const cur = {}
+  for (const id in startPos) cur[id] = { x: startPos[id].x, y: startPos[id].y }
+  let curC = crossingsFromPositions(cur, E)
+  let bestC = curC
+  let bestPos = {}
+  for (const id in cur) bestPos[id] = { x: cur[id].x, y: cur[id].y }
+  let T = 1.3
+  for (let iter = 0; iter < 14000; iter++) {
+    const id = ids[Math.floor(Math.random() * ids.length)]
+    const old = { x: cur[id].x, y: cur[id].y }
+    const step = 70 * T + 8
+    cur[id].x = Math.max(60, Math.min(WORLD_W - 60, cur[id].x + (Math.random() * 2 - 1) * step))
+    cur[id].y = Math.max(60, Math.min(WORLD_H - 60, cur[id].y + (Math.random() * 2 - 1) * step))
+    const newC = crossingsFromPositions(cur, E)
+    const dC = newC - curC
+    if (dC <= 0 || Math.random() < Math.exp(-dC / T)) {
+      curC = newC
+      if (curC < bestC) {
+        bestC = curC
+        bestPos = {}
+        for (const k in cur) bestPos[k] = { x: cur[k].x, y: cur[k].y }
+      }
+    } else {
+      cur[id].x = old.x; cur[id].y = old.y
+    }
+    T *= 0.9996
+  }
+  return { pos: bestPos, c: bestC }
+}
+
+function optimizeLayout() {
+  if (!nodes.value.length) return
+  stopSimulation()
+  const ids = nodes.value.map(n => n.id)
+  const adj = {}
+  ids.forEach(id => { adj[id] = new Set() })
+  const E = edges.value.map(e => ({ source: e.source, target: e.target }))
+  E.forEach(e => {
+    if (adj[e.source]) adj[e.source].add(e.target)
+    if (adj[e.target]) adj[e.target].add(e.source)
+  })
+
+  let best = null
+
+  // 候选 A：环形 + 最小弦交叉（对稀疏图往往更好）
+  const byDeg = ids.slice().sort((a, b) => nodeDeg(b) - nodeDeg(a))
+  const circStarts = [byDeg, byDeg.slice().reverse(), dfsOrder(ids)]
+  for (let r = 0; r < 5; r++) circStarts.push(shuffleArr(ids))
+  let bestCirc = null
+  for (const s of circStarts) {
+    const res = optimizeOrder(s)
+    if (!bestCirc || res.crossings < bestCirc.crossings) bestCirc = res
+  }
+  const cx = WORLD_W / 2, cy = WORLD_H / 2, R = Math.min(WORLD_W, WORLD_H) * 0.4, m = bestCirc.order.length
+  const circPos = {}
+  bestCirc.order.forEach((id, i) => {
+    const ang = (i / m) * Math.PI * 2 - Math.PI / 2
+    circPos[id] = { x: cx + Math.cos(ang) * R, y: cy + Math.sin(ang) * R }
+  })
+  best = { pos: circPos, c: crossingsFromPositions(circPos, E) }
+
+  // 候选 B：多种随机种子的力学布局（对稠密图往往更好），按真实交叉数择优
+  for (let seed = 0; seed < 10; seed++) {
+    const pos = forceCandidate(ids, adj, seed)
+    const c = crossingsFromPositions(pos, E)
+    if (c < best.c) best = { pos, c }
+  }
+
+  // 局部退火：在最优候选基础上继续消减交叉，突破力学局部最优（图过大时跳过，避免卡顿）
+  if (nodes.value.length <= 26 && E.length <= 100) {
+    const ann = annealPositions(best.pos, E, ids)
+    if (ann.c < best.c) best = ann
+  }
+
+  // 应用最优位置
+  for (const n of nodes.value) {
+    const p = best.pos[n.id]
+    if (p) { n.x = p.x; n.y = p.y; n.vx = 0; n.vy = 0; n.fixed = false }
+  }
+  viewBox.value = { ...defaultViewBox }
+  zoomLevel.value = 1
+  layoutMsg.value = `最佳布局：剩余 ${best.c} 处交叉`
+  clearTimeout(layoutMsgTimer)
+  layoutMsgTimer = setTimeout(() => { layoutMsg.value = '' }, 3500)
+}
+
 // ======================= Pan & Zoom =======================
 function applyZoom(newZoom) {
   const vb = viewBox.value
@@ -342,6 +568,7 @@ onUnmounted(stopSimulation)
       <span class="rg-chip">{{ edges.length }} 条关系</span>
       <span class="rg-chip">{{ Math.round(zoomLevel * 100) }}%</span>
       <span class="rg-hint">滚轮缩放 · 拖拽节点/画布 · 点击节点查看关联 · 拖动后球会固定在松手处</span>
+      <span v-if="layoutMsg" class="rg-layout-msg">{{ layoutMsg }}</span>
     </div>
 
     <div class="rg-main">
@@ -413,10 +640,16 @@ onUnmounted(stopSimulation)
             </g>
           </svg>
 
-          <button class="rg-relayout-btn" @click="relayout" title="解除手动固定，重新自动布局">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
-            重新布局
-          </button>
+          <div class="rg-canvas-tools">
+            <button class="rg-tool-btn" @click="optimizeLayout" title="一键最小化连线交叉的最佳环形布局">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9.5 13.9 11.4 12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/><path d="M19 14l.7 1.8L21.5 16.5 19.7 17.2 19 19l-.7-1.8L16.5 16.5l1.8-.7z"/></svg>
+              最佳布局
+            </button>
+            <button class="rg-tool-btn" @click="relayout" title="解除手动固定，重新自动布局">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
+              重新布局
+            </button>
+          </div>
 
           <div class="rg-zoom">
             <button class="rg-zoom-btn" @click="zoomIn" title="放大">+</button>
@@ -463,8 +696,11 @@ onUnmounted(stopSimulation)
   background: var(--c-panel); color: var(--c-secondary); font-size: 12px; font-weight: 600;
 }
 .rg-hint { font-size: 12px; color: var(--c-secondary); }
-.rg-relayout-btn {
+.rg-canvas-tools {
   position: absolute; top: 12px; right: 12px; z-index: 2;
+  display: flex; gap: 6px;
+}
+.rg-tool-btn {
   display: inline-flex; align-items: center; gap: 5px;
   height: 30px; padding: 0 12px;
   border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;
@@ -472,7 +708,12 @@ onUnmounted(stopSimulation)
   font-size: 12px; font-weight: 600; cursor: pointer;
   backdrop-filter: blur(8px); transition: background 120ms, color 120ms;
 }
-.rg-relayout-btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
+.rg-tool-btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
+.rg-layout-msg {
+  margin-left: auto; padding: 4px 10px; border-radius: 999px;
+  background: rgba(99,140,220,0.15); color: #8bb5f5;
+  font-size: 12px; font-weight: 600;
+}
 
 .rg-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 320px); gap: 14px; align-items: start; }
 .rg-canvas-wrap { min-width: 0; }
