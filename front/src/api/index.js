@@ -497,6 +497,18 @@ export async function createConstraint(categoryId, { source_ontology_id, relatio
   return res.json()
 }
 
+export async function updateConstraint(categoryId, constraintId, data) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/constraints/${constraintId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Update constraint failed')
+  }
+  return res.json()
+}
+
 export async function deleteConstraint(categoryId, constraintId) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/constraints/${constraintId}`, { method: 'DELETE' })
   if (!res.ok) throw new Error('Delete constraint failed')

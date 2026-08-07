@@ -90,9 +90,20 @@ function cancelEditInfo() {
   infoDesc.value = detail.value?.description || ''
 }
 
-// 子组件变更后刷新详情
-function onSubChanged() {
-  load()
+// 子组件变更后静默刷新详情（不显示 loading，避免子组件被销毁重建导致状态丢失）
+async function onSubChanged() {
+  if (!props.categoryId) return
+  loadError.value = ''
+  try {
+    const data = await getOntologyCategoryDetail(props.categoryId)
+    if (data) {
+      detail.value = data
+      infoName.value = data.name
+      infoDesc.value = data.description || ''
+    }
+  } catch (e) {
+    loadError.value = '加载失败：' + e.message
+  }
 }
 
 watch(() => props.categoryId, load)

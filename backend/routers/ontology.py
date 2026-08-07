@@ -224,14 +224,20 @@ async def batch_create_constraints(category_id: str, req: BatchCreateConstraints
 
 @router.post("/ontology-categories/{category_id}/constraints")
 async def create_constraint(category_id: str, req: CreateRelationConstraintRequest, db: AsyncSession = Depends(get_db)):
-    return await OntologyService.create_constraint(
-        db, category_id, req.source_ontology_id, req.relation_id, req.target_ontology_id, req.description or ""
-    )
+    try:
+        return await OntologyService.create_constraint(
+            db, category_id, req.source_ontology_id, req.relation_id, req.target_ontology_id, req.description or ""
+        )
+    except ValueError as e:
+        raise _bad_request(str(e))
 
 
 @router.put("/ontology-categories/{category_id}/constraints/{constraint_id}")
 async def update_constraint(category_id: str, constraint_id: str, req: UpdateRelationConstraintRequest, db: AsyncSession = Depends(get_db)):
-    res = await OntologyService.update_constraint(db, constraint_id, req)
+    try:
+        res = await OntologyService.update_constraint(db, constraint_id, req)
+    except ValueError as e:
+        raise _bad_request(str(e))
     if not res:
         raise _nf("Constraint not found")
     return res

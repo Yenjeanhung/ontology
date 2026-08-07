@@ -569,6 +569,16 @@ class OntologyService:
         db: AsyncSession, category_id: str, source_ontology_id: str,
         relation_id: str, target_ontology_id: str, description: str = "",
     ) -> dict:
+        # 校验：两个本体之间只能建立唯一的关系（同一对 source-target 不可重复）
+        existing = await db.execute(
+            select(OntologyRelationConstraint.id).where(
+                OntologyRelationConstraint.category_id == category_id,
+                OntologyRelationConstraint.source_ontology_id == source_ontology_id,
+                OntologyRelationConstraint.target_ontology_id == target_ontology_id,
+            )
+        )
+        if existing.scalar_one_or_none():
+            raise ValueError("这两个本体之间已存在关系约束，每对本体只能建立一个关系")
         c = OntologyRelationConstraint(
             category_id=category_id, source_ontology_id=source_ontology_id,
             relation_id=relation_id, target_ontology_id=target_ontology_id,
@@ -587,6 +597,20 @@ class OntologyService:
         c = result.scalar_one_or_none()
         if not c:
             return None
+        new_source = req.source_ontology_id if req.source_ontology_id is not None else c.source_ontology_id
+        new_target = req.target_ontology_id if req.target_ontology_id is not None else c.target_ontology_id
+        # 校验：两个本体之间只能建立唯一的关系（同一对 source-target 不可重复）
+        if req.source_ontology_id is not None or req.target_ontology_id is not None:
+            existing = await db.execute(
+                select(OntologyRelationConstraint.id).where(
+                    OntologyRelationConstraint.category_id == c.category_id,
+                    OntologyRelationConstraint.source_ontology_id == new_source,
+                    OntologyRelationConstraint.target_ontology_id == new_target,
+                    OntologyRelationConstraint.id != constraint_id,
+                )
+            )
+            if existing.scalar_one_or_none():
+                raise ValueError("这两个本体之间已存在关系约束，每对本体只能建立一个关系")
         if req.source_ontology_id is not None:
             c.source_ontology_id = req.source_ontology_id
         if req.relation_id is not None:

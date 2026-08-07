@@ -1,9 +1,15 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { createConstraint, updateConstraint, deleteConstraint } from '../../api'
 
 const props = defineProps({
   constraints: { type: Array, default: () => [] },
+  categoryId: { type: String, required: true },
+  ontologies: { type: Array, default: () => [] },
+  relations: { type: Array, default: () => [] },
 })
+
+const emit = defineEmits(['changed'])
 
 const NODE_COLORS = [
   '#5b8fbc', '#7aa17e', '#c2a45c', '#c48b7a', '#7b8db0',
@@ -25,6 +31,7 @@ const nodes = ref([])
 const edges = ref([])
 const colorMap = ref({})
 const selectedNodeId = ref('')
+const selectedEdgeKey = ref('')
 const layoutMsg = ref('')
 let layoutMsgTimer = null
 
@@ -35,16 +42,41 @@ const dragOffset = ref({ x: 0, y: 0 })
 const panStart = ref({ x: 0, y: 0 })
 const panViewBoxStart = ref({ x: 0, y: 0 })
 
+// 对话框状态
+const showAddDialog = ref(false)
+const showEditDialog = ref(false)
+const dialogError = ref('')
+const submitting = ref(false)
+const addForm = ref({ sourceId: '', relationId: '', targetId: '' })
+const editForm = ref({ relationId: '' })
+const editingEdge = ref(null)
+
+// 右键菜单状态
+const contextMenu = ref({ show: false, x: 0, y: 0, edge: null })
+
 const nodeMap = computed(() => {
   const m = {}
   for (const n of nodes.value) m[n.id] = n
   return m
 })
 
+const edgeMap = computed(() => {
+  const m = {}
+  for (const e of edges.value) m[e.key] = e
+  return m
+})
+
+const ontologyOptions = computed(() =>
+  props.ontologies.map(o => ({ value: o.id, label: o.name }))
+)
+
+const relationOptions = computed(() =>
+  props.relations.map(r => ({ value: r.id, label: r.name }))
+)
+
 // 曲线参数：同一对节点的多条平行边扇形分开，避免重叠
 const edgeRenderList = computed(() => {
   const map = nodeMap.value
-  // 先按无序节点对分组，分配弯曲偏移
   const pairIndex = new Map()
   const counts = new Map()
   for (const e of edges.value) {
@@ -72,10 +104,8 @@ const edgeRenderList = computed(() => {
     const sxo = sx + ux * sr, syo = sy + uy * sr
     const txo = tx - ux * tr, tyo = ty - uy * tr
     const mx = (sxo + txo) / 2, my = (syo + tyo) / 2
-    // 垂直方向偏移控制弧度
     const cx = mx - uy * dist * (0.12 + spread)
     const cy = my + ux * dist * (0.12 + spread)
-    // 标签放在二次贝塞尔曲线的真实中点（t=0.5），而非控制点，避免标签飘离线条
     const lx = (mx + cx) / 2
     const ly = (my + cy) / 2
     return { ...edge, sx: sxo, sy: syo, tx: txo, ty: tyo, mx, my, cx, cy, lx, ly }
@@ -85,6 +115,19 @@ const edgeRenderList = computed(() => {
 const selectedNodeEdges = computed(() => {
   if (!selectedNodeId.value) return []
   return edges.value.filter(e => e.source === selectedNodeId.value || e.target === selectedNodeId.value)
+})
+
+const selectedEdgeDetail = computed(() => {
+  if (!selectedEdgeKey.value) return null
+  const e = edgeMap.value[selectedEdgeKey.value]
+  if (!e) return null
+  const sn = nodeMap.value[e.source]
+  const tn = nodeMap.value[e.target]
+  return {
+    ...e,
+    sourceName: sn ? sn.name : '?',
+    targetName: tn ? tn.name : '?',
+  }
 })
 
 function getNodeColor(node) {
@@ -99,6 +142,104 @@ function getNodeRadius(node) {
 function getNodeLabel(node) {
   return node.name.length > 12 ? node.name.slice(0, 11) + '..' : node.name
 }
+
+// ===== 关系 CRUD 操作 =====
+
+function getOntologyName(id) {
+  const o = props.ontologies.find(x => x.id === id)
+  return o ? o.name : '?'
+}
+
+function getRelationName(id) {
+  const r = props.relations.find(x => x.id === id)
+  return r ? r.name : '?'
+}
+
+function openAddDialog() {
+  dialogError.value = ''
+  addForm.value = { sourceId: '', relationId: '', targetId: '' }
+  showAddDialog.value = true
+}
+
+function openEditDialog(edge) {
+  dialogError.value = ''
+  editingEdge.value = edge
+  editForm.value = { relationId: edge.relationId || '' }
+  showEditDialog.value = true
+}
+
+async function submitAdd() {
+  dialogError.value = ''
+  const { sourceId, relationId, targetId } = addForm.value
+  if (!sourceId || !relationId || !targetId) {
+    dialogError.value = '请完整填写起点、关系和终点'
+    return
+  }
+  if (sourceId === targetId) {
+    dialogError.value = '起点和终点不能是同一个本体'
+    return
+  }
+  // 前端预校验：检查是否已存在相同 source-target 的约束
+  const dup = props.constraints.find(
+    c => c.source_ontology_id === sourceId && c.target_ontology_id === targetId
+  )
+  if (dup) {
+    dialogError.value = `「${getOntologyName(sourceId)}」与「${getOntologyName(targetId)}」之间已存在关系约束，每对本体只能建立一个关系`
+    return
+  }
+  submitting.value = true
+  try {
+    await createConstraint(props.categoryId, {
+      source_ontology_id: sourceId,
+      relation_id: relationId,
+      target_ontology_id: targetId,
+    })
+    showAddDialog.value = false
+    emit('changed')
+  } catch (e) {
+    dialogError.value = e.message || '创建失败'
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function submitEdit() {
+  dialogError.value = ''
+  if (!editForm.value.relationId) {
+    dialogError.value = '请选择关系类型'
+    return
+  }
+  const edge = editingEdge.value
+  if (!edge) return
+  submitting.value = true
+  try {
+    await updateConstraint(props.categoryId, edge.id, {
+      relation_id: editForm.value.relationId,
+    })
+    showEditDialog.value = false
+    selectedEdgeKey.value = ''
+    emit('changed')
+  } catch (e) {
+    dialogError.value = e.message || '修改失败'
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function removeEdge(edge) {
+  const srcName = getOntologyName(edge.source)
+  const tgtName = getOntologyName(edge.target)
+  if (!confirm(`确认删除关系「${srcName} —${edge.label}→ ${tgtName}」？`)) return
+  try {
+    await deleteConstraint(props.categoryId, edge.id)
+    selectedEdgeKey.value = ''
+    emit('changed')
+  } catch (e) {
+    alert('删除失败：' + e.message)
+  }
+}
+
+// ===== 图谱构建 =====
 
 function buildGraph() {
   const nodeMapBuild = new Map()
@@ -150,6 +291,7 @@ function buildGraph() {
   edges.value = edgeList
   colorMap.value = palette
   selectedNodeId.value = ''
+  selectedEdgeKey.value = ''
   viewBox.value = { ...defaultViewBox }
   zoomLevel.value = 1
 }
@@ -232,7 +374,6 @@ function stopSimulation() {
 }
 
 function relayout() {
-  // 解除所有手动固定，重新跑力学自动布局
   for (const n of nodes.value) { n.fixed = false; n.vx = 0; n.vy = 0 }
   startSimulation()
 }
@@ -243,7 +384,6 @@ function nodeDeg(id) {
   return n ? n.degree : 0
 }
 
-// 环形布局下，两条弦(边)交叉当且仅当端点在环上交错
 function chordCrossings(order) {
   const pos = {}
   order.forEach((id, i) => { pos[id] = i })
@@ -267,7 +407,6 @@ function optimizeOrder(start) {
   let best = chordCrossings(order)
   let improved = true
   let guard = 0
-  // 爬山：尝试所有两两交换，保留能减少交叉的交换，直到收敛
   while (improved && guard++ < 60) {
     improved = false
     for (let i = 0; i < order.length; i++) {
@@ -313,7 +452,6 @@ function dfsOrder(ids) {
   return order
 }
 
-// 计算给定节点位置下的真实线段交叉数（用节点中心连成的直线段）
 function crossingsFromPositions(pos, E) {
   const ccw = (ax, ay, bx, by, cx, cy) => (cy - ay) * (bx - ax) > (by - ay) * (cx - ax)
   const inter = (ax, ay, bx, by, cx, cy, dx, dy) => {
@@ -331,7 +469,6 @@ function crossingsFromPositions(pos, E) {
   return c
 }
 
-// 纯 JS 力学布局（不依赖 DOM/动画），用于多种子择优
 function forceCandidate(ids, adj, seed) {
   const cx = WORLD_W / 2, cy = WORLD_H / 2
   const baseR = Math.min(WORLD_W, WORLD_H) * 0.34
@@ -373,7 +510,6 @@ function forceCandidate(ids, adj, seed) {
   return pos
 }
 
-// 模拟退火：在已有布局上随机扰动节点位置，进一步消除交叉（突破力学布局的局部最优）
 function annealPositions(startPos, E, ids) {
   const cur = {}
   for (const id in startPos) cur[id] = { x: startPos[id].x, y: startPos[id].y }
@@ -419,7 +555,6 @@ function optimizeLayout() {
 
   let best = null
 
-  // 候选 A：环形 + 最小弦交叉（对稀疏图往往更好）
   const byDeg = ids.slice().sort((a, b) => nodeDeg(b) - nodeDeg(a))
   const circStarts = [byDeg, byDeg.slice().reverse(), dfsOrder(ids)]
   for (let r = 0; r < 5; r++) circStarts.push(shuffleArr(ids))
@@ -436,20 +571,17 @@ function optimizeLayout() {
   })
   best = { pos: circPos, c: crossingsFromPositions(circPos, E) }
 
-  // 候选 B：多种随机种子的力学布局（对稠密图往往更好），按真实交叉数择优
   for (let seed = 0; seed < 10; seed++) {
     const pos = forceCandidate(ids, adj, seed)
     const c = crossingsFromPositions(pos, E)
     if (c < best.c) best = { pos, c }
   }
 
-  // 局部退火：在最优候选基础上继续消减交叉，突破力学局部最优（图过大时跳过，避免卡顿）
   if (nodes.value.length <= 26 && E.length <= 100) {
     const ann = annealPositions(best.pos, E, ids)
     if (ann.c < best.c) best = ann
   }
 
-  // 应用最优位置
   for (const n of nodes.value) {
     const p = best.pos[n.id]
     if (p) { n.x = p.x; n.y = p.y; n.vx = 0; n.vy = 0; n.fixed = false }
@@ -504,7 +636,7 @@ function onNodeMouseDown(event, node) {
   event.stopPropagation(); event.preventDefault()
   isDragging.value = true
   dragNode.value = node
-  node.fixed = true   // 粘滞：拖动后固定，不再被力学拉回
+  node.fixed = true
   const pt = getSvgPoint(event)
   dragOffset.value = { x: pt.x - node.x, y: pt.y - node.y }
 }
@@ -544,7 +676,56 @@ function onMouseUp() {
   dragNode.value = null
   isPanning.value = false
 }
-function onNodeClick(node) { selectedNodeId.value = node.id }
+function onNodeClick(node) {
+  selectedNodeId.value = node.id
+  selectedEdgeKey.value = ''
+}
+function onEdgeClick(edgeKey) {
+  selectedEdgeKey.value = edgeKey
+  selectedNodeId.value = ''
+}
+
+function onEdgeRightClick(event, edgeKey) {
+  event.preventDefault()
+  event.stopPropagation()
+  const e = edgeMap.value[edgeKey]
+  if (!e) return
+  // 先选中该连线
+  selectedEdgeKey.value = edgeKey
+  selectedNodeId.value = ''
+  // 显示右键菜单（使用 clientX/clientY 定位）
+  contextMenu.value = { show: true, x: event.clientX, y: event.clientY, edge: e }
+}
+
+function onEdgeDblClick(edgeKey) {
+  const e = edgeMap.value[edgeKey]
+  if (!e) return
+  selectedEdgeKey.value = edgeKey
+  selectedNodeId.value = ''
+  openEditDialog(e)
+}
+
+function hideContextMenu() {
+  contextMenu.value = { show: false, x: 0, y: 0, edge: null }
+}
+
+function contextEdit() {
+  const e = contextMenu.value.edge
+  hideContextMenu()
+  if (e) openEditDialog(e)
+}
+
+function contextDelete() {
+  const e = contextMenu.value.edge
+  hideContextMenu()
+  if (e) removeEdge(e)
+}
+
+function clearSelection() {
+  selectedNodeId.value = ''
+  selectedEdgeKey.value = ''
+  hideContextMenu()
+}
 
 watch(() => props.constraints, () => {
   buildGraph()
@@ -567,8 +748,13 @@ onUnmounted(stopSimulation)
       <span class="rg-chip">{{ nodes.length }} 个本体</span>
       <span class="rg-chip">{{ edges.length }} 条关系</span>
       <span class="rg-chip">{{ Math.round(zoomLevel * 100) }}%</span>
-      <span class="rg-hint">滚轮缩放 · 拖拽节点/画布 · 点击节点查看关联 · 拖动后球会固定在松手处</span>
+      <span class="rg-hint">滚轮缩放 · 拖拽节点/画布 · 点击/右键/双击连线编辑 · 拖动后球会固定在松手处</span>
+      <span class="rg-spacer"></span>
       <span v-if="layoutMsg" class="rg-layout-msg">{{ layoutMsg }}</span>
+      <button class="rg-add-btn" @click="openAddDialog" title="添加新的关系约束">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        添加关系
+      </button>
     </div>
 
     <div class="rg-main">
@@ -596,9 +782,12 @@ onUnmounted(stopSimulation)
               <marker id="rgArrow" markerWidth="12" markerHeight="10" refX="10" refY="5" orient="auto" markerUnits="userSpaceOnUse">
                 <polygon points="0 0, 12 5, 0 10" fill="rgba(200,215,230,0.85)" />
               </marker>
+              <marker id="rgArrowHl" markerWidth="12" markerHeight="10" refX="10" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+                <polygon points="0 0, 12 5, 0 10" fill="rgba(255,255,255,0.95)" />
+              </marker>
             </defs>
 
-            <rect class="rg-bg" x="0" y="0" :width="WORLD_W" :height="WORLD_H" fill="transparent" />
+            <rect class="rg-bg" x="0" y="0" :width="WORLD_W" :height="WORLD_H" fill="transparent" @click="clearSelection" />
 
             <g class="rg-edges">
               <path
@@ -606,9 +795,26 @@ onUnmounted(stopSimulation)
                 :key="edge.key"
                 :d="`M ${edge.sx} ${edge.sy} Q ${edge.cx} ${edge.cy} ${edge.tx} ${edge.ty}`"
                 class="rg-edge"
-                :class="{ hl: selectedNodeId && (edge.source === selectedNodeId || edge.target === selectedNodeId) }"
+                :class="{
+                  hl: selectedNodeId && (edge.source === selectedNodeId || edge.target === selectedNodeId),
+                  selected: edge.key === selectedEdgeKey,
+                }"
                 fill="none"
-                marker-end="url(#rgArrow)"
+                :marker-end="(selectedNodeId && (edge.source === selectedNodeId || edge.target === selectedNodeId)) || edge.key === selectedEdgeKey ? 'url(#rgArrowHl)' : 'url(#rgArrow)'"
+                @click.stop="onEdgeClick(edge.key)"
+                @contextmenu.prevent="onEdgeRightClick($event, edge.key)"
+                @dblclick.stop="onEdgeDblClick(edge.key)"
+              />
+              <!-- invisible wider hit area for easier edge clicking -->
+              <path
+                v-for="edge in edgeRenderList"
+                :key="'hit-' + edge.key"
+                :d="`M ${edge.sx} ${edge.sy} Q ${edge.cx} ${edge.cy} ${edge.tx} ${edge.ty}`"
+                fill="none" stroke="transparent" stroke-width="14"
+                class="rg-edge-hit"
+                @click.stop="onEdgeClick(edge.key)"
+                @contextmenu.prevent="onEdgeRightClick($event, edge.key)"
+                @dblclick.stop="onEdgeDblClick(edge.key)"
               />
             </g>
 
@@ -618,7 +824,13 @@ onUnmounted(stopSimulation)
                 :key="'l' + edge.key"
                 :x="edge.lx" :y="edge.ly"
                 class="rg-edge-label"
-                :class="{ hl: selectedNodeId && (edge.source === selectedNodeId || edge.target === selectedNodeId) }"
+                :class="{
+                  hl: selectedNodeId && (edge.source === selectedNodeId || edge.target === selectedNodeId),
+                  selected: edge.key === selectedEdgeKey,
+                }"
+                @click.stop="onEdgeClick(edge.key)"
+                @contextmenu.prevent="onEdgeRightClick($event, edge.key)"
+                @dblclick.stop="onEdgeDblClick(edge.key)"
               >{{ edge.label }}</text>
             </g>
 
@@ -649,6 +861,10 @@ onUnmounted(stopSimulation)
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
               重新布局
             </button>
+            <button class="rg-tool-btn rg-tool-btn-add" @click="openAddDialog" title="添加关系约束">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              添加
+            </button>
           </div>
 
           <div class="rg-zoom">
@@ -656,11 +872,39 @@ onUnmounted(stopSimulation)
             <button class="rg-zoom-btn reset" @click="zoomReset" title="重置">{{ Math.round(zoomLevel * 100) }}%</button>
             <button class="rg-zoom-btn" @click="zoomOut" title="缩小">&minus;</button>
           </div>
+
+          <!-- 右键菜单 -->
+          <Teleport to="body">
+            <div
+              v-if="contextMenu.show"
+              class="rg-ctxmenu"
+              :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+              @click.stop
+            >
+              <button class="rg-ctxitem" @click="contextEdit">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                编辑关系
+              </button>
+              <button class="rg-ctxitem rg-ctxitem-del" @click="contextDelete">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                删除关系
+              </button>
+            </div>
+          </Teleport>
+          <!-- 右键菜单遮罩（点击任意位置关闭）-->
+          <Teleport to="body">
+            <div v-if="contextMenu.show" class="rg-ctxmask" @click="hideContextMenu" @contextmenu.prevent="hideContextMenu"></div>
+          </Teleport>
         </div>
       </div>
 
       <aside class="rg-inspector">
-        <div class="rg-inspector-title">节点详情</div>
+        <div class="rg-inspector-title">
+          详情面板
+          <button v-if="selectedNodeId || selectedEdgeKey" class="rg-clear-btn" @click="clearSelection" title="清除选择">✕</button>
+        </div>
+
+        <!-- 节点详情 -->
         <template v-if="selectedNodeId && nodeMap[selectedNodeId]">
           <div class="rg-card">
             <div class="rg-inspector-name">
@@ -670,19 +914,139 @@ onUnmounted(stopSimulation)
             <div class="rg-inspector-sub">连接 {{ selectedNodeEdges.length }} 条关系</div>
           </div>
           <div class="rg-rels">
-            <div v-for="e in selectedNodeEdges" :key="e.key" class="rg-rel-item">
+            <div
+              v-for="e in selectedNodeEdges" :key="e.key"
+              class="rg-rel-item"
+              :class="{ 'rg-rel-item-sel': e.key === selectedEdgeKey }"
+              @click="onEdgeClick(e.key)"
+            >
               <span class="rg-rel-src" v-if="e.source === selectedNodeId">{{ nodeMap[selectedNodeId].name }}</span>
               <span class="rg-rel-src other" v-else>{{ (nodeMap[e.source] || {}).name || '?' }}</span>
               <span class="rg-rel-type">—{{ e.label }}→</span>
               <span class="rg-rel-tgt" v-if="e.target === selectedNodeId">{{ nodeMap[selectedNodeId].name }}</span>
               <span class="rg-rel-tgt other" v-else>{{ (nodeMap[e.target] || {}).name || '?' }}</span>
+              <span class="rg-rel-actions">
+                <button class="rg-act-btn" title="编辑关系" @click.stop="openEditDialog(e)">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </button>
+                <button class="rg-act-btn rg-act-btn-del" title="删除关系" @click.stop="removeEdge(e)">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </span>
             </div>
             <div v-if="!selectedNodeEdges.length" class="rg-no-rels">无关联关系</div>
           </div>
         </template>
-        <div v-else class="rg-inspector-empty">点击图谱中的本体节点，查看其参与的三元组关系。</div>
+
+        <!-- 连线详情 -->
+        <template v-else-if="selectedEdgeKey && selectedEdgeDetail">
+          <div class="rg-card">
+            <div class="rg-inspector-name">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+              关系详情
+            </div>
+          </div>
+          <div class="rg-edge-detail">
+            <div class="rg-edge-row">
+              <span class="rg-edge-lbl">起点</span>
+              <span class="rg-edge-val">{{ selectedEdgeDetail.sourceName }}</span>
+            </div>
+            <div class="rg-edge-row">
+              <span class="rg-edge-lbl">关系</span>
+              <span class="rg-edge-val rg-edge-rel">{{ selectedEdgeDetail.label }}</span>
+            </div>
+            <div class="rg-edge-row">
+              <span class="rg-edge-lbl">终点</span>
+              <span class="rg-edge-val">{{ selectedEdgeDetail.targetName }}</span>
+            </div>
+          </div>
+          <div class="rg-edge-actions">
+            <button class="btn sm primary" @click="openEditDialog(selectedEdgeDetail)">编辑关系</button>
+            <button class="btn sm danger" @click="removeEdge(selectedEdgeDetail)">删除关系</button>
+          </div>
+        </template>
+
+        <div v-else class="rg-inspector-empty">点击图谱中的本体节点或连线，查看详情并进行编辑操作。</div>
       </aside>
     </div>
+
+    <!-- 添加关系对话框 -->
+    <Teleport to="body">
+      <div v-if="showAddDialog" class="rg-overlay" @click.self="showAddDialog = false">
+        <div class="rg-dialog">
+          <div class="rg-dialog-head">
+            <span class="rg-dialog-title">添加关系约束</span>
+            <button class="rg-dialog-close" @click="showAddDialog = false">✕</button>
+          </div>
+          <div class="rg-dialog-body">
+            <div class="rg-dialog-hint">选择起点本体、关系类型和终点本体，约束抽取时仅生成符合的三元组</div>
+            <div class="rg-form">
+              <div class="rg-field">
+                <label>起点本体</label>
+                <select v-model="addForm.sourceId" class="rg-select">
+                  <option value="" disabled>选择起点本体...</option>
+                  <option v-for="o in ontologyOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
+              </div>
+              <div class="rg-field">
+                <label>关系类型</label>
+                <select v-model="addForm.relationId" class="rg-select">
+                  <option value="" disabled>选择关系类型...</option>
+                  <option v-for="r in relationOptions" :key="r.value" :value="r.value">{{ r.label }}</option>
+                </select>
+              </div>
+              <div class="rg-field">
+                <label>终点本体</label>
+                <select v-model="addForm.targetId" class="rg-select">
+                  <option value="" disabled>选择终点本体...</option>
+                  <option v-for="o in ontologyOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
+              </div>
+            </div>
+            <div v-if="dialogError" class="rg-dialog-error">{{ dialogError }}</div>
+          </div>
+          <div class="rg-dialog-foot">
+            <button class="btn" @click="showAddDialog = false">取消</button>
+            <button class="btn primary" @click="submitAdd" :disabled="submitting">
+              <span v-if="submitting" class="spinner"></span>
+              确认添加
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 编辑关系对话框 -->
+    <Teleport to="body">
+      <div v-if="showEditDialog" class="rg-overlay" @click.self="showEditDialog = false">
+        <div class="rg-dialog">
+          <div class="rg-dialog-head">
+            <span class="rg-dialog-title">修改关系类型</span>
+            <button class="rg-dialog-close" @click="showEditDialog = false">✕</button>
+          </div>
+          <div class="rg-dialog-body">
+            <div v-if="editingEdge" class="rg-dialog-info">
+              当前关系：<strong>{{ getOntologyName(editingEdge.source) }}</strong> —{{ editingEdge.label }}→ <strong>{{ getOntologyName(editingEdge.target) }}</strong>
+            </div>
+            <div class="rg-field">
+              <label>新关系类型</label>
+              <select v-model="editForm.relationId" class="rg-select">
+                <option value="" disabled>选择关系类型...</option>
+                <option v-for="r in relationOptions" :key="r.value" :value="r.value">{{ r.label }}</option>
+              </select>
+            </div>
+            <div v-if="dialogError" class="rg-dialog-error">{{ dialogError }}</div>
+          </div>
+          <div class="rg-dialog-foot">
+            <button class="btn" @click="showEditDialog = false">取消</button>
+            <button class="btn primary" @click="submitEdit" :disabled="submitting">
+              <span v-if="submitting" class="spinner"></span>
+              确认修改
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -696,6 +1060,16 @@ onUnmounted(stopSimulation)
   background: var(--c-panel); color: var(--c-secondary); font-size: 12px; font-weight: 600;
 }
 .rg-hint { font-size: 12px; color: var(--c-secondary); }
+.rg-spacer { flex: 1; min-width: 0; }
+.rg-add-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 30px; padding: 0 14px; flex-shrink: 0;
+  border: 1px solid var(--c-accent); border-radius: 8px;
+  background: rgba(99,140,220,0.12); color: #8bb5f5;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.rg-add-btn:hover { background: rgba(99,140,220,0.22); color: #a8cfff; }
 .rg-canvas-tools {
   position: absolute; top: 12px; right: 12px; z-index: 2;
   display: flex; gap: 6px;
@@ -709,13 +1083,15 @@ onUnmounted(stopSimulation)
   backdrop-filter: blur(8px); transition: background 120ms, color 120ms;
 }
 .rg-tool-btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
+.rg-tool-btn-add { border-color: rgba(99,140,220,0.4); color: #8bb5f5; }
+.rg-tool-btn-add:hover { background: rgba(99,140,220,0.2); color: #a8cfff; }
 .rg-layout-msg {
-  margin-left: auto; padding: 4px 10px; border-radius: 999px;
+  padding: 4px 10px; border-radius: 999px; flex-shrink: 0;
   background: rgba(99,140,220,0.15); color: #8bb5f5;
   font-size: 12px; font-weight: 600;
 }
 
-.rg-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 320px); gap: 14px; align-items: start; }
+.rg-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); gap: 14px; align-items: start; }
 .rg-canvas-wrap { min-width: 0; }
 .rg-canvas {
   position: relative; border: 1px solid var(--c-border); border-radius: 16px; overflow: hidden;
@@ -741,13 +1117,18 @@ onUnmounted(stopSimulation)
 .rg-zoom-btn:hover { background: rgba(255,255,255,0.08); }
 .rg-zoom-btn.reset { width: auto; min-width: 44px; font-size: 10px; }
 
-.rg-edge { stroke: rgba(255,255,255,0.30); stroke-width: 1.6; transition: stroke 250ms, stroke-width 250ms; }
+/* 连线样式 */
+.rg-edge { stroke: rgba(255,255,255,0.30); stroke-width: 1.6; transition: stroke 250ms, stroke-width 250ms; cursor: pointer; }
 .rg-edge.hl { stroke: rgba(255,255,255,0.7); stroke-width: 2.8; }
+.rg-edge.selected { stroke: #8bb5f5; stroke-width: 3; filter: drop-shadow(0 0 6px rgba(139,181,245,0.4)); }
+.rg-edge-hit { cursor: pointer; }
 .rg-edge-label {
   fill: rgba(255,255,255,0.55); font-size: 11px; text-anchor: middle; pointer-events: none;
   font-weight: 500; stroke: rgba(0,0,0,0.55); stroke-width: 2; paint-order: stroke;
+  cursor: pointer;
 }
-.rg-edge-label.hl { fill: rgba(255,255,255,0.9); font-weight: 700; stroke: rgba(0,0,0,0.65); stroke-width: 3; }
+.rg-edge-label.hl { fill: rgba(255,255,255,0.9); font-weight: 700; stroke: rgba(0,0,0,0.65); stroke-width: 3; pointer-events: none; }
+.rg-edge-label.selected { fill: #8bb5f5; font-weight: 700; stroke: rgba(0,0,0,0.7); stroke-width: 3.5; pointer-events: none; }
 
 .rg-node { cursor: pointer; }
 .rg-glow { stroke-width: 1.5; opacity: 0; transition: opacity 250ms; }
@@ -759,12 +1140,22 @@ onUnmounted(stopSimulation)
 }
 .rg-label.bold { fill: #fff; font-weight: 700; font-size: 13px; }
 
+/* 侧栏 */
 .rg-inspector {
   border: 1px solid var(--c-border); border-radius: 16px; padding: 14px;
   background: var(--c-panel); position: sticky; top: 16px;
   max-height: calc(100vh - 160px); overflow: auto;
 }
-.rg-inspector-title { font-size: 14px; font-weight: 700; margin-bottom: 10px; }
+.rg-inspector-title {
+  font-size: 14px; font-weight: 700; margin-bottom: 10px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.rg-clear-btn {
+  width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 6px; background: transparent; color: var(--c-secondary);
+  font-size: 12px; cursor: pointer;
+}
+.rg-clear-btn:hover { background: var(--c-muted); color: var(--c-fg); }
 .rg-card { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .rg-inspector-name { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 .rg-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
@@ -773,12 +1164,95 @@ onUnmounted(stopSimulation)
 .rg-rel-item {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding: 7px 9px; border-radius: 8px; background: var(--c-muted); font-size: 12px;
+  cursor: pointer; border: 1px solid transparent; transition: border-color 150ms, background 150ms;
 }
+.rg-rel-item:hover { background: var(--c-border); }
+.rg-rel-item-sel { border-color: #8bb5f5; background: rgba(139,181,245,0.08); }
 .rg-rel-src, .rg-rel-tgt { font-weight: 600; }
 .rg-rel-src.other, .rg-rel-tgt.other { color: var(--c-secondary); font-weight: 500; }
 .rg-rel-type { color: var(--c-accent); font-weight: 700; font-size: 11px; }
+.rg-rel-actions { margin-left: auto; display: flex; gap: 2px; }
+.rg-act-btn {
+  width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 5px; background: transparent; color: var(--c-secondary);
+  cursor: pointer; transition: background 120ms, color 120ms;
+}
+.rg-act-btn:hover { background: rgba(255,255,255,0.1); color: var(--c-fg); }
+.rg-act-btn-del:hover { background: rgba(220,38,38,0.15); color: #f87171; }
 .rg-no-rels { color: var(--c-secondary); font-size: 12px; font-style: italic; }
 .rg-inspector-empty { color: var(--c-secondary); font-size: 13px; line-height: 1.6; }
+
+/* 连线详情 */
+.rg-edge-detail {
+  display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px;
+  padding: 10px; border-radius: 10px; background: var(--c-muted);
+}
+.rg-edge-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.rg-edge-lbl { color: var(--c-secondary); font-weight: 600; min-width: 36px; }
+.rg-edge-val { font-weight: 600; }
+.rg-edge-rel { color: var(--c-accent); }
+.rg-edge-actions { display: flex; gap: 8px; }
+
+/* 对话框 */
+.rg-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(4px);
+}
+.rg-dialog {
+  background: var(--c-panel); border: 1px solid var(--c-border); border-radius: 16px;
+  width: 460px; max-width: 94vw; box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+}
+.rg-dialog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--c-border);
+}
+.rg-dialog-title { font-size: 15px; font-weight: 700; }
+.rg-dialog-close {
+  width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 8px; background: transparent; color: var(--c-secondary);
+  font-size: 14px; cursor: pointer;
+}
+.rg-dialog-close:hover { background: var(--c-muted); color: var(--c-fg); }
+.rg-dialog-body { padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+.rg-dialog-hint { font-size: 12px; color: var(--c-secondary); line-height: 1.5; }
+.rg-dialog-info { font-size: 13px; color: var(--c-secondary); }
+.rg-form { display: flex; flex-direction: column; gap: 10px; }
+.rg-field { display: flex; flex-direction: column; gap: 4px; }
+.rg-field label { font-size: 12px; font-weight: 600; color: var(--c-secondary); }
+.rg-select {
+  height: 36px; padding: 0 10px; border: 1px solid var(--c-border); border-radius: 8px;
+  background: var(--c-bg); color: var(--c-fg); font-size: 13px; outline: none;
+}
+.rg-select:focus { border-color: #8bb5f5; }
+.rg-dialog-error {
+  padding: 8px 12px; border-radius: 8px;
+  background: rgba(220,38,38,0.08); color: #f87171;
+  font-size: 12px; font-weight: 600;
+}
+.rg-dialog-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 20px; border-top: 1px solid var(--c-border);
+}
+
+/* 右键菜单 */
+.rg-ctxmask {
+  position: fixed; inset: 0; z-index: 9998;
+}
+.rg-ctxmenu {
+  position: fixed; z-index: 9999;
+  background: rgba(22,27,34,0.96); border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px; padding: 4px; min-width: 140px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.55); backdrop-filter: blur(12px);
+}
+.rg-ctxitem {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 8px 12px; border: 0; border-radius: 7px;
+  background: transparent; color: #c9d1d9; font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: background 100ms, color 100ms;
+}
+.rg-ctxitem:hover { background: rgba(255,255,255,0.08); color: #fff; }
+.rg-ctxitem-del:hover { background: rgba(220,38,38,0.18); color: #f87171; }
 
 @media (max-width: 1100px) {
   .rg-main { grid-template-columns: 1fr; }

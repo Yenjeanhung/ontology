@@ -1,3 +1,9 @@
+<script>
+// 模块级持久化视图模式 —— 即使组件被 v-if 销毁重建也不会丢失
+import { ref } from 'vue'
+const _persistedView = ref('list')
+</script>
+
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { createConstraint, deleteConstraint } from '../../api'
@@ -17,7 +23,9 @@ const relationId = ref(null)
 const targetId = ref(null)
 const creating = ref(false)
 const error = ref('')
-const viewMode = ref('list') // 'list' | 'graph'
+
+// 直接用模块级 ref，不需要 computed 包装
+const viewMode = _persistedView
 
 const ontologyOptions = computed(() =>
   props.ontologies.map(o => ({ value: o.id, label: o.name, meta: o.description || '' }))
@@ -170,8 +178,15 @@ function resetForm() {
       </div>
       </template>
 
-      <!-- 图谱视图 -->
-      <RelationGraph v-else :constraints="constraints" />
+      <!-- 图谱视图（v-show 保持挂载，避免数据刷新时跳回列表） -->
+      <RelationGraph
+        v-show="viewMode === 'graph'"
+        :constraints="constraints"
+        :categoryId="categoryId"
+        :ontologies="ontologies"
+        :relations="relations"
+        @changed="emit('changed')"
+      />
     </template>
   </div>
 </template>
