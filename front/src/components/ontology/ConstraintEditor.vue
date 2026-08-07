@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { createConstraint, deleteConstraint } from '../../api'
 import SearchableSelect from '../common/SearchableSelect.vue'
+import RelationGraph from './RelationGraph.vue'
 
 const props = defineProps({
   categoryId: { type: String, required: true },
@@ -16,6 +17,7 @@ const relationId = ref(null)
 const targetId = ref(null)
 const creating = ref(false)
 const error = ref('')
+const viewMode = ref('list') // 'list' | 'graph'
 
 const ontologyOptions = computed(() =>
   props.ontologies.map(o => ({ value: o.id, label: o.name, meta: o.description || '' }))
@@ -86,6 +88,23 @@ function resetForm() {
     </div>
 
     <template v-else>
+      <!-- 视图切换 -->
+      <div class="ce-bar">
+        <span class="ce-bar-count">已定义 {{ constraints.length }} 个三元组约束</span>
+        <div class="ce-view-toggle">
+          <button class="ce-vbtn" :class="{ on: viewMode === 'list' }" @click="viewMode = 'list'">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg>
+            列表视图
+          </button>
+          <button class="ce-vbtn" :class="{ on: viewMode === 'graph' }" @click="viewMode = 'graph'">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="7" y1="8.5" x2="11" y2="16"/><line x1="17" y1="8.5" x2="13" y2="16"/></svg>
+            图谱视图
+          </button>
+        </div>
+      </div>
+
+      <!-- 列表视图 -->
+      <template v-if="viewMode === 'list'">
       <!-- 新建三元组 -->
       <div class="ce-builder">
         <div class="ce-builder-head">
@@ -133,9 +152,6 @@ function resetForm() {
       </div>
 
       <!-- 现有约束列表 -->
-      <div class="ce-list-head" v-if="constraints.length">
-        已定义 {{ constraints.length }} 个三元组约束
-      </div>
       <div class="ce-list" v-if="constraints.length">
         <div v-for="c in constraints" :key="c.id" class="ce-item">
           <div class="ce-tri-display">
@@ -152,12 +168,27 @@ function resetForm() {
       <div v-else class="ce-empty">
         暂无三元组约束，使用上方表单添加
       </div>
+      </template>
+
+      <!-- 图谱视图 -->
+      <RelationGraph v-else :constraints="constraints" />
     </template>
   </div>
 </template>
 
 <style scoped>
-.ce-root { display: flex; flex-direction: column; gap: 16px; max-width: 880px; }
+.ce-root { display: flex; flex-direction: column; gap: 16px; }
+
+.ce-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.ce-bar-count { font-size: 13px; font-weight: 600; color: var(--c-secondary); }
+.ce-view-toggle { display: inline-flex; border: 1px solid var(--c-border); border-radius: 10px; overflow: hidden; }
+.ce-vbtn {
+  height: 34px; padding: 0 14px; border: 0; background: transparent;
+  color: var(--c-secondary); font-weight: 600; font-size: 12px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; transition: background 150ms, color 150ms;
+}
+.ce-vbtn:hover { color: var(--c-fg); }
+.ce-vbtn.on { background: var(--c-fg); color: var(--c-bg); }
 
 .ce-prereq {
   display: flex; align-items: flex-start; gap: 12px;
@@ -170,7 +201,7 @@ function resetForm() {
 
 .ce-builder {
   border: 1px solid var(--c-border); border-radius: var(--radius);
-  background: var(--c-panel); padding: 16px 18px;
+  background: var(--c-panel); padding: 16px 18px; max-width: 880px;
 }
 .ce-builder-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; }
 .ce-builder-title { font-size: 14px; font-weight: 700; color: var(--c-fg); }
@@ -184,7 +215,7 @@ function resetForm() {
 .ce-error { color: var(--c-danger); font-size: 12px; margin-top: 8px; }
 
 .ce-list-head { font-size: 13px; font-weight: 600; color: var(--c-secondary); }
-.ce-list { display: flex; flex-direction: column; gap: 6px; }
+.ce-list { display: flex; flex-direction: column; gap: 6px; max-width: 880px; }
 .ce-item {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 10px 14px; border: 1px solid var(--c-border); border-radius: var(--radius-sm);
@@ -202,5 +233,5 @@ function resetForm() {
   background: transparent; color: var(--c-secondary); cursor: pointer; flex-shrink: 0;
 }
 .rm-btn.sm:hover { background: rgba(220, 38, 38, 0.1); color: var(--c-danger); }
-.ce-empty { padding: 28px; text-align: center; color: var(--c-secondary); font-size: 13px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); }
+.ce-empty { padding: 28px; text-align: center; color: var(--c-secondary); font-size: 13px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); max-width: 880px; }
 </style>

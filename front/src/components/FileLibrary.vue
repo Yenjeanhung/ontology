@@ -612,22 +612,17 @@ onUnmounted(() => {
 <template>
   <div class="library-page">
     <div class="library-toolbar">
-      <div class="search-wrap">
-        <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-        <input type="text" v-model="search" placeholder="搜索文件、来源、摘要..." @input="loadAssets">
+      <div class="toolbar-action-group">
+        <button class="btn primary" :class="{ active: showCrawlForm }" @click="showCrawlForm = !showCrawlForm">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+          联网采集
+        </button>
+        <button class="btn primary" @click="triggerUpload">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          上传文件
+        </button>
+        <input type="file" id="assetFileInput" multiple style="display: none" @change="handlePick">
       </div>
-      <button class="icon-btn refresh-btn" @click="refreshAll" title="刷新">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
-      </button>
-      <button class="btn primary" :class="{ active: showCrawlForm }" @click="showCrawlForm = !showCrawlForm">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
-        采集
-      </button>
-      <button class="btn primary" @click="triggerUpload">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        上传
-      </button>
-      <input type="file" id="assetFileInput" multiple style="display: none" @change="handlePick">
     </div>
 
     <div class="library-layout">
@@ -684,6 +679,17 @@ onUnmounted(() => {
 
       <!-- 右侧文件列表 -->
       <main class="asset-panel">
+        <!-- 文件搜索：紧贴文件列表上方，避免与采集/上传按钮混淆 -->
+        <div class="asset-search-bar">
+          <div class="search-wrap">
+            <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+            <input type="text" v-model="search" placeholder="搜索文件名、来源、摘要..." @input="loadAssets">
+          </div>
+          <button class="icon-btn refresh-btn" @click="refreshAll" title="刷新">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
+          </button>
+        </div>
+
         <!-- 采集表单 - 点击采集按钮展开 -->
         <div class="crawl-band" v-if="showCrawlForm || activeCrawlJobs.length > 0 || finishedCrawlJobs.length > 0">
           <div class="crawl-fields">
@@ -950,8 +956,11 @@ onUnmounted(() => {
 
 <style scoped>
 .library-page { display: flex; flex-direction: column; gap: 16px; }
-.library-toolbar { display: flex; gap: 10px; align-items: center; }
-.search-wrap { flex: 1; position: relative; }
+.library-toolbar { display: flex; gap: 12px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+.toolbar-action-group { display: flex; gap: 8px; align-items: center; }
+.asset-search-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+.asset-search-bar .search-wrap { flex: 1; min-width: 0; }
+.search-wrap { position: relative; }
 .search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--c-secondary); }
 .search-wrap input { padding-left: 34px; }
 .icon-btn { background: none; border: none; cursor: pointer; color: var(--c-secondary); padding: 7px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; }
