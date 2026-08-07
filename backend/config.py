@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     CHUNK_DIR: str
     MAX_FILE_SIZE: int
 
+    # 文档解析（Tika 兜底，可选）
+    # Tika 作为未知格式（pptx/xlsx/html/eml 等）的兜底解析器；轻量格式 txt/md/pdf/docx 永远走专用库
+    TIKA_FALLBACK_ENABLED: bool = True        # 兜底总开关；无 JRE 时自动降级，不影响应用启动
+    TIKA_SERVER_ENDPOINT: str = ""            # 非空时走外部 Tika Server（如 http://tika:9998），跳过本地 JRE
+    TIKA_JAVA_PATH: str = ""                  # 显式 java 路径，空则用 PATH 中的 java
+
     # 文件管理与联网采集
     DEFAULT_KB_UPLOAD_DIR: str = "知识库上传"
     CRAWL_ENABLED: bool = True
