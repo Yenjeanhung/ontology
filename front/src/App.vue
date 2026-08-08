@@ -51,10 +51,6 @@ function isGroupActive(item) {
 }
 
 const menuItems = computed(() => [
-  { to: '/agent', key: 'agent', label: '智能体', exact: false, hint: '本体增强问答' },
-  { to: '/query', key: 'query', label: '知识库检索', exact: false, hint: '知识库检索' },
-  { to: '/kb', key: 'kb', label: '知识库', exact: false, hint: '知识库' },
-  { to: '/files', key: 'files', label: '文件', exact: false, hint: '文件管理' },
   {
     key: 'ontology',
     label: '本体',
@@ -67,13 +63,17 @@ const menuItems = computed(() => [
       { to: '/ontology/suggestions', key: 'suggestions', label: '本体建议', icon: 'suggestion' },
     ],
   },
+  { to: '/files', key: 'files', label: '文件', exact: false, hint: '文件管理' },
+  { to: '/kb', key: 'kb', label: '知识库', exact: false, hint: '知识库' },
   { to: '/entities', key: 'entities', label: '实体', exact: false, hint: '实体管理' },
   { to: '/graph', key: 'graph', label: '图谱', exact: false, hint: '图谱' },
+  { to: '/agent', key: 'agent', label: '智能体', exact: false, hint: '本体增强问答' },
   {
     key: 'data',
     label: '数据',
-    hint: '数据浏览',
+    hint: '检索与数据',
     children: [
+      { to: '/query', key: 'query', label: '知识库检索', icon: 'query' },
       { to: '/vectors', key: 'vectors', label: '向量', icon: 'vector' },
     ],
   },
@@ -86,6 +86,7 @@ const subIcons = {
   triple: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.8 7.5 11 16"/></svg>',
   suggestion: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>',
   vector: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="8" r="1.6"/><circle cx="12" cy="5" r="1.6"/><circle cx="18" cy="9" r="1.6"/><circle cx="9" cy="16" r="1.6"/><circle cx="16" cy="18" r="1.6"/></svg>',
+  query: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></svg>',
 }
 
 function toggleSidebar() {
