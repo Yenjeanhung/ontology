@@ -12,12 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from schemas import (
+    ApplyCleanupRequest,
+    BatchDeleteRequest,
     CreateEntityRequest,
     CreateRelationRequest,
+    MergeEntitiesRequest,
     UpdateEntityRequest,
     UpdateRelationRequest,
 )
 from services.entity_service import EntityService
+from services.graph_cleanup_service import GraphCleanupService
 
 router = APIRouter()
 
@@ -55,6 +59,32 @@ async def entity_stats(
     db: AsyncSession = Depends(get_db),
 ):
     return await EntityService.stats(db, kb_id=kb_id)
+
+
+@router.post("/entities/merge")
+async def merge_entities(req: MergeEntitiesRequest, db: AsyncSession = Depends(get_db)):
+    """把多个实体并入一个规范实体（重写关系端点 + 合并属性 + 删除冗余）。"""
+    try:
+        return await EntityService.merge_entities(
+            db,
+            canonical_id=req.canonical_id,
+            merged_ids=req.merged_ids,
+            kb_id=req.kb_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/entities/batch-delete")
+async def batch_delete_entities(req: BatchDeleteRequest, db: AsyncSession = Depends(get_db)):
+    deleted = await EntityService.delete_entities(db, req.ids)
+    return {"deleted": deleted, "requested": len(req.ids)}
+
+
+@router.post("/relations/batch-delete")
+async def batch_delete_relations(req: BatchDeleteRequest, db: AsyncSession = Depends(get_db)):
+    deleted = await EntityService.delete_relations(db, req.ids)
+    return {"deleted": deleted, "requested": len(req.ids)}
 
 
 @router.get("/entities/{entity_id}")
@@ -171,3 +201,27 @@ async def delete_relation(relation_id: str, db: AsyncSession = Depends(get_db)):
     if not await EntityService.delete_relation(db, relation_id):
         raise _nf("Relation not found")
     return {"status": "deleted"}
+
+
+# ===== 图谱清洗 =====
+
+
+@router.get("/graph-cleanup/suggestions")
+async def graph_cleanup_suggestions(kb_id: str = Query(...), db: AsyncSession = Depends(get_db)):
+    """对指定知识库给出清洗建议（合并组 / 待删实体 / 待删通用关系），纯只读。"""
+    return await GraphCleanupService.suggest_cleanup(db, kb_id)
+
+
+@router.post("/graph-cleanup/apply")
+async def graph_cleanup_apply(req: ApplyCleanupRequest, db: AsyncSession = Depends(get_db)):
+    """执行清洗：逐组合并 + 批量删除关系/实体。"""
+    try:
+        return await GraphCleanupService.apply_cleanup(
+            db,
+            kb_id=req.kb_id,
+            merges=[m.model_dump() for m in req.merges],
+            delete_entity_ids=req.delete_entity_ids,
+            delete_relation_ids=req.delete_relation_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))

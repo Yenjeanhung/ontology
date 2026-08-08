@@ -36,6 +36,11 @@ function toggleGroupMenu(key) {
   clearTimeout(closeTimer)
   openGroup.value = openGroup.value === key ? null : key
 }
+function onGroupClick(item) {
+  // 带 to 的分组（如"图谱"）：点击即由 router-link 导航；纯分组才切换悬浮卡片
+  if (item.to) return
+  toggleGroupMenu(item.key)
+}
 function onSidePointerDown(e) {
   if (openGroup.value !== null && !e.target.closest('.side-group')) openGroup.value = null
 }
@@ -48,6 +53,7 @@ watch(() => route.path, () => { openGroup.value = null })
 
 // 判断分组是否处于当前路由下（用于高亮分组标题）
 function isGroupActive(item) {
+  if (item.to && (route.path === item.to || route.path.startsWith(item.to + '/'))) return true
   return (item.children || []).some(c => c.to && (route.path === c.to || route.path.startsWith(c.to + '/')))
 }
 
@@ -67,7 +73,15 @@ const menuItems = computed(() => [
   { to: '/files', key: 'files', label: '文件', exact: false, hint: '文件管理' },
   { to: '/kb', key: 'kb', label: '知识库', exact: false, hint: '知识库' },
   { to: '/entities', key: 'entities', label: '实体', exact: false, hint: '实体管理' },
-  { to: '/graph', key: 'graph', label: '图谱', exact: false, hint: '图谱' },
+  {
+    key: 'graph',
+    label: '图谱',
+    hint: '图谱',
+    to: '/graph',
+    children: [
+      { to: '/graph-cleanup', key: 'graph-cleanup', label: '图谱清洗', icon: 'cleanup' },
+    ],
+  },
   { to: '/agent', key: 'agent', label: '智能体', exact: false, hint: '本体增强问答' },
   {
     key: 'data',
@@ -94,6 +108,7 @@ const subIcons = {
   dict: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v16H6.5A2.5 2.5 0 0 0 4 20.5"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20"/><path d="M8 7h6"/><path d="M8 10.5h4"/></svg>',
   triple: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.8 7.5 11 16"/></svg>',
   suggestion: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>',
+  cleanup: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 4.75h16.5l-6 7v6.5l-4.5 2.5v-9z"/><path d="M3.75 4.75 9 11.75"/></svg>',
   vector: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="8" r="1.6"/><circle cx="12" cy="5" r="1.6"/><circle cx="18" cy="9" r="1.6"/><circle cx="9" cy="16" r="1.6"/><circle cx="16" cy="18" r="1.6"/></svg>',
   query: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></svg>',
   models: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>',
@@ -224,12 +239,14 @@ onBeforeUnmount(() => {
                :class="{ 'is-open': openGroup === item.key, 'is-active': isGroupActive(item) }"
                @mouseenter="openGroupMenu(item.key)"
                @mouseleave="closeGroupMenu()">
-            <button
+            <component
+              :is="item.to ? 'router-link' : 'button'"
+              :to="item.to"
               class="side-item side-group-toggle"
               :class="{ 'is-active': isGroupActive(item) }"
               type="button"
               :aria-expanded="openGroup === item.key"
-              @click="toggleGroupMenu(item.key)"
+              @click="onGroupClick(item)"
             >
               <span class="side-icon-wrap" aria-hidden="true">
                 <svg v-if="item.key === 'ontology'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -243,6 +260,14 @@ onBeforeUnmount(() => {
                   <circle cx="12" cy="12" r="3" />
                   <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
                 </svg>
+                <svg v-else-if="item.key === 'graph'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="6.5" cy="6.5" r="2.25" />
+                  <circle cx="17.5" cy="6.5" r="2.25" />
+                  <circle cx="12" cy="17.5" r="2.25" />
+                  <path d="M8.75 6.5h6.5" />
+                  <path d="M8.2 8.1 10.3 15.2" />
+                  <path d="m15.8 8.1-2.1 7.1" />
+                </svg>
                 <svg v-else width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <ellipse cx="12" cy="5.5" rx="7.5" ry="2.8" />
                   <path d="M4.5 5.5v6c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8v-6" />
@@ -253,7 +278,7 @@ onBeforeUnmount(() => {
               <span class="side-chev" aria-hidden="true">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
               </span>
-            </button>
+            </component>
 
             <!-- 悬浮卡片子菜单 -->
             <div class="side-flyout">
@@ -303,14 +328,6 @@ onBeforeUnmount(() => {
               <svg v-else-if="item.key === 'agent'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M12 3l1.7 4.8L18.5 9.5l-4.8 1.7L12 16l-1.7-4.8L5.5 9.5l4.8-1.7L12 3z" />
                 <path d="M18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z" />
-              </svg>
-              <svg v-else-if="item.key === 'graph'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="6.5" cy="6.5" r="2.25" />
-                <circle cx="17.5" cy="6.5" r="2.25" />
-                <circle cx="12" cy="17.5" r="2.25" />
-                <path d="M8.75 6.5h6.5" />
-                <path d="M8.2 8.1 10.3 15.2" />
-                <path d="m15.8 8.1-2.1 7.1" />
               </svg>
               <svg v-else width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="4.25" y="4.25" width="15.5" height="15.5" rx="2.25" />

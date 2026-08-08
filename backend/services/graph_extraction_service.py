@@ -58,6 +58,41 @@ ONTOLOGY_SUGGESTION_PROMPT = """你是一个知识建模专家。以下是从文
 
 logger = logging.getLogger(__name__)
 
+
+# ===== 抽取质量治理：低价值实体名 / 无语义关系的兜底过滤 =====
+# 命中即丢弃，避免日期、纯数值、URL、版本号、整句等噪声成为图谱节点。
+_LOW_VALUE_ENTITY_PATTERNS = [
+    re.compile(r"^\d{4}\s*年(\s*$|\s*\d)"),                     # 2024年 / 2024年7月
+    re.compile(r"^\d{1,2}\s*月(\s*\d{1,2}\s*日?)?\s*$"),          # 7月 / 7月15日
+    re.compile(r"^[\d.,]+\s*(辆|个|人|万|亿|%|元|台|次|岁|分|秒|美元|公里|千米|米)?\s*$"),  # 45,046辆 / 26.7万 / 45%
+    re.compile(r"^https?://", re.IGNORECASE),                    # URL
+    re.compile(r"^v?\d+(\.\d+)+$", re.IGNORECASE),               # v1.2 / 1.2.3
+]
+
+_GENERIC_RELATION_BLOCKLIST_CACHE: set[str] | None = None
+
+
+def _is_low_value_entity_name(name: str) -> bool:
+    name = (name or "").strip()
+    if not name:
+        return True
+    if len(name) > 24:                       # 过长：疑似整句/标题
+        return True
+    if re.search(r"[，。；,;！!?？]", name):  # 含断句标点：疑似整句
+        return True
+    for pat in _LOW_VALUE_ENTITY_PATTERNS:
+        if pat.search(name):
+            return True
+    return False
+
+
+def _generic_relation_blocklist() -> set[str]:
+    global _GENERIC_RELATION_BLOCKLIST_CACHE
+    if _GENERIC_RELATION_BLOCKLIST_CACHE is None:
+        raw = getattr(settings, "GRAPH_GENERIC_RELATION_BLOCKLIST", "") or ""
+        _GENERIC_RELATION_BLOCKLIST_CACHE = {s.strip() for s in raw.split(",") if s.strip()}
+    return _GENERIC_RELATION_BLOCKLIST_CACHE
+
 # ===== 自由抽取模式（无本体约束，向后兼容）=====
 
 GRAPH_EXTRACTION_SYSTEM_PROMPT = """你是知识图谱抽取助手。
@@ -66,12 +101,14 @@ GRAPH_EXTRACTION_SYSTEM_PROMPT = """你是知识图谱抽取助手。
 
 要求：
 1. 仅基于提供文本抽取，不要编造。
-2. 实体类型用中文，如 人物、组织、产品、项目、技术、地点、日期、事件、概念、文件、法规、指标、方法、算法、模型、数据集。
-3. 关系类型用中文，如 任职于、属于、使用、位于、依赖、包含、提到、开发、合作、发布、属于组织、担任、涉及、基于、参考、定义。
-4. 每个 chunk 单独输出 entities 和 relations。
-5. relation 的 source_name 和 target_name 必须引用同一 chunk 内出现的实体名。
-6. 如果某个 chunk 没有合适结果，返回空数组。
-7. 只输出一个 JSON 对象，不要输出解释。
+2. 实体类型用中文，如 人物、组织、产品、项目、技术、地点、事件、概念、法规、方法。
+3. 实体名必须是简短的专有名词（建议不超过 10 个字）；禁止把整句、标题、长指标名（如"XX累计交付量""XX7月销量"）当作实体名。
+4. 日期、时间、纯数字、量纲/金额（如"2026年7月""45,046辆""26.7万"）、文件名、URL、版本号一律作为某个实体的属性，不得作为实体节点。
+5. 关系类型用中文且必须具体、有意义，如 任职于、属于、使用、位于、开发、合作、发布、投资、收购、生产、基于；禁止使用"涉及、提到、关联、有关、相关"等无语义关系，若无法判定具体关系就不要抽取。
+6. 每个 chunk 单独输出 entities 和 relations。
+7. relation 的 source_name 和 target_name 必须引用同一 chunk 内出现的实体名。
+8. 如果某个 chunk 没有合适结果，返回空数组。
+9. 只输出一个 JSON 对象，不要输出解释。
 """
 
 GRAPH_EXTRACTION_TEMPLATE = """请从以下 chunks 中抽取实体和关系。
@@ -119,12 +156,13 @@ GRAPH_EXTRACTION_CONSTRAINED_SYSTEM_PROMPT = """你是知识图谱抽取助手�
 要求：
 1. 仅基于提供文本抽取，不要编造。
 2. 实体类型必须从上述允许的类型中选择，不要使用其他类型。
-3. 每个实体尽量抽取上述列出的属性（properties 字段），缺失则留空；必填属性尽量给出。
-4. 关系必须是上述三元组之一（起点类型 + 关系 + 终点类型 都要匹配），不得使用其他关系或组合。
-5. 每个 chunk 单独输出 entities 和 relations。
-6. relation 的 source_name 和 target_name 必须引用同一 chunk 内出现的实体名。
-7. 如果某个 chunk 没有合适结果，返回空数组。
-8. 只输出一个 JSON 对象，不要输出解释。
+3. 每个实体尽量抽取上述列出的属性（properties 字段），缺失则留空；必填属性尽量给出；日期/数值/文件名等应作为属性而非实体。
+4. 实体名须为简短专有名词，禁止把整句或长指标名当作实体名。
+5. 关系必须是上述三元组之一（起点类型 + 关系 + 终点类型 都要匹配），不得使用其他关系或组合；关系类型必须具体、有意义，禁止"涉及、提到、关联、有关、相关"等无语义关系。
+6. 每个 chunk 单独输出 entities 和 relations。
+7. relation 的 source_name 和 target_name 必须引用同一 chunk 内出现的实体名。
+8. 如果某个 chunk 没有合适结果，返回空数组。
+9. 只输出一个 JSON 对象，不要输出解释。
 """
 
 GRAPH_EXTRACTION_CONSTRAINED_TEMPLATE = """请从以下 chunks 中抽取实体和关系。
@@ -793,6 +831,9 @@ class GraphExtractionService:
         name = str(raw_entity.get("name", "")).strip()
         if not name:
             return None
+        # 低价值实体名兜底过滤（日期/纯数值/URL/版本号/整句等），命中即丢弃
+        if settings.GRAPH_FILTER_LOW_VALUE_ENTITIES and _is_low_value_entity_name(name):
+            return None
         entity_type = str(raw_entity.get("entity_type", "")).strip() or "UNKNOWN"
         description = str(raw_entity.get("description", "")).strip()
         # 解析 properties（本体约束模式下 LLM 会输出此字段）
@@ -818,6 +859,9 @@ class GraphExtractionService:
         target_name = str(raw_relation.get("target_name", "")).strip()
         relation_type = str(raw_relation.get("relation_type", "")).strip()
         if not source_name or not target_name or not relation_type:
+            return None
+        # 丢弃无语义的通用关系类型（涉及/提到/关联 等）
+        if relation_type in _generic_relation_blocklist():
             return None
 
         source_type = str(raw_relation.get("source_type", "")).strip()

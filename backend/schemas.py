@@ -257,6 +257,31 @@ class CreateRelationRequest(BaseModel):
     description: str | None = ""
 
 
+# ===== 图谱清洗 / 实体合并 =====
+
+
+class MergeEntitiesRequest(BaseModel):
+    canonical_id: str
+    merged_ids: list[str]
+    kb_id: str
+
+
+class BatchDeleteRequest(BaseModel):
+    ids: list[str]
+
+
+class CleanupMergeItem(BaseModel):
+    canonical_id: str
+    merged_ids: list[str]
+
+
+class ApplyCleanupRequest(BaseModel):
+    kb_id: str
+    merges: list[CleanupMergeItem] = []
+    delete_entity_ids: list[str] = []
+    delete_relation_ids: list[str] = []
+
+
 # ===== 大模型（LLM）配置 =====
 
 

@@ -771,6 +771,44 @@ export async function deleteOntologySuggestion(suggestionId) {
   return res.json()
 }
 
+// ===== 图谱清洗（合并 / 精简实体关系）=====
+export async function fetchCleanupSuggestions(kbId) {
+  const res = await fetch(`${API}/api/graph-cleanup/suggestions?kb_id=${encodeURIComponent(kbId)}`)
+  if (!res.ok) throw new Error('Fetch cleanup suggestions failed')
+  return res.json()
+}
+
+export async function applyCleanup({ kbId, merges = [], deleteEntityIds = [], deleteRelationIds = [] } = {}) {
+  const res = await fetch(`${API}/api/graph-cleanup/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      kb_id: kbId,
+      merges,
+      delete_entity_ids: deleteEntityIds,
+      delete_relation_ids: deleteRelationIds,
+    }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Apply cleanup failed')
+  }
+  return res.json()
+}
+
+export async function mergeEntities({ canonicalId, mergedIds, kbId } = {}) {
+  const res = await fetch(`${API}/api/entities/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ canonical_id: canonicalId, merged_ids: mergedIds, kb_id: kbId }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Merge entities failed')
+  }
+  return res.json()
+}
+
 // ===== 大模型（LLM）配置 =====
 export async function testLLMConfig({ provider, apiKey, baseUrl, model, maxTokens, temperature }) {
   const res = await fetch(`${API}/api/config/llm/test`, {

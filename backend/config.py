@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     GRAPH_MIN_CHARS_FOR_EXTRACTION: int = 80
     GRAPH_MAX_ENTITIES_PER_CHUNK: int = 12
     GRAPH_MAX_RELATIONS_PER_CHUNK: int = 12
+    # 抽取质量治理：过滤低价值实体名（日期/纯数值/URL/版本号/整句等）
+    GRAPH_FILTER_LOW_VALUE_ENTITIES: bool = True
+    # 抽取后丢弃的无语义通用关系类型（逗号分隔；置空则不过滤）
+    GRAPH_GENERIC_RELATION_BLOCKLIST: str = "涉及,提到,关联,有关,相关"
 
     # LLM
     # openai = OpenAI 兼容（含 DeepSeek / Qwen / 智谱 / 自定义 OpenAI 格式）；anthropic = Anthropic 格式

@@ -411,6 +411,169 @@ class EntityService:
         _sync_delete_entity(entity_id)
         return True
 
+    @staticmethod
+    async def merge_entities(
+        db: AsyncSession,
+        *,
+        canonical_id: str,
+        merged_ids: list[str],
+        kb_id: str,
+    ) -> dict:
+        """把 merged_ids 的实体并入 canonical_id（同知识库内）。
+
+        - 重写它们参与的关系端点 -> canonical；
+        - 丢弃自环(两端皆 canonical)与重复(同 source+relation_type+target)关系；
+        - 合并属性(_merge_properties，旧字段不丢)、描述取更长；
+        - 被合并实体的旧名写入 canonical.properties.aliases（软别名，免迁移）；
+        - 删除被合并实体；SQLite 为权威，Kùzu best-effort 同步（经 providers.graph_store 公开函数）。
+
+        关键：Kùzu 的 delete_entity 会级联删触及该实体的 Relation 节点，
+        故必须「先改端点 / 删关系 -> 后删实体」，否则会误删本应改挂到 canonical 的关系。
+        """
+        merged_ids = [mid for mid in (merged_ids or []) if mid and mid != canonical_id]
+        if not canonical_id or not merged_ids:
+            return {"canonical_id": canonical_id, "merged_count": 0,
+                    "relations_rewired": 0, "relations_dropped": 0}
+
+        canonical = await db.get(Entity, canonical_id)
+        if not canonical:
+            raise ValueError("canonical entity not found")
+        merged_map: dict[str, Entity] = {}
+        for mid in merged_ids:
+            e = await db.get(Entity, mid)
+            if e:
+                merged_map[mid] = e
+        if not merged_map:
+            return {"canonical_id": canonical_id, "merged_count": 0,
+                    "relations_rewired": 0, "relations_dropped": 0}
+        for e in [canonical, *merged_map.values()]:
+            if e.kb_id != kb_id:
+                raise ValueError("all entities must belong to the same kb")
+
+        id_remap = {mid: canonical_id for mid in merged_map}
+
+        # 1. 取所有触及 merged 的关系，计算新端点、判自环
+        touched_row = await db.execute(
+            select(Relation).where(
+                or_(Relation.source_entity_id.in_(merged_ids),
+                    Relation.target_entity_id.in_(merged_ids))
+            )
+        )
+        candidates: list[tuple[Relation, str, str]] = []  # (rel, new_src, new_tgt)
+        to_drop_rels: list[Relation] = []
+        touched_ids: set[str] = set()
+        for rel in touched_row.scalars().all():
+            touched_ids.add(rel.id)
+            ns = id_remap.get(rel.source_entity_id, rel.source_entity_id)
+            nt = id_remap.get(rel.target_entity_id, rel.target_entity_id)
+            if ns == nt:  # 两端都并入 canonical -> 自环，丢弃
+                to_drop_rels.append(rel)
+                continue
+            candidates.append((rel, ns, nt))
+
+        # 2. 把「本就指向 canonical」的关系也纳入，用于 5 元组去重
+        canon_row = await db.execute(
+            select(Relation).where(
+                or_(Relation.source_entity_id == canonical_id,
+                    Relation.target_entity_id == canonical_id)
+            )
+        )
+        for rel in canon_row.scalars().all():
+            if rel.id in touched_ids:
+                continue
+            candidates.append((rel, rel.source_entity_id, rel.target_entity_id))
+
+        # 3. 按「计算出的新端点」(new_src, relation_type, new_tgt) 去重，保留 created_at 最早。
+        #    关键：必须用计算值（而非改后的 ORM 字段）去重，并先删重复/自环再 flush，
+        #    然后才改存活端点——否则 commit 时 UPDATE 会先于 DELETE 落库，
+        #    与尚未删除的重复行短暂撞上 relations 的 (kb,src,type,tgt) 唯一约束。
+        candidates.sort(key=lambda t: (t[0].created_at or ""))
+        keep_rels: list[tuple[Relation, str, str]] = []
+        seen_keys: set[tuple[str, str, str]] = set()
+        for rel, ns, nt in candidates:
+            key = (ns, rel.relation_type, nt)
+            if key in seen_keys:
+                if rel not in to_drop_rels:
+                    to_drop_rels.append(rel)
+            else:
+                seen_keys.add(key)
+                keep_rels.append((rel, ns, nt))
+
+        # 4. 先物理删除自环 / 重复关系并 flush，腾出唯一键空间
+        dropped_rel_ids = [rel.id for rel in to_drop_rels]
+        for rel in to_drop_rels:
+            await db.delete(rel)
+        if to_drop_rels:
+            await db.flush()
+
+        # 5. 再改存活关系的端点（此时已无重复行占位，UPDATE 不会撞唯一键）
+        rewired_rels: list[Relation] = []
+        for rel, ns, nt in keep_rels:
+            changed = False
+            if rel.source_entity_id != ns:
+                rel.source_entity_id = ns
+                changed = True
+            if rel.target_entity_id != nt:
+                rel.target_entity_id = nt
+                changed = True
+            if changed:
+                rewired_rels.append(rel)
+
+        # 6. 合并属性 / 描述 / 软别名
+        merged_props = _parse_properties(canonical.properties)
+        for e in merged_map.values():
+            merged_props = _merge_properties(
+                _dump_properties(merged_props), _parse_properties(e.properties)
+            )
+            if (e.description or "") and len(e.description) > len(canonical.description or ""):
+                canonical.description = e.description
+        aliases = list(merged_props.get("aliases") or [])
+        for e in merged_map.values():
+            if e.name and e.name != canonical.name and e.name not in aliases:
+                aliases.append(e.name)
+        if aliases:
+            merged_props["aliases"] = aliases
+        canonical.properties = _dump_properties(merged_props)
+        canonical.updated_at = datetime.now().isoformat()
+
+        # 7. 删除被合并实体（SQLite 权威）
+        for e in merged_map.values():
+            await db.delete(e)
+        await db.commit()
+        await db.refresh(canonical)
+
+        # 8. Kùzu 同步（best-effort）：先刷新存活关系、删丢弃关系，最后删被合并实体
+        _sync_upsert_entity(canonical)
+        for rel in rewired_rels:
+            _sync_upsert_relation(rel)
+        for rid in dropped_rel_ids:
+            _sync_delete_relation(rid)
+        for mid in merged_map:
+            _sync_delete_entity(mid)
+
+        return {
+            "canonical_id": canonical_id,
+            "merged_count": len(merged_map),
+            "relations_rewired": len(rewired_rels),
+            "relations_dropped": len(to_drop_rels),
+        }
+
+    @staticmethod
+    async def delete_entities(db: AsyncSession, entity_ids: list[str]) -> int:
+        n = 0
+        for eid in (entity_ids or []):
+            if await EntityService.delete_entity(db, eid):
+                n += 1
+        return n
+
+    @staticmethod
+    async def delete_relations(db: AsyncSession, relation_ids: list[str]) -> int:
+        n = 0
+        for rid in (relation_ids or []):
+            if await EntityService.delete_relation(db, rid):
+                n += 1
+        return n
+
     # ===== 关系实例 CRUD =====
 
     @staticmethod

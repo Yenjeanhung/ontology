@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { fetchGraphRelationTypes, fetchGraphView, fetchKbs, getKb } from '../api'
 
 const graphProvider = inject('graphProvider', ref(''))
@@ -71,6 +71,19 @@ const panStart = ref({ x: 0, y: 0 })
 const panViewBoxStart = ref({ x: 0, y: 0 })
 const colorMap = ref({})
 const simSettled = ref(false)
+
+// ===== 视图层精简（非破坏，仅作用于已加载的图）=====
+const allNodes = ref([])        // 全量节点（保留 x/y/vx/vy）
+const allEdges = ref([])        // 全量边
+const hiddenTypes = ref(new Set())  // 被隐藏的实体类型（小写/原值混存）
+const degreeMin = ref(0)        // 仅显示度数 ≥ 此值的节点（0=不限）
+const degreeMax = ref('')       // 仅显示度数 ≤ 此值的节点（空=不限）
+const cleanMode = ref(false)
+// 清爽模式默认隐藏的「噪声」类型（中英文都覆盖）
+const NOISE_TYPE_NAMES = new Set([
+  'date', 'indicator', 'file', 'unknown', 'number', 'metric', 'metrics',
+  '日期', '指标', '文件', '数值', '未知',
+])
 
 const summary = computed(() => graphData.value?.summary || {
   provider: '--', entity_total: 0, relation_total: 0,
@@ -275,10 +288,84 @@ function buildGraph() {
 
   nodes.value = nodeList
   edges.value = edgeList
+  // 全量缓存（同一对象引用，保留 x/y/vx/vy，便于过滤切换时位置连续）
+  allNodes.value = nodeList
+  allEdges.value = edgeList
   simSettled.value = false
   viewBox.value = { ...defaultViewBox }
   zoomLevel.value = 1
+  // 应用当前精简过滤态（内部会 startSimulation）
+  applyViewFilters()
 }
+
+// ===== 视图层精简：过滤逻辑 =====
+function isNoiseType(etype) {
+  return NOISE_TYPE_NAMES.has((etype || '').trim().toLowerCase())
+}
+
+function visibleNodeIds() {
+  const lo = Number(degreeMin.value) || 0
+  const hi = degreeMax.value === '' ? Infinity : (Number(degreeMax.value) || Infinity)
+  const out = new Set()
+  for (const n of allNodes.value) {
+    if (hiddenTypes.value.has(n.entityType)) continue
+    if (n.degree < lo || n.degree > hi) continue
+    out.add(n.id)
+  }
+  return out
+}
+
+// 依据过滤态把 nodes/edges 重置为全量的可见子集，并重热力导向。
+// 复用 allNodes 里的同一对象引用，使被隐藏后又恢复的节点保留原位置。
+function applyViewFilters() {
+  const vis = visibleNodeIds()
+  nodes.value = allNodes.value.filter(n => vis.has(n.id))
+  edges.value = allEdges.value.filter(e => vis.has(e.source) && vis.has(e.target))
+  simSettled.value = false
+  startSimulation()
+}
+
+function toggleType(etype) {
+  const next = new Set(hiddenTypes.value)
+  if (next.has(etype)) next.delete(etype)
+  else next.add(etype)
+  hiddenTypes.value = next
+}
+
+function degreePercentile(p) {
+  if (!allNodes.value.length) return Infinity
+  const ds = allNodes.value.map(n => n.degree).sort((a, b) => a - b)
+  const idx = Math.min(ds.length - 1, Math.floor(ds.length * p))
+  return ds[idx]
+}
+
+function toggleCleanMode() {
+  if (cleanMode.value) {
+    cleanMode.value = false
+    hiddenTypes.value = new Set()
+    degreeMin.value = 0
+    degreeMax.value = ''
+    return
+  }
+  cleanMode.value = true
+  // 隐藏实际存在的噪声类型（日期/指标/文件等）+ 去孤岛(度数<1) + 去顶级超级枢纽(度数>P90)
+  hiddenTypes.value = new Set(allNodes.value.map(n => n.entityType).filter(isNoiseType))
+  degreeMin.value = 1
+  degreeMax.value = String(degreePercentile(0.9))
+}
+
+function resetFilters() {
+  cleanMode.value = false
+  hiddenTypes.value = new Set()
+  degreeMin.value = 0
+  degreeMax.value = ''
+}
+
+// 过滤态变化 → 重新应用（仅在有图时）
+watch([hiddenTypes, degreeMin, degreeMax], () => {
+  if (!allNodes.value.length) return
+  applyViewFilters()
+})
 
 function simulationStep() {
   const nodeArr = nodes.value
@@ -569,7 +656,8 @@ async function loadView({ append = false } = {}) {
     entityOffset.value = offset + ENTITY_PAGE_SIZE
     hasMore.value = data.summary?.has_more ?? false
     hasQueried.value = true
-    assignColors(); buildGraph(); startSimulation()
+    // buildGraph 内部会调用 applyViewFilters → startSimulation
+    assignColors(); buildGraph()
     selectedNodeId.value = ''
     selectedChunkId.value = records.value[0]?.chunk_id || ''
     relationPage.value = 1
@@ -652,6 +740,26 @@ onUnmounted(() => stopSimulation())
       </div>
     </section>
 
+    <!-- ====== 视图精简（非破坏，仅作用于已加载的图）====== -->
+    <section v-if="selectedKbId && viewMode === 'graph'" class="graph-card filter-card simplify-card">
+      <div class="simplify-row">
+        <span class="simplify-label">视图精简</span>
+        <label class="simplify-field">
+          <span>最小度数</span>
+          <input type="number" min="0" v-model="degreeMin" :disabled="!nodes.length && !allNodes.length">
+        </label>
+        <label class="simplify-field">
+          <span>最大度数</span>
+          <input type="number" min="0" placeholder="不限" v-model="degreeMax" :disabled="!nodes.length && !allNodes.length">
+        </label>
+        <button class="btn" :class="{ primary: cleanMode }" :disabled="!allNodes.length" @click="toggleCleanMode">
+          {{ cleanMode ? '退出清爽模式' : '清爽模式' }}
+        </button>
+        <button class="btn" :disabled="!allNodes.length" @click="resetFilters">重置</button>
+        <span class="simplify-hint" v-if="allNodes.length">已显示 {{ nodes.length }}/{{ allNodes.length }} 实体 · 点击上方图例隐藏类型</span>
+      </div>
+    </section>
+
     <!-- ====== GRAPH VIEW ====== -->
     <section v-if="viewMode === 'graph'" class="graph-card main-card graph-mode">
       <div v-if="!selectedKbId" class="empty-state">
@@ -667,7 +775,13 @@ onUnmounted(() => stopSimulation())
       <div v-else class="graph-main">
         <div class="graph-canvas-wrap">
           <div class="graph-legend">
-            <span v-for="(color, etype) in colorMap" :key="etype" class="legend-chip">
+            <span
+              v-for="(color, etype) in colorMap" :key="etype"
+              class="legend-chip"
+              :class="{ off: hiddenTypes.has(etype) }"
+              :title="hiddenTypes.has(etype) ? '点击显示该类型' : '点击隐藏该类型'"
+              @click="toggleType(etype)"
+            >
               <span class="legend-dot" :style="{ background: color }"></span>{{ entityTypeLabel(etype) }}
             </span>
           </div>
@@ -999,8 +1113,24 @@ onUnmounted(() => stopSimulation())
 .legend-chip {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 11px; font-weight: 600; color: var(--c-secondary);
+  cursor: pointer; user-select: none; padding: 2px 6px; border-radius: 8px;
+  transition: background 120ms, opacity 120ms;
 }
+.legend-chip:hover { background: var(--c-muted); }
+.legend-chip.off { opacity: 0.35; text-decoration: line-through; }
 .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+/* 视图精简卡 */
+.simplify-card { padding: 12px 16px; }
+.simplify-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.simplify-label { font-size: 12px; font-weight: 700; color: var(--c-secondary); }
+.simplify-field { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--c-secondary); }
+.simplify-field input {
+  width: 84px; height: 34px; padding: 0 8px; border: 1px solid var(--c-border);
+  border-radius: 8px; background: var(--c-panel); color: var(--c-fg); font-size: 13px; outline: none;
+}
+.simplify-field input:focus { border-color: var(--c-fg); }
+.simplify-hint { font-size: 11px; color: var(--c-secondary); margin-left: auto; }
 
 .graph-canvas {
   position: relative;

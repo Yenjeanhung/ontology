@@ -16,6 +16,7 @@ import ModelConfigPage from '../components/config/ModelConfigPage.vue'
 import EntityListPage from '../components/entity/EntityListPage.vue'
 import EntityDetailPage from '../components/entity/EntityDetailPage.vue'
 import RelationListPage from '../components/entity/RelationListPage.vue'
+import GraphCleanupPage from '../components/entity/GraphCleanupPage.vue'
 
 const routes = [
   { path: '/', name: 'home', component: HomeView },
@@ -29,6 +30,7 @@ const routes = [
   { path: '/entities', name: 'entities', component: EntityListPage, meta: { keepAlive: true } },
   { path: '/entities/:entityId', name: 'entity-detail', component: EntityDetailPage, props: true },
   { path: '/entities/relations', name: 'entity-relations', component: RelationListPage, meta: { keepAlive: true } },
+  { path: '/graph-cleanup', name: 'graph-cleanup', component: GraphCleanupPage, meta: { keepAlive: true } },
   // 知识库
   { path: '/kb', name: 'kb', component: KbList, meta: { keepAlive: true } },
   { path: '/kb/:kbId', name: 'kb-detail', component: KbDetail, props: true, meta: { keepAlive: true } },
