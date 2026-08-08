@@ -389,13 +389,12 @@ class KuzuGraphAdapter(GraphStoreAdapter):
             self._delete_document_graph_internal(file_id)
 
     def _delete_document_graph_internal(self, file_id: str):
-        self._execute(
-            """
-            MATCH (r:Relation)<-[:HAS_RELATION]-(c:Chunk {file_id: $file_id})
-            DETACH DELETE r
-            """,
-            {"file_id": file_id},
-        )
+        # 只清掉本文件的分片(Chunk)与文档(Document)节点。
+        # 实体(Entity)/关系(Relation)节点是 KB 级共享的（id 不含 file_id），
+        # 删除它们会误伤其它文件抽取到的同名实体/同三元组关系，以及手动维护的实例。
+        # 分片用 DETACH DELETE，顺带带走本文件 Chunk 的 MENTIONS / HAS_RELATION 边；
+        # 仅本文件独有的 Relation 会因此失去 HAS_RELATION 而在图谱视图中不可见
+        # （fetch_graph_view 经 HAS_RELATION 检索），重新抽取时按同一 id MERGE 自动复联。
         self._execute(
             """
             MATCH (c:Chunk {file_id: $file_id})
@@ -1168,10 +1167,11 @@ class Neo4jGraphAdapter(GraphStoreAdapter):
             self._execute(statement)
 
     def delete_document_graph(self, file_id: str):
+        # 与 Kùzu 一致：只清本文件分片与文档节点，保留 KB 级共享的实体/关系节点
         self._execute(
             """
-            MATCH (d:Document {id: $file_id})-[:HAS_CHUNK]->(:Chunk)-[:HAS_RELATION]->(r:Relation)
-            DETACH DELETE r
+            MATCH (c:Chunk {file_id: $file_id})
+            DETACH DELETE c
             """,
             {"file_id": file_id},
         )

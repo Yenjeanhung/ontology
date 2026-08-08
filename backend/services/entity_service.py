@@ -49,6 +49,23 @@ def _dump_properties(value: dict | None) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _merge_properties(old_raw: str | None, new_props: dict | None) -> dict:
+    """按字段合并实体属性，保证「增量累积、不丢旧值」。
+
+    规则（对应产品诉求：新属性更丰富则更新，不要把旧属性改没，没有的新增）：
+    - 以旧属性为基底；
+    - 新值非空 → 覆盖/新增该字段；
+    - 新值为空 → 保留旧值，不动；
+    - 仅旧值有的字段 → 原样保留。
+    """
+    merged = _parse_properties(old_raw)
+    for key, value in (new_props or {}).items():
+        if value is None or str(value).strip() == "":
+            continue  # 新值为空：不覆盖旧值
+        merged[key] = value
+    return merged
+
+
 def _normalize_entity_value(value: str, default: str = "") -> str:
     return (value or "").strip() or default
 
@@ -315,14 +332,18 @@ class EntityService:
             db.add(ent)
             await db.flush()
         else:
-            # upsert：更新本体归属、描述、属性；保留原 source 信息
+            # upsert：更新本体归属、名称；描述与属性走「增量累积」语义。
+            # 描述：新值更丰富（更长）才覆盖，避免把更完整的旧描述改没；
+            # 属性：按字段合并（_merge_properties），旧字段不丢、新字段新增。
             ent.ontology_id = ontology_id
             ent.entity_type = normalized_type
             ent.name = normalized_name
             if description is not None:
-                ent.description = description.strip()
+                old_desc = ent.description or ""
+                new_desc = description.strip()
+                ent.description = new_desc if len(new_desc) >= len(old_desc) else old_desc
             if properties is not None:
-                ent.properties = _dump_properties(properties)
+                ent.properties = _dump_properties(_merge_properties(ent.properties, properties))
             ent.updated_at = datetime.now().isoformat()
             await db.flush()
 

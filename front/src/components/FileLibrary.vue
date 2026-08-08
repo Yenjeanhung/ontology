@@ -35,6 +35,7 @@ const selectedDirectoryId = ref('')
 const expandedDirectories = ref(new Set(['']))
 const search = ref('')
 const draggingNode = ref(null)
+const draggingAsset = ref(null)
 const dragOverNodeId = ref(null)
 const uploading = ref({})
 const selectedAssets = ref(new Set())
@@ -264,6 +265,11 @@ function selectDirectory(id) {
 }
 
 // 拖拽处理
+// 文件所在目录 id 的统一归一（'' 表示根目录），用于判断「拖回原目录」这类无意义操作
+function assetCurrentDirId() {
+  return draggingAsset.value?.directory_id ?? ''
+}
+
 function handleDragStart(node) {
   draggingNode.value = node
 }
@@ -273,7 +279,29 @@ function handleDragEnd() {
   dragOverNodeId.value = null
 }
 
+// 文件卡片拖拽：拖到左侧目录树节点即移动到该目录
+function handleAssetDragStart(e, asset) {
+  draggingAsset.value = asset
+  if (e?.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    // Firefox 需要 setData 才会真正进入拖拽态
+    e.dataTransfer.setData('text/plain', asset.id)
+  }
+}
+
+function handleAssetDragEnd() {
+  draggingAsset.value = null
+  dragOverNodeId.value = null
+}
+
 function handleDragOver(node) {
+  if (draggingAsset.value) {
+    // 拖文件入目录：任意目录都是合法目标（当前所在目录除外）
+    if (assetCurrentDirId() !== node.id) {
+      dragOverNodeId.value = node.id
+    }
+    return
+  }
   if (draggingNode.value && draggingNode.value.id !== node.id) {
     dragOverNodeId.value = node.id
   }
@@ -286,30 +314,45 @@ function handleDragLeave(node) {
 }
 
 async function handleDrop(targetNode) {
+  // 文件 → 目录
+  if (draggingAsset.value) {
+    const asset = draggingAsset.value
+    const fromDir = asset.directory_id ?? ''
+    handleAssetDragEnd()
+    if (fromDir === targetNode.id) return
+    try {
+      await updateAsset(asset.id, { directoryId: targetNode.id })
+      await loadAssets()
+    } catch (error) {
+      console.error('Failed to move asset:', error)
+    }
+    return
+  }
+
   if (!draggingNode.value) return
-  
+
   const sourceNode = draggingNode.value
-  
+
   // 不能拖到自己或自己的子目录下
   if (sourceNode.id === targetNode.id) {
     handleDragEnd()
     return
   }
-  
+
   // 检查是否拖到自己的子目录下
   const isDescendant = isNodeDescendant(targetNode, sourceNode)
   if (isDescendant) {
     handleDragEnd()
     return
   }
-  
+
   try {
       await updateDirectory(sourceNode.id, { parentId: targetNode.id })
       await loadDirectories()
     } catch (error) {
     console.error('Failed to move folder:', error)
   }
-  
+
   handleDragEnd()
 }
 
@@ -324,6 +367,12 @@ function isNodeDescendant(parent, child) {
 
 // 根目录拖拽处理
 function handleRootDragOver() {
+  if (draggingAsset.value) {
+    if (assetCurrentDirId() !== '') {
+      dragOverNodeId.value = 'root'
+    }
+    return
+  }
   if (draggingNode.value) {
     dragOverNodeId.value = 'root'
   }
@@ -336,17 +385,34 @@ function handleRootDragLeave() {
 }
 
 async function handleRootDrop() {
+  // 文件 → 根目录
+  if (draggingAsset.value) {
+    const asset = draggingAsset.value
+    const fromDir = asset.directory_id ?? ''
+    handleAssetDragEnd()
+    if (fromDir === '') return
+    try {
+      // 传 ''（而非 null）：后端以「directory_id is not None」判断是否更新，
+      // null 会被当成「未提供」而跳过；空字符串经 `directory_id or None` 归一为根目录。
+      await updateAsset(asset.id, { directoryId: '' })
+      await loadAssets()
+    } catch (error) {
+      console.error('Failed to move asset to root:', error)
+    }
+    return
+  }
+
   if (!draggingNode.value) return
-  
+
   const sourceNode = draggingNode.value
-  
+
   try {
     await updateDirectory(sourceNode.id, { parentId: null })
     await loadDirectories()
   } catch (error) {
     console.error('Failed to move folder to root:', error)
   }
-  
+
   handleDragEnd()
 }
 
@@ -799,7 +865,7 @@ onUnmounted(() => {
             <div>操作</div>
           </div>
           <div v-if="assets.length > 0">
-            <div v-for="asset in assets" :key="asset.id" :class="['asset-row', { selected: selectedAssets.has(asset.id), highlighted: highlightedAssetId === asset.id }]" :data-asset-id="asset.id">
+            <div v-for="asset in assets" :key="asset.id" :class="['asset-row', { selected: selectedAssets.has(asset.id), highlighted: highlightedAssetId === asset.id, dragging: draggingAsset?.id === asset.id }]" :data-asset-id="asset.id" draggable="true" @dragstart="handleAssetDragStart($event, asset)" @dragend="handleAssetDragEnd">
               <button class="check-btn" @click.stop="toggleAssetSelection(asset.id)" :disabled="asset.status !== 'ready'">
                 {{ selectedAssets.has(asset.id) ? '✓' : '' }}
               </button>
@@ -1212,6 +1278,9 @@ onUnmounted(() => {
 .table-head { background: var(--c-muted); color: var(--c-secondary); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; }
 .asset-row + .asset-row { border-top: 1px solid var(--c-border); }
 .asset-row:hover, .asset-row.selected { background: var(--c-muted); }
+.asset-row[draggable="true"] { cursor: grab; }
+.asset-row[draggable="true"]:active { cursor: grabbing; }
+.asset-row.dragging { opacity: 0.5; }
 .check-btn { width: 22px; height: 22px; border: 1px solid var(--c-border); border-radius: 6px; background: var(--c-panel); color: var(--c-fg); cursor: pointer; }
 .check-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .asset-main { min-width: 0; cursor: pointer; }

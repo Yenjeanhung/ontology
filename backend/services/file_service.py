@@ -1168,6 +1168,15 @@ class FileService:
                     entity.id = result.get("id")
                     if entity.id:
                         entity_key_to_id[key] = entity.id
+                    # 用权威存储(SQLite)合并后的属性/描述回填 GraphEntity，
+                    # 使后续 upsert_document_graph 写 Kùzu 时使用合并值，
+                    # 而不是用本次原始抽取值覆盖掉更丰富的旧值。
+                    merged_props = result.get("properties")
+                    if isinstance(merged_props, dict):
+                        entity.properties = json.dumps(merged_props, ensure_ascii=False) or ""
+                    merged_desc = result.get("description")
+                    if merged_desc:
+                        entity.description = merged_desc
                 except Exception:
                     logger.exception(
                         "Persist entity to SQLite failed: kb_id=%s entity_type=%s name=%s",
