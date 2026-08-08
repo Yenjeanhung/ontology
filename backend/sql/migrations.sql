@@ -35,3 +35,18 @@ CREATE TABLE IF NOT EXISTS ontology_suggestions (
     reviewed_at TEXT,
     reviewer TEXT
 );
+
+-- migration_007: LLM 配置表（页面配置，多套方案，单一生效）
+CREATE TABLE IF NOT EXISTS llm_configs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'openai',
+    api_key TEXT DEFAULT '',
+    base_url TEXT DEFAULT '',
+    model TEXT DEFAULT '',
+    max_tokens INTEGER DEFAULT 4096,
+    temperature REAL DEFAULT 0.7,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT,
+    updated_at TEXT
+);

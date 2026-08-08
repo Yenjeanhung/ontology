@@ -770,3 +770,81 @@ export async function deleteOntologySuggestion(suggestionId) {
   if (!res.ok) throw new Error('Delete suggestion failed')
   return res.json()
 }
+
+// ===== 大模型（LLM）配置 =====
+export async function testLLMConfig({ provider, apiKey, baseUrl, model, maxTokens, temperature }) {
+  const res = await fetch(`${API}/api/config/llm/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider,
+      api_key: apiKey,
+      base_url: baseUrl,
+      model,
+      max_tokens: maxTokens,
+      temperature,
+    }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Test connection failed')
+  }
+  return res.json()
+}
+
+// 配置方案（多套 LLM 配置，可一键切换）
+export async function fetchLLMPlans() {
+  const res = await fetch(`${API}/api/config/llm/plans`)
+  if (!res.ok) throw new Error('Fetch LLM plans failed')
+  return res.json()
+}
+
+export async function createLLMPlan({ name, provider, apiKey, baseUrl, model, maxTokens, temperature }) {
+  const res = await fetch(`${API}/api/config/llm/plans`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name, provider, api_key: apiKey, base_url: baseUrl,
+      model, max_tokens: maxTokens, temperature,
+    }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Create plan failed')
+  }
+  return res.json()
+}
+
+export async function updateLLMPlan(planId, { name, provider, apiKey, baseUrl, model, maxTokens, temperature }) {
+  const res = await fetch(`${API}/api/config/llm/plans/${planId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name, provider, api_key: apiKey, base_url: baseUrl,
+      model, max_tokens: maxTokens, temperature,
+    }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Update plan failed')
+  }
+  return res.json()
+}
+
+export async function deleteLLMPlan(planId) {
+  const res = await fetch(`${API}/api/config/llm/plans/${planId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Delete plan failed')
+  }
+  return res.json()
+}
+
+export async function applyLLMPlan(planId) {
+  const res = await fetch(`${API}/api/config/llm/plans/${planId}/apply`, { method: 'POST' })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Apply plan failed')
+  }
+  return res.json()
+}

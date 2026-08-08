@@ -42,12 +42,14 @@ class Settings(BaseSettings):
     GRAPH_MAX_RELATIONS_PER_CHUNK: int = 12
 
     # LLM
-    LLM_PROVIDER: Literal["openai"]
-    OPENAI_API_KEY: str
-    OPENAI_BASE_URL: str
-    LLM_MODEL: str
-    LLM_MAX_TOKENS: int
-    LLM_TEMPERATURE: float
+    # openai = OpenAI 兼容（含 DeepSeek / Qwen / 智谱 / 自定义 OpenAI 格式）；anthropic = Anthropic 格式
+    # 以下 LLM 配置可通过页面配置管理（/config/llm），.env 中不设置时使用默认值
+    LLM_PROVIDER: Literal["openai", "anthropic"] = "openai"
+    OPENAI_API_KEY: str = ""
+    OPENAI_BASE_URL: str = ""
+    LLM_MODEL: str = ""
+    LLM_MAX_TOKENS: int = 4096
+    LLM_TEMPERATURE: float = 0.7
 
     # 分块
     CHUNK_STRATEGY: Literal["fixed", "semantic", "sentence"] = "fixed"

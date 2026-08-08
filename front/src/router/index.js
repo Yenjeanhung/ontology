@@ -12,6 +12,7 @@ import OntologyManagePage from '../components/ontology/OntologyManagePage.vue'
 import RelationDictPage from '../components/ontology/RelationDictPage.vue'
 import ConstraintPage from '../components/ontology/ConstraintPage.vue'
 import SuggestionListPage from '../components/ontology/SuggestionListPage.vue'
+import ModelConfigPage from '../components/config/ModelConfigPage.vue'
 import EntityListPage from '../components/entity/EntityListPage.vue'
 import EntityDetailPage from '../components/entity/EntityDetailPage.vue'
 import RelationListPage from '../components/entity/RelationListPage.vue'
@@ -37,6 +38,8 @@ const routes = [
   { path: '/agent', name: 'agent', component: AgentView, meta: { keepAlive: true } },
   { path: '/vectors', name: 'vectors', component: VectorDataView, meta: { keepAlive: true } },
   { path: '/graph', name: 'graph', component: GraphView, meta: { keepAlive: true } },
+  // 配置
+  { path: '/config/models', name: 'config-models', component: ModelConfigPage, meta: { keepAlive: true } },
 ]
 
 const router = createRouter({

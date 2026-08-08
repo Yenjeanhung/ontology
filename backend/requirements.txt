@@ -28,7 +28,8 @@ langchain-chroma>=0.1.0         # VECTOR_STORE_PROVIDER=chroma
 # langchain-milvus>=0.1.0       # VECTOR_STORE_PROVIDER=milvus 时取消注释
 
 # LangChain LLM
-langchain-openai>=0.2.0         # LLM_PROVIDER=openai
+langchain-openai>=0.2.0         # LLM_PROVIDER=openai（含 DeepSeek/Qwen/智谱等 OpenAI 兼容格式）
+langchain-anthropic>=0.1.0      # LLM_PROVIDER=anthropic
 
 # 图数据库
 kuzu>=0.8.0                     # GRAPH_STORE_PROVIDER=kuzu

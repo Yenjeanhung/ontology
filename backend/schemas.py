@@ -255,3 +255,37 @@ class CreateRelationRequest(BaseModel):
     source_entity_id: str
     target_entity_id: str
     description: str | None = ""
+
+
+# ===== 大模型（LLM）配置 =====
+
+
+class LLMConfigUpdate(BaseModel):
+    """更新大模型配置。api_key 为空 / None / 掩码占位时表示不修改密钥。"""
+    provider: str = "openai"            # openai(OpenAI 兼容) | anthropic
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    model: str
+    max_tokens: int = 4096
+    temperature: float = 0.7
+
+
+class LLMConfigTest(BaseModel):
+    """测试连接：所有字段均为本次测试所用的值。api_key 为空表示沿用已保存的密钥。"""
+    provider: str = "openai"
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    model: str
+    max_tokens: int = 4096
+    temperature: float = 0.7
+
+
+class LLMPlanRequest(BaseModel):
+    """保存/更新一套 LLM 配置方案。api_key 为空时沿用当前已激活的密钥。"""
+    name: str
+    provider: str = "openai"
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    model: str = ""
+    max_tokens: int = 4096
+    temperature: float = 0.7

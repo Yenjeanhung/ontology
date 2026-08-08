@@ -95,8 +95,17 @@ async def lifespan(app: FastAPI):
 
     logger.info("Loading LLM provider...")
     from providers.llm import create_llm
+    from database import get_db
+    from services.config_service import load_active_into_settings
 
-    create_llm()
+    # 从数据库载入生效的 LLM 配置到内存 settings（LLM 配置不再走 .env）
+    async for db in get_db():
+        await load_active_into_settings(db)
+        break
+
+    llm = create_llm()
+    if llm is None:
+        logger.warning("LLM 未配置，请到 /config/llm 页面配置后使用")
 
     logger.info("Ensuring graph store schema...")
     from providers.graph_store import ensure_graph_schema
@@ -124,7 +133,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from routers import agent, entity, files, graph, kb, library, ontology, query, vector_data
+from routers import agent, config, entity, files, graph, kb, library, ontology, query, vector_data
 
 app.include_router(kb.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
@@ -135,6 +144,7 @@ app.include_router(agent.router, prefix="/api")
 app.include_router(vector_data.router, prefix="/api")
 app.include_router(ontology.router, prefix="/api")
 app.include_router(entity.router, prefix="/api")
+app.include_router(config.router, prefix="/api")
 
 front_dist = Path(__file__).parent.parent / "front" / "dist"
 if front_dist.exists():

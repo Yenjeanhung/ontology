@@ -210,3 +210,17 @@ CREATE TABLE IF NOT EXISTS relations (
     updated_at VARCHAR,
     UNIQUE(kb_id, source_entity_id, relation_type, target_entity_id)
 );
+
+CREATE TABLE IF NOT EXISTS llm_configs (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    provider VARCHAR NOT NULL DEFAULT 'openai',
+    api_key VARCHAR DEFAULT '',
+    base_url VARCHAR DEFAULT '',
+    model VARCHAR DEFAULT '',
+    max_tokens INTEGER DEFAULT 4096,
+    temperature REAL DEFAULT 0.7,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);

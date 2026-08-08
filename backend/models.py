@@ -276,3 +276,21 @@ class Relation(Base):
     source_chunk_id = Column(String, nullable=True)
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+# ===== 大模型配置（页面配置，多套方案，同一时间仅一条生效）=====
+
+class LLMConfig(Base):
+    __tablename__ = "llm_configs"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String, nullable=False)
+    provider = Column(String, nullable=False, default="openai")   # openai | anthropic
+    api_key = Column(String, default="")
+    base_url = Column(String, default="")
+    model = Column(String, default="")
+    max_tokens = Column(Integer, default=4096)
+    temperature = Column(Float, default=0.7)
+    is_active = Column(Integer, nullable=False, default=0)        # 1 = 当前生效
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
