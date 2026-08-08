@@ -1,7 +1,9 @@
 <script setup>
 import { computed, onMounted, onBeforeUnmount, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { fetchConfig, fetchOntologySuggestions } from './api'
+import { fetchConfig } from './api'
+import { pendingSuggestionCount, refreshPendingSuggestionCount } from './stores/suggestions'
+import ToastContainer from './components/ToastContainer.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -11,7 +13,6 @@ const THEME_STORAGE_KEY = 'knowsource.theme'
 const theme = ref('dark')
 const vectorProvider = ref('')
 const graphProvider = ref('')
-const pendingSuggestionCount = ref(0) // 全局待审核建议数
 
 provide('vectorProvider', vectorProvider)
 provide('graphProvider', graphProvider)
@@ -140,10 +141,8 @@ onMounted(() => {
     graphProvider.value = cfg.graph_provider || ''
   }).catch(() => {})
 
-  // 全局检查待审核本体建议数
-  fetchOntologySuggestions({ status: 'ready' }).then(list => {
-    pendingSuggestionCount.value = list.length
-  }).catch(() => {})
+  // 全局检查待审核本体建议数（后续由审核页在增删改后主动刷新）
+  refreshPendingSuggestionCount()
 
   window.addEventListener('pointerdown', onSidePointerDown)
   window.addEventListener('keydown', onSideKeydown)
@@ -353,6 +352,8 @@ onBeforeUnmount(() => {
         <component v-if="!route.meta.keepAlive" :is="Component" :key="route.path" />
       </router-view>
     </main>
+
+    <ToastContainer />
   </div>
 </template>
 

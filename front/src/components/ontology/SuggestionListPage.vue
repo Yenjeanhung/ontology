@@ -1,6 +1,8 @@
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted, onActivated } from 'vue'
 import { fetchOntologySuggestions, deleteOntologySuggestion } from '../../api'
+import { refreshPendingSuggestionCount } from '../../stores/suggestions'
+import { useToast } from '../../composables/useToast'
 import SuggestionReviewEditor from './SuggestionReviewEditor.vue'
 
 const STATUS_MAP = { ready: '待审核', approved: '已通过', rejected: '已拒绝', generating: '生成中' }
@@ -14,6 +16,7 @@ const statusFilter = ref('')
 const kbIdFilter = ref('')
 
 const reviewingId = ref(null)
+const toast = useToast()
 
 async function load() {
   loading.value = true
@@ -46,6 +49,7 @@ function onReviewed() {
   reviewingId.value = null
   emit('changed')
   load()
+  refreshPendingSuggestionCount()
 }
 
 async function removeSuggestion(item) {
@@ -53,9 +57,11 @@ async function removeSuggestion(item) {
   try {
     await deleteOntologySuggestion(item.id)
     emit('changed')
+    toast.success('已删除')
     await load()
+    refreshPendingSuggestionCount()
   } catch (e) {
-    alert('删除失败：' + e.message)
+    toast.error('删除失败：' + e.message)
   }
 }
 
@@ -82,7 +88,17 @@ function statsData(item) {
 
 const emit = defineEmits(['changed'])
 
-onMounted(load)
+let _skipFirstActivated = true
+onMounted(async () => {
+  await load()
+  refreshPendingSuggestionCount()
+})
+// keepAlive 复用实例，再次进入页面（如点“去审核”）时重新拉取数据
+onActivated(async () => {
+  if (_skipFirstActivated) { _skipFirstActivated = false; return }
+  await load()
+  refreshPendingSuggestionCount()
+})
 </script>
 
 <template>
@@ -128,7 +144,7 @@ onMounted(load)
       </div>
       <SuggestionReviewEditor
         :suggestion-id="reviewingId"
-        @changed="onReviewed"
+        @done="onReviewed"
       />
     </div>
 

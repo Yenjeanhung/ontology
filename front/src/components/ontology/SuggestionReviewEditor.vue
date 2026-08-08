@@ -1,6 +1,7 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { getOntologySuggestion, updateOntologySuggestion, approveOntologySuggestion, rejectOntologySuggestion } from '../../api'
+import { useToast } from '../../composables/useToast'
 
 const props = defineProps({
   suggestionId: { type: String, required: true },
@@ -13,6 +14,7 @@ const detail = ref(null)
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
+const toast = useToast()
 
 const categoryName = ref('')
 const categoryDesc = ref('')
@@ -121,9 +123,10 @@ async function approve() {
   try {
     await updateOntologySuggestion(props.suggestionId, buildSuggestionData())
     await approveOntologySuggestion(props.suggestionId)
+    toast.success('审核通过，已写入本体类别')
     emit('done')
   } catch (e) {
-    alert('操作失败：' + e.message)
+    toast.error('操作失败：' + e.message)
   } finally {
     saving.value = false
   }
@@ -133,9 +136,10 @@ async function reject() {
   saving.value = true
   try {
     await rejectOntologySuggestion(props.suggestionId)
+    toast.success('已拒绝该建议')
     emit('done')
   } catch (e) {
-    alert('操作失败：' + e.message)
+    toast.error('操作失败：' + e.message)
   } finally {
     saving.value = false
   }
