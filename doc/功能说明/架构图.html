@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>KnowSource 系统架构图</title>
+<style>
+  :root {
+    --bg: #0d1017;
+    --bg-2: #141925;
+    --panel: #1a2030;
+    --panel-2: #212a3d;
+    --border: #2c3650;
+    --fg: #e8edf6;
+    --fg-dim: #9aa7bd;
+    --fg-mute: #6b7793;
+
+    --c-fe: #a78bfa;      /* 前端 紫 */
+    --c-route: #60a5fa;   /* 路由 蓝 */
+    --c-svc: #22d3ee;     /* 服务 青 */
+    --c-prov: #818cf8;    /* 组件 靛 */
+    --c-sqlite: #34d399;  /* SQLite 绿 */
+    --c-chroma: #fb923c;  /* Chroma 橙 */
+    --c-kuzu: #f472b6;    /* Kùzu 粉 */
+    --c-accent: #fbbf24;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(129,140,248,.10), transparent 60%),
+      radial-gradient(900px 500px at 0% 0%, rgba(34,211,238,.08), transparent 55%),
+      var(--bg);
+    color: var(--fg);
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+    padding: 36px 22px 64px;
+  }
+
+  .wrap { max-width: 1240px; margin: 0 auto; }
+
+  /* ---------- Header ---------- */
+  header { text-align: center; margin-bottom: 26px; }
+  header h1 {
+    margin: 0 0 6px;
+    font-size: 30px;
+    font-weight: 800;
+    letter-spacing: .5px;
+    background: linear-gradient(90deg, #c4b5fd, #67e8f9, #fda4af);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  header .sub { color: var(--fg-dim); font-size: 15px; }
+  header .tags { margin-top: 12px; display: inline-flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  header .tag {
+    font-size: 12px; padding: 4px 11px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--border); color: var(--fg-dim);
+  }
+
+  /* ---------- Flow controls ---------- */
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;
+    margin: 22px 0 30px;
+  }
+  .ctrl {
+    cursor: pointer; user-select: none;
+    font-size: 13.5px; font-weight: 600;
+    padding: 9px 16px; border-radius: 11px;
+    background: var(--panel); border: 1px solid var(--border);
+    color: var(--fg-dim);
+    transition: all .18s ease;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .ctrl .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--fg-mute); transition: all .18s; }
+  .ctrl:hover { color: var(--fg); border-color: #45537a; transform: translateY(-1px); }
+  .ctrl.active { color: #0d1017; border-color: transparent; box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+  .ctrl.active .dot { background: #0d1017; }
+  .ctrl[data-flow="ontology"].active   { background: var(--c-fe); }
+  .ctrl[data-flow="extract"].active    { background: var(--c-chroma); }
+  .ctrl[data-flow="rag"].active        { background: var(--c-route); }
+  .ctrl[data-flow="oag"].active        { background: var(--c-svc); }
+  .ctrl[data-flow="govern"].active     { background: var(--c-kuzu); }
+  .ctrl[data-flow="all"].active        { background: var(--c-accent); }
+
+  .hint { text-align:center; color: var(--fg-mute); font-size: 12.5px; margin-top: -16px; margin-bottom: 26px; }
+
+  /* ---------- Diagram layers ---------- */
+  .layer {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 18px 18px 20px;
+    background: linear-gradient(180deg, var(--panel) 0%, var(--bg-2) 100%);
+    box-shadow: 0 10px 30px rgba(0,0,0,.28);
+  }
+  .layer + .arrow { margin: 6px 0; }
+  .layer-title {
+    position: absolute; top: -11px; left: 20px;
+    font-size: 12px; font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase;
+    background: var(--bg); padding: 2px 10px; border-radius: 7px;
+    border: 1px solid var(--border);
+  }
+  .layer-title .pill {
+    display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; vertical-align:middle;
+  }
+
+  .grid { display: grid; gap: 10px; }
+  .g-fe    { grid-template-columns: repeat(4, 1fr); }
+  .g-data  { grid-template-columns: repeat(3, 1fr); }
+
+  /* 后端三子层 */
+  .backend-rows { display: flex; flex-direction: column; gap: 16px; }
+  .sublayer { position: relative; }
+  .sublayer > .sl-label {
+    font-size: 11.5px; font-weight: 700; color: var(--fg-dim);
+    letter-spacing: .5px; margin: 0 0 8px 2px; text-transform: uppercase;
+  }
+  .g-route { grid-template-columns: repeat(4, 1fr); }
+  .g-svc   { grid-template-columns: repeat(5, 1fr); }
+  .g-prov  { grid-template-columns: repeat(5, 1fr); }
+
+  /* ---------- Module card ---------- */
+  .mod {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 11px;
+    transition: opacity .25s ease, filter .25s ease, transform .18s ease,
+                border-color .18s, box-shadow .18s;
+    min-height: 58px;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .mod .name { font-size: 13px; font-weight: 700; color: var(--fg); }
+  .mod .desc { font-size: 11px; color: var(--fg-mute); line-height: 1.35; }
+
+  /* layer accent borders */
+  .layer.fe    .mod { border-top: 2px solid rgba(167,139,250,.55); }
+  .layer.route .mod { border-top: 2px solid rgba(96,165,250,.55); }
+  .layer.svc   .mod { border-top: 2px solid rgba(34,211,238,.55); }
+  .layer.prov  .mod { border-top: 2px solid rgba(129,140,248,.55); }
+  .layer.data  .mod.sqlite { border-top: 2px solid var(--c-sqlite); }
+  .layer.data  .mod.chroma { border-top: 2px solid var(--c-chroma); }
+  .layer.data  .mod.kuzu   { border-top: 2px solid var(--c-kuzu); }
+
+  .mod:hover { transform: translateY(-2px); border-color: #56648f; }
+
+  /* lit / dim states when a flow is active */
+  .diagram.has-filter .mod { opacity: .16; filter: grayscale(.7); }
+  .diagram.has-filter .mod.lit {
+    opacity: 1; filter: none;
+    border-color: var(--c-accent) !important;
+    box-shadow: 0 0 0 1px rgba(251,191,36,.45), 0 8px 22px rgba(251,191,36,.16);
+  }
+
+  /* ---------- Arrows between layers ---------- */
+  .arrow {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--fg-mute); font-size: 11.5px; gap: 8px;
+  }
+  .arrow .line { width: 2px; height: 22px; background: linear-gradient(var(--border), transparent); }
+  .arrow .lbl {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 7px;
+    padding: 2px 9px; white-space: nowrap;
+  }
+
+  /* backend internal flow arrows (decorative) */
+  .flow-h {
+    display:flex; align-items:center; justify-content:center;
+    color: var(--fg-mute); font-size: 18px; height: 14px; margin: -4px 0;
+  }
+
+  /* ---------- Pipeline (horizontal) ---------- */
+  .pipeline {
+    margin-top: 30px;
+    border: 1px solid var(--border); border-radius: 18px;
+    background: linear-gradient(180deg, var(--panel), var(--bg-2));
+    padding: 18px 18px 22px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.28);
+  }
+  .pipeline h3 { margin: 0 0 4px; font-size: 15px; }
+  .pipeline .psub { color: var(--fg-dim); font-size: 12.5px; margin-bottom: 16px; }
+  .steps { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+  .step {
+    flex: 1 1 0; min-width: 130px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 11px 12px; position: relative;
+    transition: all .18s;
+  }
+  .step .n { font-size: 11px; font-weight: 800; color: var(--c-accent); }
+  .step .t { font-size: 13.5px; font-weight: 700; margin: 2px 0 3px; }
+  .step .d { font-size: 11px; color: var(--fg-mute); line-height: 1.4; }
+  .step-sep {
+    flex: 0 0 26px; display:flex; align-items:center; justify-content:center;
+    color: var(--fg-mute); font-size: 16px;
+  }
+  .step:hover { transform: translateY(-2px); border-color:#56648f; }
+
+  /* ---------- Feature cards ---------- */
+  .features {
+    margin-top: 30px;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+  }
+  .feat {
+    border: 1px solid var(--border); border-radius: 14px;
+    background: var(--panel); padding: 14px 15px;
+    transition: transform .18s, border-color .18s;
+  }
+  .feat:hover { transform: translateY(-2px); border-color:#56648f; }
+  .feat .ico { font-size: 18px; }
+  .feat .ft { font-size: 13.5px; font-weight: 700; margin: 6px 0 4px; }
+  .feat .fd { font-size: 11.5px; color: var(--fg-dim); line-height: 1.45; }
+
+  footer { text-align:center; color: var(--fg-mute); font-size: 12px; margin-top: 34px; }
+  footer a { color: var(--c-svc); text-decoration: none; }
+
+  @media (max-width: 980px) {
+    .g-fe, .g-route, .g-svc, .g-prov, .g-data { grid-template-columns: repeat(2, 1fr); }
+    .features { grid-template-columns: repeat(2, 1fr); }
+    .step-sep { display:none; }
+    .step { flex: 1 1 45%; }
+  }
+  @media (max-width: 560px) {
+    .g-fe, .g-route, .g-svc, .g-prov, .g-data, .features { grid-template-columns: 1fr; }
+    header h1 { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>KnowSource · 系统架构图</h1>
+    <div class="sub">本体约束驱动的 RAG + 知识图谱 一体化知识库系统</div>
+    <div class="tags">
+      <span class="tag">Vue 3</span>
+      <span class="tag">FastAPI</span>
+      <span class="tag">LangChain</span>
+      <span class="tag">SQLite</span>
+      <span class="tag">ChromaDB</span>
+      <span class="tag">Kùzu 图数据库</span>
+    </div>
+  </header>
+
+  <!-- 流程高亮控制 -->
+  <div class="controls" id="controls">
+    <span class="ctrl" data-flow="ontology"><span class="dot"></span>① 本体定义</span>
+    <span class="ctrl" data-flow="extract"><span class="dot"></span>② 文件抽取入库</span>
+    <span class="ctrl" data-flow="rag"><span class="dot"></span>③ 纯向量 RAG</span>
+    <span class="ctrl" data-flow="oag"><span class="dot"></span>④ OAG 融合问答</span>
+    <span class="ctrl" data-flow="govern"><span class="dot"></span>⑤ 图谱治理</span>
+    <span class="ctrl active" data-flow="all"><span class="dot"></span>全部</span>
+  </div>
+  <div class="hint">👆 点击上方按钮，逐条点亮数据流路径（讲解时可一步一步演示）</div>
+
+  <div class="diagram" id="diagram">
+
+    <!-- ============ 前端层 ============ -->
+    <div class="layer fe">
+      <div class="layer-title"><span class="pill" style="background:var(--c-fe)"></span>前端 · Vue 3 + Vite</div>
+      <div class="grid g-fe">
+        <div class="mod" data-flow="ontology"><div class="name">🧩 本体</div><div class="desc">模板/本体/关系字典/三元组/建议</div></div>
+        <div class="mod" data-flow="extract"><div class="name">📄 文件</div><div class="desc">上传·爬虫·文件库</div></div>
+        <div class="mod" data-flow="extract ontology"><div class="name">📚 知识库</div><div class="desc">CRUD · 本体绑定</div></div>
+        <div class="mod" data-flow="govern"><div class="name">🔵 实体</div><div class="desc">本体树 · 合并 · 详情</div></div>
+        <div class="mod" data-flow="govern"><div class="name">🕸️ 图谱</div><div class="desc">可视化 · 图谱清洗</div></div>
+        <div class="mod" data-flow="oag"><div class="name">🤖 智能体</div><div class="desc">OAG 推理可视化</div></div>
+        <div class="mod" data-flow="rag"><div class="name">🔎 数据</div><div class="desc">知识库检索 · 向量</div></div>
+        <div class="mod"><div class="name">⚙️ 配置</div><div class="desc">模型配置 · 热更新</div></div>
+      </div>
+    </div>
+
+    <div class="arrow"><span class="line"></span><span class="lbl">HTTP /api · SSE 流式</span><span class="line"></span></div>
+
+    <!-- ============ 后端层 ============ -->
+    <div class="layer" style="padding-top:24px;">
+      <div class="layer-title"><span class="pill" style="background:var(--c-route)"></span>后端 · FastAPI（异步）</div>
+      <div class="backend-rows">
+
+        <!-- 路由层 -->
+        <div class="sublayer">
+          <div class="sl-label">路由层 routers/</div>
+          <div class="grid g-route">
+            <div class="mod" data-flow="ontology"><div class="name">ontology</div><div class="desc">本体 CRUD · 约 50 端点</div></div>
+            <div class="mod" data-flow="extract"><div class="name">files / library</div><div class="desc">上传·处理·爬虫</div></div>
+            <div class="mod" data-flow="extract ontology"><div class="name">kb</div><div class="desc">知识库 · 本体绑定</div></div>
+            <div class="mod" data-flow="govern"><div class="name">entity / graph</div><div class="desc">实体·图谱·清洗</div></div>
+            <div class="mod" data-flow="oag"><div class="name">agent</div><div class="desc">OAG SSE 流式</div></div>
+            <div class="mod" data-flow="rag"><div class="name">query</div><div class="desc">RAG 检索</div></div>
+            <div class="mod" data-flow="rag"><div class="name">vector_data</div><div class="desc">向量对账</div></div>
+            <div class="mod"><div class="name">config</div><div class="desc">模型配置</div></div>
+          </div>
+        </div>
+
+        <div class="flow-h">▼</div>
+
+        <!-- 服务层 -->
+        <div class="sublayer">
+          <div class="sl-label">业务服务层 services/</div>
+          <div class="grid g-svc">
+            <div class="mod" data-flow="ontology"><div class="name">OntologyService</div><div class="desc">本体·约束·合并属性·建议审核</div></div>
+            <div class="mod" data-flow="extract"><div class="name">FileService</div><div class="desc">上传·分块·向量化·流水线</div></div>
+            <div class="mod" data-flow="extract"><div class="name">GraphExtractionService</div><div class="desc">约束 Prompt · 后处理校验</div></div>
+            <div class="mod" data-flow="extract"><div class="name">CrawlService</div><div class="desc">关键词采集·LLM 整理</div></div>
+            <div class="mod" data-flow="govern"><div class="name">EntityService</div><div class="desc">双库一致 · 实体合并</div></div>
+            <div class="mod" data-flow="govern"><div class="name">GraphDataService</div><div class="desc">度数排序分页视图</div></div>
+            <div class="mod" data-flow="govern"><div class="name">GraphCleanupService</div><div class="desc">并查集合并 · 护栏</div></div>
+            <div class="mod" data-flow="oag"><div class="name">OAGService</div><div class="desc">RRF 融合 · 图谱事实</div></div>
+            <div class="mod" data-flow="rag"><div class="name">RAGService</div><div class="desc">纯向量 Top-K · 流式</div></div>
+            <div class="mod"><div class="name">ConfigService</div><div class="desc">多套 LLM · 热更新</div></div>
+          </div>
+        </div>
+
+        <div class="flow-h">▼</div>
+
+        <!-- 组件层 -->
+        <div class="sublayer">
+          <div class="sl-label">可插拔组件层 providers/（LangChain 接口 · 配置即切换）</div>
+          <div class="grid g-prov">
+            <div class="mod" data-flow="extract rag oag"><div class="name">Embedding</div><div class="desc">bge-small 本地 / 在线</div></div>
+            <div class="mod" data-flow="extract rag oag"><div class="name">VectorStore</div><div class="desc">ChromaDB / Milvus</div></div>
+            <div class="mod" data-flow="rag oag"><div class="name">LLM</div><div class="desc">OpenAI 兼容 / Ollama</div></div>
+            <div class="mod" data-flow="extract"><div class="name">Parser</div><div class="desc">txt/pdf/docx/Tika</div></div>
+            <div class="mod" data-flow="extract oag govern"><div class="name">GraphStore</div><div class="desc">Kùzu / Neo4j 双 adapter</div></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="arrow"><span class="line"></span><span class="lbl">读 / 双写</span><span class="line"></span></div>
+
+    <!-- ============ 数据层 ============ -->
+    <div class="layer data">
+      <div class="layer-title"><span class="pill" style="background:var(--c-sqlite)"></span>数据层 · 三库分工</div>
+      <div class="grid g-data">
+        <div class="mod sqlite" data-flow="ontology extract rag oag govern">
+          <div class="name">🟢 SQLite（权威元数据）</div>
+          <div class="desc">本体定义 11 表 · 实体/关系实例 · 知识库/文件 · 模型配置。实体/关系的权威存储。</div>
+        </div>
+        <div class="mod chroma" data-flow="extract rag oag">
+          <div class="name">🟠 ChromaDB（向量）</div>
+          <div class="desc">文本分片向量 · 按知识库分 collection · 相似度检索。</div>
+        </div>
+        <div class="mod kuzu" data-flow="extract oag govern">
+          <div class="name">🌸 Kùzu（图数据库）</div>
+          <div class="desc">实体关系图谱 · MENTIONS/RELATES 边 · 可视化与图遍历 · OAG 图谱召回。</div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /diagram -->
+
+  <!-- ============ 核心数据流水线 ============ -->
+  <div class="pipeline">
+    <h3>🔄 核心数据流水线（端到端主线）</h3>
+    <div class="psub">"先定义本体规矩 → 建库绑定 → 上传抽取 → 治理 → 融合问答"</div>
+    <div class="steps">
+      <div class="step"><div class="n">STEP 1</div><div class="t">定义本体</div><div class="d">本体类别 / 本体属性 / 关系字典 / 三元组约束</div></div>
+      <div class="step-sep">→</div>
+      <div class="step"><div class="n">STEP 2</div><div class="t">建库绑定</div><div class="d">知识库绑定本体类别，决定抽取按谁的规矩</div></div>
+      <div class="step-sep">→</div>
+      <div class="step"><div class="n">STEP 3</div><div class="t">上传处理</div><div class="d">解析 → 分块 → 向量化 → 约束抽取 → 双库写入</div></div>
+      <div class="step-sep">→</div>
+      <div class="step"><div class="n">STEP 4</div><div class="t">治理</div><div class="d">实体编辑/合并 · 图谱清洗（去重去噪）</div></div>
+      <div class="step-sep">→</div>
+      <div class="step"><div class="n">STEP 5</div><div class="t">问答</div><div class="d">纯向量 RAG 或 OAG 向量+图谱融合问答</div></div>
+    </div>
+  </div>
+
+  <!-- ============ 关键特性 ============ -->
+  <div class="features">
+    <div class="feat">
+      <div class="ico">🛡️</div>
+      <div class="ft">本体约束双保险</div>
+      <div class="fd">动态约束 Prompt + 代码后处理 O(1) 校验，保证图谱 schema 一致。</div>
+    </div>
+    <div class="feat">
+      <div class="ico">🔀</div>
+      <div class="ft">OAG 融合检索</div>
+      <div class="fd">向量 ∪ 图谱召回 → RRF 重排 → 注入图谱事实，推理过程可视化。</div>
+    </div>
+    <div class="feat">
+      <div class="ico">🔗</div>
+      <div class="ft">双库一致性</div>
+      <div class="fd">SQLite 权威 + Kùzu 同步，best-effort + 全局写锁，最终一致。</div>
+    </div>
+    <div class="feat">
+      <div class="ico">🧹</div>
+      <div class="ft">图谱清洗护栏</div>
+      <div class="fd">并查集合并 + 删除比例阈值 + 不删孤岛，避免误清空。</div>
+    </div>
+    <div class="feat">
+      <div class="ico">🧠</div>
+      <div class="ft">先抽取后建模</div>
+      <div class="fd">无本体也能用：自由抽取 → LLM 反推候选本体 → 审核回填。</div>
+    </div>
+    <div class="feat">
+      <div class="ico">🔌</div>
+      <div class="ft">可插拔架构</div>
+      <div class="fd">嵌入/向量/LLM/解析/图库 基于接口，配置即切换，业务零改。</div>
+    </div>
+    <div class="feat">
+      <div class="ico">🔑</div>
+      <div class="ft">模型配置热更新</div>
+      <div class="fd">多套 LLM 入库 · 单例 reset→rebuild · api_key 掩码哨兵。</div>
+    </div>
+    <div class="feat">
+      <div class="ico">📊</div>
+      <div class="ft">向量双源对账</div>
+      <div class="fd">业务表 × 向量库交叉校验，定位"解析成功但向量丢失"坏数据。</div>
+    </div>
+  </div>
+
+  <footer>
+    KnowSource 架构图 · 配套文档见 <a href="00-项目总览.md">功能说明</a> · 点击顶部按钮可高亮各数据流路径
+  </footer>
+
+</div>
+
+<script>
+  const diagram = document.getElementById('diagram');
+  const ctrls = document.querySelectorAll('.ctrl');
+  let current = 'all';
+
+  function applyFlow(flow) {
+    if (flow === current) return;       // no-op
+    current = flow;
+    ctrls.forEach(c => c.classList.toggle('active', c.dataset.flow === flow));
+
+    if (flow === 'all') {
+      diagram.classList.remove('has-filter');
+      document.querySelectorAll('.mod.lit').forEach(m => m.classList.remove('lit'));
+      return;
+    }
+    diagram.classList.add('has-filter');
+    document.querySelectorAll('.mod').forEach(m => {
+      const flows = (m.dataset.flow || '').split(/\s+/);
+      m.classList.toggle('lit', flows.includes(flow));
+    });
+  }
+
+  ctrls.forEach(c => c.addEventListener('click', () => {
+    const f = c.dataset.flow;
+    // 点已激活的非"全部"项 → 回到全部
+    applyFlow(f === current && f !== 'all' ? 'all' : f);
+  }));
+</script>
+</body>
+</html>

@@ -43,7 +43,7 @@ const allClean = computed(() => hasLoaded.value && !hasAny.value)
 const activeTab = ref('merge')
 const tabs = computed(() => [
   { key: 'merge', label: '合并重复实体', count: groups.value.length },
-  { key: 'entities', label: '噪声/孤岛实体', count: delEntities.value.length },
+  { key: 'entities', label: '噪声实体', count: delEntities.value.length },
   { key: 'relations', label: '无语义关系', count: delRelations.value.length },
 ])
 
@@ -103,7 +103,7 @@ function payloadFor(scope) {
   return { kbId, merges, deleteEntityIds, deleteRelationIds }
 }
 
-const SCOPE_LABEL = { all: '全部', merge: '合并重复实体', entities: '噪声/孤岛实体', relations: '无语义关系' }
+const SCOPE_LABEL = { all: '全部', merge: '合并重复实体', entities: '噪声实体', relations: '无语义关系' }
 const confirmOpen = ref(false)
 const confirmScope = ref('all')
 const confirmPayload = computed(() => payloadFor(confirmScope.value))
@@ -137,6 +137,56 @@ async function runCleanup() {
   } finally {
     applying.value = false
   }
+}
+
+// —— 逐条处理：单组合并 / 单个删除，立即执行，无需走批量确认弹窗。
+// 后端 applyCleanup 天然支持单元素数组，单条操作不会触发 80% 安全护栏。 ——
+async function applyOne(payload) {
+  applying.value = true
+  try {
+    const res = await applyCleanup(payload)
+    toast.success(
+      `已处理：合并 ${res.merged || 0} 个实体，` +
+      `删除 ${res.entities_deleted || 0} 个实体 / ${res.relations_deleted || 0} 条关系`
+    )
+    await loadSuggestions()
+  } catch (e) {
+    toast.error('清洗失败：' + e.message)
+  } finally {
+    applying.value = false
+  }
+}
+
+// 单组合并：尊重当前选定的主实体与成员勾选状态
+function mergeOneGroup(g) {
+  const mergedIds = g.members
+    .filter(m => m.id !== g.canonicalId && g.memberChecked[m.id])
+    .map(m => m.id)
+  if (!mergedIds.length) { toast.info('该组未勾选可合并成员'); return }
+  return applyOne({
+    kbId: selectedKbId.value,
+    merges: [{ canonical_id: g.canonicalId, merged_ids: mergedIds }],
+    deleteEntityIds: [],
+    deleteRelationIds: [],
+  })
+}
+
+function deleteOneEntity(e) {
+  return applyOne({
+    kbId: selectedKbId.value,
+    merges: [],
+    deleteEntityIds: [e.id],
+    deleteRelationIds: [],
+  })
+}
+
+function deleteOneRelation(r) {
+  return applyOne({
+    kbId: selectedKbId.value,
+    merges: [],
+    deleteEntityIds: [],
+    deleteRelationIds: [r.id],
+  })
 }
 
 function onKbChange() {
@@ -180,7 +230,7 @@ onActivated(async () => {
           @change="onKbChange"
         />
       </div>
-      <button class="btn primary" :disabled="!selectedKbId || loading" @click="loadSuggestions">
+      <button class="btn primary" :disabled="!selectedKbId || loading || applying" @click="loadSuggestions">
         <span v-if="loading" class="spinner sm"></span>
         {{ loading ? '分析中...' : '生成清洗建议' }}
       </button>
@@ -191,7 +241,7 @@ onActivated(async () => {
       <span class="sum-chip">实体 {{ summary.entity_total }}</span>
       <span class="sum-chip">关系 {{ summary.relation_total }}</span>
       <span class="sum-chip" v-if="summary.merge_group_count">建议合并 {{ summary.merge_group_count }} 组</span>
-      <span class="sum-chip" v-if="summary.delete_entity_count">噪声/孤岛实体 {{ summary.delete_entity_count }}</span>
+      <span class="sum-chip" v-if="summary.delete_entity_count">噪声实体 {{ summary.delete_entity_count }}</span>
       <span class="sum-chip" v-if="summary.delete_relation_count">无语义关系 {{ summary.delete_relation_count }}</span>
     </div>
 
@@ -219,7 +269,7 @@ onActivated(async () => {
           <template v-else>
             <div class="section-head">
               <span class="section-hint">名称高度相似的同类实体，可调整主实体或取消勾选部分成员</span>
-              <button class="btn danger sm" :disabled="!selectedCounts.mergeCount" @click="askCleanup('merge')">
+              <button class="btn danger sm" :disabled="!selectedCounts.mergeCount || applying" @click="askCleanup('merge')">
                 仅清洗此类（{{ selectedCounts.mergeCount }}）
               </button>
             </div>
@@ -234,6 +284,7 @@ onActivated(async () => {
                       <option v-for="m in g.members" :key="m.id" :value="m.id">{{ m.name }}</option>
                     </select>
                   </div>
+                  <button class="btn primary sm" :disabled="applying" @click="mergeOneGroup(g)">合并本组</button>
                 </div>
                 <div class="member-list">
                   <label
@@ -258,18 +309,21 @@ onActivated(async () => {
           <div v-if="!delEntities.length" class="tab-empty">该类别暂无建议</div>
           <template v-else>
             <div class="section-head">
-              <span class="section-hint">日期、数值、整句等低价值实体名，以及无任何关系的孤岛节点</span>
-              <button class="btn danger sm" :disabled="!selectedCounts.delEntCount" @click="askCleanup('entities')">
+              <span class="section-hint">日期、数值、整句等低价值实体名（孤岛节点不再自动建议删除，避免级联清空）</span>
+              <button class="btn danger sm" :disabled="!selectedCounts.delEntCount || applying" @click="askCleanup('entities')">
                 仅清洗此类（{{ selectedCounts.delEntCount }}）
               </button>
             </div>
             <div class="check-table">
-              <label v-for="e in delEntities" :key="e.id" class="check-row">
-                <input type="checkbox" v-model="e.checked">
-                <span class="check-name">{{ e.name }}</span>
-                <span class="type-tag">{{ e.entity_type || '—' }}</span>
-                <span class="check-reason">{{ e.reason }}</span>
-              </label>
+              <div v-for="e in delEntities" :key="e.id" class="check-row">
+                <label class="check-main">
+                  <input type="checkbox" v-model="e.checked">
+                  <span class="check-name">{{ e.name }}</span>
+                  <span class="type-tag">{{ e.entity_type || '—' }}</span>
+                  <span class="check-reason">{{ e.reason }}</span>
+                </label>
+                <button class="btn danger sm row-action" :disabled="applying" @click="deleteOneEntity(e)">删除</button>
+              </div>
             </div>
           </template>
         </section>
@@ -280,16 +334,19 @@ onActivated(async () => {
           <template v-else>
             <div class="section-head">
               <span class="section-hint">"涉及/提到/关联"等无信息量关系，建议删除</span>
-              <button class="btn danger sm" :disabled="!selectedCounts.delRelCount" @click="askCleanup('relations')">
+              <button class="btn danger sm" :disabled="!selectedCounts.delRelCount || applying" @click="askCleanup('relations')">
                 仅清洗此类（{{ selectedCounts.delRelCount }}）
               </button>
             </div>
             <div class="check-table">
-              <label v-for="r in delRelations" :key="r.id" class="check-row">
-                <input type="checkbox" v-model="r.checked">
-                <span class="rel-tag">{{ r.relation_type }}</span>
-                <span class="check-reason">无语义通用关系</span>
-              </label>
+              <div v-for="r in delRelations" :key="r.id" class="check-row">
+                <label class="check-main">
+                  <input type="checkbox" v-model="r.checked">
+                  <span class="rel-tag">{{ r.relation_type }}</span>
+                  <span class="check-reason">无语义通用关系</span>
+                </label>
+                <button class="btn danger sm row-action" :disabled="applying" @click="deleteOneRelation(r)">删除</button>
+              </div>
             </div>
           </template>
         </section>
@@ -343,7 +400,7 @@ onActivated(async () => {
         <p class="confirm-line">本次将执行以下操作：</p>
         <ul class="confirm-list">
           <li v-if="confirmPayload.merges.length">合并 <b>{{ confirmPayload.merges.length }}</b> 组重复实体</li>
-          <li v-if="confirmPayload.deleteEntityIds.length">删除 <b>{{ confirmPayload.deleteEntityIds.length }}</b> 个噪声/孤岛实体</li>
+          <li v-if="confirmPayload.deleteEntityIds.length">删除 <b>{{ confirmPayload.deleteEntityIds.length }}</b> 个噪声实体</li>
           <li v-if="confirmPayload.deleteRelationIds.length">删除 <b>{{ confirmPayload.deleteRelationIds.length }}</b> 条无语义关系</li>
         </ul>
         <p class="confirm-warn">此操作不可撤销，将同步写入 SQLite 与图谱。</p>
@@ -399,9 +456,11 @@ onActivated(async () => {
 
 /* 待删列表 */
 .check-table { border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); overflow: hidden; }
-.check-row { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--c-border); cursor: pointer; font-size: 13px; transition: background 120ms; }
+.check-row { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--c-border); font-size: 13px; transition: background 120ms; }
 .check-row:last-child { border-bottom: 0; }
 .check-row:hover { background: var(--c-muted); }
+.check-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
+.row-action { flex-shrink: 0; }
 .check-name { color: var(--c-fg); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 340px; }
 .type-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--c-muted); color: var(--c-secondary); flex-shrink: 0; }
 .rel-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(220, 38, 38, 0.1); color: var(--c-danger); flex-shrink: 0; font-weight: 600; }

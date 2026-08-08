@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import logging
 import re
 import time
 import uuid
+import zlib
 from datetime import datetime
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 from urllib.request import Request, urlopen
 
@@ -101,24 +104,138 @@ def _job_to_dict(job: CrawlJob) -> dict:
     }
 
 
-def _fetch_url(url: str, timeout: int) -> str:
-    req = Request(
-        url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
-            )
-        },
-    )
-    with urlopen(req, timeout=timeout) as response:
+def _browser_headers() -> dict:
+    """更完整的浏览器请求头，降低被轻量反爬拦截的概率。"""
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,*/*;q=0.8"
+        ),
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Referer": "https://www.bing.com/",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+
+
+def _decompress(raw: bytes, encoding: str) -> bytes:
+    """部分 CDN/代理即使未请求 gzip 也可能压缩，这里做防御性解压。"""
+    encoding = (encoding or "").lower()
+    if "gzip" in encoding:
+        try:
+            return gzip.decompress(raw)
+        except OSError:
+            return raw
+    if "deflate" in encoding:
+        try:
+            return zlib.decompress(raw)
+        except OSError:
+            try:
+                return zlib.decompress(raw, -zlib.MAX_WBITS)
+            except OSError:
+                return raw
+    return raw
+
+
+def _fetch_url(url: str, timeout: int, retries: int = 2) -> str:
+    """直连抓取原始 HTML。带完整浏览器头 + 指数退避重试。
+    4xx（除 429）不重试——重试也不会变；5xx / 超时 / 网络错误会重试。"""
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            req = Request(url, headers=_browser_headers())
+            with urlopen(req, timeout=timeout) as response:
+                raw = response.read(2 * 1024 * 1024)
+                raw = _decompress(raw, response.headers.get("content-encoding", ""))
+                content_type = response.headers.get("content-type", "")
+            charset = "utf-8"
+            match = re.search(r"charset=([\w-]+)", content_type, re.I)
+            if match:
+                charset = match.group(1)
+            return raw.decode(charset, errors="ignore")
+        except HTTPError as e:
+            last_exc = e
+            # 客户端错误（除限流 429）重试无意义，直接抛出
+            if 400 <= e.code < 500 and e.code != 429:
+                raise
+            if attempt >= retries:
+                raise
+        except (URLError, TimeoutError, OSError) as e:
+            last_exc = e
+            if attempt >= retries:
+                raise
+        time.sleep(2 ** attempt)  # 1s, 2s, 4s ...
+    # 理论上不可达；保险起见抛出最后一次异常
+    raise last_exc if last_exc else RuntimeError(f"抓取失败：{url}")
+
+
+def _fetch_via_jina(url: str, timeout: int) -> str:
+    """通过 Jina Reader (r.jina.ai) 抓取，服务端渲染 JS 并返回干净的 Markdown 正文。
+    用于救场两类页面：① 今日头条等 SPA（直连 HTML 无正文）；② 部分反爬页。"""
+    jina_url = f"https://r.jina.ai/{url}"
+    headers = {
+        "User-Agent": _browser_headers()["User-Agent"],
+        "Accept": "text/plain, text/markdown, */*",
+    }
+    token = getattr(settings, "CRAWL_JINA_TOKEN", "") or ""
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = Request(jina_url, headers=headers)
+    # Jina 需要服务端渲染，给更宽松的超时
+    with urlopen(req, timeout=max(30, timeout)) as response:
         raw = response.read(2 * 1024 * 1024)
-        content_type = response.headers.get("content-type", "")
-    charset = "utf-8"
-    match = re.search(r"charset=([\w-]+)", content_type, re.I)
+    return raw.decode("utf-8", errors="ignore")
+
+
+def _extract_jina_title(jina_text: str, fallback: str) -> str:
+    """Jina 输出通常以 'Title: xxx' 开头。"""
+    match = re.match(r"\s*Title:\s*(.+)", jina_text)
     if match:
-        charset = match.group(1)
-    return raw.decode(charset, errors="ignore")
+        return match.group(1).strip()[:120]
+    return fallback
+
+
+def _fetch_document(url: str, timeout: int) -> tuple[str | None, str, str | None, Exception | None]:
+    """抓取单个 URL 为 (title, text, method, error)。
+    先直连（带重试 + 完整头），失败或正文过短则回退 Jina Reader。
+    method ∈ {'direct', 'jina', None}；二者都拿不到时 error 为直连异常（便于日志）。"""
+    html: str | None = None
+    direct_error: Exception | None = None
+    try:
+        html = _fetch_url(url, timeout)
+    except Exception as e:
+        direct_error = e
+
+    title: str | None = None
+    text = ""
+    method: str | None = None
+
+    if html is not None:
+        title = _extract_title(html, url)
+        text = _html_to_text(html)
+        if len(text) >= 200:
+            method = "direct"
+
+    # 直连失败或正文过短（多为 JS 渲染 / SPA）→ 回退 Jina
+    if method is None and getattr(settings, "CRAWL_JINA_FALLBACK", True):
+        try:
+            jina_text = _fetch_via_jina(url, timeout)
+            if len(jina_text) >= 200:
+                text = jina_text.strip()
+                title = _extract_jina_title(jina_text, title or url)
+                method = "jina"
+        except Exception:
+            # Jina 也失败则保留直连的结果/异常，交由调用方记录
+            pass
+
+    if method is None:
+        # 没拿到有效内容：清空 text 以免存入空串
+        text = ""
+    return title, text, method, direct_error
 
 
 def _extract_title(html: str, fallback: str) -> str:
@@ -550,17 +667,19 @@ class CrawlService:
                         stage_extra={"current": index, "total": len(urls)},
                     )
                     try:
-                        html = await asyncio.to_thread(_fetch_url, url, settings.CRAWL_TIMEOUT_SECONDS)
-                        title = _extract_title(html, url)
-                        text = _html_to_text(html)
-                        if len(text) >= 200:
-                            documents.append({"url": url, "title": title, "text": text})
-                            await CrawlService._append_log(db, job, "info", f"[{index}/{len(urls)}] 抓取成功：{title[:60]}（{len(text)} 字）")
+                        title, text, method, fetch_exc = await asyncio.to_thread(
+                            _fetch_document, url, settings.CRAWL_TIMEOUT_SECONDS
+                        )
+                        if method:
+                            documents.append({"url": url, "title": title or url, "text": text})
+                            tag = "（通过 Jina Reader）" if method == "jina" else ""
+                            await CrawlService._append_log(db, job, "info", f"[{index}/{len(urls)}] 抓取成功{tag}：{(title or url)[:60]}（{len(text)} 字）")
+                        elif fetch_exc is not None:
+                            await CrawlService._append_log(db, job, "error", f"[{index}/{len(urls)}] 抓取失败：{url[:80]} — {fetch_exc}")
                         else:
-                            await CrawlService._append_log(db, job, "warning", f"[{index}/{len(urls)}] 跳过（正文仅 {len(text)} 字，不足 200 字）：{url[:80]}")
-                    except Exception as fetch_exc:
-                        await CrawlService._append_log(db, job, "error", f"[{index}/{len(urls)}] 抓取失败：{url[:80]} — {fetch_exc}")
-                        continue
+                            await CrawlService._append_log(db, job, "warning", f"[{index}/{len(urls)}] 跳过（直连与 Jina 均未取到有效正文）：{url[:80]}")
+                    except Exception as exc:
+                        await CrawlService._append_log(db, job, "error", f"[{index}/{len(urls)}] 抓取失败：{url[:80]} — {exc}")
                     if settings.CRAWL_RATE_LIMIT_SECONDS > 0:
                         await asyncio.to_thread(time.sleep, settings.CRAWL_RATE_LIMIT_SECONDS)
 

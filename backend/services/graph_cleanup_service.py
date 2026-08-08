@@ -13,9 +13,10 @@ import difflib
 import logging
 import re
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
 from models import Entity, Relation
 from services.entity_service import EntityService
 from services.graph_extraction_service import (
@@ -135,18 +136,17 @@ class GraphCleanupService:
                     "reason": "名称高度相似",
                 })
 
-        # ----- 删除实体建议：低价值实体名 / 孤岛(度数 0) -----
+        # ----- 删除实体建议：仅低价值实体名（日期/数值/整句/URL/版本号）。
+        # 刻意「不」建议删除度数=0 的孤岛节点：删通用关系后大量实体会临时变成孤岛，
+        # 若再建议删孤岛会在反复「全部清洗」时级联清空整个图谱（曾导致数据全丢）。
+        # 孤岛节点非错误数据，如需清理由用户在实体页手动删除。-----
         delete_entities: list[dict] = []
         for e in ents:
-            reason = None
             if _is_low_value_entity_name(e.name):
-                reason = "低价值实体名(日期/数值/整句等)"
-            elif deg(e.id) == 0:
-                reason = "孤岛节点(无关系)"
-            if reason:
                 delete_entities.append({
                     "id": e.id, "name": e.name,
-                    "entity_type": e.entity_type, "degree": deg(e.id), "reason": reason,
+                    "entity_type": e.entity_type, "degree": deg(e.id),
+                    "reason": "低价值实体名(日期/数值/整句等)",
                 })
 
         # ----- 删除关系建议：无语义通用关系 -----
@@ -184,6 +184,34 @@ class GraphCleanupService:
         delete_relation_ids: list[str] | None = None,
     ) -> dict:
         """执行清洗：逐组合并、批量删除关系/实体。复用 EntityService，自动同步 Kùzu。"""
+        merges = merges or []
+        delete_entity_ids = delete_entity_ids or []
+        delete_relation_ids = delete_relation_ids or []
+
+        # 安全护栏：单次清洗删除占比超过阈值则中止，避免误操作清空整个图谱。
+        # 合并操作的 merged_ids 实体最终也会被删，计入待删实体数。
+        max_ratio = getattr(settings, "GRAPH_CLEANUP_MAX_DELETE_RATIO", 0.5)
+        ent_total = await db.scalar(
+            select(func.count()).select_from(Entity).where(Entity.kb_id == kb_id)
+        ) or 0
+        rel_total = await db.scalar(
+            select(func.count()).select_from(Relation).where(Relation.kb_id == kb_id)
+        ) or 0
+        will_del_ents = len(delete_entity_ids) + sum(
+            len(item.get("merged_ids") or []) for item in merges
+        )
+        will_del_rels = len(delete_relation_ids)
+        if ent_total and will_del_ents / ent_total > max_ratio:
+            raise ValueError(
+                f"安全限制：本次将删除 {will_del_ents}/{ent_total} 个实体"
+                f"（超过 {int(max_ratio * 100)}%），已中止。请减少勾选或分批清洗。"
+            )
+        if rel_total and will_del_rels / rel_total > max_ratio:
+            raise ValueError(
+                f"安全限制：本次将删除 {will_del_rels}/{rel_total} 条关系"
+                f"（超过 {int(max_ratio * 100)}%），已中止。请减少勾选或分批清洗。"
+            )
+
         merged_total = relations_rewired = relations_dropped = 0
         for item in (merges or []):
             res = await EntityService.merge_entities(

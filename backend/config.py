@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     GRAPH_FILTER_LOW_VALUE_ENTITIES: bool = True
     # 抽取后丢弃的无语义通用关系类型（逗号分隔；置空则不过滤）
     GRAPH_GENERIC_RELATION_BLOCKLIST: str = "涉及,提到,关联,有关,相关"
+    # 图谱清洗安全护栏：单次 apply 删除实体/关系占比超过此值则中止（防止误操作清空整个图谱）。
+    # 取 0.8：允许对"噪声为主"的脏图一次清掉大多数噪声，同时拦截接近清空的误操作。
+    GRAPH_CLEANUP_MAX_DELETE_RATIO: float = 0.8
 
     # LLM
     # openai = OpenAI 兼容（含 DeepSeek / Qwen / 智谱 / 自定义 OpenAI 格式）；anthropic = Anthropic 格式
@@ -93,6 +96,10 @@ class Settings(BaseSettings):
     CRAWL_RATE_LIMIT_SECONDS: float = 1.0
     CRAWL_LLM_FILTER: bool = True
     CRAWL_SAVE_RAW_HTML: bool = False
+    # 直连抓取失败 / 正文过短时，回退到 Jina Reader（r.jina.ai）渲染 JS 抓正文
+    CRAWL_JINA_FALLBACK: bool = True
+    # 可选：Jina API Token，配置后走更高额度；留空用免费匿名额度
+    CRAWL_JINA_TOKEN: str = ""
     # 搜索引擎（tavily / bing / duckduckgo）
     SEARCH_PROVIDER: str = "tavily"
     TAVILY_API_KEY: str = ""
