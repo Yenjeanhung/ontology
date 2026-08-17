@@ -231,10 +231,31 @@ CREATE TABLE IF NOT EXISTS agent_skills (
     code VARCHAR NOT NULL,
     description VARCHAR DEFAULT '',
     instructions TEXT NOT NULL DEFAULT '',
+    files TEXT NOT NULL DEFAULT '',
+    group_id VARCHAR DEFAULT NULL,
     is_enabled INTEGER NOT NULL DEFAULT 1,
     is_preset INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0,
+    file_dir TEXT NOT NULL DEFAULT '',
     created_at VARCHAR,
     updated_at VARCHAR
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_skills_code ON agent_skills(code);
+
+-- ===== 技能分组（全局，任意层级嵌套）=====
+
+CREATE TABLE IF NOT EXISTS agent_skill_groups (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    parent_id VARCHAR DEFAULT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_agent_skill_groups_parent ON agent_skill_groups(parent_id);
+
+-- 已删除预设技能的墓碑（阻止 seed_presets 复活）
+CREATE TABLE IF NOT EXISTS agent_skill_seed_tombstones (
+    code VARCHAR PRIMARY KEY,
+    deleted_at VARCHAR
+);

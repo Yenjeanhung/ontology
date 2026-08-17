@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS agent_skills (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_skills_code ON agent_skills(code);
 
--- migration_004: 添加属性编码字段
+-- migration_004b: 添加属性编码字段（重命名自重复的 migration_004，修复全新库启动时 _migrations UNIQUE 冲突）
 ALTER TABLE ontology_attributes ADD COLUMN code VARCHAR(50) DEFAULT NULL;
 ALTER TABLE ontology_template_attributes ADD COLUMN code VARCHAR(50) DEFAULT NULL;
 
@@ -64,4 +64,24 @@ CREATE TABLE IF NOT EXISTS llm_configs (
     is_active INTEGER NOT NULL DEFAULT 0,
     created_at TEXT,
     updated_at TEXT
+);
+
+-- migration_008: 技能配套文件存储（完整 ZIP 技能包导入）
+ALTER TABLE agent_skills ADD COLUMN files TEXT NOT NULL DEFAULT '';
+
+-- migration_009: 技能分组（任意嵌套）+ 挂组列 + 配套文件落盘目录 + 预设删除墓碑
+CREATE TABLE IF NOT EXISTS agent_skill_groups (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    parent_id VARCHAR DEFAULT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_agent_skill_groups_parent ON agent_skill_groups(parent_id);
+ALTER TABLE agent_skills ADD COLUMN group_id VARCHAR DEFAULT NULL;
+ALTER TABLE agent_skills ADD COLUMN file_dir TEXT NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS agent_skill_seed_tombstones (
+    code VARCHAR PRIMARY KEY,
+    deleted_at VARCHAR
 );

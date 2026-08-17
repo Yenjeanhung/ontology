@@ -210,11 +210,11 @@ export async function fetchAgentSkills() {
   return res.json()
 }
 
-export async function createAgentSkill({ name, code, description = '', instructions = '', sortOrder = 0 } = {}) {
+export async function createAgentSkill({ name, code, description = '', instructions = '', sortOrder = 0, groupId } = {}) {
   const res = await fetch(`${API}/api/agent/skills`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, code, description, instructions, sort_order: sortOrder }),
+    body: JSON.stringify({ name, code, description, instructions, sort_order: sortOrder, group_id: groupId ?? null }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
@@ -223,7 +223,7 @@ export async function createAgentSkill({ name, code, description = '', instructi
   return res.json()
 }
 
-export async function updateAgentSkill(skillId, { name, code, description, instructions, sortOrder, isEnabled } = {}) {
+export async function updateAgentSkill(skillId, { name, code, description, instructions, sortOrder, isEnabled, groupId } = {}) {
   const body = {}
   if (name != null) body.name = name
   if (code != null) body.code = code
@@ -231,6 +231,7 @@ export async function updateAgentSkill(skillId, { name, code, description, instr
   if (instructions != null) body.instructions = instructions
   if (sortOrder != null) body.sort_order = sortOrder
   if (isEnabled != null) body.is_enabled = isEnabled
+  if (groupId !== undefined) body.group_id = groupId ?? null  // null 也要发：用于移到未分组
   const res = await fetch(`${API}/api/agent/skills/${skillId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -245,6 +246,132 @@ export async function updateAgentSkill(skillId, { name, code, description, instr
 
 export async function deleteAgentSkill(skillId) {
   const res = await fetch(`${API}/api/agent/skills/${skillId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+// ───────────────────── 技能分组 ─────────────────────
+
+export async function fetchSkillGroups() {
+  const res = await fetch(`${API}/api/agent/skill-groups`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function createSkillGroup({ name, parentId = null, sortOrder = 0 } = {}) {
+  const res = await fetch(`${API}/api/agent/skill-groups`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, parent_id: parentId, sort_order: sortOrder }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function updateSkillGroup(groupId, { name, parentId, sortOrder } = {}) {
+  const body = {}
+  if (name != null) body.name = name
+  if (parentId !== undefined) body.parent_id = parentId ?? null  // null = 移到根级
+  if (sortOrder != null) body.sort_order = sortOrder
+  const res = await fetch(`${API}/api/agent/skill-groups/${groupId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteSkillGroup(groupId) {
+  const res = await fetch(`${API}/api/agent/skill-groups/${groupId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+// ───────────────────── 技能导入导出 ─────────────────────
+
+export async function exportAgentSkills(skillId) {
+  const qs = skillId ? `?skill_id=${encodeURIComponent(skillId)}` : ''
+  const res = await fetch(`${API}/api/agent/skills/export${qs}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function exportAgentSkillsZip(skillId, code = '') {
+  const qs = skillId ? `?skill_id=${encodeURIComponent(skillId)}` : ''
+  const res = await fetch(`${API}/api/agent/skills/export-zip${qs}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const blob = await res.blob()
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  const stem = skillId ? `skill-${code || 'skill'}` : 'skills'
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `knowsource-${stem}-${stamp}.zip`
+  a.click()
+  URL.revokeObjectURL(url)
+  return { ok: true }
+}
+
+export async function importAgentSkills(skillsArray, { overwrite = false, groupId } = {}) {
+  const res = await fetch(`${API}/api/agent/skills/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ skills: skillsArray, overwrite, group_id: groupId ?? null }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function importAgentSkillsFromUrl(url, { overwrite = false, groupId } = {}) {
+  const res = await fetch(`${API}/api/agent/skills/import-url`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, overwrite, group_id: groupId ?? null }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function importAgentSkillsFromZip(file, { overwrite = false, groupId } = {}) {
+  const form = new FormData()
+  form.append('file', file)
+  const params = new URLSearchParams()
+  if (overwrite) params.set('overwrite', 'true')
+  if (groupId) params.set('group_id', groupId)
+  const qs = params.toString() ? `?${params}` : ''
+  const res = await fetch(`${API}/api/agent/skills/import-zip${qs}`, {
+    method: 'POST',
+    body: form,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function searchSkillMarket(q, page = 1) {
+  const params = new URLSearchParams({ q, page: String(page), limit: '20' })
+  const res = await fetch(`${API}/api/agent/skills/search-market?${params}`)
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail || `HTTP ${res.status}`)

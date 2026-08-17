@@ -29,6 +29,8 @@ class AgentSkillCreate(BaseModel):
     description: str = ""
     instructions: str = ""
     sort_order: int = 0
+    files: Optional[list] = None     # ZIP 技能包配套文件（通常仅导入链路写入）
+    group_id: Optional[str] = None   # 所属分组；NULL/缺省 = 未分组
 
 
 class AgentSkillUpdate(BaseModel):
@@ -38,6 +40,20 @@ class AgentSkillUpdate(BaseModel):
     instructions: str | None = None
     sort_order: int | None = None
     is_enabled: int | None = None
+    files: Optional[list] = None     # None = 不修改；[] = 清空
+    group_id: Optional[str] = None   # 显式传 null = 移到未分组；不传 = 不修改
+
+
+class AgentSkillGroupCreate(BaseModel):
+    name: str
+    parent_id: Optional[str] = None  # NULL/缺省 = 根级分组
+    sort_order: int = 0
+
+
+class AgentSkillGroupUpdate(BaseModel):
+    name: Optional[str] = None
+    parent_id: Optional[str] = None  # 显式传 null = 移到根级；不传 = 不修改
+    sort_order: Optional[int] = None
 
 
 class CreateDirectoryRequest(BaseModel):

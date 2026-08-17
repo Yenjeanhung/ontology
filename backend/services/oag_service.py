@@ -56,15 +56,15 @@ def build_system_prompt(skills: list[dict]) -> str:
 
     parts: list[str] = []
     total = 0
-    truncated = False
+    truncated_at: int | None = None
 
-    for s in skills:
+    for idx, s in enumerate(skills):
         instr = (s.get("instructions") or "").strip()
         if not instr:
             continue
         block = f"\n### 技能：{s['name']}\n{instr}"
         if total + len(block) > _SKILL_CHAR_BUDGET:
-            truncated = True
+            truncated_at = idx
             break
         parts.append(block)
         total += len(block)
@@ -73,10 +73,11 @@ def build_system_prompt(skills: list[dict]) -> str:
         return OAG_SYSTEM_PROMPT
 
     prompt = OAG_SYSTEM_PROMPT + _SKILL_HEADER + "".join(parts)
-    if truncated:
+    if truncated_at is not None:
+        dropped = [s.get("name", "?") for s in skills[truncated_at:]]
         logger.warning(
-            "Agent skills truncated: budget=%d, included=%d, total=%d",
-            _SKILL_CHAR_BUDGET, len(parts), len(skills),
+            "Agent skills truncated: budget=%d, included=%d, total=%d, dropped=%s",
+            _SKILL_CHAR_BUDGET, len(parts), len(skills), dropped,
         )
     return prompt
 

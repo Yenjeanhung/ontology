@@ -304,8 +304,33 @@ class AgentSkill(Base):
     code = Column(String, nullable=False)
     description = Column(String, default="")
     instructions = Column(Text, nullable=False, default="")
+    files = Column(Text, nullable=False, default="")  # 配套文件清单（JSON 数组，仅 path/size/is_text 元数据）
+    group_id = Column(String, nullable=True)          # 所属分组（agent_skill_groups.id），NULL = 未分组
     is_enabled = Column(Integer, nullable=False, default=1)
     is_preset = Column(Integer, nullable=False, default=0)
     sort_order = Column(Integer, nullable=False, default=0)
+    file_dir = Column(Text, nullable=False, default="")  # 配套文件磁盘目录（相对运行目录，如 data/skills/<code>）
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class AgentSkillGroup(Base):
+    """技能分组：任意层级嵌套（parent_id 指向父分组，NULL = 根级）。全局，不按知识库隔离。"""
+
+    __tablename__ = "agent_skill_groups"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String(100), nullable=False)
+    parent_id = Column(String, nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class AgentSkillSeedTombstone(Base):
+    """已删除预设技能的 code 墓碑：seed_presets 跳过这些 code，防止重启复活。"""
+
+    __tablename__ = "agent_skill_seed_tombstones"
+
+    code = Column(String, primary_key=True)
+    deleted_at = Column(String, default=lambda: datetime.now().isoformat())

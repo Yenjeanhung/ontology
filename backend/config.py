@@ -84,7 +84,18 @@ class Settings(BaseSettings):
     OAG_ENTITY_LIST_LIMIT: int = 5000     # 实体链接词面匹配时加载的实体数上限
 
     # 技能指令
-    AGENT_SKILL_CHAR_BUDGET: int = 4000    # 技能指令总字符软上限
+    AGENT_SKILL_CHAR_BUDGET: int = 24000   # 技能指令总字符软上限（市场技能包 SKILL.md 常见 8-15K）
+
+    # 技能 ZIP 包导入（安全上限，均可在 .env 覆盖）
+    SKILL_ZIP_MAX_UPLOAD_BYTES: int = 20 * 1024 * 1024        # 上传/下载 zip 原始体积上限
+    SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED: int = 100 * 1024 * 1024  # 解压总量上限（解压前按 ZipInfo 预检）
+    SKILL_ZIP_MAX_ENTRIES: int = 1000                         # zip 条目数上限（真实多技能仓库可达数百条目）
+    SKILL_ZIP_MAX_COMPRESSION_RATIO: int = 100                # 单文件压缩比上限（>1MB 且超比判 bomb）
+    SKILL_FILE_MAX_CONTENT_BYTES: int = 64 * 1024             # 单文本文件内容导出回流上限，超出仅记清单
+    SKILL_FILES_MAX_TOTAL_CONTENT_BYTES: int = 256 * 1024     # 单技能文件内容导出总上限
+    SKILL_MANIFEST_MAX_LINES: int = 30                        # instructions 附带资源清单最多行数
+    # 技能配套文件解压根目录（相对后端运行目录；文件落盘，数据库只存清单）
+    SKILL_FILES_DIR: str = "./data/skills"
 
     # 文件上传
     UPLOAD_DIR: str

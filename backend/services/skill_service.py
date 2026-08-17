@@ -2,18 +2,35 @@
 
 技能 = 一段有名字、有描述、可启停的 system prompt 指令增量。
 v1：纯 prompt 技能，CRUD + 预设 seed + 查询时按 id 批量加载。
+v1.1：ZIP 技能包导入——files 列保存配套文件（JSON 数组字符串）。
+v1.2：分组归属 group_id；配套文件落盘（file_dir 指向磁盘目录，files 只存清单）；
+     预设技能可删除（墓碑表阻止 seed_presets 复活）。
 """
 from __future__ import annotations
 
+import json
 import logging
+import shutil
 from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import AgentSkill
+from config import settings
+from models import AgentSkill, AgentSkillSeedTombstone
 
 logger = logging.getLogger(__name__)
+
+
+def _files_to_list(raw: str | None) -> list[dict]:
+    """files 列（JSON 字符串）→ list；损坏数据静默降级为空。"""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except (ValueError, TypeError):
+        return []
 
 # ────────────────────────────────────────────────────────────────
 # 预设技能定义
@@ -70,9 +87,14 @@ _PRESET_SKILLS: list[dict] = [
 
 
 async def seed_presets(db: AsyncSession) -> int:
-    """写入预设技能（幂等：按 code 唯一判断，已存在则跳过）。返回实际新建数。"""
+    """写入预设技能（幂等：按 code 唯一判断，已存在则跳过；墓碑 code 不再补种）。返回实际新建数。"""
+    dead = {
+        t.code for t in (await db.execute(select(AgentSkillSeedTombstone))).scalars().all()
+    }
     created = 0
     for preset in _PRESET_SKILLS:
+        if preset["code"] in dead:
+            continue
         result = await db.execute(
             select(AgentSkill).where(AgentSkill.code == preset["code"])
         )
@@ -112,6 +134,9 @@ class SkillService:
                 "code": s.code,
                 "description": s.description or "",
                 "instructions": s.instructions or "",
+                "files": _files_to_list(s.files),
+                "group_id": s.group_id,
+                "file_dir": s.file_dir or "",
                 "is_enabled": s.is_enabled,
                 "is_preset": s.is_preset,
                 "sort_order": s.sort_order,
@@ -123,6 +148,8 @@ class SkillService:
 
     @staticmethod
     async def create(db: AsyncSession, data: dict) -> dict:
+        if isinstance(data.get("files"), list):
+            data["files"] = json.dumps(data["files"], ensure_ascii=False)
         skill = AgentSkill(**data)
         db.add(skill)
         await db.commit()
@@ -133,6 +160,9 @@ class SkillService:
             "code": skill.code,
             "description": skill.description or "",
             "instructions": skill.instructions or "",
+            "files": _files_to_list(skill.files),
+            "group_id": skill.group_id,
+            "file_dir": skill.file_dir or "",
             "is_enabled": skill.is_enabled,
             "is_preset": skill.is_preset,
             "sort_order": skill.sort_order,
@@ -147,9 +177,16 @@ class SkillService:
         if not skill:
             return None
         now = datetime.now().isoformat()
+        if isinstance(data.get("files"), list):
+            data["files"] = json.dumps(data["files"], ensure_ascii=False)
+        # group_id 特判：显式传 null = 移到未分组（下方「非 None 才生效」的循环无法清空）
+        group_id_provided = "group_id" in data
+        target_group_id = data.pop("group_id", None)
         for key, value in data.items():
             if value is not None:
                 setattr(skill, key, value)
+        if group_id_provided:
+            skill.group_id = target_group_id
         skill.updated_at = now
         await db.commit()
         await db.refresh(skill)
@@ -159,6 +196,9 @@ class SkillService:
             "code": skill.code,
             "description": skill.description or "",
             "instructions": skill.instructions or "",
+            "files": _files_to_list(skill.files),
+            "group_id": skill.group_id,
+            "file_dir": skill.file_dir or "",
             "is_enabled": skill.is_enabled,
             "is_preset": skill.is_preset,
             "sort_order": skill.sort_order,
@@ -172,8 +212,12 @@ class SkillService:
         skill = result.scalar_one_or_none()
         if not skill:
             return False
+        # 预设技能可删除：写墓碑阻止重启 seed_presets 复活
         if skill.is_preset:
-            raise ValueError("预设技能不能删除，只能禁用")
+            db.add(AgentSkillSeedTombstone(code=skill.code))
+        # 配套文件目录一并清理
+        if skill.file_dir:
+            shutil.rmtree(skill.file_dir, ignore_errors=True)
         await db.delete(skill)
         await db.commit()
         return True

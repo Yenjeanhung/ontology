@@ -136,6 +136,15 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to seed preset agent skills")
 
+    # 存量迁移：旧版本把配套文件内容存在数据库里 → 迁到磁盘（幂等，失败不阻断启动）
+    logger.info("Syncing skill files to disk...")
+    from services.skill_import_service import sync_skill_files_to_disk
+    async for db in get_db():
+        try:
+            await sync_skill_files_to_disk(db)
+        except Exception:
+            logger.exception("Failed to sync skill files to disk")
+
     logger.info("KnowSource started.")
     yield
     logger.info("KnowSource stopped.")
