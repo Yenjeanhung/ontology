@@ -294,3 +294,18 @@ class LLMConfig(Base):
     is_active = Column(Integer, nullable=False, default=0)        # 1 = 当前生效
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class AgentSkill(Base):
+    __tablename__ = "agent_skills"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String, nullable=False)
+    code = Column(String, nullable=False)
+    description = Column(String, default="")
+    instructions = Column(Text, nullable=False, default="")
+    is_enabled = Column(Integer, nullable=False, default=1)
+    is_preset = Column(Integer, nullable=False, default=0)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())

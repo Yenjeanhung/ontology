@@ -20,6 +20,24 @@ class AgentQueryRequest(BaseModel):
     """智能体（OAG）查询请求。"""
     query: str
     kb_id: str
+    skill_ids: list[str] = []
+
+
+class AgentSkillCreate(BaseModel):
+    name: str
+    code: str
+    description: str = ""
+    instructions: str = ""
+    sort_order: int = 0
+
+
+class AgentSkillUpdate(BaseModel):
+    name: str | None = None
+    code: str | None = None
+    description: str | None = None
+    instructions: str | None = None
+    sort_order: int | None = None
+    is_enabled: int | None = None
 
 
 class CreateDirectoryRequest(BaseModel):

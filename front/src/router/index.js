@@ -5,6 +5,7 @@ import KbDetail from '../components/KbDetail.vue'
 import FileLibrary from '../components/FileLibrary.vue'
 import QueryView from '../components/QueryView.vue'
 import AgentView from '../components/AgentView.vue'
+import SkillListPage from '../components/SkillListPage.vue'
 import VectorDataView from '../components/VectorDataView.vue'
 import GraphView from '../components/GraphView.vue'
 import AttributeTemplateList from '../components/ontology/AttributeTemplateList.vue'
@@ -38,6 +39,7 @@ const routes = [
   { path: '/files', name: 'files', component: FileLibrary, meta: { keepAlive: true } },
   { path: '/query', name: 'query', component: QueryView, meta: { keepAlive: true } },
   { path: '/agent', name: 'agent', component: AgentView, meta: { keepAlive: true } },
+  { path: '/agent/skills', name: 'agent-skills', component: SkillListPage, meta: { keepAlive: true } },
   { path: '/vectors', name: 'vectors', component: VectorDataView, meta: { keepAlive: true } },
   { path: '/graph', name: 'graph', component: GraphView, meta: { keepAlive: true } },
   // 配置

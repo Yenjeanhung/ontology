@@ -224,3 +224,17 @@ CREATE TABLE IF NOT EXISTS llm_configs (
     created_at VARCHAR,
     updated_at VARCHAR
 );
+
+CREATE TABLE IF NOT EXISTS agent_skills (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    description VARCHAR DEFAULT '',
+    instructions TEXT NOT NULL DEFAULT '',
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    is_preset INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_skills_code ON agent_skills(code);

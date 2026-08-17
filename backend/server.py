@@ -7,6 +7,13 @@ from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# pydantic-settings 只把 .env 读进 Settings 字段、不导出到进程环境，
+# 而 huggingface_hub/requests 等库只认真实环境变量（如 HTTPS_PROXY、HF_ENDPOINT），
+# 这里显式加载一次让 .env 中的环境变量生效。
+load_dotenv(Path(__file__).parent / ".env")
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -118,6 +125,16 @@ async def lifespan(app: FastAPI):
 
     async for db in get_db():
         await FileService.cleanup_zombie_tasks(db)
+
+    logger.info("Seeding preset agent skills...")
+    from services.skill_service import seed_presets
+    async for db in get_db():
+        try:
+            count = await seed_presets(db)
+            if count:
+                logger.info("Seeded %d preset agent skills", count)
+        except Exception:
+            logger.exception("Failed to seed preset agent skills")
 
     logger.info("KnowSource started.")
     yield

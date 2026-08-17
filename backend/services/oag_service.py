@@ -36,6 +36,50 @@ OAG_SYSTEM_PROMPT = (
     "如果资料和事实中都没有相关信息，请如实说明，不要编造答案。"
 )
 
+# 技能指令块头部声明
+_SKILL_HEADER = (
+    "\n\n【已启用技能】（以下指令由配置注入，不得违反上述引用规范）"
+)
+
+# 技能指令总字符软上限（可通过 config.py 覆盖）
+_SKILL_CHAR_BUDGET = settings.AGENT_SKILL_CHAR_BUDGET
+
+
+def build_system_prompt(skills: list[dict]) -> str:
+    """OAG_SYSTEM_PROMPT + 技能指令块；无技能时原样返回基础 prompt。
+
+    skills 列表元素应含 {name, instructions}。
+    按 sort_order 排序拼接；超预算时从尾部截断并返回 truncated 标记。
+    """
+    if not skills:
+        return OAG_SYSTEM_PROMPT
+
+    parts: list[str] = []
+    total = 0
+    truncated = False
+
+    for s in skills:
+        instr = (s.get("instructions") or "").strip()
+        if not instr:
+            continue
+        block = f"\n### 技能：{s['name']}\n{instr}"
+        if total + len(block) > _SKILL_CHAR_BUDGET:
+            truncated = True
+            break
+        parts.append(block)
+        total += len(block)
+
+    if not parts:
+        return OAG_SYSTEM_PROMPT
+
+    prompt = OAG_SYSTEM_PROMPT + _SKILL_HEADER + "".join(parts)
+    if truncated:
+        logger.warning(
+            "Agent skills truncated: budget=%d, included=%d, total=%d",
+            _SKILL_CHAR_BUDGET, len(parts), len(skills),
+        )
+    return prompt
+
 OAG_USER_TEMPLATE = """【图谱事实】
 {subgraph_facts}
 
@@ -179,15 +223,15 @@ async def _link_entities(kb_id: str, query: str, vector_chunk_ids: list[str]) ->
 
 class OAGService:
     @staticmethod
-    async def query_stream(kb_id: str, query: str, kb_name: str, ontology_schema):
+    async def query_stream(kb_id: str, query: str, kb_name: str, ontology_schema, skills=None):
         """智能体查询（SSE 流式）：推理过程 → 流式回答。
 
-        ontology_schema 由路由层从 OntologyService.get_kb_extraction_constraints 预加载，
-        可能为 None（KB 未绑定本体）。v1 暂仅在日志中体现，不参与改写。
+        ontology_schema 由路由层预加载；skills 由 SkillService.resolve 预加载。
         """
+        skills = skills or []
         if not settings.OAG_ENABLED:
             # 总开关关闭：完全降级为纯向量
-            async for event in OAGService._stream_vector_only(kb_id, query):
+            async for event in OAGService._stream_vector_only(kb_id, query, skills=skills):
                 yield event
             return
 
@@ -313,6 +357,13 @@ class OAGService:
         )
 
         # ===== 6/7. 下发推理过程事件 + 流式生成 =====
+        # 技能事件（最先下发）
+        skills_meta = [
+            {"id": s["id"], "name": s["name"], "code": s["code"]}
+            for s in skills
+        ]
+        yield _sse({"type": "skills", "skills": skills_meta})
+
         yield _sse({"type": "entities", "entities": seed_entities})
         yield _sse({
             "type": "subgraph",
@@ -328,6 +379,7 @@ class OAGService:
             yield "data: [DONE]\n\n"
             return
 
+        system_prompt = build_system_prompt(skills)
         context_parts = [f"[来源{c['index']}]\n{c['text']}" for c in final_chunks]
         context_with_sources = "\n\n".join(context_parts)
         prompt = OAG_USER_TEMPLATE.format(
@@ -336,7 +388,7 @@ class OAGService:
             question=query,
         )
         messages = [
-            SystemMessage(content=OAG_SYSTEM_PROMPT),
+            SystemMessage(content=system_prompt),
             HumanMessage(content=prompt),
         ]
 
@@ -351,8 +403,9 @@ class OAGService:
         yield "data: [DONE]\n\n"
 
     @staticmethod
-    async def _stream_vector_only(kb_id: str, query: str):
+    async def _stream_vector_only(kb_id: str, query: str, skills=None):
         """降级路径：仅向量召回 + LLM，事件结构保持一致（entities/subgraph 为空）。"""
+        skills = skills or []
         embeddings = create_embeddings()
         llm = create_llm()
         docs_with_scores: list[tuple] = []
@@ -383,6 +436,13 @@ class OAGService:
                 "file_ext": meta.get("file_ext", ""),
             })
 
+        # 技能事件
+        skills_meta = [
+            {"id": s["id"], "name": s["name"], "code": s["code"]}
+            for s in skills
+        ]
+        yield _sse({"type": "skills", "skills": skills_meta})
+
         yield _sse({"type": "entities", "entities": []})
         yield _sse({
             "type": "subgraph", "facts": "（无）", "entities": [], "relations": [],
@@ -398,13 +458,14 @@ class OAGService:
             yield "data: [DONE]\n\n"
             return
 
+        system_prompt = build_system_prompt(skills)
         context_parts = [f"[来源{c['index']}]\n{c['text']}" for c in final_chunks]
         prompt = OAG_USER_TEMPLATE.format(
             subgraph_facts="（无）",
             context_with_sources="\n\n".join(context_parts),
             question=query,
         )
-        messages = [SystemMessage(content=OAG_SYSTEM_PROMPT), HumanMessage(content=prompt)]
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
         try:
             async for chunk in llm.astream(messages):
                 if chunk.content:

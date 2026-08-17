@@ -166,11 +166,11 @@ export async function queryRagStream(kbId, query, { onChunks, onToken }) {
 }
 
 // 智能体（OAG）流式问答：比 queryRagStream 多 entities / subgraph 两类事件
-export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, onChunks, onToken }) {
+export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, onChunks, onToken, onSkills, skillIds } = {}) {
   const res = await fetch(`${API}/api/agent/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, kb_id: kbId }),
+    body: JSON.stringify({ query, kb_id: kbId, skill_ids: skillIds || [] }),
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
@@ -192,13 +192,64 @@ export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, on
       if (payload === '[DONE]') return
       try {
         const data = JSON.parse(payload)
-        if (data.type === 'entities') onEntities?.(data.entities)
+        if (data.type === 'skills') onSkills?.(data.skills)
+        else if (data.type === 'entities') onEntities?.(data.entities)
         else if (data.type === 'subgraph') onSubgraph?.(data)
         else if (data.type === 'chunks') onChunks?.(data.chunks)
         else if (data.type === 'token') onToken?.(data.content)
       } catch { /* skip malformed lines */ }
     }
   }
+}
+
+// ───────────────────── 智能体技能（Agent Skill） ─────────────────────
+
+export async function fetchAgentSkills() {
+  const res = await fetch(`${API}/api/agent/skills`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function createAgentSkill({ name, code, description = '', instructions = '', sortOrder = 0 } = {}) {
+  const res = await fetch(`${API}/api/agent/skills`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, code, description, instructions, sort_order: sortOrder }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function updateAgentSkill(skillId, { name, code, description, instructions, sortOrder, isEnabled } = {}) {
+  const body = {}
+  if (name != null) body.name = name
+  if (code != null) body.code = code
+  if (description != null) body.description = description
+  if (instructions != null) body.instructions = instructions
+  if (sortOrder != null) body.sort_order = sortOrder
+  if (isEnabled != null) body.is_enabled = isEnabled
+  const res = await fetch(`${API}/api/agent/skills/${skillId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteAgentSkill(skillId) {
+  const res = await fetch(`${API}/api/agent/skills/${skillId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
 }
 
 export function getFilePreviewUrl(fileId) {

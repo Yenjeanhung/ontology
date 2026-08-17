@@ -2,12 +2,31 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, reactive, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { marked } from 'marked'
-import { fetchKbs, queryAgentStream } from '../api'
+import { fetchKbs, queryAgentStream, fetchAgentSkills } from '../api'
 import PreviewModal from './PreviewModal.vue'
 
 const router = useRouter()
 const kbs = ref([])
 const queryKbId = ref('')
+
+// ---------- 技能 ----------
+const allSkills = ref([])
+const selectedSkillIds = ref([])
+const activeSkills = ref([])     // SSE 实际生效的技能
+
+const enabledSkills = computed(() => allSkills.value.filter(s => s.is_enabled))
+function toggleSkill(id) {
+  const idx = selectedSkillIds.value.indexOf(id)
+  if (idx >= 0) selectedSkillIds.value.splice(idx, 1)
+  else selectedSkillIds.value.push(id)
+}
+async function loadSkills() {
+  try {
+    allSkills.value = await fetchAgentSkills()
+    selectedSkillIds.value = enabledSkills.value.map(s => s.id)
+  } catch {}
+}
+
 const queryText = ref('')
 const querying = ref(false)
 const answerRaw = ref('')
@@ -25,7 +44,7 @@ const selectedKbLabel = computed(() => selectedKb.value
   ? `${selectedKb.value.name} (${selectedKb.value.file_count} 个文件)`
   : '请选择知识库...')
 
-const hasReasoning = computed(() => (entities.value.length > 0) || (subgraph.value && (subgraph.value.relations?.length || subgraph.value.entities?.length)))
+const hasReasoning = computed(() => (entities.value.length > 0) || (subgraph.value && (subgraph.value.relations?.length || subgraph.value.entities?.length)) || activeSkills.value.length > 0)
 const isDegraded = computed(() => !!subgraph.value?.retrieval_path?.degraded)
 const facts = computed(() => subgraph.value?.facts || '')
 const factRelations = computed(() => subgraph.value?.relations || [])
@@ -175,6 +194,7 @@ async function runQuery() {
   chunks.value = []
   entities.value = []
   subgraph.value = null
+  activeSkills.value = []
   thinkBlocks.value = []
   thinkExpanded.value = false
   hoveredChunk.value = null
@@ -182,6 +202,8 @@ async function runQuery() {
   Object.keys(expandedSources).forEach(k => delete expandedSources[k])
   try {
     await queryAgentStream(queryKbId.value, q, {
+      skillIds: selectedSkillIds.value,
+      onSkills(data) { activeSkills.value = data || [] },
       onEntities(data) { entities.value = data || [] },
       onSubgraph(data) { subgraph.value = data },
       onChunks(data) { chunks.value = data || [] },
@@ -200,6 +222,7 @@ function onWindowPointerDown(e) {
 }
 
 onMounted(loadKbs)
+onMounted(loadSkills)
 onMounted(() => window.addEventListener('pointerdown', onWindowPointerDown))
 onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerDown))
 </script>
@@ -233,6 +256,23 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
       </div>
     </div>
 
+    <!-- 技能选择 -->
+    <div class="skill-row" v-if="enabledSkills.length">
+      <div class="skill-chips">
+        <button
+          v-for="s in enabledSkills" :key="s.id"
+          type="button"
+          class="skill-chip" :class="{ active: selectedSkillIds.includes(s.id) }"
+          :title="s.description"
+          @click="toggleSkill(s.id)"
+        >
+          <span class="skill-chip-icon" v-if="selectedSkillIds.includes(s.id)">✓</span>
+          <span class="skill-chip-icon" v-else>+</span>
+          {{ s.name }}
+        </button>
+      </div>
+    </div>
+
     <div class="query-row">
       <div class="field-shell search-shell" :class="{ disabled: !queryKbId || querying }">
         <span class="field-icon" aria-hidden="true">
@@ -263,6 +303,13 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
           <div class="reason-legend">
             引用标记：<span class="lg-ref">[来源N]</span> = 知识库文档原文片段 ·
             <span class="lg-fact">[事实]</span> = 知识图谱结构化事实（实体属性 / 关系）
+          </div>
+          <!-- 已加载技能 -->
+          <div class="reason-block" v-if="activeSkills.length">
+            <div class="reason-label">已加载技能</div>
+            <div class="skill-chips-inline">
+              <span v-for="s in activeSkills" :key="s.id" class="skill-tag">{{ s.name }}</span>
+            </div>
           </div>
           <!-- 识别实体 -->
           <div class="reason-block" v-if="entities.length">
@@ -469,6 +516,28 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 
 .spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── 技能行 ── */
+.skill-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.skill-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
+.skill-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 500;
+  border: 1px solid var(--c-border); background: var(--c-panel); color: var(--c-secondary);
+  cursor: pointer; user-select: none; transition: all 150ms;
+}
+.skill-chip:hover { border-color: var(--c-accent); color: var(--c-fg); }
+.skill-chip.active {
+  background: var(--c-muted); border-color: var(--c-accent); color: var(--c-accent);
+}
+.skill-chip-icon { font-size: 11px; line-height: 1; }
+
+/* ── 推理卡片中的技能标签 ── */
+.skill-chips-inline { display: flex; flex-wrap: wrap; gap: 6px; }
+.skill-tag {
+  display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 500;
+  background: var(--c-muted); color: var(--c-accent); border: 1px solid color-mix(in srgb, var(--c-accent) 20%, transparent);
+}
 
 @media (max-width: 720px) {
   .field-shell { min-height: 48px; border-radius: 14px; }

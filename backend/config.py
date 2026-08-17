@@ -1,6 +1,12 @@
 from pydantic_settings import BaseSettings
 from typing import Literal
 
+from dotenv import load_dotenv
+
+# 把 .env 中的变量（含 HTTP_PROXY/HTTPS_PROXY 等）注入进程环境变量，
+# 这样 HuggingFace 下载、requests 等外网请求才能真正走代理；已存在的环境变量优先。
+load_dotenv(override=False)
+
 
 class Settings(BaseSettings):
     # 服务
@@ -77,6 +83,9 @@ class Settings(BaseSettings):
     OAG_NEIGHBOR_LIMIT: int = 40          # 子图关系条数上限
     OAG_ENTITY_LIST_LIMIT: int = 5000     # 实体链接词面匹配时加载的实体数上限
 
+    # 技能指令
+    AGENT_SKILL_CHAR_BUDGET: int = 4000    # 技能指令总字符软上限
+
     # 文件上传
     UPLOAD_DIR: str
     CHUNK_DIR: str
@@ -106,6 +115,9 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        # 允许 .env 中存在未在 Settings 中定义的键（如 HTTP_PROXY/HTTPS_PROXY/NO_PROXY），
+        # 否则 pydantic-settings 默认 extra="forbid" 会在启动时直接报 ValidationError
+        extra = "ignore"
 
 
 settings = Settings()

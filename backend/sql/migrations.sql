@@ -14,6 +14,21 @@ ALTER TABLE files ADD COLUMN asset_id VARCHAR DEFAULT NULL REFERENCES file_asset
 ALTER TABLE files ADD COLUMN detail TEXT DEFAULT NULL;
 ALTER TABLE files ADD COLUMN logs TEXT DEFAULT NULL;
 
+-- migration_004
+CREATE TABLE IF NOT EXISTS agent_skills (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    description VARCHAR DEFAULT '',
+    instructions TEXT NOT NULL DEFAULT '',
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    is_preset INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_skills_code ON agent_skills(code);
+
 -- migration_004: 添加属性编码字段
 ALTER TABLE ontology_attributes ADD COLUMN code VARCHAR(50) DEFAULT NULL;
 ALTER TABLE ontology_template_attributes ADD COLUMN code VARCHAR(50) DEFAULT NULL;

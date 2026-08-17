@@ -82,7 +82,15 @@ const menuItems = computed(() => [
       { to: '/graph-cleanup', key: 'graph-cleanup', label: '图谱清洗', icon: 'cleanup' },
     ],
   },
-  { to: '/agent', key: 'agent', label: '智能体', exact: false, hint: '本体增强问答' },
+  {
+    key: 'agent',
+    label: '智能体',
+    hint: '本体增强问答',
+    to: '/agent',
+    children: [
+      { to: '/agent/skills', key: 'agent-skills', label: '技能管理', icon: 'skills' },
+    ],
+  },
   {
     key: 'data',
     label: '数据',
@@ -112,6 +120,7 @@ const subIcons = {
   vector: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="8" r="1.6"/><circle cx="12" cy="5" r="1.6"/><circle cx="18" cy="9" r="1.6"/><circle cx="9" cy="16" r="1.6"/><circle cx="16" cy="18" r="1.6"/></svg>',
   query: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></svg>',
   models: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>',
+  skills: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
 }
 
 function toggleSidebar() {
