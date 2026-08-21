@@ -350,9 +350,6 @@ onBeforeUnmount(() => {
               <span v-else-if="step.key === 'files'" class="start-chip">START</span>
               <span v-else-if="step.key === 'agent'" class="agent-chip">AGENT</span>
               <span v-else-if="step.key === 'vectors' || step.key === 'graph'" class="branch-chip">知识库支线</span>
-              <span v-if="live[step.key]" class="live-chip" :title="`${live[step.key].label} ${live[step.key].progress}%`">
-                <i aria-hidden="true"></i>{{ live[step.key].label }} {{ live[step.key].count > 1 ? `×${live[step.key].count} ` : '' }}{{ live[step.key].progress }}%
-              </span>
             </div>
             <span class="flow-role">{{ step.role }}</span>
             <h2>{{ step.label }}</h2>
@@ -363,6 +360,18 @@ onBeforeUnmount(() => {
                 <path d="M6.5 3.75 11.75 9 6.5 14.25" />
               </svg>
             </span>
+
+            <!-- 任务执行实时进度条（贴卡片底部，全宽） -->
+            <div v-if="live[step.key]" class="live-bar" role="status">
+              <span class="live-label">
+                <i aria-hidden="true"></i>
+                {{ live[step.key].label }}<template v-if="live[step.key].count > 1"> ×{{ live[step.key].count }}</template>
+              </span>
+              <span class="live-pct">{{ live[step.key].progress }}%</span>
+              <div class="live-track">
+                <div class="live-fill" :style="{ width: live[step.key].progress + '%' }"></div>
+              </div>
+            </div>
           </div>
         </RouterLink>
       </div>
@@ -418,12 +427,21 @@ onBeforeUnmount(() => {
 }
 
 .pipeline-pill i {
+  position: relative;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: #5cab2e;
   box-shadow: 0 0 8px rgba(92, 171, 46, 0.9);
-  animation: live-blink 1.1s ease-in-out infinite;
+}
+
+.pipeline-pill i::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: #5cab2e;
+  animation: live-ping 1.3s cubic-bezier(0, 0, 0.2, 1) infinite;
 }
 
 :root[data-theme='dark'] .pipeline-pill {
@@ -576,71 +594,105 @@ onBeforeUnmount(() => {
   color: var(--c-accent);
 }
 
-/* 任务运行中：卡片绿框 + 扫光 */
+/* 任务运行中：卡片绿框 + 底部进度条空间 */
 .flow-card.running {
   overflow: hidden;
   border-color: rgba(134, 201, 87, 0.65);
   box-shadow: 0 0 0 1px rgba(134, 201, 87, 0.3), 0 10px 28px rgba(134, 201, 87, 0.14);
+  padding-bottom: 46px;
 }
 
-.flow-card.running::after {
+/* 实时进度条：贴卡片底部全宽，深色底 + 动画条纹 + 大号百分比 */
+.live-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  background: linear-gradient(90deg, #143d1f, #1c5228);
+  box-shadow: inset 0 1px 0 rgba(183, 236, 134, 0.25);
+}
+
+.live-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  color: #d9f7b8;
+}
+
+/* 雷达点：实心点 + 扩散圆环 */
+.live-label i {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #a5f26b;
+  flex-shrink: 0;
+}
+
+.live-label i::before {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  background: linear-gradient(
-    115deg,
-    transparent 32%,
-    rgba(134, 201, 87, 0.12) 46%,
-    rgba(198, 241, 145, 0.28) 50%,
-    rgba(134, 201, 87, 0.12) 54%,
-    transparent 68%
-  );
-  background-size: 260% 100%;
-  animation: card-scan 2.8s linear infinite;
-}
-
-@keyframes card-scan {
-  from { background-position: 135% 0; }
-  to { background-position: -135% 0; }
-}
-
-/* 实时状态徽标 */
-.live-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 20px;
-  padding: 0 8px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 800;
-  color: #386f1e;
-  background: rgba(134, 201, 87, 0.22);
-  box-shadow: inset 0 0 0 1px rgba(74, 128, 39, 0.28);
-}
-
-.live-chip i {
-  width: 6px;
-  height: 6px;
   border-radius: 50%;
-  background: #5cab2e;
-  animation: live-blink 1.1s ease-in-out infinite;
+  background: #a5f26b;
+  animation: live-ping 1.3s cubic-bezier(0, 0, 0.2, 1) infinite;
 }
 
-@keyframes live-blink {
-  50% { opacity: 0.25; }
+@keyframes live-ping {
+  75%, 100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
 }
 
-:root[data-theme='dark'] .live-chip {
-  color: #b7ec86;
-  background: rgba(134, 201, 87, 0.16);
-  box-shadow: inset 0 0 0 1px rgba(134, 201, 87, 0.3);
+.live-pct {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 15px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  text-shadow: 0 0 8px rgba(165, 242, 107, 0.65);
 }
 
-:root[data-theme='dark'] .live-chip i {
-  background: #86c957;
+.live-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.live-fill {
+  height: 100%;
+  background: repeating-linear-gradient(
+    -45deg,
+    #86c957 0 10px,
+    #a5f26b 10px 20px
+  );
+  background-size: 200% 100%;
+  animation: live-stripes 0.9s linear infinite;
+  box-shadow: 0 0 10px rgba(165, 242, 107, 0.8);
+  transition: width 600ms ease;
+}
+
+@keyframes live-stripes {
+  to { background-position: 28.28px 0; }
+}
+
+:root[data-theme='dark'] .live-bar {
+  background: linear-gradient(90deg, #10270f, #1b431b);
 }
 
 .step-ontology { grid-column: 1 / span 4; grid-row: 1; }
