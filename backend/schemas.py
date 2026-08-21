@@ -294,6 +294,26 @@ class InvokeEntityServiceRequest(BaseModel):
     params: dict = {}
 
 
+class AiAssistChatMessage(BaseModel):
+    """AI 辅助对话历史消息。"""
+
+    role: str  # user / assistant
+    content: str = ""
+
+
+class AiAssistServiceCodeRequest(BaseModel):
+    """AI 辅助编写服务代码。"""
+
+    prompt: str  # 需求描述
+    name: str | None = ""  # 当前表单中的服务名（供 LLM 上下文）
+    code: str | None = ""
+    description: str | None = ""
+    owner_name: str | None = ""  # 所属本体名 / 实体名
+    current_code: str | None = ""  # 当前代码区内容（供 LLM 在其基础上修改）
+    selected_code: str | None = ""  # 用户选中的代码片段（重点上下文）
+    history: list[AiAssistChatMessage] = []  # 多轮对话历史
+
+
 # ===== 实体/关系实例管理 =====
 
 

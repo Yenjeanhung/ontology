@@ -902,6 +902,45 @@ export async function testOntologyService(serviceId, { params, mock_entity } = {
   return res.json()
 }
 
+// AI 辅助编写动作代码（SSE 流式）：onDelta 收增量文本，结束后返回 {code_text, params, explanation}
+export async function aiAssistServiceCode({ prompt, name, code, description, owner_name, current_code, selected_code, history, onDelta, signal } = {}) {
+  const res = await fetch(`${API}/api/ontology-services/ai-assist`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, name, code, description, owner_name, current_code, selected_code, history }),
+    signal,
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || `AI assist failed (HTTP ${res.status})`)
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let result = null
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let idx
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const raw = buf.slice(0, idx)
+      buf = buf.slice(idx + 2)
+      const line = raw.replace(/^data:\s*/, '').trim()
+      if (!line) continue
+      let ev
+      try { ev = JSON.parse(line) } catch { continue }
+      if (ev.type === 'delta') {
+        onDelta?.(ev.content)
+      } else if (ev.type === 'done') {
+        result = ev.data
+      } else if (ev.type === 'error') {
+        throw new Error(ev.detail || 'AI 生成失败')
+      }
+    }
+  }
+  return result
+}
+
 export async function fetchEntityServices(entityId) {
   const res = await fetch(`${API}/api/entities/${entityId}/services`)
   if (!res.ok) throw new Error('Fetch entity services failed')

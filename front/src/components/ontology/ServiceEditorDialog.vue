@@ -1,7 +1,8 @@
 <script setup>
-import { ref, reactive, watch, computed } from 'vue'
+import { ref, reactive, watch, computed, nextTick } from 'vue'
 import {
   createOntologyService, createEntityService, updateOntologyService, testOntologyService,
+  aiAssistServiceCode,
 } from '../../api'
 
 const props = defineProps({
@@ -57,6 +58,112 @@ const testing = ref(false)
 const testResult = ref(null)
 const testError = ref('')
 
+// AI 辅助（右侧聊天面板）
+const chatOpen = ref(false)
+const chatMessages = ref([]) // {role:'user'|'assistant', content} | {role:'assistant', data:{code_text,params,explanation}} | {role:'assistant', error}
+const chatInput = ref('')
+const chatLoading = ref(false)
+const chatBodyRef = ref(null)
+
+// 选中代码 → 引用到 AI 对话
+const codeAreaRef = ref(null)
+const selection = ref({ start: 0, end: 0 })
+const quotedCode = ref('')
+
+async function scrollChat() {
+  await nextTick()
+  if (chatBodyRef.value) chatBodyRef.value.scrollTop = chatBodyRef.value.scrollHeight
+}
+
+// 把流式 Markdown 文本切成 文本/代码 段（未闭合的代码块按代码续流）
+function splitSegments(text) {
+  const segs = []
+  const parts = String(text || '').split('```')
+  parts.forEach((p, i) => {
+    if (!p) return
+    if (i % 2 === 1) {
+      const nl = p.indexOf('\n')
+      const body = nl >= 0 ? p.slice(nl + 1) : ''
+      if (body) segs.push({ type: 'code', content: body })
+    } else if (p.trim()) {
+      segs.push({ type: 'text', content: p })
+    }
+  })
+  return segs
+}
+
+const hasSelection = computed(() => selection.value.end > selection.value.start)
+
+function captureSelection() {
+  const el = codeAreaRef.value
+  if (!el) return
+  selection.value = { start: el.selectionStart, end: el.selectionEnd }
+}
+
+function quoteSelection() {
+  const el = codeAreaRef.value
+  if (!el || el.selectionEnd <= el.selectionStart) return
+  quotedCode.value = el.value.slice(el.selectionStart, el.selectionEnd)
+  selection.value = { start: 0, end: 0 }
+  chatOpen.value = true
+}
+
+async function chatSend() {
+  const text = chatInput.value.trim()
+  if (!text || chatLoading.value) return
+  const quoted = quotedCode.value
+  chatMessages.value.push({ role: 'user', content: text, quoted: quoted || null })
+  chatInput.value = ''
+  quotedCode.value = ''
+  chatLoading.value = true
+  // 组装多轮历史（assistant 回传 说明+代码，让模型有上下文可迭代修改）
+  const history = chatMessages.value
+    .filter(m => !m.error && (m.role === 'user' ? m.content : m.data?.code_text))
+    .slice(-10)
+    .map(m => ({
+      role: m.role,
+      content: m.role === 'user' ? m.content : `${m.data.explanation || ''}\n\n${m.data.code_text}`,
+    }))
+  const msg = reactive({ role: 'assistant', content: '', data: null, error: null, streaming: true })
+  chatMessages.value.push(msg)
+  scrollChat()
+  try {
+    const data = await aiAssistServiceCode({
+      prompt: text,
+      name: form.name,
+      code: form.code,
+      description: form.description,
+      owner_name: props.owner?.ontologyName || props.owner?.entityName || '',
+      current_code: form.code_text,
+      selected_code: quoted,
+      history,
+      onDelta: d => { msg.content += d; scrollChat() },
+    })
+    msg.data = data
+  } catch (e) {
+    msg.error = e.message || 'AI 生成失败'
+  } finally {
+    msg.streaming = false
+    chatLoading.value = false
+    scrollChat()
+  }
+}
+
+function applyChatCode(msg) {
+  if (!msg.data?.code_text) return
+  form.code_text = msg.data.code_text
+  if (msg.data.params?.length) {
+    form.params = msg.data.params.map(p => ({
+      name: (p.name || '').trim(),
+      label: p.label || p.name || '',
+      type: p.type || 'string',
+      required: !!p.required,
+      default: p.default ?? '',
+      description: p.description || '',
+    }))
+  }
+}
+
 const isEdit = computed(() => !!props.service)
 const savedId = ref('') // 保存后的服务 id（编辑模式直接取 service.id）
 
@@ -70,6 +177,12 @@ watch(() => props.modelValue, (v) => {
   testVisible.value = false
   testResult.value = null
   testError.value = ''
+  chatOpen.value = false
+  chatMessages.value = []
+  chatInput.value = ''
+  chatLoading.value = false
+  quotedCode.value = ''
+  selection.value = { start: 0, end: 0 }
   if (props.service) {
     form.name = props.service.name
     form.code = props.service.code
@@ -177,8 +290,9 @@ async function runTest() {
 </script>
 
 <template>
-  <div v-if="modelValue" class="sed-mask" @click.self="emit('update:modelValue', false)">
-    <div class="sed-modal">
+  <div v-if="modelValue" class="sed-mask">
+    <div class="sed-modal" :class="{ 'with-chat': chatOpen }">
+      <div class="sed-main">
       <h3>{{ dialogTitle }}</h3>
 
       <div class="sed-grid">
@@ -235,12 +349,20 @@ async function runTest() {
         <div class="sed-block-head">
           <span class="sed-block-title">代码（Python，定义 run 函数）</span>
           <div class="sed-tpl-btns">
+            <button class="btn sm ai-btn" :class="{ active: chatOpen }" @click="chatOpen = !chatOpen">✦ AI 辅助</button>
+            <button v-if="chatOpen" class="btn sm" :disabled="!hasSelection" @click="quoteSelection"
+              :title="hasSelection ? '把选中的代码片段引用到 AI 对话' : '先在下方代码区选中代码'">选中 → AI</button>
             <button class="btn sm" @click="applyTemplate('http')">示例：调用 API</button>
             <button class="btn sm" @click="applyTemplate('data')">示例：数据处理</button>
           </div>
         </div>
-        <textarea class="sed-code" v-model="form.code_text" spellcheck="false" rows="12"
+
+        <textarea ref="codeAreaRef" class="sed-code" v-model="form.code_text" spellcheck="false" rows="12"
+          @mouseup="captureSelection" @keyup="captureSelection"
           placeholder="def run(params, entity, context):&#10;    return {}"></textarea>
+        <div v-if="chatOpen && hasSelection" class="sed-sel-tip">
+          已选中 {{ selection.end - selection.start }} 字符 · 点「选中 → AI」引用到对话
+        </div>
         <div class="sed-hint">
           可用 import：json / re / math / datetime / random / collections / urllib / hashlib / base64 / requests / httpx 等；
           入口为 <code>run(params, entity, context)</code>，返回可 JSON 序列化的 dict。
@@ -304,13 +426,65 @@ async function runTest() {
           <span v-if="saving" class="spinner"></span> 保存
         </button>
       </div>
+      </div>
+
+      <!-- 右侧 AI 辅助聊天面板 -->
+      <aside v-if="chatOpen" class="sed-chat">
+        <div class="sed-chat-head">
+          <span class="sed-chat-title">✦ AI 辅助</span>
+          <button class="sed-chat-close" @click="chatOpen = false" title="收起">×</button>
+        </div>
+        <div class="sed-chat-body" ref="chatBodyRef">
+          <div v-if="!chatMessages.length" class="sed-chat-empty">
+            描述想要的功能，AI 生成动作代码<br>
+            也可继续追问，让 AI 修改当前代码
+          </div>
+          <template v-for="(m, i) in chatMessages" :key="i">
+            <div v-if="m.role === 'user'" class="sed-chat-msg user">
+              <pre v-if="m.quoted" class="sed-chat-quote-pre" title="引用的选中代码">{{ m.quoted }}</pre>
+              <div class="sed-chat-bubble">{{ m.content }}</div>
+            </div>
+            <div v-else class="sed-chat-msg assistant">
+              <div v-if="m.error" class="sed-ai-error">{{ m.error }}</div>
+              <template v-else>
+                <template v-for="(seg, si) in splitSegments(m.content)" :key="si">
+                  <div v-if="seg.type === 'text'" class="sed-ai-explain">{{ seg.content }}</div>
+                  <pre v-else class="sed-chat-code-pre">{{ seg.content }}</pre>
+                </template>
+                <span v-if="m.streaming" class="sed-chat-cursor">▍</span>
+                <template v-if="m.data">
+                  <div class="sed-ai-meta">已通过安全校验{{ m.data.params?.length ? ` · 含 ${m.data.params.length} 个参数定义` : '' }}</div>
+                  <div class="sed-ai-actions">
+                    <button class="btn primary sm" @click="applyChatCode(m)">应用到代码区</button>
+                  </div>
+                </template>
+              </template>
+            </div>
+          </template>
+        </div>
+        <div v-if="quotedCode" class="sed-chat-quote">
+          <div class="sed-chat-quote-head">
+            <span>引用选中代码 · {{ quotedCode.length }} 字符</span>
+            <button class="sed-chat-close" @click="quotedCode = ''" title="移除引用">×</button>
+          </div>
+          <pre>{{ quotedCode }}</pre>
+        </div>
+        <div class="sed-chat-input">
+          <textarea v-model="chatInput" rows="2" spellcheck="false" :disabled="chatLoading"
+            placeholder="描述需求，如：调用 wttr.in 查询城市天气并返回温度；Enter 发送，Shift+Enter 换行"
+            @keydown.enter.exact.prevent="chatSend"></textarea>
+          <button class="btn primary sm" @click="chatSend" :disabled="chatLoading || !chatInput.trim()">发送</button>
+        </div>
+      </aside>
     </div>
   </div>
 </template>
 
 <style scoped>
 .sed-mask { position: fixed; inset: 0; background: var(--c-overlay); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 20px; }
-.sed-modal { background: var(--c-panel); border-radius: var(--radius); padding: 20px 22px; width: 100%; max-width: 720px; max-height: 88vh; overflow-y: auto; box-shadow: 0 8px 30px rgba(0,0,0,0.18); display: flex; flex-direction: column; gap: 12px; }
+.sed-modal { background: var(--c-panel); border-radius: var(--radius); width: 100%; max-width: 720px; max-height: 88vh; overflow: hidden; box-shadow: 0 8px 30px rgba(0,0,0,0.18); display: flex; flex-direction: column; }
+.sed-modal.with-chat { flex-direction: row; max-width: 1120px; }
+.sed-main { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; }
 .sed-modal h3 { font-size: 15px; font-weight: 700; color: var(--c-fg); }
 .sed-grid { display: grid; grid-template-columns: 1.2fr 1.2fr 0.6fr 0.8fr; gap: 10px; }
 .sed-grid .narrow { min-width: 0; }
@@ -338,6 +512,40 @@ async function runTest() {
 
 .sed-code { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-muted); color: var(--c-fg); font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 12.5px; line-height: 1.55; resize: vertical; outline: none; tab-size: 4; }
 .sed-code:focus { border-color: var(--c-fg); }
+
+.sed-ai-error { padding: 7px 9px; border-radius: var(--radius-sm); background: rgba(220, 38, 38, 0.08); color: var(--c-danger); font-size: 12px; }
+.sed-ai-explain { font-size: 12.5px; color: var(--c-fg); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.sed-ai-meta { font-size: 11px; color: var(--c-secondary); }
+.sed-ai-actions { display: flex; gap: 8px; }
+
+/* 右侧 AI 聊天面板 */
+.ai-btn.active { border-color: #8b5cf6; color: #8b5cf6; }
+.ai-btn.active:hover { background: rgba(139, 92, 246, 0.1); }
+.sed-chat { flex: 0 0 350px; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--c-border); background: rgba(139, 92, 246, 0.03); }
+.sed-chat-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--c-border); flex-shrink: 0; }
+.sed-chat-title { font-size: 13px; font-weight: 700; color: #8b5cf6; }
+.sed-chat-close { width: 26px; height: 26px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); font-size: 16px; line-height: 1; cursor: pointer; }
+.sed-chat-close:hover { background: rgba(139, 92, 246, 0.12); color: var(--c-fg); }
+.sed-chat-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 200px; }
+.sed-chat-empty { color: var(--c-secondary); font-size: 12px; text-align: center; line-height: 2; margin-top: 40%; }
+.sed-chat-msg.user { display: flex; justify-content: flex-end; }
+.sed-chat-bubble { background: rgba(139, 92, 246, 0.14); border-radius: 10px 10px 2px 10px; padding: 8px 11px; font-size: 12.5px; color: var(--c-fg); max-width: 88%; white-space: pre-wrap; word-break: break-word; }
+.sed-chat-msg.assistant { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 9px 11px; background: var(--c-panel); font-size: 12.5px; }
+.sed-chat-msg.assistant .spinner { width: 13px; height: 13px; border-width: 2px; margin-right: 4px; }
+.sed-chat-code-pre { margin: 0; padding: 8px; border-radius: var(--radius-sm); background: var(--c-muted); font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow-y: auto; }
+.sed-chat-cursor { display: inline-block; color: #8b5cf6; animation: sed-cursor-blink 0.9s steps(1) infinite; }
+@keyframes sed-cursor-blink { 50% { opacity: 0; } }
+
+.sed-sel-tip { margin-top: 6px; font-size: 11.5px; color: #8b5cf6; background: rgba(139, 92, 246, 0.08); border: 1px dashed rgba(139, 92, 246, 0.4); border-radius: var(--radius-sm); padding: 5px 9px; }
+
+.sed-chat-quote { border: 1px dashed rgba(139, 92, 246, 0.4); border-radius: var(--radius-sm); margin: 0 10px 8px; background: var(--c-panel); }
+.sed-chat-quote-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 9px; font-size: 11px; color: #8b5cf6; border-bottom: 1px dashed rgba(139, 92, 246, 0.3); }
+.sed-chat-quote pre { margin: 0; padding: 8px 9px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; max-height: 110px; overflow-y: auto; color: var(--c-secondary); }
+.sed-chat-quote-pre { margin: 0 0 4px; padding: 6px 8px; border-radius: var(--radius-sm); border-left: 2px solid rgba(139, 92, 246, 0.5); background: var(--c-muted); font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; white-space: pre-wrap; word-break: break-all; max-height: 90px; overflow-y: auto; color: var(--c-secondary); }
+.sed-chat-input { border-top: 1px solid var(--c-border); padding: 10px; display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0; }
+.sed-chat-input textarea { flex: 1; padding: 8px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12.5px; line-height: 1.5; resize: none; outline: none; box-sizing: border-box; font-family: var(--font, inherit); }
+.sed-chat-input textarea:focus { border-color: #8b5cf6; }
+.sed-chat-input .btn { flex-shrink: 0; }
 
 .sed-test-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
 .sed-mock summary { font-size: 12px; color: var(--c-secondary); cursor: pointer; }

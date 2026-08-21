@@ -32,6 +32,13 @@ RUNNER_SRC = r"""
 import io, json, sys, traceback
 from contextlib import redirect_stdout
 
+# Windows 下子进程 stdout 默认 GBK 编码，强制 UTF-8 避免中文输出乱码
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 def main():
     payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     code = payload.get("code") or ""
@@ -121,7 +128,8 @@ async def execute_service(
     started = time.monotonic()
     try:
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-I", "-c", RUNNER_SRC,
+            # -X utf8：UTF-8 模式（-I 会忽略 PYTHONIOENCODING 环境变量，需用解释器参数）
+            sys.executable, "-I", "-X", "utf8", "-c", RUNNER_SRC,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
