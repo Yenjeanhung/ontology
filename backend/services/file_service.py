@@ -1252,6 +1252,24 @@ class FileService:
         ]
 
     @staticmethod
+    async def pipeline_summary(db: AsyncSession) -> dict:
+        """首页流水线大屏：按处理阶段聚合进行中的文件，轻量无日志"""
+        result = await db.execute(select(File).where(File.status == "processing"))
+        files = result.scalars().all()
+        stage_files: dict[str, list[int]] = {}
+        for file in files:
+            stage = (FileService._read_detail(file).get("stage") or "").lower() or "preparing"
+            stage_files.setdefault(stage, []).append(file.progress or 0)
+        stages = {
+            stage: {
+                "count": len(progresses),
+                "progress": round(sum(progresses) / len(progresses)) if progresses else 0,
+            }
+            for stage, progresses in stage_files.items()
+        }
+        return {"processing_files": len(files), "stages": stages}
+
+    @staticmethod
     async def cancel_processing(db: AsyncSession, file_id: str) -> bool:
         """取消文件处理，删除已入库的数据（分片、向量、图谱），保持原文件不变"""
         file = await db.get(File, file_id)

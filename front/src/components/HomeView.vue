@@ -1,4 +1,8 @@
 <script setup>
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { fetchPipelineStatus } from '../api'
+
+// 蛇形流水线：上排 00→01→02（左→右），下排 03→04→05→06（右→左）
 const flowSteps = [
   {
     key: 'ontology',
@@ -28,13 +32,13 @@ const flowSteps = [
     action: '进入知识库',
   },
   {
-    key: 'query',
+    key: 'graph',
     number: '03',
-    to: '/query',
-    label: '问答',
-    role: '主业务出口',
-    line: '选择知识库提问，基于召回内容生成可追溯的回答。',
-    action: '开始问答',
+    to: '/graph',
+    label: '图谱',
+    role: '关系支线',
+    line: '抽取实体与关系构建知识图谱，沉淀结构化事实。',
+    action: '查看图谱',
   },
   {
     key: 'vectors',
@@ -42,19 +46,96 @@ const flowSteps = [
     to: '/vectors',
     label: '向量',
     role: '召回支线',
-    line: '查看分片向量、同步状态和相似召回，定位索引质量。',
+    line: '分片向量化入索引，支撑语义相似召回。',
     action: '查看向量',
   },
   {
-    key: 'graph',
+    key: 'rag',
     number: '05',
-    to: '/graph',
-    label: '图谱',
-    role: '关系支线',
-    line: '观察实体、关系和文件来源，理解知识之间的连接。',
-    action: '查看图谱',
+    to: '/query',
+    label: '知识库检索',
+    role: '主业务出口',
+    line: '选择知识库提问，基于向量召回生成可追溯的回答。',
+    action: '开始检索',
+  },
+  {
+    key: 'agent',
+    number: '06',
+    to: '/agent',
+    label: '智能体',
+    role: '增强问答',
+    line: '融合知识库检索、图谱事实与技能，回答更准、推理过程可追溯。',
+    action: '进入智能体',
   },
 ]
+
+// 流水线连线（viewBox 0 0 1180 520，与卡片栅格对齐）
+const flowEdges = [
+  { id: 'e1', from: 'ontology', to: 'files', d: 'M378 119 L400 119', dur: '1.4s', half: '0.7s' },
+  { id: 'e2', from: 'files', to: 'kb', d: 'M779 119 L801 119', dur: '1.4s', half: '0.7s' },
+  { id: 'e3', from: 'kb', to: 'graph', d: 'M991 240 C991 258 1041 244 1041 261', dur: '1.8s', half: '0.9s' },
+  { id: 'e4', from: 'graph', to: 'vectors', d: 'M902 381 L880 381', dur: '1.4s', half: '0.7s' },
+  { id: 'e5', from: 'vectors', to: 'rag', d: 'M601 381 L579 381', dur: '1.4s', half: '0.7s' },
+  { id: 'e6', from: 'rag', to: 'agent', d: 'M300 381 L278 381', dur: '1.4s', half: '0.7s' },
+]
+
+// ---------- 流水线实时状态（数字孪生大屏） ----------
+const live = reactive({})
+const pipelineActive = ref(0)
+
+const STAGE_GROUPS = {
+  kb: ['preparing', 'parsing', 'chunking'],
+  vectors: ['vectorizing'],
+  graph: ['extracting', 'saving'],
+}
+const STAGE_LABELS = {
+  kb: '分片处理',
+  vectors: '向量化',
+  graph: '图谱构建',
+}
+
+function applyStatus(s) {
+  const stages = s?.stages || {}
+  for (const [key, names] of Object.entries(STAGE_GROUPS)) {
+    let count = 0
+    let weighted = 0
+    for (const n of names) {
+      const g = stages[n]
+      if (!g) continue
+      count += g.count || 0
+      weighted += (g.progress || 0) * (g.count || 0)
+    }
+    live[key] = count
+      ? { label: STAGE_LABELS[key], count, progress: Math.round(weighted / count) }
+      : null
+  }
+  live.files = s?.crawling
+    ? { label: '网络采集', count: 1, progress: s.crawl_progress || 0 }
+    : null
+  pipelineActive.value = (s?.processing_files || 0) + (s?.crawling ? 1 : 0)
+}
+
+function isEdgeActive(e) {
+  return !!live[e.to]
+}
+
+let pollTimer = null
+async function pollStatus() {
+  try { applyStatus(await fetchPipelineStatus()) } catch {}
+}
+function onVisibility() {
+  if (!document.hidden) pollStatus()
+}
+
+onMounted(() => {
+  pollStatus()
+  pollTimer = setInterval(pollStatus, 5000)
+  document.addEventListener('visibilitychange', onVisibility)
+})
+onBeforeUnmount(() => {
+  clearInterval(pollTimer)
+  document.removeEventListener('visibilitychange', onVisibility)
+})
 </script>
 
 <template>
@@ -62,35 +143,46 @@ const flowSteps = [
     <header class="home-head">
       <div class="home-title-block">
         <h1>KnowSource 知源知识中枢</h1>
-        <p>从文件和数据采集开始，进入知识库加工，再输出到问答；向量和图谱作为知识库的索引与关系分析支线。</p>
+        <p>从文件和数据采集开始，进入知识库加工，经图谱与向量索引，最终汇入知识库检索与智能体问答。</p>
+      </div>
+      <div v-if="pipelineActive" class="pipeline-pill" role="status">
+        <i aria-hidden="true"></i>
+        流水线运行中 · {{ pipelineActive }} 个任务
       </div>
     </header>
 
     <section class="flow-band" aria-label="系统菜单流程">
       <div class="flow-map">
-        <svg class="flow-links" viewBox="0 0 1000 720" preserveAspectRatio="none" aria-hidden="true">
+        <svg class="flow-links" viewBox="0 0 1180 520" preserveAspectRatio="none" aria-hidden="true">
           <defs>
-            <marker id="flow-arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
-              <path d="M2 2 10 6 2 10Z" />
+            <marker id="flow-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+              <path d="M1 1 9 5 1 9Z" />
+            </marker>
+            <marker id="flow-arrow-on" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+              <path d="M1 1 9 5 1 9Z" />
             </marker>
           </defs>
-          <path class="flow-link main-link" d="M285 205 C340 205 374 205 428 205" marker-end="url(#flow-arrow)" />
-          <path class="flow-link main-link" d="M572 205 C626 205 660 205 715 205" marker-end="url(#flow-arrow)" />
-          <path class="flow-link branch-link" d="M500 294 C500 350 500 378 500 414" />
-          <path class="flow-link branch-link" d="M500 414 C456 444 405 474 333 508" marker-end="url(#flow-arrow)" />
-          <path class="flow-link branch-link" d="M500 414 C544 444 595 474 667 508" marker-end="url(#flow-arrow)" />
-          <circle class="flow-dot dot-files" cx="167" cy="205" r="6" />
-          <circle class="flow-dot dot-kb" cx="500" cy="205" r="7" />
-          <circle class="flow-dot dot-query" cx="833" cy="205" r="6" />
-          <circle class="flow-dot dot-vector" cx="333" cy="508" r="6" />
-          <circle class="flow-dot dot-graph" cx="667" cy="508" r="6" />
+          <g
+            v-for="e in flowEdges"
+            :key="e.id"
+            :class="['edge', { active: isEdgeActive(e) }]"
+          >
+            <path class="edge-base" :d="e.d" marker-end="url(#flow-arrow)" />
+            <path class="edge-flow" :d="e.d" />
+            <circle class="edge-pulse" r="3.2">
+              <animateMotion :dur="e.dur" repeatCount="indefinite" :path="e.d" begin="0s" />
+            </circle>
+            <circle class="edge-pulse lag" r="2.4">
+              <animateMotion :dur="e.dur" repeatCount="indefinite" :path="e.d" :begin="e.half" />
+            </circle>
+          </g>
         </svg>
 
         <RouterLink
           v-for="step in flowSteps"
           :key="step.key"
           :to="step.to"
-          :class="['flow-card', `step-${step.key}`]"
+          :class="['flow-card', `step-${step.key}`, { running: live[step.key] }]"
           :aria-label="`${step.label}：${step.line}`"
         >
           <div class="art-panel">
@@ -165,7 +257,7 @@ const flowSteps = [
                 <circle class="token green" cx="289" cy="58" r="14" />
               </g>
 
-              <g v-else-if="step.key === 'query'" class="art-scene query-art">
+              <g v-else-if="step.key === 'rag'" class="art-scene query-art">
                 <ellipse class="art-shadow" cx="178" cy="197" rx="116" ry="18" />
                 <path class="iso-base" d="M61 158 163 102 305 164 203 219Z" />
                 <path class="console-top" d="M87 145 172 101 270 142 184 188Z" />
@@ -182,6 +274,27 @@ const flowSteps = [
                 <path class="tube-line" d="M77 139 C52 136 49 111 72 101" />
                 <circle class="token yellow" cx="76" cy="139" r="8" />
                 <circle class="token green" cx="300" cy="144" r="11" />
+              </g>
+
+              <g v-else-if="step.key === 'agent'" class="art-scene agent-art">
+                <ellipse class="art-shadow" cx="180" cy="198" rx="118" ry="18" />
+                <path class="iso-base" d="M57 160 164 101 306 162 201 219Z" />
+                <path class="robot-head" d="M138 88 L180 66 L222 88 L222 138 L180 160 L138 138 Z" />
+                <path class="robot-face" d="M150 94 L180 78 L210 94 L210 130 L180 148 L150 130 Z" />
+                <circle class="robot-eye" cx="166" cy="110" r="7" />
+                <circle class="robot-eye" cx="194" cy="110" r="7" />
+                <path class="robot-mouth" d="M167 129 L193 129" />
+                <path class="robot-antenna" d="M180 66 L180 50" />
+                <circle class="token yellow" cx="180" cy="44" r="8" />
+                <path class="gear-ring" d="M75 108 A22 22 0 1 0 76 108 M68 108 A14 14 0 1 1 69 108" />
+                <path class="gear-tooth" d="M53 89 61 84 68 91 63 99Z" />
+                <path class="gear-tooth" d="M89 92 96 101 87 108 81 101Z" />
+                <path class="gear-tooth" d="M58 130 66 126 73 136 65 141Z" />
+                <path class="tube-line" d="M97 118 C115 122 125 130 138 128" />
+                <path class="bubble" d="M240 46 C272 32 316 40 330 64 C342 86 322 110 288 112 L272 132 268 110 C244 106 230 88 234 66 C236 58 236 50 240 46Z" />
+                <path class="bolt" d="M286 60 L270 86 L282 86 L272 108 L294 80 L282 80 Z" />
+                <path class="tiny-node" d="M247 146 274 158" />
+                <circle class="token green small" cx="282" cy="162" r="7" />
               </g>
 
               <g v-else-if="step.key === 'vectors'" class="art-scene vector-art">
@@ -235,7 +348,11 @@ const flowSteps = [
               <span class="step-number">{{ step.number }}</span>
               <span v-if="step.key === 'ontology'" class="define-chip">定义层</span>
               <span v-else-if="step.key === 'files'" class="start-chip">START</span>
+              <span v-else-if="step.key === 'agent'" class="agent-chip">AGENT</span>
               <span v-else-if="step.key === 'vectors' || step.key === 'graph'" class="branch-chip">知识库支线</span>
+              <span v-if="live[step.key]" class="live-chip" :title="`${live[step.key].label} ${live[step.key].progress}%`">
+                <i aria-hidden="true"></i>{{ live[step.key].label }} {{ live[step.key].count > 1 ? `×${live[step.key].count} ` : '' }}{{ live[step.key].progress }}%
+              </span>
             </div>
             <span class="flow-role">{{ step.role }}</span>
             <h2>{{ step.label }}</h2>
@@ -260,12 +377,12 @@ const flowSteps = [
       <div class="workflow-item">
         <span>02</span>
         <strong>知识库承担加工和组织</strong>
-        <p>知识库把资料变成可检索的分片，同时可以派生向量索引和实体关系数据。</p>
+        <p>知识库把资料变成可检索的分片，同时派生向量索引和实体关系图谱。</p>
       </div>
       <div class="workflow-item">
         <span>03</span>
-        <strong>问答是面向使用者的主出口</strong>
-        <p>用户最终通过问答消费知识；向量和图谱用于校验、调试和深入分析。</p>
+        <strong>检索与智能体是面向使用者的主出口</strong>
+        <p>知识库检索基于向量召回生成可追溯回答；智能体在其上融合图谱事实与技能。</p>
       </div>
     </section>
   </div>
@@ -279,6 +396,40 @@ const flowSteps = [
 .home-head {
   max-width: 1180px;
   margin: 0 auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* 头部流水线运行状态 */
+.pipeline-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #2f6b1c;
+  background: rgba(134, 201, 87, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(74, 128, 39, 0.24);
+}
+
+.pipeline-pill i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #5cab2e;
+  box-shadow: 0 0 8px rgba(92, 171, 46, 0.9);
+  animation: live-blink 1.1s ease-in-out infinite;
+}
+
+:root[data-theme='dark'] .pipeline-pill {
+  color: #b7ec86;
+  background: rgba(134, 201, 87, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(134, 201, 87, 0.28);
 }
 
 .home-title-block {
@@ -317,15 +468,82 @@ const flowSteps = [
   z-index: 1;
   width: 100%;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(12, minmax(0, 1fr));
   grid-template-rows: minmax(238px, auto) minmax(238px, auto);
   gap: 24px;
   max-width: 1180px;
   margin: 0 auto;
 }
 
+/* 流水线连线：铺满卡片区，与栅格对齐（viewBox 1180x520） */
 .flow-links {
-  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.edge-base {
+  fill: none;
+  stroke: var(--c-border);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  marker-end: url(#flow-arrow);
+}
+
+.edge-flow {
+  fill: none;
+  stroke: #35c6d3;
+  stroke-width: 2.6;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 8 96;
+  stroke-dashoffset: 0;
+  opacity: 0.85;
+  filter: drop-shadow(0 0 4px rgba(53, 198, 211, 0.75));
+  animation: edge-dash 2.2s linear infinite;
+}
+
+@keyframes edge-dash {
+  to { stroke-dashoffset: -104; }
+}
+
+.edge-pulse {
+  fill: #7ee3ec;
+  opacity: 0.9;
+  filter: drop-shadow(0 0 5px rgba(126, 227, 236, 0.9));
+}
+
+.edge-pulse.lag {
+  opacity: 0.5;
+}
+
+/* 任务运行中：对应链路变绿加速发光 */
+.edge.active .edge-base {
+  stroke: rgba(134, 201, 87, 0.55);
+  marker-end: url(#flow-arrow-on);
+}
+
+.edge.active .edge-flow {
+  stroke: #86c957;
+  opacity: 1;
+  filter: drop-shadow(0 0 6px rgba(134, 201, 87, 0.95));
+  animation-duration: 0.9s;
+}
+
+.edge.active .edge-pulse {
+  fill: #b7ec86;
+  opacity: 1;
+}
+
+#flow-arrow path {
+  fill: var(--c-border);
+}
+
+#flow-arrow-on path {
+  fill: #86c957;
 }
 
 .flow-card {
@@ -358,12 +576,81 @@ const flowSteps = [
   color: var(--c-accent);
 }
 
-.step-ontology { grid-column: 1; grid-row: 1; }
-.step-files { grid-column: 2; grid-row: 1; }
-.step-kb { grid-column: 3; grid-row: 1; }
-.step-query { grid-column: 1; grid-row: 2; }
-.step-vectors { grid-column: 2; grid-row: 2; }
-.step-graph { grid-column: 3; grid-row: 2; }
+/* 任务运行中：卡片绿框 + 扫光 */
+.flow-card.running {
+  overflow: hidden;
+  border-color: rgba(134, 201, 87, 0.65);
+  box-shadow: 0 0 0 1px rgba(134, 201, 87, 0.3), 0 10px 28px rgba(134, 201, 87, 0.14);
+}
+
+.flow-card.running::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 32%,
+    rgba(134, 201, 87, 0.12) 46%,
+    rgba(198, 241, 145, 0.28) 50%,
+    rgba(134, 201, 87, 0.12) 54%,
+    transparent 68%
+  );
+  background-size: 260% 100%;
+  animation: card-scan 2.8s linear infinite;
+}
+
+@keyframes card-scan {
+  from { background-position: 135% 0; }
+  to { background-position: -135% 0; }
+}
+
+/* 实时状态徽标 */
+.live-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  color: #386f1e;
+  background: rgba(134, 201, 87, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(74, 128, 39, 0.28);
+}
+
+.live-chip i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #5cab2e;
+  animation: live-blink 1.1s ease-in-out infinite;
+}
+
+@keyframes live-blink {
+  50% { opacity: 0.25; }
+}
+
+:root[data-theme='dark'] .live-chip {
+  color: #b7ec86;
+  background: rgba(134, 201, 87, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(134, 201, 87, 0.3);
+}
+
+:root[data-theme='dark'] .live-chip i {
+  background: #86c957;
+}
+
+.step-ontology { grid-column: 1 / span 4; grid-row: 1; }
+.step-files { grid-column: 5 / span 4; grid-row: 1; }
+.step-kb { grid-column: 9 / span 4; grid-row: 1; }
+/* 下排蛇形：03 图谱在最右，向左流经 04 向量 → 05 检索 → 06 智能体 */
+.step-graph { grid-column: 10 / span 3; grid-row: 2; }
+.step-vectors { grid-column: 7 / span 3; grid-row: 2; }
+.step-rag { grid-column: 4 / span 3; grid-row: 2; }
+.step-agent { grid-column: 1 / span 3; grid-row: 2; }
 
 .art-panel {
   height: 126px;
@@ -397,7 +684,8 @@ const flowSteps = [
 
 .step-number,
 .start-chip,
-.branch-chip {
+.branch-chip,
+.agent-chip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -435,6 +723,19 @@ const flowSteps = [
   background: rgba(134, 201, 87, 0.2);
   color: #386f1e;
   box-shadow: inset 0 0 0 1px rgba(74, 128, 39, 0.2);
+}
+
+.agent-chip {
+  padding: 0 9px;
+  background: rgba(124, 58, 237, 0.14);
+  color: #6d28d9;
+  box-shadow: inset 0 0 0 1px rgba(109, 40, 217, 0.24);
+}
+
+:root[data-theme='dark'] .agent-chip {
+  background: rgba(139, 92, 246, 0.18);
+  color: #b79bf7;
+  box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.32);
 }
 
 .flow-role {
@@ -763,6 +1064,41 @@ const flowSteps = [
   fill: #f3feff;
 }
 
+/* 智能体插画样式 */
+.robot-head {
+  fill: rgba(14, 107, 133, 0.2);
+  stroke: #0e6b85;
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.robot-face {
+  fill: #e8fcfc;
+  stroke: #15313d;
+  stroke-width: 2.2;
+  stroke-linejoin: round;
+}
+.robot-eye {
+  fill: #0f7893;
+  stroke: #15313d;
+  stroke-width: 2;
+}
+.robot-mouth,
+.robot-antenna {
+  fill: none;
+  stroke: #0f5c78;
+  stroke-width: 2.3;
+  stroke-linecap: round;
+}
+.bolt {
+  fill: #f6bd4b;
+  stroke: #15313d;
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+:root[data-theme='dark'] .robot-face {
+  fill: #eefbfc;
+}
+
 /* 本体管理插画样式 */
 .ontology-hub {
   fill: rgba(14, 107, 133, 0.2);
@@ -816,9 +1152,10 @@ const flowSteps = [
   .step-ontology,
   .step-files,
   .step-kb,
-  .step-query,
+  .step-graph,
   .step-vectors,
-  .step-graph {
+  .step-rag,
+  .step-agent {
     grid-column: auto;
     grid-row: auto;
   }
@@ -826,12 +1163,18 @@ const flowSteps = [
   .step-ontology { order: 1; }
   .step-files { order: 2; }
   .step-kb { order: 3; }
-  .step-query { order: 4; }
+  .step-graph { order: 4; }
   .step-vectors { order: 5; }
-  .step-graph { order: 6; }
+  .step-rag { order: 6; }
+  .step-agent { order: 7; }
 }
 
 @media (max-width: 640px) {
+  .home-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
   .home-title-block h1 {
     font-size: 26px;
   }

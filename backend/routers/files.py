@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from database import get_db
 from services.file_service import FileService
-from models import File as FileModel
+from models import File as FileModel, CrawlJob
 
 router = APIRouter()
 
@@ -57,6 +57,19 @@ async def reprocess_file(
     if not ok:
         raise HTTPException(400, "File not ready for reprocessing")
     return {"status": "processing"}
+
+
+@router.get("/files/pipeline/status")
+async def pipeline_status(db: AsyncSession = Depends(get_db)):
+    """首页流水线大屏状态：各处理阶段进行中的文件数 + 最新爬虫任务"""
+    summary = await FileService.pipeline_summary(db)
+    crawl = await db.execute(select(CrawlJob).order_by(CrawlJob.created_at.desc()).limit(1))
+    job = crawl.scalars().first()
+    crawling = bool(job and job.status in ("queued", "running"))
+    summary["crawling"] = crawling
+    if crawling:
+        summary["crawl_progress"] = job.progress or 0
+    return summary
 
 
 @router.get("/files/{file_id}/status")

@@ -70,6 +70,13 @@ export async function getFileStatus(fileId) {
   return res.json()
 }
 
+// 首页流水线大屏状态（轻量聚合：各阶段进行中文件数 + 最新爬虫任务）
+export async function fetchPipelineStatus() {
+  const res = await fetch(`${API}/api/files/pipeline/status`)
+  if (!res.ok) throw new Error('Pipeline status failed')
+  return res.json()
+}
+
 export async function fetchVectorRecords({ kbId = '', q = '', unsyncedOnly = false, limit = 100, offset = 0 } = {}) {
   const params = new URLSearchParams()
   if (kbId) params.set('kb_id', kbId)
