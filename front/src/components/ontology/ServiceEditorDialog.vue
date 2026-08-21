@@ -108,6 +108,35 @@ function quoteSelection() {
   chatOpen.value = true
 }
 
+// 行级 diff（LCS）：返回 [{type:'same'|'add'|'del', text}]
+function computeDiff(oldText, newText) {
+  const a = String(oldText || '').split('\n')
+  const b = String(newText || '').split('\n')
+  const n = a.length, m = b.length
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+  const rows = []
+  let i = 0, j = 0
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { rows.push({ type: 'same', text: a[i] }); i++; j++ }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) rows.push({ type: 'del', text: a[i++] })
+    else rows.push({ type: 'add', text: b[j++] })
+  }
+  while (i < n) rows.push({ type: 'del', text: a[i++] })
+  while (j < m) rows.push({ type: 'add', text: b[j++] })
+  return rows
+}
+
+function diffStats(msg) {
+  const rows = computeDiff(msg.oldCode ?? '', msg.data?.code_text ?? '')
+  return {
+    added: rows.filter(r => r.type === 'add').length,
+    removed: rows.filter(r => r.type === 'del').length,
+  }
+}
+
 async function chatSend() {
   const text = chatInput.value.trim()
   if (!text || chatLoading.value) return
@@ -124,7 +153,7 @@ async function chatSend() {
       role: m.role,
       content: m.role === 'user' ? m.content : `${m.data.explanation || ''}\n\n${m.data.code_text}`,
     }))
-  const msg = reactive({ role: 'assistant', content: '', data: null, error: null, streaming: true })
+  const msg = reactive({ role: 'assistant', content: '', data: null, error: null, streaming: true, oldCode: form.code_text, showDiff: false })
   chatMessages.value.push(msg)
   scrollChat()
   try {
@@ -454,8 +483,18 @@ async function runTest() {
                 <span v-if="m.streaming" class="sed-chat-cursor">▍</span>
                 <template v-if="m.data">
                   <div class="sed-ai-meta">已通过安全校验{{ m.data.params?.length ? ` · 含 ${m.data.params.length} 个参数定义` : '' }}</div>
+                  <button class="btn sm diff-toggle" @click="m.showDiff = !m.showDiff">
+                    {{ m.showDiff ? '收起改动' : `查看改动（+${diffStats(m).added} −${diffStats(m).removed}）` }}
+                  </button>
+                  <div v-if="m.showDiff" class="sed-diff">
+                    <div v-for="(r, ri) in computeDiff(m.oldCode, m.data.code_text)" :key="ri"
+                      class="sed-diff-row" :class="r.type">
+                      <span class="sed-diff-sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : '' }}</span>
+                      <span class="sed-diff-text">{{ r.text }}</span>
+                    </div>
+                  </div>
                   <div class="sed-ai-actions">
-                    <button class="btn primary sm" @click="applyChatCode(m)">应用到代码区</button>
+                    <button class="btn primary sm" @click="applyChatCode(m)">应用改动</button>
                   </div>
                 </template>
               </template>
@@ -517,6 +556,18 @@ async function runTest() {
 .sed-ai-explain { font-size: 12.5px; color: var(--c-fg); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .sed-ai-meta { font-size: 11px; color: var(--c-secondary); }
 .sed-ai-actions { display: flex; gap: 8px; }
+
+/* diff 改动预览 */
+.diff-toggle { color: #8b5cf6; border-color: rgba(139, 92, 246, 0.4); align-self: flex-start; }
+.diff-toggle:hover { background: rgba(139, 92, 246, 0.1); }
+.sed-diff { border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-muted); font-family: ui-monospace, Consolas, monospace; font-size: 11px; line-height: 1.55; overflow: auto; max-height: 320px; }
+.sed-diff-row { display: flex; align-items: stretch; }
+.sed-diff-sign { flex: 0 0 22px; text-align: center; color: var(--c-secondary); user-select: none; }
+.sed-diff-row.add { background: rgba(34, 197, 94, 0.14); }
+.sed-diff-row.add .sed-diff-sign { color: #16a34a; font-weight: 700; }
+.sed-diff-row.del { background: rgba(220, 38, 38, 0.12); }
+.sed-diff-row.del .sed-diff-sign { color: var(--c-danger); font-weight: 700; }
+.sed-diff-text { flex: 1; padding: 0 6px 0 0; white-space: pre-wrap; word-break: break-all; min-height: 1.4em; }
 
 /* 右侧 AI 聊天面板 */
 .ai-btn.active { border-color: #8b5cf6; color: #8b5cf6; }
