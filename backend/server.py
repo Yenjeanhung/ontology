@@ -159,7 +159,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from routers import agent, config, entity, files, graph, kb, library, ontology, query, vector_data
+from routers import agent, config, entity, files, graph, kb, library, ontology, ontology_service, query, vector_data
 
 app.include_router(kb.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
@@ -169,6 +169,7 @@ app.include_router(query.router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
 app.include_router(vector_data.router, prefix="/api")
 app.include_router(ontology.router, prefix="/api")
+app.include_router(ontology_service.router, prefix="/api")
 app.include_router(entity.router, prefix="/api")
 app.include_router(config.router, prefix="/api")
 

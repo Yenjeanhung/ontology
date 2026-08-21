@@ -6,9 +6,13 @@ import {
   fetchAttributeTemplates,
   setOntologyTemplates,
   getMergedAttributes,
+  fetchOntologyServices,
+  deleteOntologyService,
+  updateOntologyService,
 } from '../../api'
 import AttributeEditor from '../common/AttributeEditor.vue'
 import SearchableSelect from '../common/SearchableSelect.vue'
+import ServiceEditorDialog from './ServiceEditorDialog.vue'
 
 const props = defineProps({
   categoryId: { type: String, required: true },
@@ -93,6 +97,7 @@ function isExpanded(ont) {
 
 function toggleExpand(ont) {
   expandedId.value = isExpanded(ont) ? null : ont.id
+  if (expandedId.value) ensureServices(ont)
 }
 
 function openCreate() {
@@ -217,6 +222,74 @@ function attrSourceLabel(source) {
   if (source && source.startsWith('template:')) return '模板'
   return source || ''
 }
+
+// ===== 本体服务（动作）=====
+
+const servicesByOnt = ref({})       // { ontologyId: [service...] }
+const svcLoading = ref('')          // 正在加载服务列表的 ontology id
+const showSvcDialog = ref(false)
+const svcEditing = ref(null)        // 编辑目标（null = 新建）
+const svcOwner = ref(null)          // { type:'ontology', categoryId, ontologyId, ontologyName }
+
+async function loadServices(ont, { silent = false } = {}) {
+  if (!silent) svcLoading.value = ont.id
+  try {
+    servicesByOnt.value[ont.id] = await fetchOntologyServices(props.categoryId, ont.id)
+  } catch {
+    servicesByOnt.value[ont.id] = []
+  } finally {
+    svcLoading.value = ''
+  }
+}
+
+function ensureServices(ont) {
+  if (!servicesByOnt.value[ont.id]) loadServices(ont)
+}
+
+function openSvcCreate(ont) {
+  svcEditing.value = null
+  svcOwner.value = { type: 'ontology', categoryId: props.categoryId, ontologyId: ont.id, ontologyName: ont.name }
+  showSvcDialog.value = true
+}
+
+function openSvcEdit(ont, svc) {
+  svcEditing.value = svc
+  svcOwner.value = { type: 'ontology', categoryId: props.categoryId, ontologyId: ont.id, ontologyName: ont.name }
+  showSvcDialog.value = true
+}
+
+async function onSvcSaved(svc) {
+  const ont = ontologies.value.find(o => o.id === svc.ontology_id)
+  if (ont) await loadServices(ont, { silent: true })
+}
+
+async function toggleSvcEnabled(ont, svc) {
+  try {
+    await updateOntologyService(svc.id, {
+      name: svc.name, code: svc.code, description: svc.description || '',
+      params: svc.params || [], code_text: svc.code_text || '', language: svc.language || 'python',
+      timeout_seconds: svc.timeout_seconds, is_enabled: !svc.is_enabled, sort_order: svc.sort_order || 0,
+    })
+    await loadServices(ont, { silent: true })
+  } catch (e) {
+    alert('操作失败：' + e.message)
+  }
+}
+
+async function removeSvc(ont, svc) {
+  if (!confirm(`确认删除服务「${svc.name}」？其下实体的继承动作将一并失效。`)) return
+  try {
+    await deleteOntologyService(svc.id)
+    await loadServices(ont, { silent: true })
+  } catch (e) {
+    alert('删除失败：' + e.message)
+  }
+}
+
+function paramSummary(svc) {
+  const n = svc.params?.length || 0
+  return n ? `${n} 参数` : '无参数'
+}
 </script>
 
 <template>
@@ -248,6 +321,7 @@ function attrSourceLabel(source) {
           <span class="oe-name">{{ ont.name }}</span>
           <span class="oe-count-tag">{{ (mergedPreview[ont.id]?.attributes?.length ?? ont.attributes?.length) || 0 }} 属性</span>
           <span v-if="ont.template_ids?.length" class="oe-count-tag tpl">{{ ont.template_ids.length }} 模板</span>
+          <span v-if="servicesByOnt[ont.id]?.length" class="oe-count-tag svc">{{ servicesByOnt[ont.id].length }} 服务</span>
           <span class="oe-spacer"></span>
           <button class="rm-btn sm" @click.stop="removeOntology(ont)" title="删除">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
@@ -377,9 +451,51 @@ function attrSourceLabel(source) {
               </div>
             </div>
           </div>
+
+          <!-- 本体服务（动作） -->
+          <div class="oe-section">
+            <div class="oe-section-head">
+              <span class="oe-section-title">本体服务（动作）</span>
+              <button class="btn sm" @click="openSvcCreate(ont)">+ 新建服务</button>
+            </div>
+            <div class="oe-svc-tip">
+              定义该类实体的通用动作（如调用 API、处理数据），其下所有实体自动继承并可执行。
+            </div>
+            <div v-if="svcLoading === ont.id" class="oe-merged-loading"><span class="spinner"></span> 加载中...</div>
+            <template v-else>
+              <div v-if="!servicesByOnt[ont.id]?.length" class="oe-merged-empty">
+                暂无服务，点击「新建服务」为本体添加通用动作
+              </div>
+              <div v-else class="oe-svc-list">
+                <div v-for="svc in servicesByOnt[ont.id]" :key="svc.id" class="oe-svc-row" :class="{ disabled: !svc.is_enabled }">
+                  <span class="oe-svc-status" :class="svc.is_enabled ? 'on' : 'off'" :title="svc.is_enabled ? '已启用' : '已停用'"></span>
+                  <span class="oe-svc-name">{{ svc.name }}</span>
+                  <span class="oe-svc-code">{{ svc.code }}</span>
+                  <span class="oe-svc-meta">{{ paramSummary(svc) }}</span>
+                  <span v-if="svc.description" class="oe-svc-desc" :title="svc.description">{{ svc.description }}</span>
+                  <span class="oe-spacer"></span>
+                  <button class="btn sm ghost" @click="toggleSvcEnabled(ont, svc)" :title="svc.is_enabled ? '停用' : '启用'">
+                    {{ svc.is_enabled ? '停用' : '启用' }}
+                  </button>
+                  <button class="btn sm" @click="openSvcEdit(ont, svc)">编辑</button>
+                  <button class="rm-btn sm" @click="removeSvc(ont, svc)" title="删除">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                  </button>
+                </div>
+              </div>
+            </template>
+          </div>
         </div>
       </div>
     </div>
+
+    <!-- 服务编辑弹窗 -->
+    <ServiceEditorDialog
+      v-model="showSvcDialog"
+      :owner="svcOwner"
+      :service="svcEditing"
+      @saved="onSvcSaved"
+    />
 
     <!-- 新建本体弹窗 -->
     <div v-if="showCreate" class="oe-modal-mask" @click.self="showCreate = false">
@@ -474,6 +590,22 @@ function attrSourceLabel(source) {
 .oe-merged-src { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--c-muted); color: var(--c-secondary); }
 .oe-merged-src.own { background: rgba(161, 98, 7, 0.15); color: var(--c-accent); }
 .oe-merged-empty { padding: 8px; text-align: center; color: var(--c-secondary); font-size: 12px; }
+
+/* 本体服务区块 */
+.oe-count-tag.svc { background: rgba(37, 99, 235, 0.12); color: #2563EB; }
+.oe-svc-tip { font-size: 12px; color: var(--c-secondary); }
+.oe-svc-list { display: flex; flex-direction: column; gap: 4px; }
+.oe-svc-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); font-size: 12px; }
+.oe-svc-row.disabled { opacity: 0.55; }
+.oe-svc-status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.oe-svc-status.on { background: #16A34A; box-shadow: 0 0 6px rgba(22, 163, 74, 0.6); }
+.oe-svc-status.off { background: var(--c-secondary); }
+.oe-svc-name { font-weight: 600; color: var(--c-fg); flex-shrink: 0; }
+.oe-svc-code { color: #2563EB; font-family: ui-monospace, Consolas, monospace; font-size: 11px; padding: 0 6px; border-radius: 8px; background: rgba(37, 99, 235, 0.08); flex-shrink: 0; }
+.oe-svc-meta { color: var(--c-secondary); flex-shrink: 0; }
+.oe-svc-desc { color: var(--c-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.btn.sm.ghost { background: transparent; border-color: var(--c-border); color: var(--c-secondary); }
+.btn.sm.ghost:hover { border-color: var(--c-fg); color: var(--c-fg); }
 
 .oe-modal-mask { position: fixed; inset: 0; background: var(--c-overlay); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 20px; }
 .oe-modal { background: var(--c-panel); border-radius: var(--radius); padding: 22px; width: 100%; max-width: 460px; box-shadow: 0 8px 30px rgba(0,0,0,0.18); }

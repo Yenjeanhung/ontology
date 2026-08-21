@@ -404,6 +404,11 @@ class EntityService:
                 delete(Relation).where(Relation.id.in_(relation_ids))
             )
 
+        # 级联删除：该实体的自定义服务
+        from services.ontology_action_service import OntologyServiceService
+
+        await OntologyServiceService.delete_for_entities(db, [entity_id])
+
         await db.delete(ent)
         await db.commit()
 
@@ -536,7 +541,10 @@ class EntityService:
         canonical.properties = _dump_properties(merged_props)
         canonical.updated_at = datetime.now().isoformat()
 
-        # 7. 删除被合并实体（SQLite 权威）
+        # 7. 删除被合并实体（SQLite 权威）+ 级联删除其自定义服务
+        from services.ontology_action_service import OntologyServiceService
+
+        await OntologyServiceService.delete_for_entities(db, list(merged_map.keys()))
         for e in merged_map.values():
             await db.delete(e)
         await db.commit()

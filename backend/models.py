@@ -244,6 +244,28 @@ class OntologyTemplateBinding(Base):
     created_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
+# ===== 本体服务（动作）：本体级通用动作，实体级个性化动作（无外键）=====
+
+class OntologyService(Base):
+    __tablename__ = "ontology_services"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    owner_type = Column(String, nullable=False, default="ontology")  # ontology | entity
+    ontology_id = Column(String, nullable=False)                     # 所属本体（entity 服务冗余记录，便于展示来源）
+    entity_id = Column(String, nullable=True)                        # owner_type=entity 时必填
+    name = Column(String(100), nullable=False)
+    code = Column(String(100), nullable=False)                       # 动作标识，同一 owner 下唯一
+    description = Column(Text, default="")
+    params_schema = Column(Text, default="[]")                       # JSON: [{name,label,type,required,default,description}]
+    code_text = Column(Text, nullable=False, default="")             # Python 源码
+    language = Column(String(20), nullable=False, default="python")  # 预留多语言
+    timeout_seconds = Column(Integer, nullable=False, default=30)
+    is_enabled = Column(Integer, nullable=False, default=1)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
 # ===== 实体实例层（抽取后生成，无外键）=====
 
 class Entity(Base):

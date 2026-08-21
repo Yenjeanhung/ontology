@@ -85,3 +85,24 @@ CREATE TABLE IF NOT EXISTS agent_skill_seed_tombstones (
     code VARCHAR PRIMARY KEY,
     deleted_at VARCHAR
 );
+
+-- migration_010: 本体服务（动作）：本体级通用动作 + 实体级个性化动作
+CREATE TABLE IF NOT EXISTS ontology_services (
+    id VARCHAR PRIMARY KEY,
+    owner_type VARCHAR NOT NULL DEFAULT 'ontology',
+    ontology_id VARCHAR NOT NULL,
+    entity_id VARCHAR DEFAULT NULL,
+    name VARCHAR(100) NOT NULL,
+    code VARCHAR(100) NOT NULL,
+    description TEXT DEFAULT '',
+    params_schema TEXT DEFAULT '[]',
+    code_text TEXT NOT NULL DEFAULT '',
+    language VARCHAR(20) NOT NULL DEFAULT 'python',
+    timeout_seconds INTEGER NOT NULL DEFAULT 30,
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_ontology_services_owner ON ontology_services(owner_type, ontology_id, entity_id);
+CREATE INDEX IF NOT EXISTS idx_ontology_services_code ON ontology_services(owner_type, code);

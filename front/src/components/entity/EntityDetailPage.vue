@@ -1,8 +1,10 @@
 <script setup>
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl } from '../../api'
+import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl, fetchEntityServices, copyServiceToEntity, deleteOntologyService } from '../../api'
 import { marked } from 'marked'
+import ServiceInvokeDialog from './ServiceInvokeDialog.vue'
+import ServiceEditorDialog from '../ontology/ServiceEditorDialog.vue'
 
 const props = defineProps({
   entityId: { type: String, required: true },
@@ -36,6 +38,70 @@ const editing = ref(false)
 const editName = ref('')
 const editDesc = ref('')
 const editProps = ref([]) // [{ key, value }]
+
+// ===== 服务（动作）=====
+const services = ref([])
+const servicesLoading = ref(false)
+const showInvoke = ref(false)
+const invokeTarget = ref(null)
+const showSvcEditor = ref(false)
+const svcEditing = ref(null)
+
+const inheritedServices = computed(() =>
+  services.value.filter(s => s.source === 'ontology')
+)
+const customServices = computed(() =>
+  services.value.filter(s => s.owner_type === 'entity')
+)
+
+async function loadServices() {
+  servicesLoading.value = true
+  try {
+    services.value = await fetchEntityServices(props.entityId)
+  } catch {
+    services.value = []
+  } finally {
+    servicesLoading.value = false
+  }
+}
+
+function openInvoke(svc) {
+  invokeTarget.value = svc
+  showInvoke.value = true
+}
+
+function openSvcCreate() {
+  svcEditing.value = null
+  showSvcEditor.value = true
+}
+
+function openSvcEdit(svc) {
+  svcEditing.value = svc
+  showSvcEditor.value = true
+}
+
+async function onSvcSaved() {
+  await loadServices()
+}
+
+async function copyToCustom(svc) {
+  try {
+    await copyServiceToEntity(props.entityId, svc.id)
+    await loadServices()
+  } catch (e) {
+    alert('复制失败：' + e.message)
+  }
+}
+
+async function removeCustomService(svc) {
+  if (!confirm(`确认删除自定义服务「${svc.name}」？`)) return
+  try {
+    await deleteOntologyService(svc.id)
+    await loadServices()
+  } catch (e) {
+    alert('删除失败：' + e.message)
+  }
+}
 
 const parsedProperties = computed(() => {
   if (!entity.value) return {}
@@ -128,6 +194,7 @@ async function load() {
       entity.value = null
     } else {
       entity.value = data
+      loadServices()
     }
   } catch (e) {
     loadError.value = '加载失败：' + e.message
@@ -402,6 +469,57 @@ onMounted(load)
         </div>
       </div>
 
+      <!-- 服务（动作）：本体继承 + 实体自定义 -->
+      <div class="detail-card">
+        <div class="detail-section">
+          <div class="section-head">
+            <span class="section-title">服务（动作）</span>
+            <button class="btn sm" @click="openSvcCreate">+ 新建自定义服务</button>
+          </div>
+
+          <div v-if="servicesLoading" class="props-empty">服务加载中...</div>
+          <template v-else>
+            <div v-if="!inheritedServices.length && !customServices.length" class="props-empty">
+              暂无可用动作：可在本体上定义通用服务，所有实体自动继承
+            </div>
+
+            <template v-if="inheritedServices.length">
+              <div class="svc-group-title">继承自本体 · {{ inheritedServices.length }}</div>
+              <div class="svc-list">
+                <div v-for="svc in inheritedServices" :key="svc.id" class="svc-row">
+                  <span class="svc-status on" title="继承自本体"></span>
+                  <span class="svc-name">{{ svc.name }}</span>
+                  <span class="svc-code">{{ svc.code }}</span>
+                  <span class="svc-desc" v-if="svc.description" :title="svc.description">{{ svc.description }}</span>
+                  <span class="svc-spacer"></span>
+                  <button class="btn sm primary" @click="openInvoke(svc)">执行</button>
+                  <button class="btn sm" @click="copyToCustom(svc)" title="复制为自定义后可修改覆盖">复制为自定义</button>
+                </div>
+              </div>
+            </template>
+
+            <template v-if="customServices.length">
+              <div class="svc-group-title custom">自定义 · {{ customServices.length }}</div>
+              <div class="svc-list">
+                <div v-for="svc in customServices" :key="svc.id" class="svc-row">
+                  <span class="svc-status custom-dot" title="实体自定义"></span>
+                  <span class="svc-name">{{ svc.name }}</span>
+                  <span class="svc-code">{{ svc.code }}</span>
+                  <span v-if="svc.source === 'entity_override'" class="svc-override-tag" title="同名实体服务已覆盖本体动作">已覆盖本体</span>
+                  <span class="svc-desc" v-if="svc.description" :title="svc.description">{{ svc.description }}</span>
+                  <span class="svc-spacer"></span>
+                  <button class="btn sm primary" @click="openInvoke(svc)">执行</button>
+                  <button class="btn sm" @click="openSvcEdit(svc)">编辑</button>
+                  <button class="rm-btn sm" @click="removeCustomService(svc)" title="删除">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                  </button>
+                </div>
+              </div>
+            </template>
+          </template>
+        </div>
+      </div>
+
       <!-- 关联关系 -->
       <div class="detail-card">
         <div class="detail-section">
@@ -466,6 +584,9 @@ onMounted(load)
           </div>
         </div>
       </div>
+
+      <ServiceInvokeDialog v-model="showInvoke" :entity-id="entityId" :entity-name="entity?.name || ''" :service="invokeTarget" />
+      <ServiceEditorDialog v-model="showSvcEditor" :owner="{ type: 'entity', entityId: entityId, entityName: entity?.name || '' }" :service="svcEditing" @saved="onSvcSaved" />
     </div>
   </div>
 </template>
@@ -516,6 +637,19 @@ onMounted(load)
 .prop-view-key { flex: 0 0 160px; font-size: 13px; font-weight: 600; color: var(--c-secondary); }
 .prop-view-val { flex: 1; font-size: 13px; color: var(--c-fg); word-break: break-word; }
 .props-empty { padding: 16px; text-align: center; color: var(--c-secondary); font-size: 13px; }
+
+.svc-group-title { font-size: 12px; font-weight: 700; color: var(--c-secondary); margin: 4px 0 8px; letter-spacing: 0.02em; }
+.svc-group-title.custom { color: #8b5cf6; }
+.svc-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.svc-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-muted); font-size: 13px; min-height: 40px; }
+.svc-status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--c-secondary); }
+.svc-status.on { background: var(--c-success); }
+.svc-status.custom-dot { background: #8b5cf6; }
+.svc-name { font-weight: 600; color: var(--c-fg); white-space: nowrap; }
+.svc-code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--c-accent); background: rgba(59, 130, 246, 0.1); padding: 1px 8px; border-radius: 4px; white-space: nowrap; }
+.svc-desc { color: var(--c-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+.svc-spacer { flex: 1; }
+.svc-override-tag { font-size: 11px; color: #8b5cf6; border: 1px solid rgba(139, 92, 246, 0.4); border-radius: 4px; padding: 0 6px; white-space: nowrap; }
 
 .rel-list { display: flex; flex-direction: column; gap: 6px; }
 .rel-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-muted); font-size: 13px; }

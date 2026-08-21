@@ -853,6 +853,94 @@ export async function removeKbOntology(kbId) {
   return res.json()
 }
 
+// 模块五b：本体服务（动作）
+export async function fetchOntologyServices(categoryId, ontologyId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/services`)
+  if (!res.ok) throw new Error('Fetch ontology services failed')
+  return res.json()
+}
+
+export async function createOntologyService(categoryId, ontologyId, data) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/services`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Create service failed')
+  }
+  return res.json()
+}
+
+export async function updateOntologyService(serviceId, data) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Update service failed')
+  }
+  return res.json()
+}
+
+export async function deleteOntologyService(serviceId) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete service failed')
+  return res.json()
+}
+
+export async function testOntologyService(serviceId, { params, mock_entity } = {}) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}/test`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ params, mock_entity }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Test service failed')
+  }
+  return res.json()
+}
+
+export async function fetchEntityServices(entityId) {
+  const res = await fetch(`${API}/api/entities/${entityId}/services`)
+  if (!res.ok) throw new Error('Fetch entity services failed')
+  return res.json()
+}
+
+export async function createEntityService(entityId, data) {
+  const res = await fetch(`${API}/api/entities/${entityId}/services`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Create service failed')
+  }
+  return res.json()
+}
+
+export async function invokeEntityService(entityId, serviceId, { params } = {}) {
+  const res = await fetch(`${API}/api/entities/${entityId}/services/${serviceId}/invoke`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ params }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Invoke service failed')
+  }
+  return res.json()
+}
+
+export async function copyServiceToEntity(entityId, serviceId) {
+  const res = await fetch(`${API}/api/entities/${entityId}/services/${serviceId}/copy`, { method: 'POST' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Copy service failed')
+  }
+  return res.json()
+}
+
 // 模块六：实体实例管理
 export async function fetchEntities({ kb_id = '', ontology_id = '', q = '', page = 1, page_size = 20 } = {}) {
   const params = new URLSearchParams()

@@ -259,6 +259,41 @@ class BindOntologyTemplatesRequest(BaseModel):
     template_ids: list[str]
 
 
+# ===== 本体服务（动作）=====
+
+
+class ServiceParamDef(BaseModel):
+    name: str
+    label: str | None = ""
+    type: str = "string"  # string/number/boolean/date/datetime/text
+    required: bool = False
+    default: str | None = None
+    description: str | None = ""
+
+
+class SaveOntologyServiceRequest(BaseModel):
+    """本体服务 / 实体服务统一保存结构（创建与更新共用）。"""
+
+    name: str
+    code: str
+    description: str | None = ""
+    params: list[ServiceParamDef] = []
+    code_text: str = ""
+    language: str = "python"
+    timeout_seconds: int = 30
+    is_enabled: bool = True
+    sort_order: int = 0
+
+
+class TestOntologyServiceRequest(BaseModel):
+    params: dict = {}
+    mock_entity: dict | None = None  # 本体级测试运行时的模拟实体 {name, entity_type, properties}
+
+
+class InvokeEntityServiceRequest(BaseModel):
+    params: dict = {}
+
+
 # ===== 实体/关系实例管理 =====
 
 

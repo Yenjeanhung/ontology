@@ -21,6 +21,8 @@ from models import (
 import json
 import logging
 
+from services.ontology_action_service import OntologyServiceService
+
 logger = logging.getLogger(__name__)
 
 
@@ -226,6 +228,9 @@ class OntologyService:
             await db.execute(
                 delete(OntologyTemplateBinding).where(OntologyTemplateBinding.ontology_id.in_(ont_ids))
             )
+            # 级联：本体服务（动作）
+            for oid in ont_ids:
+                await OntologyServiceService.delete_for_ontology(db, oid)
         # 三元组、关系字典、本体、绑定
         await db.execute(
             delete(OntologyRelationConstraint).where(OntologyRelationConstraint.category_id == category_id)
@@ -320,13 +325,14 @@ class OntologyService:
         ont = result.scalar_one_or_none()
         if not ont:
             return False
-        # 级联：属性、模板绑定、引用它的三元组
+        # 级联：属性、模板绑定、本体服务、引用它的三元组
         await db.execute(
             delete(OntologyAttribute).where(OntologyAttribute.ontology_id == ontology_id)
         )
         await db.execute(
             delete(OntologyTemplateBinding).where(OntologyTemplateBinding.ontology_id == ontology_id)
         )
+        await OntologyServiceService.delete_for_ontology(db, ontology_id)
         await db.execute(
             delete(OntologyRelationConstraint).where(
                 (OntologyRelationConstraint.source_ontology_id == ontology_id)
