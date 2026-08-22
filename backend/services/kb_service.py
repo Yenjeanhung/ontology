@@ -43,6 +43,8 @@ class KBService:
                 # 添加失败文件数量
                 "failed_files": sum(1 for file in kb.files if file.status == "failed"),
                 "overall_progress": max((file.progress for file in kb.files), default=0) if kb.files else 0,
+                "chunk_count": sum(file.total_chunks for file in kb.files),
+                "updated_at": max((file.created_at for file in kb.files), default=kb.created_at),
             }
             for kb in kbs
         ]
