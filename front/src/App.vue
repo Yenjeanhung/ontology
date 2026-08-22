@@ -265,7 +265,8 @@ onBeforeUnmount(() => {
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="3.75" y="5" width="16.5" height="14" rx="3" />
-            <path d="M9 5v14" />
+            <path d="M9 5v14" opacity="0.55" />
+            <path class="toggle-chev" d="m14.25 9.25 2.5 2.5-2.5 2.5" />
           </svg>
         </button>
       </div>
@@ -343,14 +344,9 @@ onBeforeUnmount(() => {
         </template>
       </nav>
 
-      <!-- 收起态：底部首页 logo -->
+      <!-- 收起态：底部品牌 K 字（与展开态一致） -->
       <button class="rail-home" type="button" aria-label="返回首页" @click="goHome">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M12 2.75 18.5 8.25 12 21.25 5.5 8.25 12 2.75Z" />
-          <path d="M12 2.75v18.5" stroke-width="1.1" opacity="0.45" />
-          <path d="M8.75 10.25h6.5" stroke-width="1.1" opacity="0.45" />
-        </svg>
-        <span class="nav-tip">首页</span>
+        <span class="brand-mark">K</span>
       </button>
     </aside>
 
@@ -510,6 +506,13 @@ onBeforeUnmount(() => {
   transition: background 150ms ease, color 150ms ease;
 }
 .sidebar-toggle:hover { background: var(--c-muted); color: var(--c-fg); }
+.sidebar-toggle .toggle-chev {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: rotate(180deg);
+  transition: transform 220ms ease;
+}
+.is-collapsed .sidebar-toggle .toggle-chev { transform: rotate(0deg); }
 
 .rail-home {
   display: none;
