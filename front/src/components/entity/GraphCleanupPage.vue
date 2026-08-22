@@ -403,7 +403,7 @@ onActivated(async () => {
           <li v-if="confirmPayload.deleteEntityIds.length">删除 <b>{{ confirmPayload.deleteEntityIds.length }}</b> 个噪声实体</li>
           <li v-if="confirmPayload.deleteRelationIds.length">删除 <b>{{ confirmPayload.deleteRelationIds.length }}</b> 条无语义关系</li>
         </ul>
-        <p class="confirm-warn">此操作不可撤销，将同步写入 SQLite 与图谱。</p>
+        <p class="confirm-warn">此操作不可撤销，将同步写入数据库与图谱。</p>
       </div>
     </ModalDialog>
   </div>

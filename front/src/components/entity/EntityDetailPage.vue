@@ -157,7 +157,7 @@ async function save() {
 }
 
 async function remove() {
-  if (!confirm(`确认删除实体「${entity.value.name}」？\n关联关系将一并删除，Kùzu 图谱同步更新。`)) return
+  if (!confirm(`确认删除实体「${entity.value.name}」？\n关联关系将一并删除，图谱同步更新。`)) return
   try {
     await deleteEntity(props.entityId)
     if (window.history.length > 1) {

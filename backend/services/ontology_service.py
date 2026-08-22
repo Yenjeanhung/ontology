@@ -66,7 +66,7 @@ class OntologyService:
 
     @staticmethod
     async def list_categories(db: AsyncSession, q: str = "") -> list[dict]:
-        stmt = select(OntologyCategory).order_by(OntologyCategory.created_at)
+        stmt = select(OntologyCategory).order_by(OntologyCategory.created_at.desc())
         if q:
             stmt = stmt.where(OntologyCategory.name.contains(q))
         result = await db.execute(stmt)

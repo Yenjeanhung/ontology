@@ -66,7 +66,7 @@ function goPage(p) {
 
 async function remove(rel) {
   const label = `${rel.source_entity_name || '—'} —${rel.relation_def_name || rel.relation_type}→ ${rel.target_entity_name || '—'}`
-  if (!confirm(`确认删除关系「${label}」？\nKùzu 图谱中的对应边将同步删除。`)) return
+  if (!confirm(`确认删除关系「${label}」？\n图谱中的对应边将同步删除。`)) return
   try {
     await deleteRelationInstance(rel.id)
     await load()

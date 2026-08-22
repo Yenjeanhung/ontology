@@ -68,7 +68,6 @@ async function loadTree() {
     for (const cat of cats) {
       const detail = await getOntologyCategoryDetail(cat.id)
       tree.push({ category: { ...cat, entity_count: detail?.entity_count ?? 0 }, ontologies: detail?.ontologies || [] })
-      expandedCats.value.add(cat.id)
     }
     ontologyTree.value = tree
   } catch {
@@ -163,7 +162,7 @@ function goDetail(entityId) {
 
 async function remove(entity, e) {
   e && e.stopPropagation()
-  if (!confirm(`确认删除实体「${entity.name}」？\n关联的关系实例将一并删除，Kùzu 图谱同步更新。`)) return
+  if (!confirm(`确认删除实体「${entity.name}」？\n关联的关系实例将一并删除，图谱同步更新。`)) return
   try {
     await deleteEntity(entity.id)
     await load()
@@ -205,7 +204,7 @@ onActivated(() => {
     <div class="page-head">
       <div class="page-title-row">
         <h2 class="page-title">实体管理</h2>
-        <span class="page-subtitle">知识抽取生成的实体实例，同步存于 SQLite 与 Kùzu</span>
+        <span class="page-subtitle">知识抽取生成的实体实例</span>
       </div>
       <router-link to="/entities/relations" class="link-btn">关系实例 →</router-link>
     </div>
