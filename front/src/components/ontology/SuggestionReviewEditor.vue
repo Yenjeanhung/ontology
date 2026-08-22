@@ -341,12 +341,12 @@ async function reject() {
   box-sizing: border-box;
 }
 .sre-field input:focus {
-  border-color: var(--c-primary);
+  border-color: var(--c-accent);
 }
 .sre-score {
   font-size: 14px;
   font-weight: 600;
-  color: var(--c-primary);
+  color: var(--c-accent);
 }
 
 /* Ontology cards */
@@ -422,7 +422,7 @@ async function reject() {
 }
 .sre-attr-table input:focus,
 .sre-attr-table select:focus {
-  border-color: var(--c-primary);
+  border-color: var(--c-accent);
 }
 .sre-attr-table select {
   min-width: 80px;
@@ -474,7 +474,7 @@ async function reject() {
 }
 .sre-rel-fields input:focus,
 .sre-con-fields input:focus {
-  border-color: var(--c-primary);
+  border-color: var(--c-accent);
 }
 
 /* Buttons */
@@ -500,9 +500,9 @@ async function reject() {
   cursor: not-allowed;
 }
 .btn.primary {
-  background: var(--c-primary);
+  background: var(--c-accent);
   color: #fff;
-  border-color: var(--c-primary);
+  border-color: var(--c-accent);
 }
 .btn.primary:hover {
   opacity: 0.9;

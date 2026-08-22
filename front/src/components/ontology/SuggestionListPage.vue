@@ -1,12 +1,13 @@
 ﻿<script setup>
-import { ref, watch, onMounted, onActivated } from 'vue'
-import { fetchOntologySuggestions, deleteOntologySuggestion } from '../../api'
+import { ref, computed, watch, onMounted, onActivated } from 'vue'
+import { fetchOntologySuggestions, deleteOntologySuggestion, fetchKbs } from '../../api'
 import { refreshNotifications } from '../../stores/notifications'
 import { useToast } from '../../composables/useToast'
 import SuggestionReviewEditor from './SuggestionReviewEditor.vue'
+import SearchableSelect from '../common/SearchableSelect.vue'
 
 const STATUS_MAP = { ready: '待审核', approved: '已通过', rejected: '已拒绝', generating: '生成中' }
-const STATUS_COLORS = { ready: 'var(--c-primary)', approved: '#4caf50', rejected: '#ef5350', generating: '#ff9800' }
+const STATUS_COLORS = { ready: 'var(--c-accent)', approved: '#4caf50', rejected: '#ef5350', generating: '#ff9800' }
 const SOURCE_MAP = { free_extraction: '自由抽取', auto_cluster: '自动聚类' }
 
 const suggestions = ref([])
@@ -14,6 +15,18 @@ const loading = ref(false)
 
 const statusFilter = ref('')
 const kbIdFilter = ref('')
+const kbs = ref([])
+
+const statusOptions = [
+  { value: '', label: '全部状态' },
+  { value: 'ready', label: '待审核' },
+  { value: 'approved', label: '已通过' },
+  { value: 'rejected', label: '已拒绝' },
+]
+const kbOptions = computed(() => [
+  { value: '', label: '全部知识库' },
+  ...kbs.value.map(k => ({ value: k.id, label: k.name })),
+])
 
 const reviewingId = ref(null)
 const toast = useToast()
@@ -24,8 +37,8 @@ async function load() {
   loading.value = true
   try {
     const res = await fetchOntologySuggestions({
-      kbId: kbIdFilter.value.trim(),
-      status: statusFilter.value,
+      kbId: (kbIdFilter.value || '').trim(),
+      status: statusFilter.value || '',
     })
     suggestions.value = Array.isArray(res) ? res : (res.items || [])
   } catch {
@@ -90,6 +103,7 @@ function statsData(item) {
 
 let _skipFirstActivated = true
 onMounted(async () => {
+  fetchKbs().then(list => { kbs.value = Array.isArray(list) ? list : [] }).catch(() => {})
   await load()
   refreshNotifications()
 })
@@ -113,21 +127,10 @@ onActivated(async () => {
     <div class="sl-toolbar">
       <div class="sl-filter-group">
         <div class="sl-select-wrap">
-          <select v-model="statusFilter" class="sl-select">
-            <option value="">全部</option>
-            <option value="ready">待审核</option>
-            <option value="approved">已通过</option>
-            <option value="rejected">已拒绝</option>
-          </select>
+          <SearchableSelect v-model="statusFilter" :options="statusOptions" placeholder="全部状态" />
         </div>
-        <div class="sl-input-wrap">
-          <svg class="sl-input-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input
-            type="text"
-            v-model="kbIdFilter"
-            class="sl-input"
-            placeholder="知识库 ID"
-          >
+        <div class="sl-select-wrap">
+          <SearchableSelect v-model="kbIdFilter" :options="kbOptions" placeholder="全部知识库" />
         </div>
       </div>
       <button class="icon-btn sm" @click="load" title="刷新">
@@ -205,7 +208,7 @@ onActivated(async () => {
 
 .sl-toolbar { display: flex; align-items: center; gap: 10px; }
 .sl-filter-group { display: flex; align-items: center; gap: 10px; flex: 1; }
-.sl-select-wrap { position: relative; }
+.sl-select-wrap { position: relative; min-width: 190px; }
 .sl-select {
   appearance: none; padding: 0 32px 0 12px; height: 38px;
   border: 1px solid var(--c-border); border-radius: var(--radius-sm);
@@ -224,6 +227,22 @@ onActivated(async () => {
 .sl-input-icon { color: var(--c-secondary); flex-shrink: 0; }
 .sl-input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--c-fg); font-size: 14px; font-family: var(--font); }
 .sl-input::placeholder { color: var(--c-secondary); opacity: 0.7; }
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  background: var(--c-panel);
+  color: var(--c-secondary);
+  cursor: pointer;
+  transition: background 150ms, color 150ms;
+  flex-shrink: 0;
+}
+.icon-btn:hover { background: var(--c-muted); color: var(--c-fg); }
 
 .sl-review-panel {
   border: 1px solid var(--c-border); border-radius: var(--radius);
