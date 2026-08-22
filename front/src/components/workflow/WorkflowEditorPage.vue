@@ -41,6 +41,17 @@ const DEFAULT_CONFIG = {
   code: { code_text: 'def run(params, entity, context):\n    return {"data": params}', params: {} },
 }
 
+// 各节点类型固定的输出字段（供「输出变量」提示与复制引用）
+const OUTPUT_FIELDS = {
+  start: [],
+  end: [],
+  agent: ['answer', 'chunks', 'entities', 'subgraph'],
+  service: ['success', 'data', 'error', 'stdout', 'duration_ms'],
+  llm: ['text'],
+  condition: ['result'],
+  code: ['success', 'data', 'error', 'stdout', 'duration_ms'],
+}
+
 const wfName = ref('')
 const wfDesc = ref('')
 const nodes = ref([])
@@ -61,6 +72,38 @@ let edgeSeq = 0
 const selectedNode = computed(() => nodes.value.find(n => n.id === selectedNodeId.value) || null)
 const selectedType = computed(() => selectedNode.value?.type || '')
 const selectedConfig = computed(() => selectedNode.value?.data?.config || {})
+// 结束节点可引用的上游节点（所有非 end 节点，含开始）
+const upstreamNodes = computed(() => nodes.value.filter(n => n.type !== 'end' && n.id !== selectedNodeId.value))
+
+// 结束节点输出映射的 key-value 行（与 config.outputs 双向同步）
+const endRows = ref([])
+function syncEndRows() {
+  const outs = selectedConfig.value?.outputs
+  endRows.value = Array.isArray(outs)
+    ? outs.map(o => ({ name: o.name || '', value: o.value ?? '' }))
+    : []
+}
+function flushEndRows() {
+  if (!selectedNode.value) return
+  selectedNode.value.data.config.outputs = endRows.value
+    .filter(r => r.name.trim())
+    .map(r => ({ name: r.name.trim(), value: r.value }))
+}
+function addEndRow(name = '', value = '') {
+  endRows.value.push({ name, value })
+  flushEndRows()
+}
+function removeEndRow(i) {
+  endRows.value.splice(i, 1)
+  flushEndRows()
+}
+// 从「可用变量」点选：追加一行并自动命名（去重）
+function appendEndRowFromVar(id, field) {
+  let name = field
+  let n = 2
+  while (endRows.value.some(r => r.name === name)) name = `${field}_${n++}`
+  addEndRow(name, varRef(id, field))
+}
 
 // 实体服务节点选中的实体 → 服务列表
 const enabledSkills = computed(() => palette.value.skills || [])
@@ -221,6 +264,14 @@ function setJson(field, text) {
   if (!selectedNode.value) return
   try { selectedNode.value.data.config[field] = JSON.parse(text) } catch {}
 }
+function varRef(id, field) { return `{{${id}.${field}}}` }
+function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast.success('已复制 ' + text)).catch(() => {})
+  } else {
+    toast.info(text)
+  }
+}
 function toggleSkill(id) {
   const cfg = selectedConfig.value
   if (!cfg) return
@@ -262,6 +313,15 @@ const runModal = ref(false)
 const runInputs = reactive({})
 const consoleOpen = ref(false)
 const contextMenu = reactive({ visible: false, x: 0, y: 0, type: '', id: '' })
+// 运行中节点：node_id -> 起始时间戳（用于节点/日志的实时计时）
+const runningSince = reactive({})
+const nowTick = ref(Date.now())
+let tickTimer = null
+function fmtElapsed(ms) {
+  if (ms == null) return ''
+  const s = Math.floor(ms / 1000)
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`
+}
 const startInputs = computed(() => {
   const s = nodes.value.find(n => n.type === 'start')
   return s?.data?.config?.inputs || []
@@ -275,10 +335,17 @@ function openRunModal() {
 
 function setStatus(nodeId, status) {
   const n = nodes.value.find(x => x.id === nodeId)
-  if (n) n.data.status = status
+  if (n) {
+    n.data.status = status
+    if (status === 'running') n.data.elapsedText = '0s'
+    else n.data.elapsedText = ''
+  }
+  if (status === 'running') runningSince[nodeId] = Date.now()
+  else delete runningSince[nodeId]
 }
 function clearStatus() {
   nodes.value.forEach(n => { n.data.status = '' })
+  Object.keys(runningSince).forEach(k => delete runningSince[k])
   logs.value = []
 }
 
@@ -294,6 +361,11 @@ async function startRun() {
       onNodeStarted(d) {
         setStatus(d.node_id, 'running')
         logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'running' })
+      },
+      onNodeProgress(d) {
+        // 心跳：更新对应 running 日志行的已运行时长
+        const line = [...logs.value].reverse().find(l => l.kind === 'node' && l.node_id === d.node_id && l.status === 'running')
+        if (line) line.elapsed_ms = d.elapsed_ms
       },
       onNodeFinished(d) {
         setStatus(d.node_id, 'succeeded')
@@ -333,17 +405,33 @@ function toggleLog(i) {
   expandedLog.value = expandedLog.value === i ? -1 : i
 }
 
-// 切换节点时同步实体服务下拉
+// 切换节点时同步实体服务下拉 / 结束节点 key-value 行
 watch(selectedNodeId, (id) => {
   if (id) {
     const n = nodes.value.find(x => x.id === id)
     if (n?.type === 'service') loadSvc(n.data.config)
+    if (n?.type === 'end') syncEndRows()
   }
 })
 
-// 右键菜单：点击空白处关闭
+// 右键菜单：点击空白处关闭 + 运行中计时 tick
 onMounted(() => window.addEventListener('click', closeContextMenu))
-onBeforeUnmount(() => window.removeEventListener('click', closeContextMenu))
+onMounted(() => { tickTimer = setInterval(() => { nowTick.value = Date.now() }, 1000) })
+onBeforeUnmount(() => {
+  window.removeEventListener('click', closeContextMenu)
+  clearInterval(tickTimer)
+})
+function nodeElapsed(nid) {
+  const since = runningSince[nid]
+  return since == null ? null : nowTick.value - since
+}
+// 每 tick 把运行中节点的实时时长写进节点 data（驱动节点卡片上的计时显示）
+watch(nowTick, () => {
+  for (const nid of Object.keys(runningSince)) {
+    const n = nodes.value.find(x => x.id === nid)
+    if (n && n.data.status === 'running') n.data.elapsedText = fmtElapsed(nodeElapsed(nid))
+  }
+})
 </script>
 
 <template>
@@ -409,6 +497,15 @@ onBeforeUnmount(() => window.removeEventListener('click', closeContextMenu))
               <input type="text" v-model="selectedNode.data.title">
             </div>
 
+            <!-- 输出变量（非开始/结束节点展示自身输出） -->
+            <div class="field" v-if="!['start', 'end'].includes(selectedType)">
+              <label>输出变量（点一下复制引用）</label>
+              <div class="var-chips">
+                <button v-for="f in (OUTPUT_FIELDS[selectedType] || [])" :key="f" type="button" class="var-chip" @click="copyText(varRef(selectedNodeId, f))">{{ f }}</button>
+              </div>
+              <span class="hint">引用格式 <code v-pre>{{节点ID.字段}}</code>，如 <code v-pre>{{n1.answer}}</code></span>
+            </div>
+
             <!-- 开始 -->
             <template v-if="selectedType === 'start'">
               <div class="field">
@@ -420,8 +517,26 @@ onBeforeUnmount(() => window.removeEventListener('click', closeContextMenu))
             <!-- 结束 -->
             <template v-else-if="selectedType === 'end'">
               <div class="field">
-                <label>输出映射（JSON）</label>
-                <textarea :value="jsonText('outputs')" @input="setJson('outputs', $event.target.value)" rows="6" placeholder='[{"name":"answer","value":"{{agent.answer}}"}]'></textarea>
+                <label>可用变量（点击直接添加为输出）</label>
+                <div v-for="n in upstreamNodes" :key="n.id" class="upstream-node">
+                  <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
+                  <div class="var-chips">
+                    <button v-for="f in (OUTPUT_FIELDS[n.type] || [])" :key="f" type="button" class="var-chip" @click="appendEndRowFromVar(n.id, f)">{{ n.id }}.{{ f }}</button>
+                  </div>
+                </div>
+                <span class="hint" v-if="!upstreamNodes.length">还没有上游节点，先把前面的节点连过来</span>
+              </div>
+              <div class="field">
+                <label>输出映射（最终返回的结果）</label>
+                <div class="end-rows">
+                  <div v-for="(r, i) in endRows" :key="i" class="end-row">
+                    <input type="text" v-model="r.name" placeholder="字段名" class="er-name" @change="flushEndRows">
+                    <input type="text" v-model="r.value" placeholder="值或 {{n1.answer}}" class="er-value" @change="flushEndRows">
+                    <button type="button" class="btn sm" @click="removeEndRow(i)">×</button>
+                  </div>
+                  <button type="button" class="btn sm" @click="addEndRow()">＋ 添加一行</button>
+                </div>
+                <span class="hint">点击上方变量会自动加一行；也可手动编辑「字段名 / 值」，值支持 <code v-pre>{{节点.字段}}</code></span>
               </div>
             </template>
 
@@ -557,7 +672,8 @@ onBeforeUnmount(() => window.removeEventListener('click', closeContextMenu))
             <span class="log-status">{{ statusIcon(l.status) }}</span>
             <span class="log-title">{{ l.title || l.node_id }}</span>
             <span class="log-summary" v-if="l.summary || l.error">{{ l.summary || l.error }}</span>
-            <span class="log-dur" v-if="l.duration_ms != null">{{ l.duration_ms }}ms</span>
+            <span class="log-dur" v-if="l.status === 'running' && runningSince[l.node_id]">{{ fmtElapsed(nowTick - runningSince[l.node_id]) }}</span>
+            <span class="log-dur" v-else-if="l.duration_ms != null">{{ l.duration_ms }}ms</span>
             <span class="log-expand" v-if="l.output != null || l.error">{{ expandedLog === i ? '▾' : '▸' }}</span>
           </div>
           <div class="log-output" v-if="expandedLog === i && (l.output != null || l.error)">
@@ -627,7 +743,8 @@ onBeforeUnmount(() => window.removeEventListener('click', closeContextMenu))
 .log-node { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .log-node:hover { background: var(--c-muted); }
 .log-status { width: 14px; flex-shrink: 0; text-align: center; }
-.log-node.st-running .log-status { color: var(--c-accent); }
+.log-node.st-running .log-status { color: var(--c-accent); animation: wf-blink 1s ease-in-out infinite; }
+@keyframes wf-blink { 50% { opacity: .3; } }
 .log-node.st-succeeded .log-status { color: var(--c-success); }
 .log-node.st-failed .log-status { color: var(--c-danger); }
 .log-node.st-skipped { opacity: .5; }
@@ -669,6 +786,21 @@ onBeforeUnmount(() => window.removeEventListener('click', closeContextMenu))
 .skill-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .skill-chip { padding: 4px 10px; border-radius: 20px; font-size: 12px; border: 1px solid var(--c-border); background: var(--c-panel); color: var(--c-secondary); cursor: pointer; }
 .skill-chip.active { background: var(--c-muted); border-color: var(--c-accent); color: var(--c-accent); }
+
+/* 输出变量提示 */
+.var-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.var-chip { padding: 3px 9px; border-radius: 6px; font-size: 11px; font-family: ui-monospace, monospace; border: 1px solid var(--c-border); background: var(--c-muted); color: var(--c-accent); cursor: pointer; }
+.var-chip:hover { border-color: var(--c-accent); }
+.upstream-node { margin-bottom: 6px; }
+.up-node-name { font-size: 11px; color: var(--c-secondary); margin-bottom: 3px; }
+.up-node-name code { color: var(--c-fg); }
+
+/* 结束节点 key-value 行 */
+.end-rows { display: flex; flex-direction: column; gap: 6px; }
+.end-row { display: flex; align-items: center; gap: 6px; }
+.er-name { width: 90px; flex-shrink: 0; padding: 6px 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px); font-size: 12px; font-family: ui-monospace, monospace; background: var(--c-bg); color: var(--c-fg); outline: none; }
+.er-value { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px); font-size: 12px; font-family: ui-monospace, monospace; background: var(--c-bg); color: var(--c-fg); outline: none; }
+.er-name:focus, .er-value:focus { border-color: var(--c-accent); }
 
 /* 弹窗 */
 .modal-mask { position: fixed; inset: 0; background: var(--c-overlay, rgba(0,0,0,.35)); z-index: 100; display: flex; align-items: center; justify-content: center; }

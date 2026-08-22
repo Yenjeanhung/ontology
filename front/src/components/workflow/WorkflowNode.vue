@@ -23,6 +23,9 @@ const meta = computed(() => TYPE_META[type.value] || TYPE_META.start)
 const title = computed(() => props.data?.title || meta.value.name)
 const isCondition = computed(() => type.value === 'condition')
 const status = computed(() => props.data?.status || '')
+const elapsedText = computed(() => props.data?.elapsedText || '')
+
+const STATUS_LABEL = { running: '运行中', succeeded: '完成', failed: '失败', skipped: '跳过' }
 
 function bodyText(t, cfg = {}) {
   if (t === 'agent') return cfg.agent_id ? '引用已配置智能体' : (cfg.kb_id ? '内联 · KB + 技能' : '未配置知识库')
@@ -47,6 +50,10 @@ function bodyText(t, cfg = {}) {
     <div class="wf-head">
       <span class="wf-ico" :style="{ background: meta.color }">{{ meta.icon }}</span>
       <div class="wf-title">{{ title }}</div>
+      <span v-if="status" class="wf-status-chip" :class="'sc-' + status">
+        <span v-if="status === 'running'" class="wf-pulse"></span>
+        {{ STATUS_LABEL[status] }}<template v-if="elapsedText"> · {{ elapsedText }}</template>
+      </span>
     </div>
     <div class="wf-body">{{ bodyText(type, props.data?.config) }}</div>
   </div>
@@ -64,7 +71,25 @@ function bodyText(t, cfg = {}) {
 }
 .wf-node:hover { box-shadow: 0 4px 14px rgba(0,0,0,.12); }
 .wf-node.selected { border-color: var(--c-accent); box-shadow: 0 0 0 2px var(--c-accent-weak, rgba(161,98,7,.10)); }
-.wf-node.running { border-color: var(--c-accent); }
+.wf-node.running { border-color: var(--c-accent); animation: wf-breath 1.6s ease-in-out infinite; }
+@keyframes wf-breath {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--c-accent) 35%, transparent); }
+  50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--c-accent) 0%, transparent); }
+}
+
+.wf-status-chip {
+  display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
+  padding: 1px 7px; border-radius: 999px; font-size: 9.5px; font-weight: 700; line-height: 1.5;
+}
+.wf-status-chip.sc-running { color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 14%, transparent); }
+.wf-status-chip.sc-succeeded { color: var(--c-success); background: color-mix(in srgb, var(--c-success) 14%, transparent); }
+.wf-status-chip.sc-failed { color: var(--c-danger); background: color-mix(in srgb, var(--c-danger) 14%, transparent); }
+.wf-status-chip.sc-skipped { color: var(--c-secondary); background: var(--c-muted); }
+.wf-pulse {
+  width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  animation: wf-dot 1s ease-in-out infinite;
+}
+@keyframes wf-dot { 50% { opacity: .25; } }
 .wf-node.succeeded { border-color: var(--c-success); }
 .wf-node.failed { border-color: var(--c-danger); }
 .wf-node.skipped { opacity: .45; }

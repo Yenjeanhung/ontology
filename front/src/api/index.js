@@ -1330,7 +1330,7 @@ export async function fetchWorkflowPalette() {
   return res.json()
 }
 
-export async function runWorkflowStream(workflowId, inputs, { onStarted, onNodeStarted, onNodeFinished, onNodeFailed, onNodeSkipped, onFinished } = {}) {
+export async function runWorkflowStream(workflowId, inputs, { onStarted, onNodeStarted, onNodeProgress, onNodeFinished, onNodeFailed, onNodeSkipped, onFinished } = {}) {
   const res = await fetch(`${API}/api/workflows/${workflowId}/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1358,6 +1358,7 @@ export async function runWorkflowStream(workflowId, inputs, { onStarted, onNodeS
         const t = data.type
         if (t === 'workflow_started') onStarted?.(data)
         else if (t === 'node_started') onNodeStarted?.(data)
+        else if (t === 'node_progress') onNodeProgress?.(data)
         else if (t === 'node_finished') onNodeFinished?.(data)
         else if (t === 'node_failed') onNodeFailed?.(data)
         else if (t === 'node_skipped') onNodeSkipped?.(data)

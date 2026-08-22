@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -336,8 +337,18 @@ async def run_stream(workflow_id: str, definition: dict, inputs: dict):
 
             yield _sse({"type": "node_started", "node_id": nid, "title": title})
             t0 = time.monotonic()
+            task = asyncio.create_task(_execute_node(node, context, db))
             try:
-                result = await _execute_node(node, context, db)
+                # 执行期间每 2s 发一次 node_progress 心跳（含已运行毫秒数）
+                while True:
+                    done, _ = await asyncio.wait({task}, timeout=2.0)
+                    if done:
+                        break
+                    yield _sse({
+                        "type": "node_progress", "node_id": nid, "title": title,
+                        "elapsed_ms": int((time.monotonic() - t0) * 1000),
+                    })
+                result = task.result()
                 dur = int((time.monotonic() - t0) * 1000)
                 context[nid] = result
                 active[nid] = True
