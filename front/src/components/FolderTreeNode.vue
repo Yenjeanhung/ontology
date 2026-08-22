@@ -193,10 +193,9 @@ function handleDelete() {
 }
 
 .folder-item.active {
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.18), rgba(245, 158, 11, 0.08));
-  border-color: rgba(245, 158, 11, 0.28);
-  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.08);
-  color: #fff3d6;
+  background: var(--c-accent-weak);
+  border-color: var(--c-accent);
+  color: var(--c-fg);
 }
 
 .active-marker {
@@ -208,8 +207,7 @@ function handleDelete() {
 }
 
 .folder-item.active .active-marker {
-  background: linear-gradient(180deg, #f59e0b, #fcd34d);
-  box-shadow: 0 0 12px rgba(245, 158, 11, 0.45);
+  background: var(--c-accent);
 }
 
 .expand-toggle {
@@ -255,7 +253,7 @@ function handleDelete() {
 .item-icon {
   width: 16px;
   height: 16px;
-  color: #f59e0b;
+  color: var(--c-accent);
 }
 
 .file-badge {
@@ -265,8 +263,8 @@ function handleDelete() {
   min-width: 14px;
   height: 14px;
   padding: 0 4px;
-  background-color: #374151;
-  color: #fff;
+  background-color: var(--c-muted-hover);
+  color: var(--c-fg);
   font-size: 10px;
   font-weight: 600;
   border-radius: 7px;
@@ -274,7 +272,7 @@ function handleDelete() {
   align-items: center;
   justify-content: center;
   line-height: 1;
-  border: 1px solid #4b5563;
+  border: 1px solid var(--c-border);
 }
 
 .item-name {
@@ -290,8 +288,8 @@ function handleDelete() {
   flex-shrink: 0;
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #fde68a;
+  background: var(--c-muted);
+  color: var(--c-accent);
   font-size: 11px;
   font-weight: 700;
 }
@@ -388,7 +386,7 @@ function handleDelete() {
 }
 
 .folder-item.drag-over {
-  background-color: var(--c-accent-muted);
+  background-color: var(--c-accent-weak);
   border-left: 2px solid var(--c-accent);
 }
 

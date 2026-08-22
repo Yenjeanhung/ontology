@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useToast } from '../composables/useToast'
 import FolderTreeNode from './FolderTreeNode.vue'
 import {
   attachAssetsToKb,
@@ -30,6 +31,7 @@ const uuid = () => ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(
 
 const props = defineProps({ kbId: { type: String, required: true } })
 const router = useRouter()
+const toast = useToast()
 
 const kb = ref(null)
 const files = ref([])
@@ -546,6 +548,12 @@ function applyStatusData(fileId, data) {
   return target
 }
 
+function notifyCompletion(file, status) {
+  if (!file) return
+  if (status === 'indexed') toast.success(`「${file.name}」处理完成`)
+  else if (status === 'failed') toast.error(`「${file.name}」处理失败`)
+}
+
 async function syncFileStatus(fileId, timer = null) {
   try {
     const data = await getFileStatus(fileId)
@@ -566,6 +574,7 @@ async function syncFileStatus(fileId, timer = null) {
         collapsedFiles.value.add(fileId)
         checkPendingSuggestions()
       }
+      notifyCompletion(target, data.status)
       return true
     }
   } catch {
@@ -619,10 +628,11 @@ function startStatusWatch(fileId) {
         stream.close()
         delete statusStreams[fileId]
         if (data.status === 'indexed') {
-        delete processing.value[fileId]
-        collapsedFiles.value.add(fileId)
-        checkPendingSuggestions()
-      }
+          delete processing.value[fileId]
+          collapsedFiles.value.add(fileId)
+          checkPendingSuggestions()
+        }
+        notifyCompletion(target, data.status)
       }
     } catch {}
   }

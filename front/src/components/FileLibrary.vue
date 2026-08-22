@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { marked } from 'marked'
+import { useToast } from '../composables/useToast'
 import FolderTreeNode from './FolderTreeNode.vue'
 import {
   attachAssetsToKb,
@@ -28,6 +29,7 @@ const uuid = () => ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(
   c => (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16),
 )
 
+const toast = useToast()
 const directories = ref([])
 const assets = ref([])
 const kbs = ref([])
@@ -635,6 +637,8 @@ function watchCrawlJob(jobId) {
       if (job.status === 'done' || job.status === 'failed') {
         clearInterval(crawlTimers[jobId])
         delete crawlTimers[jobId]
+        if (job.status === 'done') toast.success(`「${job.keyword}」采集完成`)
+        else toast.error(`「${job.keyword}」采集失败`)
         await loadAssets()
         // 失败的任务保留更长时间，让用户看到错误信息
         const delay = job.status === 'failed' ? 30000 : 5000
@@ -1075,10 +1079,10 @@ onUnmounted(() => {
   align-items: center;
   max-width: 100%;
   padding: 4px 10px;
-  border: 1px solid rgba(245, 158, 11, 0.24);
+  border: 1px solid var(--c-accent);
   border-radius: 999px;
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.18), rgba(245, 158, 11, 0.08));
-  color: #fbbf24;
+  background: var(--c-accent-weak);
+  color: var(--c-accent);
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -1132,14 +1136,13 @@ onUnmounted(() => {
 }
 
 .tree-root-item.active {
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.18), rgba(245, 158, 11, 0.08));
-  border-color: rgba(245, 158, 11, 0.28);
-  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.08);
-  color: #fff3d6;
+  background: var(--c-accent-weak);
+  border-color: var(--c-accent);
+  color: var(--c-fg);
 }
 
 .tree-root-item.drag-over {
-  background-color: var(--c-accent-muted);
+  background-color: var(--c-accent-weak);
   border-left: 2px solid var(--c-accent);
 }
 
@@ -1152,8 +1155,7 @@ onUnmounted(() => {
 }
 
 .tree-root-item.active .tree-active-marker {
-  background: linear-gradient(180deg, #f59e0b, #fcd34d);
-  box-shadow: 0 0 12px rgba(245, 158, 11, 0.45);
+  background: var(--c-accent);
 }
 
 .expand-placeholder {
@@ -1161,10 +1163,10 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.folder-icon { 
-  width: 16px; 
-  flex-shrink: 0; 
-  color: #f59e0b;
+.folder-icon {
+  width: 16px;
+  flex-shrink: 0;
+  color: var(--c-accent);
 }
 
 .folder-name { 
@@ -1180,8 +1182,8 @@ onUnmounted(() => {
   flex-shrink: 0;
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #fde68a;
+  background: var(--c-muted);
+  color: var(--c-accent);
   font-size: 11px;
   font-weight: 700;
 }
@@ -1195,13 +1197,13 @@ onUnmounted(() => {
 .crawl-target-banner {
   margin-top: 10px;
   padding: 12px 14px;
-  border: 1px solid rgba(245, 158, 11, 0.16);
+  border: 1px solid var(--c-accent);
   border-radius: 10px;
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(15, 23, 42, 0.18));
+  background: var(--c-accent-weak);
 }
 .crawl-target-banner.warning {
-  border-color: rgba(248, 113, 113, 0.24);
-  background: linear-gradient(135deg, rgba(248, 113, 113, 0.12), rgba(15, 23, 42, 0.18));
+  border-color: var(--c-danger);
+  background: var(--c-muted);
 }
 .crawl-target-copy {
   display: flex;
@@ -1331,12 +1333,12 @@ onUnmounted(() => {
 .preview-markdown ul, .preview-markdown ol { margin: 8px 0; padding-left: 1.4em; }
 .preview-markdown li { margin: 4px 0; }
 .preview-markdown code { background: var(--c-muted); padding: 2px 6px; border-radius: 4px; font-size: 0.92em; }
-.preview-markdown pre { background: #0f141a; color: #e5edf5; padding: 14px 16px; border-radius: 8px; overflow-x: auto; margin: 10px 0; }
+.preview-markdown pre { background: var(--c-muted); color: var(--c-fg); padding: 14px 16px; border-radius: 8px; overflow-x: auto; margin: 10px 0; }
 .preview-markdown pre code { background: transparent; padding: 0; color: inherit; }
 .preview-markdown table { width: 100%; border-collapse: collapse; margin: 10px 0; }
 .preview-markdown th, .preview-markdown td { border: 1px solid var(--c-border); padding: 8px 10px; text-align: left; vertical-align: top; }
 .preview-markdown th { background: var(--c-muted); }
-.preview-markdown blockquote { margin: 10px 0; padding: 8px 12px; border-left: 3px solid var(--c-accent); background: rgba(161, 98, 7, 0.08); color: var(--c-secondary); }
+.preview-markdown blockquote { margin: 10px 0; padding: 8px 12px; border-left: 3px solid var(--c-accent); background: var(--c-accent-weak); color: var(--c-secondary); }
 .preview-markdown a { color: var(--c-accent); }
 .preview-markdown hr { border: 0; border-top: 1px solid var(--c-border); margin: 14px 0; }
 .preview-markdown img { max-width: 100%; border-radius: 8px; }

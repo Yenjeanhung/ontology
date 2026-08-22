@@ -1,16 +1,16 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --c-bg: #FFFFFF;
+  --c-bg: #F6F1E9;
   --c-fg: #171717;
   --c-secondary: #737373;
-  --c-muted: #F5F5F5;
-  --c-muted-hover: #EDEDED;
-  --c-border: #E5E5E5;
+  --c-muted: #EDE7DC;
+  --c-muted-hover: #E5DED1;
+  --c-border: #E4DCCE;
   --c-accent: #A16207;
   --c-danger: #DC2626;
   --c-success: #16A34A;
-  --c-panel: #FFFFFF;
+  --c-panel: #FCFAF6;
   --c-panel-elevated: rgba(255, 252, 247, 0.98);
   --c-overlay: rgba(0, 0, 0, 0.35);
   --radius: 8px;
