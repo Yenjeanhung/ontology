@@ -605,6 +605,13 @@ export async function fetchOntologies(categoryId) {
   return res.json()
 }
 
+// 单个本体详情（完整属性 + 模板绑定），点击时按需加载
+export async function getOntologyDetail(categoryId, ontologyId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}`)
+  if (!res.ok) throw new Error('Fetch ontology detail failed')
+  return res.json()
+}
+
 export async function createOntology(categoryId, { name, description = '', color = null, sort_order = 0 }) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1030,6 +1037,13 @@ export async function fetchRelationInstances({ kb_id = '', relation_type = '', q
 export async function deleteRelationInstance(relationId) {
   const res = await fetch(`${API}/api/relations/${relationId}`, { method: 'DELETE' })
   if (!res.ok) throw new Error('Delete relation instance failed')
+  return res.json()
+}
+
+// 通知聚合（侧栏红点 + 顶栏消息总数）
+export async function fetchNotificationSummary() {
+  const res = await fetch(`${API}/api/notifications/summary`)
+  if (!res.ok) throw new Error('Fetch notifications failed')
   return res.json()
 }
 

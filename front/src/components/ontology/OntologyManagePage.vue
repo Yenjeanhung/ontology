@@ -317,8 +317,8 @@ onMounted(loadCategories)
             </div>
           </div>
 
-          <!-- 本体编辑器 -->
-          <OntologyEditor :category-id="selectedId" :detail="detail" @changed="onSubChanged" />
+          <!-- 本体编辑器（列表+详情按需加载，自身管理数据） -->
+          <OntologyEditor :category-id="selectedId" @changed="onSubChanged" />
         </template>
       </div>
     </div>

@@ -1,7 +1,7 @@
-<script setup>
+﻿<script setup>
 import { ref, watch, onMounted, onActivated } from 'vue'
 import { fetchOntologySuggestions, deleteOntologySuggestion } from '../../api'
-import { refreshPendingSuggestionCount } from '../../stores/suggestions'
+import { refreshNotifications } from '../../stores/notifications'
 import { useToast } from '../../composables/useToast'
 import SuggestionReviewEditor from './SuggestionReviewEditor.vue'
 
@@ -17,6 +17,8 @@ const kbIdFilter = ref('')
 
 const reviewingId = ref(null)
 const toast = useToast()
+
+const emit = defineEmits(['changed'])
 
 async function load() {
   loading.value = true
@@ -49,7 +51,7 @@ function onReviewed() {
   reviewingId.value = null
   emit('changed')
   load()
-  refreshPendingSuggestionCount()
+  refreshNotifications()
 }
 
 async function removeSuggestion(item) {
@@ -59,9 +61,9 @@ async function removeSuggestion(item) {
     emit('changed')
     toast.success('已删除')
     await load()
-    refreshPendingSuggestionCount()
+    refreshNotifications()
   } catch (e) {
-    toast.error('删除失败：' + e.message)
+    toast.error('删除失败: ' + e.message)
   }
 }
 
@@ -86,18 +88,16 @@ function statsData(item) {
   }
 }
 
-const emit = defineEmits(['changed'])
-
 let _skipFirstActivated = true
 onMounted(async () => {
   await load()
-  refreshPendingSuggestionCount()
+  refreshNotifications()
 })
-// keepAlive 复用实例，再次进入页面（如点“去审核”）时重新拉取数据
+// keepAlive 复用实例，再次进入页面（如点"去审核"）时重新拉取数据
 onActivated(async () => {
   if (_skipFirstActivated) { _skipFirstActivated = false; return }
   await load()
-  refreshPendingSuggestionCount()
+  refreshNotifications()
 })
 </script>
 
@@ -157,14 +157,14 @@ onActivated(async () => {
         <div class="sl-card-body">
           <div class="sl-card-top">
             <div class="sl-card-info">
-              <span class="sl-cat-name">{{ item.suggestion_data?.category?.name || '—' }}</span>
+              <span class="sl-cat-name">{{ item.suggestion_data?.category?.name || '-' }}</span>
               <span class="sl-score-badge">{{ fmtScore(item.score || item.confidence) }}</span>
               <span
                 class="sl-status-badge"
                 :style="{ background: STATUS_COLORS[item.status] || 'var(--c-muted)', color: '#fff' }"
               >{{ STATUS_MAP[item.status] || item.status }}</span>
             </div>
-            <span class="sl-source-tag">{{ SOURCE_MAP[item.source_mode] || item.source_mode || '—' }}</span>
+            <span class="sl-source-tag">{{ SOURCE_MAP[item.source_mode] || item.source_mode || '-' }}</span>
           </div>
           <div class="sl-card-stats">
             <span class="sl-stat">本体 {{ statsData(item).ontologyCount }}</span>

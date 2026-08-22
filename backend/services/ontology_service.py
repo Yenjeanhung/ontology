@@ -18,6 +18,7 @@ from models import (
     OntologyTemplateAttribute,
     OntologyTemplateBinding,
 )
+from models import OntologyService as OntologyServiceModel  # 本体服务（动作）ORM，避免与业务类同名冲突
 import json
 import logging
 
@@ -250,37 +251,97 @@ class OntologyService:
 
     @staticmethod
     async def list_ontologies(db: AsyncSession, category_id: str) -> list[dict]:
+        """本体轻量列表：仅返回基础字段与各类计数，不加载完整属性/模板，用于表格展示。"""
         result = await db.execute(
             select(Ontology)
             .where(Ontology.category_id == category_id)
             .order_by(Ontology.sort_order, Ontology.created_at)
         )
-        out = []
-        for ont in result.scalars().all():
-            attrs_result = await db.execute(
-                select(OntologyAttribute)
-                .where(OntologyAttribute.ontology_id == ont.id)
-                .order_by(OntologyAttribute.sort_order)
+        rows = result.scalars().all()
+        ont_ids = [o.id for o in rows]
+        if not ont_ids:
+            return []
+
+        async def _counts(model):
+            res = await db.execute(
+                select(model.ontology_id, func.count())
+                .where(model.ontology_id.in_(ont_ids))
+                .group_by(model.ontology_id)
             )
-            attrs = [_serialize_attribute(a) for a in attrs_result.scalars().all()]
-            bindings_result = await db.execute(
-                select(OntologyTemplateBinding)
-                .where(OntologyTemplateBinding.ontology_id == ont.id)
-                .order_by(OntologyTemplateBinding.sort_order)
-            )
-            template_ids = [b.template_id for b in bindings_result.scalars().all()]
-            out.append({
+            return {row[0]: int(row[1]) for row in res.all()}
+
+        attr_counts = await _counts(OntologyAttribute)
+        tpl_counts = await _counts(OntologyTemplateBinding)
+        entity_counts = await _counts(Entity)
+        svc_counts = await _counts(OntologyServiceModel)
+
+        return [
+            {
                 "id": ont.id,
                 "category_id": ont.category_id,
                 "name": ont.name,
                 "description": ont.description or "",
                 "color": ont.color,
                 "sort_order": ont.sort_order,
-                "attributes": attrs,
-                "template_ids": template_ids,
+                "attribute_count": attr_counts.get(ont.id, 0),
+                "template_count": tpl_counts.get(ont.id, 0),
+                "service_count": svc_counts.get(ont.id, 0),
+                "entity_count": entity_counts.get(ont.id, 0),
                 "created_at": ont.created_at,
-            })
-        return out
+            }
+            for ont in rows
+        ]
+
+    @staticmethod
+    async def get_ontology_detail(db: AsyncSession, category_id: str, ontology_id: str) -> dict | None:
+        """单个本体详情：完整自有属性 + 模板绑定 + 计数，点击行时按需加载。"""
+        result = await db.execute(
+            select(Ontology).where(
+                Ontology.id == ontology_id, Ontology.category_id == category_id
+            )
+        )
+        ont = result.scalar_one_or_none()
+        if not ont:
+            return None
+
+        attrs_result = await db.execute(
+            select(OntologyAttribute)
+            .where(OntologyAttribute.ontology_id == ont.id)
+            .order_by(OntologyAttribute.sort_order)
+        )
+        attrs = [_serialize_attribute(a) for a in attrs_result.scalars().all()]
+
+        bindings_result = await db.execute(
+            select(OntologyTemplateBinding)
+            .where(OntologyTemplateBinding.ontology_id == ont.id)
+            .order_by(OntologyTemplateBinding.sort_order)
+        )
+        template_ids = [b.template_id for b in bindings_result.scalars().all()]
+
+        entity_count = int(
+            (await db.execute(select(func.count()).where(Entity.ontology_id == ont.id))).scalar() or 0
+        )
+        service_count = int(
+            (await db.execute(
+                select(func.count()).where(OntologyServiceModel.ontology_id == ont.id)
+            )).scalar() or 0
+        )
+
+        return {
+            "id": ont.id,
+            "category_id": ont.category_id,
+            "name": ont.name,
+            "description": ont.description or "",
+            "color": ont.color,
+            "sort_order": ont.sort_order,
+            "attributes": attrs,
+            "template_ids": template_ids,
+            "attribute_count": len(attrs),
+            "template_count": len(template_ids),
+            "service_count": service_count,
+            "entity_count": entity_count,
+            "created_at": ont.created_at,
+        }
 
     @staticmethod
     async def create_ontology(

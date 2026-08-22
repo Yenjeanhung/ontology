@@ -82,6 +82,14 @@ async def list_ontologies(category_id: str, db: AsyncSession = Depends(get_db)):
     return await OntologyService.list_ontologies(db, category_id)
 
 
+@router.get("/ontology-categories/{category_id}/ontologies/{ontology_id}")
+async def get_ontology_detail(category_id: str, ontology_id: str, db: AsyncSession = Depends(get_db)):
+    detail = await OntologyService.get_ontology_detail(db, category_id, ontology_id)
+    if not detail:
+        raise _nf("Ontology not found")
+    return detail
+
+
 @router.post("/ontology-categories/{category_id}/ontologies/batch")
 async def batch_create_ontologies(category_id: str, req: BatchCreateOntologiesRequest, db: AsyncSession = Depends(get_db)):
     return await OntologyService.batch_create_ontologies(db, category_id, req.ontologies)
