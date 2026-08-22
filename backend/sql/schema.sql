@@ -280,3 +280,19 @@ CREATE TABLE IF NOT EXISTS agent_skill_seed_tombstones (
     code VARCHAR PRIMARY KEY,
     deleted_at VARCHAR
 );
+
+-- ===== 智能体（KB + 技能 + 人设 的可复用组合）=====
+CREATE TABLE IF NOT EXISTS agents (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT DEFAULT '',
+    kb_id VARCHAR NOT NULL,
+    system_prompt TEXT DEFAULT '',
+    skill_ids TEXT DEFAULT '[]',
+    model VARCHAR DEFAULT '',
+    temperature REAL DEFAULT 0.7,
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_agents_kb ON agents(kb_id);

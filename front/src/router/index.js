@@ -5,6 +5,7 @@ import KbDetail from '../components/KbDetail.vue'
 import FileLibrary from '../components/FileLibrary.vue'
 import QueryView from '../components/QueryView.vue'
 import AgentView from '../components/AgentView.vue'
+import AgentListPage from '../components/agent/AgentListPage.vue'
 import SkillListPage from '../components/SkillListPage.vue'
 import VectorDataView from '../components/VectorDataView.vue'
 import VectorFileDetail from '../components/VectorFileDetail.vue'
@@ -40,6 +41,7 @@ const routes = [
   { path: '/files', name: 'files', component: FileLibrary, meta: { keepAlive: true } },
   { path: '/query', name: 'query', component: QueryView, meta: { keepAlive: true } },
   { path: '/agent', name: 'agent', component: AgentView, meta: { keepAlive: true } },
+  { path: '/agent/configs', name: 'agent-configs', component: AgentListPage, meta: { keepAlive: true } },
   { path: '/agent/skills', name: 'agent-skills', component: SkillListPage, meta: { keepAlive: true } },
   { path: '/vectors', name: 'vectors', component: VectorDataView, meta: { keepAlive: true } },
   { path: '/vectors/:fileId', name: 'vector-file-detail', component: VectorFileDetail, props: true },

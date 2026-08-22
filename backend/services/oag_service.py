@@ -45,14 +45,15 @@ _SKILL_HEADER = (
 _SKILL_CHAR_BUDGET = settings.AGENT_SKILL_CHAR_BUDGET
 
 
-def build_system_prompt(skills: list[dict]) -> str:
-    """OAG_SYSTEM_PROMPT + 技能指令块；无技能时原样返回基础 prompt。
+def build_system_prompt(skills: list[dict], base_prompt: str = OAG_SYSTEM_PROMPT) -> str:
+    """base_prompt + 技能指令块；无技能时原样返回 base_prompt。
 
+    base_prompt 默认为 OAG_SYSTEM_PROMPT；智能体配置传自定义人设时覆盖默认人设。
     skills 列表元素应含 {name, instructions}。
     按 sort_order 排序拼接；超预算时从尾部截断并返回 truncated 标记。
     """
     if not skills:
-        return OAG_SYSTEM_PROMPT
+        return base_prompt
 
     parts: list[str] = []
     total = 0
@@ -70,9 +71,9 @@ def build_system_prompt(skills: list[dict]) -> str:
         total += len(block)
 
     if not parts:
-        return OAG_SYSTEM_PROMPT
+        return base_prompt
 
-    prompt = OAG_SYSTEM_PROMPT + _SKILL_HEADER + "".join(parts)
+    prompt = base_prompt + _SKILL_HEADER + "".join(parts)
     if truncated_at is not None:
         dropped = [s.get("name", "?") for s in skills[truncated_at:]]
         logger.warning(
@@ -224,15 +225,16 @@ async def _link_entities(kb_id: str, query: str, vector_chunk_ids: list[str]) ->
 
 class OAGService:
     @staticmethod
-    async def query_stream(kb_id: str, query: str, kb_name: str, ontology_schema, skills=None):
+    async def query_stream(kb_id: str, query: str, kb_name: str, ontology_schema, skills=None, persona=None):
         """智能体查询（SSE 流式）：推理过程 → 流式回答。
 
         ontology_schema 由路由层预加载；skills 由 SkillService.resolve 预加载。
+        persona 为智能体自定义人设（覆盖 OAG_SYSTEM_PROMPT），空则用默认人设。
         """
         skills = skills or []
         if not settings.OAG_ENABLED:
             # 总开关关闭：完全降级为纯向量
-            async for event in OAGService._stream_vector_only(kb_id, query, skills=skills):
+            async for event in OAGService._stream_vector_only(kb_id, query, skills=skills, persona=persona):
                 yield event
             return
 
@@ -380,7 +382,7 @@ class OAGService:
             yield "data: [DONE]\n\n"
             return
 
-        system_prompt = build_system_prompt(skills)
+        system_prompt = build_system_prompt(skills, base_prompt=persona)
         context_parts = [f"[来源{c['index']}]\n{c['text']}" for c in final_chunks]
         context_with_sources = "\n\n".join(context_parts)
         prompt = OAG_USER_TEMPLATE.format(
@@ -404,7 +406,7 @@ class OAGService:
         yield "data: [DONE]\n\n"
 
     @staticmethod
-    async def _stream_vector_only(kb_id: str, query: str, skills=None):
+    async def _stream_vector_only(kb_id: str, query: str, skills=None, persona=None):
         """降级路径：仅向量召回 + LLM，事件结构保持一致（entities/subgraph 为空）。"""
         skills = skills or []
         embeddings = create_embeddings()
@@ -459,7 +461,7 @@ class OAGService:
             yield "data: [DONE]\n\n"
             return
 
-        system_prompt = build_system_prompt(skills)
+        system_prompt = build_system_prompt(skills, base_prompt=persona)
         context_parts = [f"[来源{c['index']}]\n{c['text']}" for c in final_chunks]
         prompt = OAG_USER_TEMPLATE.format(
             subgraph_facts="（无）",

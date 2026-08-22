@@ -19,8 +19,28 @@ class QueryRequest(BaseModel):
 class AgentQueryRequest(BaseModel):
     """智能体（OAG）查询请求。"""
     query: str
-    kb_id: str
+    kb_id: str | None = None          # 传 agent_id 时可不传，以智能体为准
     skill_ids: list[str] = []
+    agent_id: str | None = None       # 引用已配置智能体（KB + 技能 + 人设）
+
+
+class AgentCreate(BaseModel):
+    """创建智能体（KB + 技能 + 人设）。"""
+    name: str
+    description: str = ""
+    kb_id: str
+    system_prompt: str = ""
+    skill_ids: list[str] = []
+    is_enabled: int = 1
+
+
+class AgentUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    kb_id: str | None = None
+    system_prompt: str | None = None
+    skill_ids: list[str] | None = None
+    is_enabled: int | None = None
 
 
 class AgentSkillCreate(BaseModel):

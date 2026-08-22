@@ -106,3 +106,19 @@ CREATE TABLE IF NOT EXISTS ontology_services (
 );
 CREATE INDEX IF NOT EXISTS idx_ontology_services_owner ON ontology_services(owner_type, ontology_id, entity_id);
 CREATE INDEX IF NOT EXISTS idx_ontology_services_code ON ontology_services(owner_type, code);
+
+-- migration_011: 智能体配置（KB + 技能 + 人设 的可复用组合）
+CREATE TABLE IF NOT EXISTS agents (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT DEFAULT '',
+    kb_id VARCHAR NOT NULL,
+    system_prompt TEXT DEFAULT '',
+    skill_ids TEXT DEFAULT '[]',
+    model VARCHAR DEFAULT '',
+    temperature REAL DEFAULT 0.7,
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_agents_kb ON agents(kb_id);

@@ -118,8 +118,9 @@ const menuItems = [
   {
     key: 'agent', label: '智能体', icon: 'agent',
     children: [
-      { to: '/agent', label: '本体问答' },
       { to: '/agent/skills', label: '技能管理' },
+      { to: '/agent/configs', label: '智能体配置' },
+      { to: '/agent', label: '本体问答' },
     ],
   },
   { key: 'data', label: '向量数据', icon: 'data', to: '/vectors' },
@@ -138,7 +139,7 @@ const flyoutKey = ref(null)
 let flyoutTimer = null
 
 function isChildActive(child) {
-  return route.path === child.to || route.path.startsWith(child.to + '/')
+  return route.path === child.to
 }
 
 function isItemActive(item) {

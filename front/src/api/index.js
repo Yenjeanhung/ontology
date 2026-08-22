@@ -190,11 +190,11 @@ export async function queryRagStream(kbId, query, { onChunks, onToken }) {
 }
 
 // 智能体（OAG）流式问答：比 queryRagStream 多 entities / subgraph 两类事件
-export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, onChunks, onToken, onSkills, skillIds } = {}) {
+export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, onChunks, onToken, onSkills, skillIds, agentId } = {}) {
   const res = await fetch(`${API}/api/agent/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, kb_id: kbId, skill_ids: skillIds || [] }),
+    body: JSON.stringify({ query, kb_id: kbId, skill_ids: skillIds || [], agent_id: agentId || null }),
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
@@ -400,6 +400,53 @@ export async function searchSkillMarket(q, page = 1) {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail || `HTTP ${res.status}`)
   }
+  return res.json()
+}
+
+// ───────────────────── 智能体配置（Agent） ─────────────────────
+
+export async function fetchAgents() {
+  const res = await fetch(`${API}/api/agents`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function createAgent({ name, description = '', kbId, systemPrompt = '', skillIds = [] }) {
+  const res = await fetch(`${API}/api/agents`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description, kb_id: kbId, system_prompt: systemPrompt, skill_ids: skillIds }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function updateAgent(agentId, data = {}) {
+  const body = {}
+  if (data.name != null) body.name = data.name
+  if (data.description != null) body.description = data.description
+  if (data.kbId != null) body.kb_id = data.kbId
+  if (data.systemPrompt != null) body.system_prompt = data.systemPrompt
+  if (data.skillIds != null) body.skill_ids = data.skillIds
+  if (data.isEnabled != null) body.is_enabled = data.isEnabled
+  const res = await fetch(`${API}/api/agents/${agentId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteAgent(agentId) {
+  const res = await fetch(`${API}/api/agents/${agentId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 

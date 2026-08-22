@@ -356,3 +356,24 @@ class AgentSkillSeedTombstone(Base):
 
     code = Column(String, primary_key=True)
     deleted_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class Agent(Base):
+    """智能体：知识库(KB) + 技能(Skills) + 人设(System Prompt) 的可复用组合。
+
+    v1 仅暴露 KB/技能/人设；model/temperature 预留（后续覆盖全局 LLM 配置）。
+    """
+
+    __tablename__ = "agents"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String(100), nullable=False)
+    description = Column(Text, default="")
+    kb_id = Column(String, nullable=False)
+    system_prompt = Column(Text, default="")
+    skill_ids = Column(Text, default="[]")    # JSON 数组，默认启用的技能 id
+    model = Column(String, default="")        # 空 = 用当前激活的 LLM 配置
+    temperature = Column(Float, default=0.7)
+    is_enabled = Column(Integer, nullable=False, default=1)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())

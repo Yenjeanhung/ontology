@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工作流编辑器 · 原型</title>
+<style>
+/* ============ 主题变量（对齐 front/src/style.css） ============ */
+:root {
+  --bg: #F6F1E9;
+  --fg: #171717;
+  --secondary: #737373;
+  --muted: #EDE7DC;
+  --muted-hover: #E5DED1;
+  --border: #E4DCCE;
+  --border-strong: #D8CDBB;
+  --accent: #A16207;
+  --accent-weak: #F3E8D4;
+  --danger: #DC2626;
+  --success: #16A34A;
+  --panel: #FCFAF6;
+  --panel-elevated: rgba(255, 252, 247, 0.98);
+  --overlay: rgba(0,0,0,0.35);
+  --canvas-dot: #E2D9C9;
+  --edge: #B9AC93;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+:root[data-theme='dark'] {
+  --bg: #111315; --fg: #F5F1E8; --secondary: #B1ACA3;
+  --muted: #1A1E22; --muted-hover: #242A2F; --border: #2C333A; --border-strong: #3A434C;
+  --accent: #E0A84E; --accent-weak: #2A2318;
+  --danger: #F87171; --success: #4ADE80; --panel: #161A1E; --panel-elevated: rgba(28,32,37,0.98);
+  --overlay: rgba(0,0,0,0.55); --canvas-dot: #23282E; --edge: #4A5560;
+}
+:root[data-theme='platform-dark'] {
+  --bg: #111217; --fg: #E8EAED; --secondary: #9AA0AA;
+  --muted: #1D1F24; --muted-hover: #262930; --border: #26282F; --border-strong: #3A3D47;
+  --accent: #2DD4BF; --accent-weak: rgba(45,212,191,.10);
+  --danger: #F87171; --success: #34D399; --panel: #17181C; --panel-elevated: rgba(24,26,31,0.98);
+  --overlay: rgba(0,0,0,0.6); --canvas-dot: #22242A; --edge: #3A3D47;
+}
+
+/* ============ 节点类型语义色（跨主题固定，Dify/Coze 式） ============ */
+:root {
+  --nc-start: #64748b;
+  --nc-agent: #d97706;
+  --nc-service: #2563eb;
+  --nc-llm: #7c3aed;
+  --nc-condition: #ea580c;
+  --nc-code: #059669;
+  --nc-end: #64748b;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--font); background: var(--bg); color: var(--fg);
+  line-height: 1.5; overflow: hidden; font-size: 13px;
+  transition: background 180ms ease, color 180ms ease;
+}
+button { font-family: var(--font); cursor: pointer; }
+svg { display: block; }
+
+/* ============ 顶部工具栏 ============ */
+.toolbar {
+  height: 52px; display: flex; align-items: center; gap: 10px;
+  padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+  position: relative; z-index: 10;
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; }
+.brand-mark {
+  width: 26px; height: 26px; border-radius: var(--radius-sm);
+  background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700;
+}
+.crumb { color: var(--secondary); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.crumb b { color: var(--fg); font-weight: 600; }
+.wf-name-input {
+  font-size: 14px; font-weight: 600; border: 1px solid transparent; background: transparent;
+  padding: 4px 8px; border-radius: var(--radius-sm); color: var(--fg); width: 220px; outline: none;
+}
+.wf-name-input:hover { border-color: var(--border); }
+.wf-name-input:focus { border-color: var(--accent); background: var(--bg); }
+.toolbar-spacer { flex: 1; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  font-size: 12.5px; font-weight: 600; background: var(--panel); color: var(--fg);
+  transition: background .15s, border-color .15s, transform .1s;
+}
+.btn:hover { background: var(--muted); }
+.btn:active { transform: scale(.97); }
+.btn.primary { background: var(--fg); color: #fff; border-color: var(--fg); }
+.btn.primary:hover { opacity: .85; background: var(--fg); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--secondary); }
+.btn.ghost:hover { background: var(--muted); color: var(--fg); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.badge {
+  font-size: 10px; padding: 1px 7px; border-radius: 3px; border: 1px solid var(--border);
+  color: var(--secondary); font-weight: 500;
+}
+.badge.saved { color: var(--success); border-color: var(--success); }
+
+/* ============ 三栏主体 ============ */
+.layout { display: flex; height: calc(100vh - 52px); }
+
+/* 左：节点面板 */
+.palette {
+  width: 200px; flex-shrink: 0; background: var(--panel);
+  border-right: 1px solid var(--border); overflow-y: auto; padding: 12px 10px;
+}
+.palette-group { font-size: 11px; font-weight: 700; color: var(--secondary); letter-spacing: 1px; margin: 12px 2px 8px; text-transform: uppercase; }
+.palette-group:first-child { margin-top: 0; }
+.palette-item {
+  display: flex; align-items: center; gap: 9px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  margin-bottom: 7px; cursor: grab; background: var(--bg);
+  transition: transform .1s, border-color .15s, box-shadow .15s;
+}
+.palette-item:hover { border-color: var(--border-strong); box-shadow: 0 2px 8px rgba(0,0,0,.06); transform: translateY(-1px); }
+.palette-item:active { cursor: grabbing; }
+.palette-item .p-ico {
+  width: 26px; height: 26px; border-radius: var(--radius-sm); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; color: #fff; font-size: 13px;
+}
+.palette-item .p-name { font-size: 12.5px; font-weight: 600; }
+.palette-item .p-desc { font-size: 10.5px; color: var(--secondary); margin-top: 1px; }
+.palette-hint {
+  margin-top: 14px; padding: 9px 10px; font-size: 11px; color: var(--secondary);
+  border: 1px dashed var(--border); border-radius: var(--radius-sm); line-height: 1.6;
+}
+.palette-hint b { color: var(--fg); }
+
+/* 中：画布 */
+.canvas-wrap { flex: 1; position: relative; overflow: hidden; background: var(--bg); }
+.canvas {
+  position: absolute; inset: 0;
+  background-image: radial-gradient(var(--canvas-dot) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+.canvas-inner { position: absolute; inset: 0; }
+.edge-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.edge-path { fill: none; stroke: var(--edge); stroke-width: 1.6; }
+.edge-label {
+  fill: var(--secondary); font-size: 10px; font-family: var(--font); font-weight: 600;
+}
+.edge-label-true { fill: var(--success); }
+.edge-label-false { fill: var(--danger); }
+
+/* 节点卡片 */
+.node {
+  position: absolute; width: 200px; background: var(--panel);
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  cursor: move; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+  transition: box-shadow .15s, border-color .15s;
+}
+.node:hover { box-shadow: 0 4px 14px rgba(0,0,0,.12); }
+.node.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-weak); }
+.node .n-head {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border-bottom: 1px solid var(--border); border-radius: var(--radius) var(--radius) 0 0;
+}
+.node .n-ico {
+  width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; color: #fff; font-size: 12px;
+}
+.node .n-title { font-size: 12.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node .n-type { font-size: 10px; color: var(--secondary); margin-top: 1px; }
+.node .n-body { padding: 7px 10px; font-size: 11px; color: var(--secondary); min-height: 20px; }
+.node .n-body code {
+  font-family: ui-monospace, Consolas, monospace; font-size: 10.5px;
+  color: var(--fg); background: var(--muted); padding: 1px 5px; border-radius: 4px;
+}
+
+/* 状态着色 */
+.node.running { border-color: var(--accent); }
+.node.running .n-head { background: var(--accent-weak); }
+.node.succeeded { border-color: var(--success); }
+.node.succeeded .n-head { background: rgba(22,163,74,.10); }
+.node.failed { border-color: var(--danger); }
+.node.failed .n-head { background: rgba(220,38,38,.10); }
+.node.skipped { opacity: .45; }
+
+/* 端口句柄 */
+.handle {
+  position: absolute; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--panel); border: 2px solid var(--border-strong);
+  top: 50%; transform: translateY(-50%);
+}
+.handle.in { left: -5px; }
+.handle.out { right: -5px; }
+.handle.out-true { top: 38%; }
+.handle.out-false { top: 68%; }
+.node .handle { transition: border-color .15s, background .15s; }
+.node:hover .handle { border-color: var(--accent); background: var(--accent-weak); }
+
+/* 空画布提示 */
+.canvas-empty {
+  position: absolute; left: 50%; top: 44%; transform: translate(-50%,-50%);
+  text-align: center; color: var(--secondary);
+}
+.canvas-empty .ce-ico { font-size: 40px; opacity: .5; margin-bottom: 10px; }
+.canvas-empty .ce-t { font-size: 14px; font-weight: 700; color: var(--fg); margin-bottom: 4px; }
+.canvas-empty .ce-d { font-size: 12px; }
+
+/* 右下角运行日志 */
+.runlog {
+  position: absolute; right: 14px; bottom: 14px; width: 340px;
+  background: var(--panel-elevated); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 8px 30px rgba(0,0,0,.18);
+  overflow: hidden; display: flex; flex-direction: column; max-height: 240px;
+}
+.runlog .rl-head {
+  display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+  border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 700;
+}
+.runlog .rl-head .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
+.runlog .rl-head .dot.live { background: var(--success); animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+.runlog .rl-body { overflow-y: auto; padding: 6px 0; font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+.runlog .rl-line { padding: 4px 12px; border-left: 2px solid transparent; }
+.runlog .rl-line .t { color: var(--secondary); margin-right: 6px; }
+.runlog .rl-line.start { border-left-color: var(--accent); }
+.runlog .rl-line.ok { border-left-color: var(--success); }
+.runlog .rl-line.fail { border-left-color: var(--danger); }
+.runlog .rl-line.done { border-left-color: var(--success); color: var(--success); font-weight: 700; }
+
+/* 右：配置抽屉 */
+.drawer {
+  width: 320px; flex-shrink: 0; background: var(--panel);
+  border-left: 1px solid var(--border); display: flex; flex-direction: column;
+}
+.drawer .d-head {
+  padding: 13px 16px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 9px;
+}
+.drawer .d-head .n-ico { width: 24px; height: 24px; border-radius: 6px; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+.drawer .d-head .t { font-size: 13px; font-weight: 700; }
+.drawer .d-head .s { font-size: 10.5px; color: var(--secondary); }
+.drawer .d-head .x { margin-left: auto; cursor: pointer; color: var(--secondary); font-size: 16px; padding: 0 4px; }
+.drawer .d-body { flex: 1; overflow-y: auto; padding: 14px 16px 20px; }
+.drawer .d-empty { padding: 40px 20px; text-align: center; color: var(--secondary); font-size: 12px; }
+.drawer .d-empty .ico { font-size: 30px; opacity: .5; margin-bottom: 8px; }
+
+.field { margin-bottom: 13px; }
+.field > label { display: block; font-size: 11.5px; font-weight: 700; color: var(--secondary); margin-bottom: 5px; }
+.field .req { color: var(--danger); }
+.field input[type=text], .field input[type=number], .field select, .field textarea {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  font-size: 12.5px; font-family: var(--font); background: var(--bg); color: var(--fg); outline: none;
+}
+.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); }
+.field textarea { resize: vertical; min-height: 64px; font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+.field .hint { font-size: 10.5px; color: var(--secondary); margin-top: 4px; }
+.var-btn {
+  display: inline-flex; align-items: center; gap: 3px; margin-top: 5px;
+  font-size: 11px; font-weight: 600; color: var(--accent); cursor: pointer;
+  padding: 2px 8px; border: 1px dashed var(--accent); border-radius: 4px;
+}
+.var-btn:hover { background: var(--accent-weak); }
+.var-chip {
+  display: inline-block; font-family: ui-monospace, Consolas, monospace; font-size: 10.5px;
+  background: var(--accent-weak); color: var(--accent); padding: 1px 6px; border-radius: 4px; margin: 2px 2px 0 0;
+}
+.divider { border-top: 1px dashed var(--border); margin: 14px 0; }
+
+.skill-row { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 6px; cursor: pointer; }
+.skill-row.on { border-color: var(--accent); background: var(--accent-weak); }
+.skill-row .ck { width: 14px; height: 14px; border: 1px solid var(--border-strong); border-radius: 3px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 10px; }
+.skill-row.on .ck { background: var(--accent); border-color: var(--accent); }
+
+/* 运行输入弹窗 */
+.modal-mask {
+  position: fixed; inset: 0; background: var(--overlay); z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+}
+.modal {
+  width: 380px; background: var(--panel); border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0,0,0,.25); padding: 18px 20px; display: flex; flex-direction: column; gap: 12px;
+}
+.modal h3 { font-size: 14px; font-weight: 700; }
+.modal .m-sub { font-size: 12px; color: var(--secondary); }
+.modal .m-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+</style>
+</head>
+<body data-theme="light">
+
+<!-- ============ 顶部工具栏 ============ -->
+<div class="toolbar">
+  <div class="brand"><span class="brand-mark">K</span><span>KnowSource</span></div>
+  <div class="crumb">应用 <span>/</span> <b>工作流</b></div>
+  <input class="wf-name-input" value="财务智能分析" spellcheck="false">
+  <span class="badge saved">已保存</span>
+  <div class="toolbar-spacer"></div>
+  <button class="btn ghost" onclick="toggleTheme()">🌓 主题</button>
+  <button class="btn" onclick="validateWf()">校验</button>
+  <button class="btn" onclick="resetRun()">重置</button>
+  <button class="btn primary" onclick="openRunModal()">▶ 运行</button>
+</div>
+
+<!-- ============ 三栏 ============ -->
+<div class="layout">
+
+  <!-- 左：节点面板 -->
+  <aside class="palette">
+    <div class="palette-group">基础</div>
+    <div class="palette-item" draggable="false" onclick="addNode('start')">
+      <span class="p-ico" style="background:var(--nc-start)">▶</span>
+      <div><div class="p-name">开始</div><div class="p-desc">运行入口 · 声明入参</div></div>
+    </div>
+    <div class="palette-item" onclick="addNode('end')">
+      <span class="p-ico" style="background:var(--nc-end)">■</span>
+      <div><div class="p-name">结束</div><div class="p-desc">运行出口 · 汇总输出</div></div>
+    </div>
+
+    <div class="palette-group">智能体 <span style="float:right;font-weight:400;color:var(--secondary);cursor:pointer" title="进入智能体配置模块">⚙️ 管理</span></div>
+    <div class="palette-item" onclick="addAgentNode('agent_finance')">
+      <span class="p-ico" style="background:var(--nc-agent)">🤖</span>
+      <div><div class="p-name">财务智能体</div><div class="p-desc">财务知识库 · 2 技能</div></div>
+    </div>
+    <div class="palette-item" onclick="addAgentNode('agent_legal')">
+      <span class="p-ico" style="background:var(--nc-agent)">⚖️</span>
+      <div><div class="p-name">法务智能体</div><div class="p-desc">法务知识库 · 1 技能</div></div>
+    </div>
+    <div class="palette-item" onclick="addNode('agent')" style="border-style:dashed">
+      <span class="p-ico" style="background:var(--nc-agent)">＋</span>
+      <div><div class="p-name">内联智能体</div><div class="p-desc">现场 KB+技能 快速配置</div></div>
+    </div>
+
+    <div class="palette-group">能力</div>
+    <div class="palette-item" onclick="addNode('service')">
+      <span class="p-ico" style="background:var(--nc-service)">⚙️</span>
+      <div><div class="p-name">实体服务</div><div class="p-desc">沙箱动作 · 实体</div></div>
+    </div>
+    <div class="palette-item" onclick="addNode('llm')">
+      <span class="p-ico" style="background:var(--nc-llm)">✨</span>
+      <div><div class="p-name">大模型</div><div class="p-desc">通用 LLM 补全</div></div>
+    </div>
+    <div class="palette-item" onclick="addNode('condition')">
+      <span class="p-ico" style="background:var(--nc-condition)">⇄</span>
+      <div><div class="p-name">条件分支</div><div class="p-desc">true / false 路由</div></div>
+    </div>
+    <div class="palette-item" onclick="addNode('code')">
+      <span class="p-ico" style="background:var(--nc-code)">&lt;/&gt;</span>
+      <div><div class="p-name">代码</div><div class="p-desc">沙箱 Python</div></div>
+    </div>
+
+    <div class="palette-hint">💡 <b>拖拽 / 点击</b>节点加入画布，连线组装。变量用 <b>{{节点.字段}}</b> 引用上游输出。</div>
+  </aside>
+
+  <!-- 中：画布 -->
+  <div class="canvas-wrap">
+    <div class="canvas">
+      <div class="canvas-inner">
+        <svg class="edge-svg" id="edgeSvg"></svg>
+        <div id="nodeLayer"></div>
+      </div>
+    </div>
+
+    <!-- 运行日志 -->
+    <div class="runlog" id="runlog" style="display:none">
+      <div class="rl-head"><span class="dot" id="rlDot"></span>运行日志 <span style="margin-left:auto;font-weight:400;color:var(--secondary)">run #r2026-08-22</span></div>
+      <div class="rl-body" id="rlBody"></div>
+    </div>
+  </div>
+
+  <!-- 右：配置抽屉 -->
+  <aside class="drawer">
+    <div class="d-head" id="drawerHead" style="display:none">
+      <span class="n-ico" id="dhIco">🤖</span>
+      <div><div class="t" id="dhTitle"></div><div class="s" id="dhSub"></div></div>
+      <span class="x" onclick="deselect()">×</span>
+    </div>
+    <div class="d-body" id="drawerBody">
+      <div class="d-empty"><div class="ico">🖱️</div>点击画布上的节点<br>编辑它的配置</div>
+    </div>
+  </aside>
+</div>
+
+<!-- 运行输入弹窗 -->
+<div class="modal-mask" id="runModal" style="display:none">
+  <div class="modal">
+    <h3>运行工作流</h3>
+    <div class="m-sub">填写「开始」节点的输入变量</div>
+    <div class="field">
+      <label>问题 question <span class="req">*</span></label>
+      <input type="text" id="runQuestion" placeholder="例如：华为公司最近的股价如何？" value="华为公司最近的股价如何？">
+    </div>
+    <div class="m-actions">
+      <button class="btn" onclick="closeRunModal()">取消</button>
+      <button class="btn primary" onclick="startRun()">开始运行</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============ 节点类型元数据 ============ */
+const TYPE_META = {
+  start:     { name:'开始',     sub:'Start',        ico:'▶',   color:'var(--nc-start)',     body:'输入：question' },
+  end:       { name:'结束',     sub:'End',          ico:'■',   color:'var(--nc-end)',       body:'输出：answer' },
+  agent:     { name:'智能体',   sub:'OAG Agent',    ico:'🤖', color:'var(--nc-agent)',     body:'内联 · 现场选 KB + 技能' },
+  service:   { name:'实体服务', sub:'Entity Service',ico:'⚙️', color:'var(--nc-service)',   body:'华为公司 · 查询股价' },
+  llm:       { name:'大模型',   sub:'LLM',          ico:'✨', color:'var(--nc-llm)',       body:'汇总为要点' },
+  condition: { name:'条件分支', sub:'Condition',    ico:'⇄',  color:'var(--nc-condition)', body:'service.success == true' },
+  code:      { name:'代码',     sub:'Python',       ico:'</>',color:'var(--nc-code)',      body:'降级：拼默认值' },
+};
+
+const AGENTS = [
+  { id:'agent_finance', name:'财务智能体', kb:'财务知识库', skills:2, ico:'🤖' },
+  { id:'agent_legal',   name:'法务智能体', kb:'法务知识库', skills:1, ico:'⚖️' },
+];
+function agentById(id){ return AGENTS.find(a => a.id === id); }
+
+const NODE_W = 200, NODE_H = 56;
+
+/* ============ 示例工作流 ============ */
+let nodes = [
+  { id:'start',     type:'start',     x: 30,   y: 280 },
+  { id:'agent',     type:'agent',     agentRef:'agent_finance', x: 260,  y: 200 },
+  { id:'service',   type:'service',   x: 260,  y: 380 },
+  { id:'condition', type:'condition', x: 500,  y: 290 },
+  { id:'llm',       type:'llm',       x: 740,  y: 190 },
+  { id:'code',      type:'code',      x: 740,  y: 390 },
+  { id:'end',       type:'end',       x: 980,  y: 290 },
+];
+let edges = [
+  { id:'e1', source:'start',     target:'agent',     handle:'default' },
+  { id:'e2', source:'agent',     target:'service',   handle:'default' },
+  { id:'e3', source:'service',   target:'condition', handle:'default' },
+  { id:'e4', source:'condition', target:'llm',       handle:'true' },
+  { id:'e5', source:'condition', target:'code',      handle:'false' },
+  { id:'e6', source:'llm',       target:'end',       handle:'default' },
+  { id:'e7', source:'code',      target:'end',       handle:'default' },
+];
+
+let selectedId = null;
+let runState = {};   // nodeId -> 'running'|'succeeded'|'failed'|'skipped'
+let running = false;
+let seq = 1;
+
+/* ============ 渲染 ============ */
+function nodeById(id){ return nodes.find(n => n.id === id); }
+
+function outPoint(n){
+  const cx = n.x + NODE_W, cy = n.y + NODE_H/2;
+  if (n.type === 'condition') return { true: [cx, n.y + NODE_H*0.38], false: [cx, n.y + NODE_H*0.68], default:[cx, cy] };
+  return { default:[cx, cy], true:[cx,cy], false:[cx,cy] };
+}
+function inPoint(n){ return [n.x, n.y + NODE_H/2]; }
+
+function bezier(p1, p2){
+  const dx = Math.max(40, Math.abs(p2[0]-p1[0])/2);
+  return `M ${p1[0]} ${p1[1]} C ${p1[0]+dx} ${p1[1]}, ${p2[0]-dx} ${p2[1]}, ${p2[0]} ${p2[1]}`;
+}
+
+function render(){
+  const svg = document.getElementById('edgeSvg');
+  let svgInner = '';
+  edges.forEach(e => {
+    const s = nodeById(e.source), t = nodeById(e.target);
+    if (!s || !t) return;
+    const p1 = outPoint(s)[e.handle || 'default'], p2 = inPoint(t);
+    const label = (e.handle === 'true') ? 'true' : (e.handle === 'false' ? 'false' : '');
+    let lbl = '';
+    if (label) {
+      const mx = (p1[0]+p2[0])/2, my = (p1[1]+p2[1])/2;
+      lbl = `<text class="edge-label ${label==='true'?'edge-label-true':'edge-label-false'}" x="${mx}" y="${my-6}" text-anchor="middle">${label}</text>`;
+    }
+    svgInner += `<path class="edge-path" d="${bezier(p1,p2)}"/>${lbl}`;
+  });
+  svg.innerHTML = svgInner;
+
+  const layer = document.getElementById('nodeLayer');
+  layer.innerHTML = nodes.map(n => {
+    const m = TYPE_META[n.type];
+    const st = runState[n.id] || '';
+    const sel = n.id === selectedId ? ' selected' : '';
+    return `<div class="node${sel}${st?' '+st:''}" id="n-${n.id}" style="left:${n.x}px;top:${n.y}px;width:${NODE_W}px" data-id="${n.id}">
+      <span class="handle in" data-h="in"></span>
+      <span class="handle out ${n.type==='condition'?'out-true':''}" data-h="${n.type==='condition'?'out-true':'out'}"></span>
+      ${n.type==='condition' ? '<span class="handle out out-false" data-h="out-false"></span>' : ''}
+      <div class="n-head"><span class="n-ico" style="background:${m.color}">${m.ico}</span>
+        <div><div class="n-title">${nodeTitle(n)}</div>
+        <div class="n-type">${m.sub}</div></div>
+      </div>
+      <div class="n-body">${nodeBody(n)}</div>
+    </div>`;
+  }).join('');
+
+  layer.querySelectorAll('.node').forEach(el => {
+    el.addEventListener('mousedown', onNodeDown);
+    el.addEventListener('click', e => { e.stopPropagation(); selectNode(el.dataset.id); });
+  });
+}
+
+/* ============ 节点拖拽 ============ */
+let drag = null;
+function onNodeDown(e){
+  if (e.target.closest('.handle')) return;
+  const id = e.currentTarget.dataset.id;
+  const n = nodeById(id);
+  drag = { id, dx: e.clientX - n.x, dy: e.clientY - n.y };
+  e.preventDefault();
+}
+window.addEventListener('mousemove', e => {
+  if (!drag) return;
+  const n = nodeById(drag.id);
+  n.x = Math.max(0, e.clientX - drag.dx);
+  n.y = Math.max(0, e.clientY - drag.dy);
+  render();
+});
+window.addEventListener('mouseup', () => { drag = null; });
+
+/* ============ 选中 / 配置抽屉 ============ */
+function selectNode(id){
+  selectedId = id;
+  render();
+  renderDrawer();
+}
+function deselect(){ selectedId = null; render(); renderDrawer(); }
+
+function renderDrawer(){
+  const head = document.getElementById('drawerHead');
+  const body = document.getElementById('drawerBody');
+  if (!selectedId) {
+    head.style.display = 'none';
+    body.innerHTML = `<div class="d-empty"><div class="ico">🖱️</div>点击画布上的节点<br>编辑它的配置</div>`;
+    return;
+  }
+  const n = nodeById(selectedId);
+  const m = TYPE_META[n.type];
+  head.style.display = 'flex';
+  document.getElementById('dhIco').textContent = m.ico;
+  document.getElementById('dhIco').style.background = m.color;
+  document.getElementById('dhTitle').textContent = nodeTitle(n);
+  document.getElementById('dhSub').textContent = m.sub;
+  body.innerHTML = drawerHtml(n);
+}
+
+function varChips(list){
+  return `<div>${list.map(v=>`<span class="var-chip">{{${v}}}</span>`).join('')}</div>`;
+}
+
+function drawerHtml(n){
+  switch(n.type){
+    case 'start':
+      return `<div class="field"><label>输入变量 <span class="req">*</span></label>
+        <input type="text" value="question"><div class="hint">类型 text · 必填 · 运行前填写</div></div>
+        <div class="field"><label>类型</label><select><option>text</option><option>number</option><option>boolean</option></select></div>`;
+    case 'end':
+      return `<div class="field"><label>输出映射</label>
+        ${varChips(['llm.text'])}
+        <div class="hint">结束节点汇总上游变量作为工作流最终结果</div></div>`;
+    case 'agent':
+      if (n.agentRef) {
+        const a = agentById(n.agentRef) || { name:'?', kb:'?' };
+        return `<div class="field"><label>绑定方式</label>
+        <div style="display:flex;gap:6px"><span class="btn primary" style="flex:1;justify-content:center">引用智能体</span><span class="btn" style="flex:1;justify-content:center;color:var(--secondary)">内联配置</span></div></div>
+        <div class="field"><label>选择智能体 <span class="req">*</span></label>
+        <select>${AGENTS.map(x=>`<option${x.id===n.agentRef?' selected':''}>${x.name}（${x.kb}）</option>`).join('')}</select></div>
+        <div class="field"><label>问题模板</label>
+        <textarea>{{start.question}}</textarea><span class="var-btn">⊕ 插入变量</span></div>
+        <div class="divider"></div>
+        <div class="hint">该智能体已绑定 KB「${a.kb}」+ 技能 + 人设，执行时引擎按 agent_id 展开。</div>`;
+      }
+      return `<div class="field"><label>绑定方式</label>
+        <div style="display:flex;gap:6px"><span class="btn" style="flex:1;justify-content:center;color:var(--secondary)">引用智能体</span><span class="btn primary" style="flex:1;justify-content:center">内联配置</span></div></div>
+        <div class="field"><label>目标知识库 <span class="req">*</span></label>
+        <select><option>财务知识库</option><option>科研文献库</option><option>企业制度库</option></select></div>
+        <div class="field"><label>技能</label>
+        <div class="skill-row on"><span class="ck">✓</span>深度分析</div>
+        <div class="skill-row on"><span class="ck">✓</span>严格引用</div>
+        <div class="skill-row"><span class="ck"></span>表格输出</div></div>
+        <div class="field"><label>问题模板</label>
+        <textarea>请分析：{{start.question}}</textarea><span class="var-btn">⊕ 插入变量</span></div>
+        <div class="hint">输出：answer / chunks / entities / subgraph</div>`;
+    case 'service':
+      return `<div class="field"><label>实体 <span class="req">*</span></label>
+        <select><option>华为公司（组织）</option><option>任正非（人物）</option></select></div>
+        <div class="field"><label>服务 <span class="req">*</span></label>
+        <select><option>查询股价</option><option>查询成立时间</option></select></div>
+        <div class="field"><label>参数</label>
+        <input type="text" value="ticker: HUAWEI"><div class="hint">可用变量：<span class="var-chip">{{agent.answer}}</span></div></div>
+        <div class="hint">输出：success / data / error / stdout</div>`;
+    case 'llm':
+      return `<div class="field"><label>System Prompt</label>
+        <textarea>你是财经分析助手，输出简洁。</textarea></div>
+        <div class="field"><label>Prompt 模板</label>
+        <textarea>把下面内容整理成要点：{{service.data}}</textarea>
+        <span class="var-btn">⊕ 插入变量</span></div>`;
+    case 'condition':
+      return `<div class="field"><label>判断表达式</label>
+        <select><option>contains</option><option>==</option><option>!=</option><option>empty</option><option>gt</option><option>lt</option></select></div>
+        <div class="field"><label>左值</label><input type="text" value="{{service.success}}"></div>
+        <div class="field"><label>右值</label><input type="text" value="true"></div>
+        <div class="divider"></div>
+        <div class="hint">两个出口：<b style="color:var(--success)">true</b> / <b style="color:var(--danger)">false</b></div>`;
+    case 'code':
+      return `<div class="field"><label>代码（沙箱 Python）</label>
+        <textarea style="min-height:120px">def run(params, entity, context):
+    # 降级兜底：返回默认结构
+    return {"price": "-", "note": "查询失败"}</textarea></div>
+        <div class="field"><label>参数</label><input type="text" value="x: {{service.data}}"></div>
+        <div class="hint">复用实体服务沙箱：import 白名单 + 超时隔离</div>`;
+  }
+  return '';
+}
+
+/* ============ 新增节点 ============ */
+function addNode(type){
+  const id = 'node_' + (seq++);
+  const n = { id, type, x: 200 + (seq%5)*40, y: 120 + (seq%4)*50 };
+  nodes.push(n);
+  render();
+  selectNode(id);
+}
+function addAgentNode(id){
+  const a = agentById(id); if (!a) return;
+  const nid = 'agent_' + (seq++);
+  nodes.push({ id: nid, type: 'agent', agentRef: id, x: 200 + (seq%5)*40, y: 120 + (seq%4)*50 });
+  render(); selectNode(nid);
+}
+function nodeTitle(n){
+  const m = TYPE_META[n.type];
+  if (n.type === 'agent' && n.agentRef) return `智能体 · ${agentById(n.agentRef)?.name || '未命名'}`;
+  if (n.id === 'service') return '实体服务 · 查询股价';
+  if (n.id === 'llm') return '大模型 · 汇总';
+  if (n.id === 'condition') return '条件 · 是否成功';
+  if (n.id === 'code') return '代码 · 降级处理';
+  return m.name;
+}
+function nodeBody(n){
+  const m = TYPE_META[n.type];
+  if (n.type === 'agent' && n.agentRef) return `引用：${agentById(n.agentRef)?.name || ''}`;
+  return m.body;
+}
+
+/* ============ 校验 ============ */
+function validateWf(){
+  const bad = document.querySelector('.badge');
+  bad.textContent = '✓ 校验通过 · 7 节点 · 无环';
+  bad.className = 'badge saved';
+  setTimeout(()=>{ bad.textContent = '已保存'; }, 2000);
+}
+
+/* ============ 运行 ============ */
+function openRunModal(){ document.getElementById('runModal').style.display = 'flex'; }
+function closeRunModal(){ document.getElementById('runModal').style.display = 'none'; }
+
+function resetRun(){
+  runState = {}; running = false;
+  document.getElementById('runlog').style.display = 'none';
+  render();
+}
+
+function log(text, cls){
+  const body = document.getElementById('rlBody');
+  const line = document.createElement('div');
+  line.className = 'rl-line ' + cls;
+  line.innerHTML = `<span class="t">${new Date().toTimeString().slice(0,8)}</span>${text}`;
+  body.appendChild(line);
+  body.scrollTop = body.scrollHeight;
+}
+
+const ORDER = ['start','agent','service','condition','llm','end'];   // true 分支路径（code 走 false 分支被跳过）
+function startRun(){
+  closeRunModal();
+  resetRun();
+  running = true;
+  const logEl = document.getElementById('runlog');
+  logEl.style.display = 'flex';
+  document.getElementById('rlBody').innerHTML = '';
+  document.getElementById('rlDot').classList.add('live');
+  log('workflow_started · run #r2026-08-22 · 6 节点', 'start');
+
+  // 先标 code 为 skipped（走 true 分支）
+  runState['code'] = 'skipped';
+
+  let i = 0;
+  function step(){
+    if (i >= ORDER.length) {
+      document.getElementById('rlDot').classList.remove('live');
+      log('workflow_finished · status=succeeded · 耗时 2.1s', 'done');
+      running = false;
+      render();
+      return;
+    }
+    const id = ORDER[i];
+    const n = nodeById(id);
+    runState[id] = 'running';
+    render();
+    log(`node_started · ${id} · ${TYPE_META[n.type].name}`, 'start');
+    setTimeout(() => {
+      runState[id] = 'succeeded';
+      render();
+      log(`node_finished · ${id} · 输出已写入 context`, 'ok');
+      i++;
+      step();
+    }, 420);
+  }
+  step();
+}
+
+/* ============ 主题切换 ============ */
+const THEMES = ['light','dark','platform-dark'];
+function toggleTheme(){
+  const cur = document.body.dataset.theme;
+  const idx = THEMES.indexOf(cur);
+  document.body.dataset.theme = THEMES[(idx+1)%THEMES.length];
+}
+
+/* ============ 启动 ============ */
+render();
+renderDrawer();
+</script>
+</body>
+</html>

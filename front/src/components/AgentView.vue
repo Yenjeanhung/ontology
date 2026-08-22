@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, reactive, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { marked } from 'marked'
-import { fetchKbs, queryAgentStream, fetchAgentSkills } from '../api'
+import { fetchKbs, queryAgentStream, fetchAgentSkills, fetchAgents } from '../api'
 import PreviewModal from './PreviewModal.vue'
 
 const router = useRouter()
@@ -25,6 +25,21 @@ async function loadSkills() {
     allSkills.value = await fetchAgentSkills()
     selectedSkillIds.value = enabledSkills.value.map(s => s.id)
   } catch {}
+}
+
+// ---------- 智能体（可选：引用已配置智能体） ----------
+const agents = ref([])
+const selectedAgentId = ref('')
+const enabledAgents = computed(() => agents.value.filter(a => a.is_enabled))
+function onAgentChange() {
+  const a = agents.value.find(x => x.id === selectedAgentId.value)
+  if (a) {
+    queryKbId.value = a.kb_id
+    selectedSkillIds.value = a.skill_ids || []
+  }
+}
+async function loadAgents() {
+  try { agents.value = await fetchAgents() } catch {}
 }
 
 const queryText = ref('')
@@ -203,6 +218,7 @@ async function runQuery() {
   try {
     await queryAgentStream(queryKbId.value, q, {
       skillIds: selectedSkillIds.value,
+      agentId: selectedAgentId.value || null,
       onSkills(data) { activeSkills.value = data || [] },
       onEntities(data) { entities.value = data || [] },
       onSubgraph(data) { subgraph.value = data },
@@ -223,6 +239,7 @@ function onWindowPointerDown(e) {
 
 onMounted(loadKbs)
 onMounted(loadSkills)
+onMounted(loadAgents)
 onMounted(() => window.addEventListener('pointerdown', onWindowPointerDown))
 onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerDown))
 </script>
@@ -232,6 +249,16 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
     <div class="agent-head">
       <h3>智能体 · 本体增强问答</h3>
       <p>结合知识图谱与本体的结构化事实进行检索与生成，回答更准、过程可追溯。</p>
+    </div>
+
+    <!-- 智能体（可选：引用已配置智能体，自动预填 KB 与技能） -->
+    <div class="agent-pick" v-if="enabledAgents.length">
+      <label>智能体（可选）</label>
+      <select v-model="selectedAgentId" @change="onAgentChange">
+        <option value="">（快速模式 · 手动选知识库与技能）</option>
+        <option v-for="a in enabledAgents" :key="a.id" :value="a.id">{{ a.name }} · {{ a.kb_name || '未知知识库' }}</option>
+      </select>
+      <span class="agent-pick-hint" v-if="selectedAgentId">已按该智能体预填知识库与技能，人设由智能体提供</span>
     </div>
 
     <div class="kb-select">
@@ -412,6 +439,16 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 
 .kb-select { display: flex; flex-direction: column; gap: 6px; }
 .kb-select label { font-size: 13px; font-weight: 600; color: var(--c-secondary); }
+
+.agent-pick { display: flex; flex-direction: column; gap: 6px; }
+.agent-pick label { font-size: 13px; font-weight: 600; color: var(--c-secondary); }
+.agent-pick select {
+  width: 100%; padding: 8px 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px);
+  font-size: 13px; font-family: var(--font); background: var(--c-panel); color: var(--c-fg); outline: none;
+  transition: border-color 150ms;
+}
+.agent-pick select:focus { border-color: var(--c-accent); }
+.agent-pick-hint { font-size: 11px; color: var(--c-accent); }
 .field-shell {
   display: flex; align-items: center; gap: 10px;
   min-height: 52px; border: 1px solid #e8e5df; border-radius: 16px;

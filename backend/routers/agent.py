@@ -5,6 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from schemas import (
+    AgentCreate,
+    AgentUpdate,
     AgentQueryRequest,
     AgentSkillCreate,
     AgentSkillGroupCreate,
@@ -12,6 +14,7 @@ from schemas import (
     AgentSkillUpdate,
 )
 from services import skill_import_service
+from services.agent_service import AgentService
 from services.kb_service import KBService
 from services.ontology_service import OntologyService
 from services.oag_service import OAGService
@@ -473,26 +476,119 @@ async def _import_from_skillsmp(
 
 
 
+# ─────────────────────── 智能体配置 CRUD ───────────────────────
+
+
+@router.get("/agents")
+async def list_agents(db: AsyncSession = Depends(get_db)):
+    return await AgentService.list(db)
+
+
+@router.get("/agents/{agent_id}")
+async def get_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
+    agent = await AgentService.get_detail(db, agent_id)
+    if not agent:
+        raise HTTPException(404, "智能体不存在")
+    return agent
+
+
+@router.post("/agents")
+async def create_agent(req: AgentCreate, db: AsyncSession = Depends(get_db)):
+    from models import KnowledgeBase
+
+    name = (req.name or "").strip()
+    if not name:
+        raise HTTPException(400, "智能体名称不能为空")
+    if not await db.get(KnowledgeBase, req.kb_id):
+        raise HTTPException(404, "知识库不存在")
+    data = req.model_dump()
+    data["name"] = name
+    return await AgentService.create(db, data)
+
+
+@router.put("/agents/{agent_id}")
+async def update_agent(agent_id: str, req: AgentUpdate, db: AsyncSession = Depends(get_db)):
+    from models import KnowledgeBase
+
+    data = req.model_dump(exclude_unset=True)
+    if data.get("name") is not None and not str(data["name"]).strip():
+        raise HTTPException(400, "智能体名称不能为空")
+    if data.get("kb_id") and not await db.get(KnowledgeBase, data["kb_id"]):
+        raise HTTPException(404, "知识库不存在")
+    updated = await AgentService.update(db, agent_id, data)
+    if not updated:
+        raise HTTPException(404, "智能体不存在")
+    return updated
+
+
+@router.delete("/agents/{agent_id}")
+async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
+    if not await AgentService.delete(db, agent_id):
+        raise HTTPException(404, "智能体不存在")
+    return {"status": "deleted"}
+
+
+@router.post("/agents/{agent_id}/test")
+async def test_agent(agent_id: str, req: AgentQueryRequest, db: AsyncSession = Depends(get_db)):
+    """用已配置智能体测试对话（SSE 流式，预览该智能体效果）。"""
+    agent = await AgentService.resolve(db, agent_id)
+    if not agent:
+        raise HTTPException(404, "智能体不存在或已禁用")
+    kb = await KBService.get(db, agent["kb_id"])
+    if not kb:
+        raise HTTPException(404, "智能体绑定的知识库不存在")
+
+    try:
+        ontology_schema = await OntologyService.get_kb_extraction_constraints(db, agent["kb_id"])
+    except Exception:
+        ontology_schema = None
+    skills = await SkillService.resolve(db, agent["skill_ids"])
+
+    return StreamingResponse(
+        OAGService.query_stream(
+            agent["kb_id"], req.query, kb["name"], ontology_schema, skills,
+            persona=agent["system_prompt"],
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ─────────────────────── 智能体查询 ───────────────────────
 
 
 @router.post("/agent/query")
 async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)):
-    kb = await KBService.get(db, req.kb_id)
+    # 引用智能体（可选）：传 agent_id 时以其 KB / 技能 / 人设为准
+    agent = None
+    if req.agent_id:
+        agent = await AgentService.resolve(db, req.agent_id)
+        if not agent:
+            raise HTTPException(404, "智能体不存在或已禁用")
+
+    kb_id = agent["kb_id"] if agent else req.kb_id
+    if not kb_id:
+        raise HTTPException(400, "缺少 kb_id 或 agent_id")
+    kb = await KBService.get(db, kb_id)
     if not kb:
         raise HTTPException(404, "Knowledge base not found")
 
     # 预加载本体 schema：db 会话在响应返回后释放，SSE 生成器不再持有 db
     try:
-        ontology_schema = await OntologyService.get_kb_extraction_constraints(db, req.kb_id)
+        ontology_schema = await OntologyService.get_kb_extraction_constraints(db, kb_id)
     except Exception:
         ontology_schema = None
 
     # 预加载技能：db 会话在响应返回后释放
-    skills = await SkillService.resolve(db, req.skill_ids)
+    if agent:
+        skills = await SkillService.resolve(db, agent["skill_ids"])
+        persona = agent["system_prompt"]
+    else:
+        skills = await SkillService.resolve(db, req.skill_ids)
+        persona = None
 
     return StreamingResponse(
-        OAGService.query_stream(req.kb_id, req.query, kb["name"], ontology_schema, skills),
+        OAGService.query_stream(kb_id, req.query, kb["name"], ontology_schema, skills, persona=persona),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
