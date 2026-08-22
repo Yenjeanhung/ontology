@@ -10,11 +10,11 @@ const route = useRoute()
 const isSidebarCollapsed = ref(false)
 const SIDEBAR_STORAGE_KEY = 'knowsource.sidebar.collapsed'
 const THEME_STORAGE_KEY = 'knowsource.theme'
-// 主题列表：右上角皮肤下拉菜单（首项为系统默认）
+// 主题列表：右上角皮肤下拉菜单（首项为系统默认）。label 与 swatch 圆点均对应各主题的强调色
 const THEMES = [
-  { key: 'platform-dark', label: '深蓝', swatch: '#2DD4BF' },
-  { key: 'light', label: '浅色', swatch: '#A16207' },
-  { key: 'dark', label: '深色', swatch: '#E0A84E' },
+  { key: 'platform-dark', label: '青蓝', swatch: '#2DD4BF' },
+  { key: 'light', label: '琥珀', swatch: '#A16207' },
+  { key: 'dark', label: '金色', swatch: '#E0A84E' },
 ]
 const theme = ref('platform-dark')
 const vectorProvider = ref('')
@@ -107,7 +107,13 @@ const menuItems = [
   },
   { type: 'group', label: '知识生产', icon: 'groupProd' },
   { key: 'files', label: '文件管理', icon: 'files', to: '/files', badgeKey: 'files' },
-  { key: 'kb', label: '知识库', icon: 'kb', to: '/kb' },
+  {
+    key: 'kb', label: '知识库', icon: 'kb',
+    children: [
+      { to: '/kb', label: '知识库列表' },
+      { to: '/query', label: '知识库检索' },
+    ],
+  },
   { type: 'group', label: '应用', icon: 'groupApp' },
   {
     key: 'agent', label: '智能体', icon: 'agent',
@@ -116,13 +122,7 @@ const menuItems = [
       { to: '/agent/skills', label: '技能管理' },
     ],
   },
-  {
-    key: 'data', label: '检索与向量', icon: 'data',
-    children: [
-      { to: '/query', label: '知识库检索' },
-      { to: '/vectors', label: '向量数据' },
-    ],
-  },
+  { key: 'data', label: '向量数据', icon: 'data', to: '/vectors' },
   {
     key: 'config', label: '系统配置', icon: 'config',
     children: [
@@ -809,7 +809,7 @@ onBeforeUnmount(() => {
 .is-collapsed .sidebar { width: 80px; padding-left: 8px; padding-right: 8px; }
 .is-collapsed .sidebar-head { justify-content: center; padding-bottom: 10px; }
 .is-collapsed .brand { display: none; }
-.is-collapsed .nav { gap: 8px; padding-top: 8px; }
+.is-collapsed .nav { gap: 8px; padding-top: 8px; overflow: visible; }
 .is-collapsed .nav-group-label { display: none; }
 .is-collapsed .nav-item {
   flex-direction: column;

@@ -170,6 +170,111 @@ class VectorDataService:
         }
 
     @staticmethod
+    async def list_files(
+        db: AsyncSession,
+        kb_id: str | None = None,
+        query: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict:
+        """文件级列表：仅汇总 files 表元数据 + 分片计数，不触碰向量库。"""
+        provider = get_vector_store_provider_name()
+        page_size = max(1, min(limit, 200))
+        page_offset = max(0, offset)
+
+        filters = []
+        if kb_id:
+            filters.append(File.kb_id == kb_id)
+        if query:
+            filters.append(File.name.like(f"%{query.strip()}%"))
+
+        total = (await db.execute(
+            select(func.count()).select_from(File).where(*filters)
+        )).scalar_one()
+
+        chunk_count_subq = (
+            select(Chunk.file_id, func.count(Chunk.id).label("chunk_count"))
+            .group_by(Chunk.file_id)
+            .subquery()
+        )
+        stmt = (
+            select(
+                File.id,
+                File.kb_id,
+                File.name,
+                File.size,
+                File.status,
+                File.created_at,
+                KnowledgeBase.name,
+                func.coalesce(chunk_count_subq.c.chunk_count, 0),
+            )
+            .join(KnowledgeBase, File.kb_id == KnowledgeBase.id)
+            .outerjoin(chunk_count_subq, chunk_count_subq.c.file_id == File.id)
+            .where(*filters)
+            .order_by(File.created_at.desc(), File.id.asc())
+            .limit(page_size)
+            .offset(page_offset)
+        )
+
+        rows = (await db.execute(stmt)).all()
+        items = [
+            {
+                "file_id": r[0],
+                "kb_id": r[1],
+                "file_name": r[2],
+                "size": r[3],
+                "status": r[4],
+                "created_at": r[5],
+                "kb_name": r[6],
+                "chunk_count": r[7],
+            }
+            for r in rows
+        ]
+
+        page = (page_offset // page_size) + 1
+        return {
+            "provider": provider,
+            "kb_id": kb_id,
+            "total": total,
+            "limit": page_size,
+            "offset": page_offset,
+            "page": page,
+            "has_prev": page_offset > 0,
+            "has_next": page_offset + page_size < total,
+            "items": items,
+        }
+
+    @staticmethod
+    async def list_file_chunks(db: AsyncSession, file_id: str) -> dict:
+        """单个文件的分片/向量详情：按需加载，含向量库同步状态校验。
+
+        文件元数据（名称/所属知识库）与分片分离查询，即使文件没有分片也能返回元数据，
+        便于详情页据此定位所属知识库（例如做召回测试）。
+        """
+        provider = get_vector_store_provider_name()
+
+        meta = (
+            await db.execute(
+                select(File.name, File.kb_id, KnowledgeBase.name)
+                .join(KnowledgeBase, File.kb_id == KnowledgeBase.id)
+                .where(File.id == file_id)
+            )
+        ).first()
+
+        raw_items = await VectorDataService._fetch_rows(db, [File.id == file_id])
+        items = VectorDataService._enrich_items(raw_items)
+
+        return {
+            "provider": provider,
+            "file_id": file_id,
+            "file_name": meta[0] if meta else "",
+            "kb_id": meta[1] if meta else "",
+            "kb_name": meta[2] if meta else "",
+            "total": len(items),
+            "items": items,
+        }
+
+    @staticmethod
     async def similarity_test(kb_id: str, query: str, top_k: int = 10) -> dict:
         embeddings = create_embeddings()
         vectorstore = create_vector_store(kb_id, embeddings)

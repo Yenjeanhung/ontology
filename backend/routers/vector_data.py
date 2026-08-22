@@ -27,6 +27,31 @@ async def list_vector_records(
     )
 
 
+@router.get("/vector-files")
+async def list_vector_files(
+    kb_id: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    return await VectorDataService.list_files(
+        db,
+        kb_id=kb_id,
+        query=q,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/vector-files/{file_id}/chunks")
+async def list_file_chunks(
+    file_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    return await VectorDataService.list_file_chunks(db, file_id)
+
+
 @router.get("/vector-search-test")
 async def vector_search_test(
     kb_id: str = Query(...),

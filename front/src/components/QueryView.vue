@@ -517,22 +517,22 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 /* ── 模式切换 ── */
 .mode-tabs {
   display: inline-flex; gap: 4px; padding: 4px; width: fit-content;
-  border: 1px solid #e8e5df; border-radius: 14px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(249,247,243,0.98));
-  box-shadow: 0 1px 0 rgba(255,255,255,0.92) inset, 0 10px 28px rgba(23, 23, 23, 0.035);
+  border: 1px solid var(--c-border); border-radius: 12px;
+  background: var(--c-panel);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.04);
 }
 .mode-tab {
   display: inline-flex; align-items: center; gap: 6px;
-  min-height: 36px; padding: 0 16px; border: 0; border-radius: 10px;
+  min-height: 34px; padding: 0 16px; border: 0; border-radius: 9px;
   background: transparent; color: var(--c-secondary);
   font-size: 13px; font-weight: 600; font-family: var(--font); cursor: pointer;
   transition: background 150ms, color 150ms, box-shadow 150ms;
 }
-.mode-tab:hover:not(:disabled) { color: var(--c-fg); background: rgba(23, 23, 23, 0.04); }
+.mode-tab:hover:not(:disabled) { color: var(--c-fg); background: var(--c-muted); }
 .mode-tab.active {
   color: #fff;
-  background: linear-gradient(135deg, #171717, #3a342b);
-  box-shadow: 0 8px 20px rgba(23, 23, 23, 0.18);
+  background: var(--c-accent);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--c-accent) 32%, transparent);
 }
 .mode-tab:disabled { opacity: 0.55; cursor: not-allowed; }
 

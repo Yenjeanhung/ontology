@@ -286,6 +286,10 @@ select option {
   color: #171717 !important;
 }
 
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .mode-tab.active {
+  color: #141414 !important;
+}
+
 :root:is([data-theme='dark'], [data-theme='platform-dark']) .test-score {
   color: #2b1700 !important;
   background: #f7c66a !important;

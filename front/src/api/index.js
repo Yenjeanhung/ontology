@@ -89,6 +89,23 @@ export async function fetchVectorRecords({ kbId = '', q = '', unsyncedOnly = fal
   return res.json()
 }
 
+export async function fetchVectorFiles({ kbId = '', q = '', limit = 100, offset = 0 } = {}) {
+  const params = new URLSearchParams()
+  if (kbId) params.set('kb_id', kbId)
+  if (q) params.set('q', q)
+  params.set('limit', String(limit))
+  params.set('offset', String(offset))
+  const res = await fetch(`${API}/api/vector-files?${params.toString()}`)
+  if (!res.ok) throw new Error('Fetch vector files failed')
+  return res.json()
+}
+
+export async function fetchVectorFileChunks(fileId) {
+  const res = await fetch(`${API}/api/vector-files/${fileId}/chunks`)
+  if (!res.ok) throw new Error('Fetch vector file chunks failed')
+  return res.json()
+}
+
 export async function fetchVectorSearchTest({ kbId, query, topK = 8 }) {
   const params = new URLSearchParams()
   params.set('kb_id', kbId)
