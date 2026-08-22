@@ -129,12 +129,22 @@ async def _exec_agent(cfg: dict, context: dict, db) -> dict:
         ontology_schema = None
     skills = await SkillService.resolve(db, skill_ids)
     result = await OAGService.run(kb_id, query, kb["name"], ontology_schema, skills, persona)
-    return {
+    out = {
         "answer": result["answer"],
         "chunks": result["chunks"],
         "entities": result["entities"],
         "subgraph": result.get("subgraph"),
     }
+    # 手动追加的自定义输出：extra_outputs = {自定义名: 表达式}
+    # 表达式可引用本节点固定输出（{{answer}} 等）与上游变量（{{n1.x}}），经 render 求值
+    extra = cfg.get("extra_outputs") or {}
+    if isinstance(extra, dict):
+        local_ctx = dict(context)
+        local_ctx["_self"] = out  # 支持子字段提取，如 {{_self.chunks.0.file_name}}
+        for name, expr in extra.items():
+            if name and isinstance(expr, str):
+                out[name] = render(expr, local_ctx)
+    return out
 
 
 async def _exec_service(cfg: dict, context: dict, db) -> dict:
@@ -209,6 +219,29 @@ async def _execute_node(node: dict, context: dict, db) -> dict:
 
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+
+
+# 各节点类型固定输出，投影时强制保留（前端同样锁定不可删）
+FIXED_OUTPUTS = {
+    "agent": {"answer", "chunks", "entities", "subgraph"},
+    "service": {"success", "data", "error", "stdout", "duration_ms"},
+    "llm": {"text"},
+    "condition": {"result"},
+    "code": {"success", "data", "error", "stdout", "duration_ms"},
+}
+
+
+def _project_output(node: dict, result) -> dict:
+    """按节点声明的 output_fields 投影结果：只保留「声明的键 + 该类型固定输出」。
+    固定输出（如智能体的 answer）强制保留，删不掉；未声明 / 结果非 dict /
+    声明的键全不存在时，原样返回全部结果（兼容旧数据）。"""
+    fields = (node.get("config") or {}).get("output_fields")
+    if not fields or not isinstance(result, dict):
+        return result
+    keep = set(fields) | FIXED_OUTPUTS.get(node.get("type"), set())
+    projected = {k: result[k] for k in keep if k in result}
+    # 声明的键全都不在结果里（用户随便写的名字）→ 保留全部，避免下游拿空对象
+    return projected if projected else result
 
 
 def _truncate_output(result):
@@ -350,7 +383,7 @@ async def run_stream(workflow_id: str, definition: dict, inputs: dict):
                     })
                 result = task.result()
                 dur = int((time.monotonic() - t0) * 1000)
-                context[nid] = result
+                context[nid] = _project_output(node, result)
                 active[nid] = True
                 node_states[nid] = {"status": "succeeded", "output": result, "duration_ms": dur}
                 yield _sse({

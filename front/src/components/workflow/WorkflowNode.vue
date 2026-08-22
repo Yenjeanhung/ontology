@@ -61,6 +61,7 @@ function bodyText(t, cfg = {}) {
 
 <style scoped>
 .wf-node {
+  position: relative;
   width: 200px;
   background: var(--c-panel);
   border: 1px solid var(--c-border-strong, #d8cdbb);
@@ -71,11 +72,9 @@ function bodyText(t, cfg = {}) {
 }
 .wf-node:hover { box-shadow: 0 4px 14px rgba(0,0,0,.12); }
 .wf-node.selected { border-color: var(--c-accent); box-shadow: 0 0 0 2px var(--c-accent-weak, rgba(161,98,7,.10)); }
-.wf-node.running { border-color: var(--c-accent); animation: wf-breath 1.6s ease-in-out infinite; }
-@keyframes wf-breath {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--c-accent) 35%, transparent); }
-  50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--c-accent) 0%, transparent); }
-}
+/* 运行中：只有边框变色 + 徽章圆点闪，卡片本体完全静止（不闪不呼吸） */
+.wf-node.running { border-color: var(--c-accent); border-width: 1.5px; }
+.wf-node.running .n-head { background: var(--c-accent-weak, rgba(161,98,7,.10)); }
 
 .wf-status-chip {
   display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
@@ -86,10 +85,10 @@ function bodyText(t, cfg = {}) {
 .wf-status-chip.sc-failed { color: var(--c-danger); background: color-mix(in srgb, var(--c-danger) 14%, transparent); }
 .wf-status-chip.sc-skipped { color: var(--c-secondary); background: var(--c-muted); }
 .wf-pulse {
-  width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  width: 7px; height: 7px; border-radius: 50%; background: currentColor;
   animation: wf-dot 1s ease-in-out infinite;
 }
-@keyframes wf-dot { 50% { opacity: .25; } }
+@keyframes wf-dot { 50% { opacity: .2; } }
 .wf-node.succeeded { border-color: var(--c-success); }
 .wf-node.failed { border-color: var(--c-danger); }
 .wf-node.skipped { opacity: .45; }

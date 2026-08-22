@@ -62,7 +62,19 @@ def validate_definition(definition: dict) -> str | None:
             return f"边 source 指向不存在的节点：{e.get('source')}"
         if e.get("target") not in id_set:
             return f"边 target 指向不存在的节点：{e.get('target')}"
+        if e["source"] == e["target"]:
+            return "节点不能连接自己"
         out_degree[e["source"]] = out_degree.get(e["source"], 0) + 1
+
+    # 开始节点不能有入边；结束节点不能有出边
+    node_by_id = {n["id"]: n for n in nodes}
+    for e in edges:
+        src_type = (node_by_id.get(e["source"]) or {}).get("type")
+        tgt_type = (node_by_id.get(e["target"]) or {}).get("type")
+        if tgt_type == "start":
+            return "「开始」节点之前不能再连接其他节点"
+        if src_type == "end":
+            return "「结束」节点之后不能再连接其他节点"
 
     for n in nodes:
         if n.get("type") != "condition" and out_degree.get(n["id"], 0) > 1:

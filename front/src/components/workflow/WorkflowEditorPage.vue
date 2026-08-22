@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount, reactive } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, reactive, markRaw } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -28,7 +28,9 @@ const TYPE_META = {
   condition: { name: '条件分支', icon: '⇄', color: '#ea580c' },
   code: { name: '代码', icon: '</>', color: '#059669' },
 }
-const nodeTypes = Object.fromEntries(Object.keys(TYPE_META).map(t => [t, WorkflowNode]))
+// 自定义节点组件映射（Vue Flow 按节点 type 渲染 WorkflowNode）
+// markRaw：组件对象不进响应式代理（Vue Flow 内部会 h() 渲染，代理化组件触发性能 warning）
+const nodeTypes = markRaw(Object.fromEntries(Object.keys(TYPE_META).map(t => [t, WorkflowNode])))
 const { screenToFlowCoordinate } = useVueFlow()
 
 const DEFAULT_CONFIG = {
@@ -41,15 +43,30 @@ const DEFAULT_CONFIG = {
   code: { code_text: 'def run(params, entity, context):\n    return {"data": params}', params: {} },
 }
 
-// 各节点类型固定的输出字段（供「输出变量」提示与复制引用）
-const OUTPUT_FIELDS = {
+// 各节点类型的默认输出字段（新节点预填，之后可手动增删）
+const OUTPUT_FIELDS_DEFAULT = {
   start: [],
   end: [],
+  agent: ['answer', 'chunks', 'entities'],
+  service: ['success', 'data', 'error'],
+  llm: ['text'],
+  condition: ['result'],
+  code: ['success', 'data', 'error'],
+}
+// 各类型固定输出（与后端 FIXED_OUTPUTS 对齐）：锁定显示、不可删除
+const FIXED_OUTPUTS = {
   agent: ['answer', 'chunks', 'entities', 'subgraph'],
   service: ['success', 'data', 'error', 'stdout', 'duration_ms'],
   llm: ['text'],
   condition: ['result'],
   code: ['success', 'data', 'error', 'stdout', 'duration_ms'],
+}
+function isFixedField(type, f) { return (FIXED_OUTPUTS[type] || []).includes(f) }
+// 节点声明输出变量：优先 config.output_fields（用户手动管理），旧数据回退到类型默认
+function outputFieldsOf(nodeLike) {
+  const t = nodeLike.type
+  const arr = nodeLike.data?.config?.output_fields ?? nodeLike.config?.output_fields
+  return Array.isArray(arr) && arr.length ? arr : (OUTPUT_FIELDS_DEFAULT[t] || [])
 }
 
 const wfName = ref('')
@@ -72,8 +89,24 @@ let edgeSeq = 0
 const selectedNode = computed(() => nodes.value.find(n => n.id === selectedNodeId.value) || null)
 const selectedType = computed(() => selectedNode.value?.type || '')
 const selectedConfig = computed(() => selectedNode.value?.data?.config || {})
-// 结束节点可引用的上游节点（所有非 end 节点，含开始）
-const upstreamNodes = computed(() => nodes.value.filter(n => n.type !== 'end' && n.id !== selectedNodeId.value))
+// 沿连线反向收集「真正能流到当前节点」的祖先节点（含开始；不含自己）
+const upstreamNodes = computed(() => {
+  if (!selectedNodeId.value) return []
+  const parents = new Map()
+  for (const e of edges.value) {
+    if (!parents.has(e.target)) parents.set(e.target, new Set())
+    parents.get(e.target).add(e.source)
+  }
+  const seen = new Set()
+  const queue = [...(parents.get(selectedNodeId.value) || [])]
+  while (queue.length) {
+    const id = queue.shift()
+    if (seen.has(id)) continue
+    seen.add(id)
+    for (const p of parents.get(id) || []) queue.push(p)
+  }
+  return nodes.value.filter(n => seen.has(n.id))
+})
 
 // 结束节点输出映射的 key-value 行（与 config.outputs 双向同步）
 const endRows = ref([])
@@ -116,9 +149,20 @@ onMounted(async () => {
     palette.value = pal
     const def = wf.definition || { nodes: [], edges: [] }
     nodes.value = (def.nodes || []).map(toFlowNode)
-    edges.value = (def.edges || []).map(toFlowEdge)
-    nodeSeq = nodes.value.length
-    edgeSeq = edges.value.length
+    // 防御：历史 id 撞车 bug 可能保存过重复 id 的节点 → 去重（保留最后一个，即后加的），
+    // 并丢弃指向不存在节点的悬空连线，避免 Vue Flow 渲染异常（节点消失）
+    const seenIds = new Set()
+    nodes.value = nodes.value.filter(n => {
+      if (seenIds.has(n.id)) return false
+      seenIds.add(n.id)
+      return true
+    })
+    edges.value = (def.edges || []).map(toFlowEdge).filter(e => seenIds.has(e.source) && seenIds.has(e.target))
+    // 序号起点取已有 id 中的最大序号（而非节点数），避免删除过节点后 id 撞车导致新节点覆盖旧节点
+    const maxNodeSeq = Math.max(0, ...nodes.value.map(n => parseInt(String(n.id).replace(/^n/, ''), 10) || 0))
+    const maxEdgeSeq = Math.max(0, ...edges.value.map(e => parseInt(String(e.id).replace(/^e/, ''), 10) || 0))
+    nodeSeq = maxNodeSeq
+    edgeSeq = maxEdgeSeq
   } catch (err) {
     toast.error(`加载失败: ${err.message}`)
   }
@@ -149,7 +193,11 @@ function fromFlowEdge(e) {
 
 // ───── 画布交互 ─────
 function addNodeAt(type, position) {
-  const id = `n${++nodeSeq}`
+  let id = `n${++nodeSeq}`
+  // 兜底：id 已存在（历史数据手工编辑等）则继续顺延，绝不生成重复 id
+  while (nodes.value.some(n => n.id === id)) id = `n${++nodeSeq}`
+  const config = JSON.parse(JSON.stringify(DEFAULT_CONFIG[type]))
+  config.output_fields = [...(OUTPUT_FIELDS_DEFAULT[type] || [])]
   const pos = position || { x: 100 + (nodeSeq % 4) * 220, y: 80 + (nodeSeq % 3) * 160 }
   nodes.value.push({
     id,
@@ -158,7 +206,7 @@ function addNodeAt(type, position) {
     data: {
       nodeType: type,
       title: TYPE_META[type].name,
-      config: JSON.parse(JSON.stringify(DEFAULT_CONFIG[type])),
+      config,
       status: '',
     },
   })
@@ -191,12 +239,77 @@ function selectNode(id) {
 function onNodeClick({ node }) { selectNode(node.id) }
 function onPaneClick() { selectedNodeId.value = null }
 function onConnect(conn) {
+  const { source, target } = conn
+  // 拦截非法连线：自环 / start 入边 / end 出边 / 成环 / 重复边
+  if (source === target) { toast.error('节点不能连接自己'); return }
+  const srcNode = nodes.value.find(n => n.id === source)
+  const tgtNode = nodes.value.find(n => n.id === target)
+  if (tgtNode?.type === 'start') { toast.error('「开始」节点之前不能再连接其他节点'); return }
+  if (srcNode?.type === 'end') { toast.error('「结束」节点之后不能再连接其他节点'); return }
+  if (edges.value.some(e => e.source === source && e.target === target)) { toast.error('这两个节点之间已存在连线'); return }
+  // 成环检测：从 target 沿下游走，若能回到 source 则成环
+  const children = new Map()
+  for (const e of edges.value) {
+    if (!children.has(e.source)) children.set(e.source, new Set())
+    children.get(e.source).add(e.target)
+  }
+  const stack = [target]
+  const seen = new Set()
+  while (stack.length) {
+    const cur = stack.pop()
+    if (cur === source) { toast.error('不能形成循环连线'); return }
+    if (seen.has(cur)) continue
+    seen.add(cur)
+    for (const c of children.get(cur) || []) stack.push(c)
+  }
+  let id = `e${++edgeSeq}`
+  while (edges.value.some(e => e.id === id)) id = `e${++edgeSeq}`
   edges.value.push({
-    id: `e${++edgeSeq}`,
-    source: conn.source,
-    target: conn.target,
+    id,
+    source,
+    target,
     sourceHandle: conn.sourceHandle || undefined,
   })
+}
+
+// ── 一键整理：DAG 分层布局（按拓扑层级排布，同层纵向对齐） ──
+function autoLayout() {
+  if (!nodes.value.length) return
+  // 入度与邻接（按当前 edges 计算）
+  const indeg = new Map(nodes.value.map(n => [n.id, 0]))
+  const children = new Map(nodes.value.map(n => [n.id, []]))
+  for (const e of edges.value) {
+    if (indeg.has(e.target)) indeg.set(e.target, (indeg.get(e.target) || 0) + 1)
+    if (children.has(e.source)) children.get(e.source).push(e.target)
+  }
+  // Kahn 分层：同层节点放同一列
+  const layers = []
+  let queue = [...indeg.entries()].filter(([, d]) => d === 0).map(([id]) => id)
+  const done = new Set()
+  while (queue.length) {
+    layers.push([...queue])
+    for (const id of queue) done.add(id)
+    const next = []
+    for (const id of queue) {
+      for (const c of children.get(id) || []) {
+        indeg.set(c, (indeg.get(c) || 0) - 1)
+        if (indeg.get(c) === 0 && !done.has(c)) next.push(c)
+      }
+    }
+    queue = [...new Set(next)]
+  }
+  // 有环时剩余节点兜底放最后一列
+  const rest = nodes.value.filter(n => !done.has(n.id)).map(n => n.id)
+  if (rest.length) layers.push(rest)
+  // 布局参数：列距 260，行距 90；start 固定在第一列
+  const COL_GAP = 260, ROW_GAP = 96
+  layers.forEach((layer, li) => {
+    layer.forEach((id, ri) => {
+      const n = nodes.value.find(x => x.id === id)
+      if (n) n.position = { x: 40 + li * COL_GAP, y: 60 + ri * ROW_GAP - (layer.length - 1) * ROW_GAP / 2 }
+    })
+  })
+  toast.success('已整理布局')
 }
 
 function deleteSelected() {
@@ -272,6 +385,43 @@ function copyText(text) {
     toast.info(text)
   }
 }
+// 把变量引用插入到指定配置字段的光标处 / 追加到末尾
+function insertRefInto(field, ref) {
+  const cfg = selectedConfig.value
+  if (cfg == null) return
+  cfg[field] = (cfg[field] || '') + ref
+  toast.success('已插入 ' + ref)
+}
+
+// ── 输出变量手动管理：回车添加 / 点 × 删除（固定字段除外） ──
+const outputFieldInput = ref('')
+// 展示列表 = 固定字段（在前，锁定）∪ 手动字段
+function displayOutputFields(nodeLike) {
+  const type = nodeLike.type
+  const manual = outputFieldsOf(nodeLike).filter(f => !isFixedField(type, f))
+  return [...(FIXED_OUTPUTS[type] || []), ...manual]
+}
+function addOutputField() {
+  const raw = outputFieldInput.value.trim()
+  if (!raw || !selectedNode.value) return
+  const cfg = selectedNode.value.data.config
+  if (!Array.isArray(cfg.output_fields)) cfg.output_fields = [...(FIXED_OUTPUTS[selectedNode.value.type] || [])]
+  for (const f of raw.split(/[\s,，]+/).filter(Boolean)) {
+    if (!cfg.output_fields.includes(f)) cfg.output_fields.push(f)
+  }
+  outputFieldInput.value = ''
+}
+function removeOutputField(i) {
+  const cfg = selectedNode.value?.data?.config
+  if (!cfg) return
+  if (!Array.isArray(cfg.output_fields)) cfg.output_fields = [...(FIXED_OUTPUTS[selectedNode.value.type] || [])]
+  // 按显示列表定位：固定字段不可删（前端隐藏 ×，这里再兜底拦截）
+  const shown = displayOutputFields(selectedNode.value)
+  const target = shown[i]
+  if (target == null || isFixedField(selectedNode.value.type, target)) return
+  const idx = cfg.output_fields.indexOf(target)
+  if (idx >= 0) cfg.output_fields.splice(idx, 1)
+}
 function toggleSkill(id) {
   const cfg = selectedConfig.value
   if (!cfg) return
@@ -319,8 +469,10 @@ const nowTick = ref(Date.now())
 let tickTimer = null
 function fmtElapsed(ms) {
   if (ms == null) return ''
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
   const s = Math.floor(ms / 1000)
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`
+  return `${Math.floor(s / 60)}m${s % 60}s`
 }
 const startInputs = computed(() => {
   const s = nodes.value.find(n => n.type === 'start')
@@ -333,11 +485,15 @@ function openRunModal() {
   runModal.value = true
 }
 
-function setStatus(nodeId, status) {
+function setStatus(nodeId, status, durationMs = null) {
   const n = nodes.value.find(x => x.id === nodeId)
   if (n) {
     n.data.status = status
     if (status === 'running') n.data.elapsedText = '0s'
+    // succeeded/failed：定格最终耗时（durationMs 优先，缺省用本地计时）
+    else if (status === 'succeeded' || status === 'failed') {
+      n.data.elapsedText = fmtElapsed(durationMs ?? (runningSince[nodeId] ? Date.now() - runningSince[nodeId] : null))
+    }
     else n.data.elapsedText = ''
   }
   if (status === 'running') runningSince[nodeId] = Date.now()
@@ -368,11 +524,11 @@ async function startRun() {
         if (line) line.elapsed_ms = d.elapsed_ms
       },
       onNodeFinished(d) {
-        setStatus(d.node_id, 'succeeded')
+        setStatus(d.node_id, 'succeeded', d.duration_ms)
         logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'succeeded', summary: d.summary, output: d.output, duration_ms: d.duration_ms })
       },
       onNodeFailed(d) {
-        setStatus(d.node_id, 'failed')
+        setStatus(d.node_id, 'failed', d.duration_ms)
         logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'failed', error: d.error, duration_ms: d.duration_ms })
       },
       onNodeSkipped(d) {
@@ -405,12 +561,13 @@ function toggleLog(i) {
   expandedLog.value = expandedLog.value === i ? -1 : i
 }
 
-// 切换节点时同步实体服务下拉 / 结束节点 key-value 行
+// 切换节点时同步实体服务下拉 / 结束节点 key-value 行 / 智能体自定义输出行
 watch(selectedNodeId, (id) => {
   if (id) {
     const n = nodes.value.find(x => x.id === id)
     if (n?.type === 'service') loadSvc(n.data.config)
     if (n?.type === 'end') syncEndRows()
+    if (n?.type === 'agent') syncExtraRows()
   }
 })
 
@@ -425,7 +582,22 @@ function nodeElapsed(nid) {
   const since = runningSince[nid]
   return since == null ? null : nowTick.value - since
 }
-// 每 tick 把运行中节点的实时时长写进节点 data（驱动节点卡片上的计时显示）
+// 智能体节点自定义输出（extra_outputs：{名: 表达式}）的行编辑
+const extraRows = ref([])
+function syncExtraRows() {
+  const extra = selectedConfig.value?.extra_outputs
+  extraRows.value = extra && typeof extra === 'object'
+    ? Object.entries(extra).map(([name, expr]) => ({ name, expr: String(expr) }))
+    : []
+}
+function flushExtraRows() {
+  if (!selectedNode.value) return
+  const out = {}
+  for (const r of extraRows.value) {
+    if (r.name.trim() && r.expr.trim()) out[r.name.trim()] = r.expr.trim()
+  }
+  selectedNode.value.data.config.extra_outputs = out
+}
 watch(nowTick, () => {
   for (const nid of Object.keys(runningSince)) {
     const n = nodes.value.find(x => x.id === nid)
@@ -442,6 +614,7 @@ watch(nowTick, () => {
       <input class="wf-name" v-model="wfName" placeholder="工作流名称">
       <span v-if="saved" class="wf-saved">已保存</span>
       <div class="spacer"></div>
+      <button class="btn" @click="autoLayout" title="按拓扑层级自动排列节点">一键整理</button>
       <button class="btn" @click="consoleOpen = !consoleOpen">日志</button>
       <button class="btn" @click="save" :disabled="saving">{{ saving ? '保存中...' : '保存' }}</button>
       <button class="btn primary" @click="openRunModal" :disabled="running">▶ 运行</button>
@@ -497,13 +670,50 @@ watch(nowTick, () => {
               <input type="text" v-model="selectedNode.data.title">
             </div>
 
-            <!-- 输出变量（非开始/结束节点展示自身输出） -->
-            <div class="field" v-if="!['start', 'end'].includes(selectedType)">
-              <label>输出变量（点一下复制引用）</label>
-              <div class="var-chips">
-                <button v-for="f in (OUTPUT_FIELDS[selectedType] || [])" :key="f" type="button" class="var-chip" @click="copyText(varRef(selectedNodeId, f))">{{ f }}</button>
+            <!-- 输入变量：沿连线可流入本节点的上游输出（非开始节点展示） -->
+            <div class="field" v-if="selectedType !== 'start'">
+              <label>可用输入变量（来自上游，点一下复制引用）</label>
+              <div v-for="n in upstreamNodes" :key="n.id" class="upstream-node">
+                <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
+                <div class="var-chips">
+                  <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
+                </div>
               </div>
-              <span class="hint">引用格式 <code v-pre>{{节点ID.字段}}</code>，如 <code v-pre>{{n1.answer}}</code></span>
+              <span class="hint" v-if="!upstreamNodes.length">还没有连线的上游节点，先从上游节点拖一条线过来</span>
+            </div>
+
+            <!-- 输出变量：固定字段（锁定）+ 手动追加（回车添加），下游据此引用 -->
+            <div class="field" v-if="selectedType !== 'end'">
+              <label>输出变量（🔒 固定输出不可删；输入名称回车可追加自定义）</label>
+              <div class="var-chips" v-if="displayOutputFields(selectedNode).length">
+                <span
+                  v-for="(f, fi) in displayOutputFields(selectedNode)" :key="f"
+                  class="var-chip var-chip-edit" :class="{ 'var-chip-fixed': isFixedField(selectedType, f) }"
+                >
+                  <span class="vc-name" @click="copyText(varRef(selectedNodeId, f))">{{ isFixedField(selectedType, f) ? '🔒 ' : '' }}{{ f }}</span>
+                  <span v-if="!isFixedField(selectedType, f)" class="vc-del" title="删除" @click="removeOutputField(fi)">×</span>
+                </span>
+              </div>
+              <input
+                type="text" v-model="outputFieldInput"
+                placeholder="自定义输出字段名（回车添加，可逗号分隔多个）"
+                @keydown.enter.prevent="addOutputField"
+              >
+              <span class="hint">点字段名复制引用；🔒 固定输出始终传给下游；自定义字段需节点执行结果里有同名键</span>
+            </div>
+
+            <!-- 智能体：自定义输出提取（extra_outputs） -->
+            <div class="field" v-if="selectedType === 'agent'">
+              <label>自定义输出提取（可选：名称 + 表达式，从本节点结果中再提取）</label>
+              <div class="end-rows">
+                <div v-for="(row, ri) in extraRows" :key="ri" class="end-row">
+                  <input type="text" v-model="row.name" placeholder="输出名（如 summary）" class="er-name" @change="flushExtraRows">
+                  <input type="text" v-model="row.expr" placeholder="表达式，如 {{_self.answer}} 或 {{_self.chunks.0.file_name}}" class="er-value" @change="flushExtraRows">
+                  <button type="button" class="btn sm" @click="extraRows.splice(ri, 1); flushExtraRows()">×</button>
+                </div>
+                <button type="button" class="btn sm" @click="extraRows.push({ name: '', expr: '' }); flushExtraRows()">＋ 添加一条</button>
+              </div>
+              <span class="hint">表达式用 <code v-pre>{{_self.字段}}</code> 引用本节点固定输出；结果会成为新的输出字段供下游引用</span>
             </div>
 
             <!-- 开始 -->
@@ -521,7 +731,7 @@ watch(nowTick, () => {
                 <div v-for="n in upstreamNodes" :key="n.id" class="upstream-node">
                   <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
                   <div class="var-chips">
-                    <button v-for="f in (OUTPUT_FIELDS[n.type] || [])" :key="f" type="button" class="var-chip" @click="appendEndRowFromVar(n.id, f)">{{ n.id }}.{{ f }}</button>
+                    <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @click="appendEndRowFromVar(n.id, f)">{{ n.id }}.{{ f }}</button>
                   </div>
                 </div>
                 <span class="hint" v-if="!upstreamNodes.length">还没有上游节点，先把前面的节点连过来</span>
@@ -770,16 +980,28 @@ watch(nowTick, () => {
 .dr-head-t { flex: 1; min-width: 0; }
 .dr-title { font-size: 13px; font-weight: 700; color: var(--c-fg); }
 .dr-sub { font-size: 10.5px; color: var(--c-secondary); }
-.dr-body { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.dr-body { flex: 1; overflow-y: auto; padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+
+/* 配置分区卡片：每个 field 变成独立小节 */
+.field {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+  background: var(--c-bg);
+}
 .dr-empty { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--c-secondary); font-size: 13px; line-height: 1.6; }
 
-.field { display: flex; flex-direction: column; gap: 5px; }
-.field label { font-size: 11.5px; font-weight: 600; color: var(--c-secondary); }
-.field input, .field textarea, .field select { padding: 7px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px); font-size: 12.5px; font-family: var(--font); outline: none; background: var(--c-bg); color: var(--c-fg); }
+.field label {
+  font-size: 11px; font-weight: 700; color: var(--c-secondary);
+  letter-spacing: .3px;
+  display: flex; align-items: center; gap: 4px;
+}
+.field input, .field textarea, .field select { padding: 7px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px); font-size: 12.5px; font-family: var(--font); outline: none; background: var(--c-panel); color: var(--c-fg); }
 .field input:focus, .field textarea:focus, .field select:focus { border-color: var(--c-accent); }
 .field textarea { resize: vertical; min-height: 56px; line-height: 1.5; }
 .req { color: var(--c-danger); }
-.hint { font-size: 11px; color: var(--c-secondary); line-height: 1.5; }
+.hint { font-size: 10.5px; color: var(--c-secondary); line-height: 1.5; opacity: .85; }
 .var-btn { display: inline-flex; align-items: center; gap: 3px; margin-top: 5px; font-size: 11px; font-weight: 600; color: var(--c-accent); cursor: pointer; padding: 2px 8px; border: 1px dashed var(--c-accent); border-radius: 4px; width: fit-content; }
 .var-btn:hover { background: var(--c-accent-weak, rgba(161,98,7,.10)); }
 
@@ -791,7 +1013,12 @@ watch(nowTick, () => {
 .var-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .var-chip { padding: 3px 9px; border-radius: 6px; font-size: 11px; font-family: ui-monospace, monospace; border: 1px solid var(--c-border); background: var(--c-muted); color: var(--c-accent); cursor: pointer; }
 .var-chip:hover { border-color: var(--c-accent); }
-.upstream-node { margin-bottom: 6px; }
+.var-chip-edit { display: inline-flex; align-items: center; gap: 4px; }
+.var-chip-fixed { border-style: dashed; cursor: default; opacity: .92; }
+.vc-name { cursor: pointer; }
+.vc-del { cursor: pointer; color: var(--c-secondary); font-weight: 700; padding: 0 2px; }
+.vc-del:hover { color: var(--c-danger); }
+.upstream-node { margin-bottom: 4px; padding: 6px 8px; border: 1px dashed var(--c-border); border-radius: 8px; background: var(--c-panel); }
 .up-node-name { font-size: 11px; color: var(--c-secondary); margin-bottom: 3px; }
 .up-node-name code { color: var(--c-fg); }
 
