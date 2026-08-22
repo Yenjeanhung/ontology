@@ -20,7 +20,17 @@ from typing import Any
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Entity, File, Ontology, OntologyRelation, Relation
+from models import (
+    Entity,
+    File,
+    Ontology,
+    OntologyAttribute,
+    OntologyRelation,
+    OntologyService,
+    OntologyTemplateAttribute,
+    OntologyTemplateBinding,
+    Relation,
+)
 from providers.graph_store import (
     delete_entity as kuzu_delete_entity,
     delete_relation as kuzu_delete_relation,
@@ -47,6 +57,19 @@ def _dump_properties(value: dict | None) -> str:
     if not value:
         return ""
     return json.dumps(value, ensure_ascii=False)
+
+
+def _format_property_preview(props: dict, limit: int = 3) -> str:
+    """实体列表的属性概要：仅取前 N 个字段的 key: value，值截断避免过长。"""
+    if not props:
+        return ""
+    parts = []
+    for k, v in list(props.items())[:limit]:
+        s = str(v)
+        if len(s) > 24:
+            s = s[:24] + "…"
+        parts.append(f"{k}: {s}")
+    return " · ".join(parts)
 
 
 def _merge_properties(old_raw: str | None, new_props: dict | None) -> dict:
@@ -80,6 +103,7 @@ def _serialize_entity(
     ontology_name: str | None = None,
     include_properties: bool = True,
 ) -> dict:
+    props = _parse_properties(ent.properties)
     return {
         "id": ent.id,
         "kb_id": ent.kb_id,
@@ -88,7 +112,9 @@ def _serialize_entity(
         "entity_type": ent.entity_type,
         "name": ent.name,
         "description": ent.description or "",
-        "properties": _parse_properties(ent.properties) if include_properties else None,
+        "properties": props if include_properties else None,
+        "property_count": len(props),
+        "property_preview": _format_property_preview(props),
         "source_file_id": ent.source_file_id,
         "source_chunk_id": ent.source_chunk_id,
         "created_at": ent.created_at,
@@ -210,6 +236,7 @@ class EntityService:
         *,
         kb_id: str | None = None,
         ontology_id: str | None = None,
+        category_id: str | None = None,
         entity_type: str | None = None,
         q: str = "",
         page: int = 1,
@@ -223,6 +250,12 @@ class EntityService:
             filters.append(Entity.kb_id == kb_id)
         if ontology_id:
             filters.append(Entity.ontology_id == ontology_id)
+        if category_id:
+            filters.append(
+                Entity.ontology_id.in_(
+                    select(Ontology.id).where(Ontology.category_id == category_id)
+                )
+            )
         if entity_type:
             filters.append(Entity.entity_type == entity_type)
         if q:
@@ -255,10 +288,84 @@ class EntityService:
             )
             ont_map = {row[0]: row[1] for row in ont_rows}
 
-        items = [
-            _serialize_entity(r, ontology_name=ont_map.get(r.ontology_id), include_properties=False)
-            for r in rows
-        ]
+        # 批量统计：关系度数 + 服务数（继承/自定义）
+        ent_ids = [r.id for r in rows]
+
+        relation_counts: dict[str, int] = {}
+        if ent_ids:
+            for col in (Relation.source_entity_id, Relation.target_entity_id):
+                cnt_rows = await db.execute(
+                    select(col, func.count()).where(col.in_(ent_ids)).group_by(col)
+                )
+                for eid, c in cnt_rows:
+                    relation_counts[eid] = relation_counts.get(eid, 0) + c
+
+        service_custom: dict[str, int] = {}
+        service_inherited: dict[str, int] = {}
+        if ent_ids:
+            svc_rows = await db.execute(
+                select(OntologyService.entity_id, func.count())
+                .where(
+                    OntologyService.entity_id.in_(ent_ids),
+                    OntologyService.owner_type == "entity",
+                    OntologyService.is_enabled == 1,
+                )
+                .group_by(OntologyService.entity_id)
+            )
+            service_custom = {eid: c for eid, c in svc_rows}
+        if ont_ids:
+            ont_svc_rows = await db.execute(
+                select(OntologyService.ontology_id, func.count())
+                .where(
+                    OntologyService.ontology_id.in_(ont_ids),
+                    OntologyService.owner_type == "ontology",
+                    OntologyService.is_enabled == 1,
+                )
+                .group_by(OntologyService.ontology_id)
+            )
+            service_inherited = {oid: c for oid, c in ont_svc_rows}
+
+        # 本体属性名/编码（自有 + 模板），用于判断实体属性是否「继承自本体」
+        inherited_keys: dict[str, set[str]] = {}
+        if ont_ids:
+            own_rows = await db.execute(
+                select(OntologyAttribute.ontology_id, OntologyAttribute.name, OntologyAttribute.code)
+                .where(OntologyAttribute.ontology_id.in_(ont_ids))
+            )
+            for oid, name, code in own_rows:
+                s = inherited_keys.setdefault(oid, set())
+                if name:
+                    s.add(name.strip().lower())
+                if code:
+                    s.add(code.strip().lower())
+            tpl_rows = await db.execute(
+                select(OntologyTemplateBinding.ontology_id, OntologyTemplateAttribute.name, OntologyTemplateAttribute.code)
+                .join(OntologyTemplateAttribute, OntologyTemplateBinding.template_id == OntologyTemplateAttribute.template_id)
+                .where(OntologyTemplateBinding.ontology_id.in_(ont_ids))
+            )
+            for oid, name, code in tpl_rows:
+                s = inherited_keys.setdefault(oid, set())
+                if name:
+                    s.add(name.strip().lower())
+                if code:
+                    s.add(code.strip().lower())
+
+        items = []
+        for r in rows:
+            props = _parse_properties(r.properties)
+            prop_keys = {k.strip().lower() for k in props if k}
+            inherited = sum(1 for k in prop_keys if k in inherited_keys.get(r.ontology_id, set()))
+            custom_svc = service_custom.get(r.id, 0)
+            inherited_svc = service_inherited.get(r.ontology_id, 0)
+
+            it = _serialize_entity(r, ontology_name=ont_map.get(r.ontology_id), include_properties=False)
+            it["relation_count"] = relation_counts.get(r.id, 0)
+            it["property_inherited_count"] = inherited
+            it["property_custom_count"] = len(props) - inherited
+            it["service_count"] = custom_svc + inherited_svc
+            it["service_inherited_count"] = inherited_svc
+            it["service_custom_count"] = custom_svc
+            items.append(it)
         return _paginate(total, items, page, page_size)
 
     @staticmethod

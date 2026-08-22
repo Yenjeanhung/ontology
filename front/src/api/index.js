@@ -1005,10 +1005,11 @@ export async function copyServiceToEntity(entityId, serviceId) {
 }
 
 // 模块六：实体实例管理
-export async function fetchEntities({ kb_id = '', ontology_id = '', q = '', page = 1, page_size = 20 } = {}) {
+export async function fetchEntities({ kb_id = '', ontology_id = '', category_id = '', q = '', page = 1, page_size = 20 } = {}) {
   const params = new URLSearchParams()
   if (kb_id) params.set('kb_id', kb_id)
   if (ontology_id) params.set('ontology_id', ontology_id)
+  if (category_id) params.set('category_id', category_id)
   if (q) params.set('q', q)
   params.set('page', String(page))
   params.set('page_size', String(page_size))

@@ -36,6 +36,7 @@ def _nf(detail: str):
 async def list_entities(
     kb_id: str | None = Query(default=None),
     ontology_id: str | None = Query(default=None),
+    category_id: str | None = Query(default=None),
     entity_type: str | None = Query(default=None),
     q: str = Query(default=""),
     page: int = Query(default=1, ge=1),
@@ -46,6 +47,7 @@ async def list_entities(
         db,
         kb_id=kb_id,
         ontology_id=ontology_id,
+        category_id=category_id,
         entity_type=entity_type,
         q=q,
         page=page,

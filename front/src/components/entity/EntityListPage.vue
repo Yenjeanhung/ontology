@@ -120,6 +120,7 @@ async function load() {
     const res = await fetchEntities({
       kb_id: kbId.value,
       ontology_id: selectedOntologyId.value,
+      category_id: selectedCategoryId.value,
       q: search.value.trim(),
       page: page.value,
       page_size: pageSize.value,
@@ -171,16 +172,6 @@ async function remove(entity, e) {
   }
 }
 
-function fmtProps(props) {
-  if (!props) return '—'
-  if (typeof props === 'string') {
-    try { props = JSON.parse(props) } catch { return props }
-  }
-  const keys = Object.keys(props)
-  if (!keys.length) return '—'
-  return keys.slice(0, 3).map(k => `${k}: ${props[k]}`).join(' · ') + (keys.length > 3 ? ` ...+${keys.length - 3}` : '')
-}
-
 onMounted(async () => {
   try { kbs.value = await fetchKbs() } catch {}
   await loadTree()
@@ -212,6 +203,10 @@ onActivated(() => {
     <div class="split-layout">
       <!-- 左侧：本体树 -->
       <div class="tree-panel">
+        <div class="tree-head">
+          <div class="tree-title">本体分类</div>
+          <div class="tree-hint">按本体类别 / 本体筛选实体</div>
+        </div>
         <div class="tree-toolbar">
           <div class="tree-search">
             <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -288,6 +283,9 @@ onActivated(() => {
           <div class="ent-row ent-row-head">
             <span class="col-name">实体名称</span>
             <span class="col-type">本体类型</span>
+            <span class="col-stat">属性</span>
+            <span class="col-num">关系</span>
+            <span class="col-stat">服务</span>
             <span class="col-props">属性概要</span>
             <span class="col-actions"></span>
           </div>
@@ -304,7 +302,16 @@ onActivated(() => {
             <span class="col-type">
               <span class="type-tag">{{ ent.entity_type || ent.ontology_name || '—' }}</span>
             </span>
-            <span class="col-props">{{ fmtProps(ent.properties) }}</span>
+            <span class="col-stat">
+              <span class="stat-total">{{ ent.property_count ?? 0 }}</span>
+              <span class="stat-split">继承{{ ent.property_inherited_count ?? 0 }} · 自定义{{ ent.property_custom_count ?? 0 }}</span>
+            </span>
+            <span class="col-num">{{ ent.relation_count ?? 0 }}</span>
+            <span class="col-stat">
+              <span class="stat-total">{{ ent.service_count ?? 0 }}</span>
+              <span class="stat-split">继承{{ ent.service_inherited_count ?? 0 }} · 自定义{{ ent.service_custom_count ?? 0 }}</span>
+            </span>
+            <span class="col-props">{{ ent.property_preview || '—' }}</span>
             <span class="col-actions">
               <button class="rm-btn sm" @click="remove(ent, $event)" title="删除">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
@@ -347,6 +354,9 @@ onActivated(() => {
 
 /* 左侧本体树 */
 .tree-panel { flex: 0 0 240px; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); padding: 10px; overflow: hidden; }
+.tree-head { display: flex; flex-direction: column; gap: 1px; padding: 0 2px 4px; }
+.tree-title { font-size: 13px; font-weight: 700; color: var(--c-fg); }
+.tree-hint { font-size: 11px; color: var(--c-secondary); }
 .tree-toolbar { display: flex; align-items: center; gap: 8px; }
 .tree-search { flex: 1; display: flex; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); height: 32px; }
 .tree-search:focus-within { border-color: var(--c-fg); }
@@ -405,6 +415,10 @@ onActivated(() => {
 .ent-row-head:hover { background: var(--c-muted); }
 .col-name { flex: 1.5; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-type { flex: 0 0 130px; min-width: 0; }
+.col-num { flex: 0 0 56px; min-width: 0; text-align: center; font-size: 12px; color: var(--c-secondary); font-variant-numeric: tabular-nums; }
+.col-stat { flex: 0 0 118px; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.stat-total { font-size: 13px; font-weight: 600; color: var(--c-fg); font-variant-numeric: tabular-nums; }
+.stat-split { font-size: 10px; color: var(--c-secondary); white-space: nowrap; }
 .col-props { flex: 2; min-width: 0; font-size: 12px; color: var(--c-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-actions { flex: 0 0 40px; display: flex; justify-content: flex-end; }
 .ent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
