@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>KnowSource</title>
   <script>
-    // 首屏即设定主题，默认暗色，避免加载时的浅色闪烁
+    // 首屏即设定主题，默认数据平台深色，避免加载时的浅色闪烁
     (function () {
       try {
         var t = localStorage.getItem('knowsource.theme');
-        if (t !== 'light' && t !== 'dark') t = 'dark';
-      } catch (e) { t = 'dark'; }
+        if (t !== 'light' && t !== 'dark' && t !== 'platform-dark') t = 'platform-dark';
+      } catch (e) { t = 'platform-dark'; }
       document.documentElement.dataset.theme = t;
     })();
   </script>

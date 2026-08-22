@@ -35,6 +35,23 @@
   color-scheme: dark;
 }
 
+/* 数据平台深色：冷灰底 + 青色强调（Grafana / Palantir 气质） */
+:root[data-theme='platform-dark'] {
+  --c-bg: #111217;
+  --c-fg: #E8EAED;
+  --c-secondary: #9AA0AA;
+  --c-muted: #1D1F24;
+  --c-muted-hover: #262930;
+  --c-border: #26282F;
+  --c-accent: #2DD4BF;
+  --c-danger: #F87171;
+  --c-success: #34D399;
+  --c-panel: #17181C;
+  --c-panel-elevated: rgba(24, 26, 31, 0.98);
+  --c-overlay: rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
+}
+
 html {
   background: var(--c-bg);
 }
@@ -106,196 +123,251 @@ select option {
 .empty-state .title { font-size: 15px; font-weight: 700; color: var(--c-fg); margin-bottom: 4px; }
 .empty-state .desc { font-size: 13px; }
 
-:root[data-theme='dark'] .btn {
+/* ─── 暗色主题组件覆盖（深色 + 数据平台深色共用） ─── */
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .btn {
   background: var(--c-panel);
 }
 
-:root[data-theme='dark'] .btn.primary {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .btn.primary {
   background: #f0e9df;
   color: #151515;
   border-color: #f0e9df;
 }
 
-:root[data-theme='dark'] .app-shell,
-:root[data-theme='dark'] .main-area {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .app-shell,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .main-area {
   background: var(--c-bg);
 }
 
-:root[data-theme='dark'] .toolbar,
-:root[data-theme='dark'] .page-head,
-:root[data-theme='dark'] .sec-head,
-:root[data-theme='dark'] .vectors-toolbar {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .toolbar,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .page-head,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .sec-head,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .vectors-toolbar {
   color: var(--c-fg);
 }
 
-:root[data-theme='dark'] .view-toggle,
-:root[data-theme='dark'] .kb-card,
-:root[data-theme='dark'] .vectors-card,
-:root[data-theme='dark'] .field-shell,
-:root[data-theme='dark'] .kb-dropdown,
-:root[data-theme='dark'] .answer-card,
-:root[data-theme='dark'] .sources-col,
-:root[data-theme='dark'] .think-card,
-:root[data-theme='dark'] .source-chip,
-:root[data-theme='dark'] .test-item,
-:root[data-theme='dark'] .pager-jump,
-:root[data-theme='dark'] .expanded-meta,
-:root[data-theme='dark'] .expanded-block,
-:root[data-theme='dark'] .status-tooltip,
-:root[data-theme='dark'] select,
-:root[data-theme='dark'] select option,
-:root[data-theme='dark'] .dropzone,
-:root[data-theme='dark'] .modal,
-:root[data-theme='dark'] .meta-chip {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .view-toggle,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .kb-card,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .vectors-card,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .field-shell,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .kb-dropdown,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .answer-card,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .sources-col,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .think-card,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .source-chip,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .test-item,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .pager-jump,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .expanded-meta,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .expanded-block,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .status-tooltip,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) select,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) select option,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .dropzone,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .modal,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .meta-chip {
   background: var(--c-panel) !important;
   border-color: var(--c-border) !important;
   color: var(--c-fg);
   box-shadow: none !important;
 }
 
-:root[data-theme='dark'] .field-icon,
-:root[data-theme='dark'] .answer-card h4 svg,
-:root[data-theme='dark'] .sources-header svg {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .field-icon,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .answer-card h4 svg,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .sources-header svg {
   background: #20252a !important;
   border-color: var(--c-border) !important;
   color: var(--c-secondary) !important;
 }
 
-:root[data-theme='dark'] .sources-hint,
-:root[data-theme='dark'] .table-header,
-:root[data-theme='dark'] .expanded-label,
-:root[data-theme='dark'] .test-item,
-:root[data-theme='dark'] .expanded-meta,
-:root[data-theme='dark'] .expanded-block {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .sources-hint,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .table-header,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .expanded-label,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .test-item,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .expanded-meta,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .expanded-block {
   background: #1b2025 !important;
   border-color: var(--c-border) !important;
   color: var(--c-secondary) !important;
 }
 
-:root[data-theme='dark'] .test-snippet,
-:root[data-theme='dark'] .preview-text,
-:root[data-theme='dark'] .expanded-pre {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .test-snippet,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .preview-text,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .expanded-pre {
   color: var(--c-fg) !important;
 }
 
-:root[data-theme='dark'] .group-loading {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .group-loading {
   background: rgba(30, 36, 42, 0.95) !important;
   border-color: var(--c-border) !important;
   box-shadow: none !important;
 }
 
-:root[data-theme='dark'] .group-body.is-loading::after {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .group-body.is-loading::after {
   background: rgba(20, 24, 28, 0.58) !important;
 }
 
-:root[data-theme='dark'] .status-chip {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .status-chip {
   background: #252a30 !important;
 }
 
-:root[data-theme='dark'] .status-chip.ok,
-:root[data-theme='dark'] .status-chip.synced {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .status-chip.ok,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .status-chip.synced {
   background: rgba(21, 128, 61, 0.15) !important;
   color: #4ade80 !important;
 }
 
-:root[data-theme='dark'] .status-chip.miss,
-:root[data-theme='dark'] .status-chip.missing_vector {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .status-chip.miss,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .status-chip.missing_vector {
   background: rgba(185, 28, 28, 0.15) !important;
   color: #f87171 !important;
 }
 
-:root[data-theme='dark'] .status-chip.missing_id {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .status-chip.missing_id {
   background: rgba(194, 65, 12, 0.15) !important;
   color: #fb923c !important;
 }
 
-:root[data-theme='dark'] .help-dot {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .help-dot {
   background: #252a30 !important;
   border-color: var(--c-border) !important;
 }
 
-:root[data-theme='dark'] .vectors-filters select,
-:root[data-theme='dark'] .vectors-filters input,
-:root[data-theme='dark'] .test-controls select,
-:root[data-theme='dark'] .test-controls input {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .vectors-filters select,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .vectors-filters input,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .test-controls select,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .test-controls input {
   background: var(--c-panel) !important;
   color: var(--c-fg) !important;
 }
 
-:root[data-theme='dark'] .btn {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .btn {
   background: var(--c-panel) !important;
   color: var(--c-fg) !important;
   border-color: var(--c-border) !important;
 }
 
-:root[data-theme='dark'] .btn.primary {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .btn.primary {
   background: #e8e2d8 !important;
   color: #171717 !important;
   border-color: #e8e2d8 !important;
 }
 
-:root[data-theme='dark'] .vector-row + .vector-row,
-:root[data-theme='dark'] .file-group + .file-group,
-:root[data-theme='dark'] .status-tooltip-item + .status-tooltip-item {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .vector-row + .vector-row,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .file-group + .file-group,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .status-tooltip-item + .status-tooltip-item {
   border-color: var(--c-border) !important;
 }
 
-:root[data-theme='dark'] .file-card:hover,
-:root[data-theme='dark'] .kb-row:hover,
-:root[data-theme='dark'] .row-main:hover,
-:root[data-theme='dark'] .kb-option:hover,
-:root[data-theme='dark'] .side-item.is-active,
-:root[data-theme='dark'] .side-item:hover,
-:root[data-theme='dark'] .side-brand:hover,
-:root[data-theme='dark'] .view-toggle button:hover:not(.on) {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .file-card:hover,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .kb-row:hover,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .row-main:hover,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .kb-option:hover,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .side-item.is-active,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .side-item:hover,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .side-brand:hover,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .view-toggle button:hover:not(.on) {
   background: var(--c-muted) !important;
 }
 
-:root[data-theme='dark'] .kb-option.active {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .kb-option.active {
   background: var(--c-muted-hover) !important;
   color: var(--c-fg) !important;
 }
 
-:root[data-theme='dark'] .kb-option-meta,
-:root[data-theme='dark'] .kb-option-placeholder,
-:root[data-theme='dark'] .select-value.placeholder,
-:root[data-theme='dark'] .field-caret {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .kb-option-meta,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .kb-option-placeholder,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .select-value.placeholder,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .field-caret {
   color: var(--c-secondary) !important;
 }
 
-:root[data-theme='dark'] .view-toggle button.on {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .view-toggle button.on {
   background: #f0e9df !important;
   color: #171717 !important;
 }
 
-:root[data-theme='dark'] .test-score {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .test-score {
   color: #2b1700 !important;
   background: #f7c66a !important;
   box-shadow: inset 0 0 0 1px rgba(120, 69, 3, 0.22);
 }
 
-:root[data-theme='dark'] .source-pct {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .source-pct {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
 }
 
-:root[data-theme='dark'] .markdown-body code {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .markdown-body code {
   background: #232a31;
 }
 
-:root[data-theme='dark'] .markdown-body pre {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .markdown-body pre {
   background: #0d1117;
 }
 
-:root[data-theme='dark'] .markdown-body th {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .markdown-body th {
   background: #1b2025;
 }
 
-:root[data-theme='dark'] .markdown-body th,
-:root[data-theme='dark'] .markdown-body td,
-:root[data-theme='dark'] .markdown-body hr {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .markdown-body th,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .markdown-body td,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .markdown-body hr {
   border-color: var(--c-border);
 }
 
-:root[data-theme='dark'] .modal-mask {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .modal-mask {
   background: var(--c-overlay) !important;
+}
+
+/* ─── 数据平台深色专项修正（替换原暗色中的暖金硬编码） ─── */
+:root[data-theme='platform-dark'] .btn.primary {
+  background: var(--c-accent) !important;
+  border-color: var(--c-accent) !important;
+  color: #0d1b1a !important;
+}
+:root[data-theme='platform-dark'] .btn.primary:hover { filter: brightness(1.1); }
+
+:root[data-theme='platform-dark'] .field-icon,
+:root[data-theme='platform-dark'] .answer-card h4 svg,
+:root[data-theme='platform-dark'] .sources-header svg {
+  background: #22252b !important;
+}
+
+:root[data-theme='platform-dark'] .sources-hint,
+:root[data-theme='platform-dark'] .table-header,
+:root[data-theme='platform-dark'] .expanded-label,
+:root[data-theme='platform-dark'] .test-item,
+:root[data-theme='platform-dark'] .expanded-meta,
+:root[data-theme='platform-dark'] .expanded-block {
+  background: #1b1e23 !important;
+}
+
+:root[data-theme='platform-dark'] .group-loading {
+  background: rgba(26, 28, 32, 0.96) !important;
+}
+:root[data-theme='platform-dark'] .group-body.is-loading::after {
+  background: rgba(17, 18, 23, 0.6) !important;
+}
+
+:root[data-theme='platform-dark'] .status-chip,
+:root[data-theme='platform-dark'] .help-dot {
+  background: #22252b !important;
+}
+
+:root[data-theme='platform-dark'] .view-toggle button.on {
+  background: var(--c-accent) !important;
+  color: #0d1b1a !important;
+}
+
+:root[data-theme='platform-dark'] .test-score {
+  color: #0d1b1a !important;
+  background: var(--c-accent) !important;
+  box-shadow: inset 0 0 0 1px rgba(13, 148, 136, 0.35);
+}
+
+:root[data-theme='platform-dark'] .markdown-body code {
+  background: #23262c;
+}
+
+:root[data-theme='platform-dark'] .markdown-body th {
+  background: #1b1e23;
 }

@@ -153,7 +153,7 @@ function selectTab(tab) {
   color: var(--c-bg);
 }
 
-:root[data-theme='dark'] .v-pill .tab-badge {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .v-pill .tab-badge {
   background: rgba(255, 255, 255, 0.12);
 }
 </style>

@@ -691,7 +691,7 @@ onBeforeUnmount(() => {
   to { background-position: 28.28px 0; }
 }
 
-:root[data-theme='dark'] .live-bar {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .live-bar {
   background: linear-gradient(90deg, #10270f, #1b431b);
 }
 
@@ -796,7 +796,7 @@ onBeforeUnmount(() => {
   font-weight: 800;
 }
 
-:root[data-theme='dark'] .flow-role {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .flow-role {
   color: var(--c-secondary);
 }
 
@@ -875,7 +875,7 @@ onBeforeUnmount(() => {
   font-weight: 900;
 }
 
-:root[data-theme='dark'] .workflow-item span {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .workflow-item span {
   background: rgba(120, 220, 227, 0.12);
   color: #78dce3;
 }
@@ -898,7 +898,7 @@ onBeforeUnmount(() => {
   opacity: 0.45;
 }
 
-:root[data-theme='dark'] .art-grid path {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .art-grid path {
   stroke: rgba(141, 230, 236, 0.42);
 }
 
@@ -1147,7 +1147,7 @@ onBeforeUnmount(() => {
   stroke-width: 2;
   stroke-linejoin: round;
 }
-:root[data-theme='dark'] .robot-face {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .robot-face {
   fill: #eefbfc;
 }
 
@@ -1180,12 +1180,12 @@ onBeforeUnmount(() => {
   stroke-linecap: round;
 }
 
-:root[data-theme='dark'] .iso-base,
-:root[data-theme='dark'] .paper,
-:root[data-theme='dark'] .bubble,
-:root[data-theme='dark'] .screen,
-:root[data-theme='dark'] .scope-base,
-:root[data-theme='dark'] .graph-node.white {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .iso-base,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .paper,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .bubble,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .screen,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .scope-base,
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .graph-node.white {
   fill: #eefbfc;
 }
 

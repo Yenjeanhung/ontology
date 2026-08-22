@@ -10,7 +10,13 @@ const route = useRoute()
 const isSidebarCollapsed = ref(false)
 const SIDEBAR_STORAGE_KEY = 'knowsource.sidebar.collapsed'
 const THEME_STORAGE_KEY = 'knowsource.theme'
-const theme = ref('dark')
+// 主题列表：右上角皮肤下拉菜单（首项为系统默认）
+const THEMES = [
+  { key: 'platform-dark', label: '深蓝', swatch: '#2DD4BF' },
+  { key: 'light', label: '浅色', swatch: '#A16207' },
+  { key: 'dark', label: '深色', swatch: '#E0A84E' },
+]
+const theme = ref('platform-dark')
 const vectorProvider = ref('')
 const graphProvider = ref('')
 
@@ -43,9 +49,13 @@ function onGroupClick(item) {
 }
 function onSidePointerDown(e) {
   if (openGroup.value !== null && !e.target.closest('.side-group')) openGroup.value = null
+  if (themeMenuOpen.value && !e.target.closest('.theme-menu')) themeMenuOpen.value = false
 }
 function onSideKeydown(e) {
-  if (e.key === 'Escape') openGroup.value = null
+  if (e.key === 'Escape') {
+    openGroup.value = null
+    themeMenuOpen.value = false
+  }
 }
 
 // 路由变化时收起卡片
@@ -134,9 +144,36 @@ function applyTheme(nextTheme) {
   localStorage.setItem(THEME_STORAGE_KEY, nextTheme)
 }
 
-function toggleTheme() {
-  applyTheme(theme.value === 'dark' ? 'light' : 'dark')
+// 皮肤下拉菜单
+const themeMenuOpen = ref(false)
+
+function toggleThemeMenu() {
+  themeMenuOpen.value = !themeMenuOpen.value
 }
+
+function selectTheme(key) {
+  applyTheme(key)
+  themeMenuOpen.value = false
+}
+
+// 顶栏面包屑：根据当前路由解析 分组/页面 名（子路由优先于父级匹配）
+const EXTRA_ROUTE_TITLES = [
+  ['/entities/relations', '实体', '关系列表'],
+]
+const routeTitle = computed(() => {
+  const p = route.path
+  if (p === '/') return { group: '', label: '首页' }
+  for (const [prefix, group, title] of EXTRA_ROUTE_TITLES) {
+    if (p === prefix || p.startsWith(prefix + '/')) return { group, label: title }
+  }
+  for (const item of menuItems.value) {
+    for (const c of item.children || []) {
+      if (p === c.to || p.startsWith(c.to + '/')) return { group: item.label, label: c.label }
+    }
+    if (item.to && (p === item.to || p.startsWith(item.to + '/'))) return { group: '', label: item.label }
+  }
+  return { group: '', label: '' }
+})
 
 function isExact(item) {
   return item.exact ? 'is-active' : undefined
@@ -153,11 +190,11 @@ onMounted(() => {
   }
 
   const savedTheme = localStorage.getItem(THEME_STORAGE_KEY)
-  if (savedTheme === 'light' || savedTheme === 'dark') {
+  if (THEMES.some(t => t.key === savedTheme)) {
     applyTheme(savedTheme)
   } else {
-    // 默认使用深色模式
-    applyTheme('dark')
+    // 默认使用数据平台深色
+    applyTheme('platform-dark')
   }
 
   fetchConfig().then(cfg => {
@@ -191,51 +228,6 @@ onBeforeUnmount(() => {
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="3.75" y="5" width="16.5" height="14" rx="3" />
             <path d="M9 5v14" />
-          </svg>
-        </button>
-        <button
-          v-if="!isSidebarCollapsed"
-          class="sidebar-toggle theme-toggle"
-          type="button"
-          :aria-label="theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
-          :title="theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
-          @click="toggleTheme"
-        >
-          <svg
-            v-if="theme === 'dark'"
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.85"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <circle cx="12" cy="12" r="4.25" />
-            <path d="M12 2.75v2.1" />
-            <path d="M12 19.15v2.1" />
-            <path d="m4.93 4.93 1.49 1.49" />
-            <path d="m17.58 17.58 1.49 1.49" />
-            <path d="M2.75 12h2.1" />
-            <path d="M19.15 12h2.1" />
-            <path d="m4.93 19.07 1.49-1.49" />
-            <path d="m17.58 6.42 1.49-1.49" />
-          </svg>
-          <svg
-            v-else
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.85"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M20.25 14.2A8.25 8.25 0 1 1 9.8 3.75a6.6 6.6 0 0 0 10.45 10.45Z" />
           </svg>
         </button>
       </div>
@@ -371,12 +363,58 @@ onBeforeUnmount(() => {
     </aside>
 
     <main class="main-area" :class="{ 'home-main': route.path === '/' }">
-      <router-view v-slot="{ Component, route }">
-        <KeepAlive>
-          <component v-if="route.meta.keepAlive" :is="Component" :key="route.params.kbId || route.path" />
-        </KeepAlive>
-        <component v-if="!route.meta.keepAlive" :is="Component" :key="route.path" />
-      </router-view>
+      <header class="topbar">
+        <nav class="topbar-crumb" aria-label="面包屑">
+          <router-link to="/" class="crumb-link">首页</router-link>
+          <template v-if="routeTitle.group">
+            <span class="crumb-sep">/</span>
+            <span class="crumb-group">{{ routeTitle.group }}</span>
+          </template>
+          <span class="crumb-sep">/</span>
+          <span class="crumb-current">{{ routeTitle.label || 'KnowSource' }}</span>
+        </nav>
+        <div class="theme-menu" :class="{ 'is-open': themeMenuOpen }">
+          <button
+            class="theme-menu-btn"
+            type="button"
+            aria-haspopup="menu"
+            :aria-expanded="themeMenuOpen"
+            aria-label="切换皮肤"
+            title="切换皮肤"
+            @click="toggleThemeMenu"
+          >
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z" />
+            </svg>
+          </button>
+          <div class="theme-dropdown" role="menu" aria-label="选择皮肤">
+            <div class="td-title">皮肤</div>
+            <button
+              v-for="t in THEMES"
+              :key="t.key"
+              class="td-item"
+              type="button"
+              role="menuitemradio"
+              :aria-checked="theme === t.key"
+              :class="{ 'is-active': theme === t.key }"
+              @click="selectTheme(t.key)"
+            >
+              <span class="td-swatch" :style="{ background: t.swatch }"></span>
+              <span class="td-label">{{ t.label }}</span>
+              <svg v-if="theme === t.key" class="td-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div class="main-content">
+        <router-view v-slot="{ Component, route }">
+          <KeepAlive>
+            <component v-if="route.meta.keepAlive" :is="Component" :key="route.params.kbId || route.path" />
+          </KeepAlive>
+          <component v-if="!route.meta.keepAlive" :is="Component" :key="route.path" />
+        </router-view>
+      </div>
     </main>
 
     <ToastContainer />
@@ -434,10 +472,6 @@ onBeforeUnmount(() => {
 .sidebar-toggle:hover {
   background: var(--c-muted);
   color: var(--c-fg);
-}
-
-.theme-toggle {
-  color: var(--c-accent);
 }
 
 .side-nav {
@@ -549,15 +583,168 @@ onBeforeUnmount(() => {
   transform: translateY(-50%) rotate(45deg);
 }
 
+/* 数据平台深色：去除暖色调阴影 */
+:root[data-theme='platform-dark'] .side-hint,
+:root[data-theme='platform-dark'] .theme-dropdown {
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+}
+
 .main-area {
   flex: 1;
   min-width: 0;
-  padding: 28px 32px 48px;
+  display: flex;
+  flex-direction: column;
   position: relative;
   z-index: 1;
 }
 
-.main-area.home-main {
+/* ─── 顶栏 ─── */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 52px;
+  padding: 0 24px;
+  background: var(--c-panel-elevated);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--c-border);
+}
+
+.topbar-crumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.crumb-link {
+  color: var(--c-secondary);
+  text-decoration: none;
+  transition: color 120ms;
+}
+.crumb-link:hover { color: var(--c-fg); }
+
+.crumb-sep { color: var(--c-border); font-size: 12px; user-select: none; }
+
+.crumb-group { color: var(--c-secondary); }
+
+.crumb-current {
+  color: var(--c-fg);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 皮肤切换（右上角调色板图标 + 下拉） */
+.theme-menu {
+  position: relative;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.theme-menu-btn {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--c-border);
+  border-radius: 9px;
+  background: var(--c-panel);
+  color: var(--c-secondary);
+  cursor: pointer;
+  transition: background 150ms, color 150ms, border-color 150ms;
+}
+
+.theme-menu-btn:hover {
+  background: var(--c-muted);
+  color: var(--c-fg);
+  border-color: var(--c-secondary);
+}
+
+.theme-menu.is-open .theme-menu-btn {
+  color: var(--c-accent);
+  border-color: var(--c-accent);
+}
+
+.theme-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  min-width: 152px;
+  padding: 6px;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  background: var(--c-panel-elevated);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 150ms ease, transform 150ms ease, visibility 150ms ease;
+  z-index: 60;
+}
+
+.theme-menu.is-open .theme-dropdown {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.td-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--c-secondary);
+  padding: 6px 10px 7px;
+  letter-spacing: 0.3px;
+}
+
+.td-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--c-fg);
+  font-family: var(--font);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.td-item:hover { background: var(--c-muted); }
+.td-item.is-active { color: var(--c-accent); font-weight: 600; }
+
+.td-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+
+.td-label { flex: 1; min-width: 0; }
+
+.td-check { color: var(--c-accent); flex-shrink: 0; }
+
+.main-content {
+  flex: 1;
+  padding: 28px 32px 48px;
+}
+
+.main-area.home-main .main-content {
   padding-bottom: 0;
 }
 
@@ -709,12 +896,16 @@ onBeforeUnmount(() => {
     display: none;
   }
 
-  .main-area {
+  .main-content {
     padding: 20px 16px 40px;
   }
 
-  .main-area.home-main {
+  .main-area.home-main .main-content {
     padding-bottom: 0;
+  }
+
+  .topbar {
+    padding: 0 14px;
   }
 }
 </style>

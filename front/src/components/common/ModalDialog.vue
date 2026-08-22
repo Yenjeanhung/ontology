@@ -251,7 +251,7 @@ onBeforeUnmount(() => {
   background: var(--c-danger);
 }
 
-:root[data-theme='dark'] .btn.primary.danger {
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .btn.primary.danger {
   background: var(--c-danger);
   border-color: var(--c-danger);
   color: #fff;
