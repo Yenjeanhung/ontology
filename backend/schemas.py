@@ -43,6 +43,21 @@ class AgentUpdate(BaseModel):
     is_enabled: int | None = None
 
 
+# ===== 工作流 =====
+
+
+class WorkflowSaveRequest(BaseModel):
+    """工作流定义保存结构（创建与更新共用）。"""
+    name: str
+    description: str = ""
+    definition: dict | None = None  # {nodes: [...], edges: [...]}
+
+
+class RunWorkflowRequest(BaseModel):
+    """运行工作流：开始节点入参。"""
+    inputs: dict = {}
+
+
 class AgentSkillCreate(BaseModel):
     name: str
     code: str

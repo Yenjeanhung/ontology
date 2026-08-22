@@ -377,3 +377,34 @@ class Agent(Base):
     is_enabled = Column(Integer, nullable=False, default=1)
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class Workflow(Base):
+    """工作流定义：节点 + 边的 DAG 图（definition 存 JSON blob）。"""
+
+    __tablename__ = "workflows"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String(100), nullable=False)
+    description = Column(Text, default="")
+    definition = Column(Text, nullable=False, default='{"nodes":[],"edges":[]}')
+    is_published = Column(Integer, nullable=False, default=0)  # 预留：发布为端点（v2）
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class WorkflowRun(Base):
+    """工作流运行记录：一次执行一行，节点状态存 JSON blob。"""
+
+    __tablename__ = "workflow_runs"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    workflow_id = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="running")  # running | succeeded | failed | cancelled
+    inputs = Column(Text, default="{}")
+    outputs = Column(Text, default="{}")
+    node_states = Column(Text, default="{}")
+    error = Column(Text, default="")
+    started_at = Column(String, nullable=True)
+    finished_at = Column(String, nullable=True)
+    duration_ms = Column(Integer, default=0)

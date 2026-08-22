@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     # 技能指令
     AGENT_SKILL_CHAR_BUDGET: int = 24000   # 技能指令总字符软上限（市场技能包 SKILL.md 常见 8-15K）
 
+    # 工作流
+    WORKFLOW_MAX_NODES: int = 100          # 单工作流节点数上限
+    WORKFLOW_MAX_STEPS: int = 200          # 单次运行最多执行节点数
+    WORKFLOW_RUN_TIMEOUT_SECONDS: int = 300  # 单次运行总超时（秒）
+    WORKFLOW_NODE_OUTPUT_LIMIT: int = 8192   # 节点输出 SSE 回传截断上限（字符）
+
     # 技能 ZIP 包导入（安全上限，均可在 .env 覆盖）
     SKILL_ZIP_MAX_UPLOAD_BYTES: int = 20 * 1024 * 1024        # 上传/下载 zip 原始体积上限
     SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED: int = 100 * 1024 * 1024  # 解压总量上限（解压前按 ZipInfo 预检）

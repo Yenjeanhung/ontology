@@ -1277,3 +1277,92 @@ export async function applyLLMPlan(planId) {
   }
   return res.json()
 }
+
+// ───────────────────── 工作流 ─────────────────────
+
+export async function fetchWorkflows() {
+  const res = await fetch(`${API}/api/workflows`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function getWorkflow(workflowId) {
+  const res = await fetch(`${API}/api/workflows/${workflowId}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function createWorkflow({ name, description = '', definition = null }) {
+  const res = await fetch(`${API}/api/workflows`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description, definition }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function updateWorkflow(workflowId, { name, description, definition }) {
+  const res = await fetch(`${API}/api/workflows/${workflowId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description, definition }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteWorkflow(workflowId) {
+  const res = await fetch(`${API}/api/workflows/${workflowId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function fetchWorkflowPalette() {
+  const res = await fetch(`${API}/api/workflow/palette`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function runWorkflowStream(workflowId, inputs, { onStarted, onNodeStarted, onNodeFinished, onNodeFailed, onNodeSkipped, onFinished } = {}) {
+  const res = await fetch(`${API}/api/workflows/${workflowId}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inputs }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || `HTTP ${res.status}`)
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const payload = line.slice(6)
+      if (payload === '[DONE]') return
+      try {
+        const data = JSON.parse(payload)
+        const t = data.type
+        if (t === 'workflow_started') onStarted?.(data)
+        else if (t === 'node_started') onNodeStarted?.(data)
+        else if (t === 'node_finished') onNodeFinished?.(data)
+        else if (t === 'node_failed') onNodeFailed?.(data)
+        else if (t === 'node_skipped') onNodeSkipped?.(data)
+        else if (t === 'workflow_finished') onFinished?.(data)
+      } catch { /* skip malformed */ }
+    }
+  }
+}

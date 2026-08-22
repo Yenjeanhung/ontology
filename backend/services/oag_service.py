@@ -49,9 +49,12 @@ def build_system_prompt(skills: list[dict], base_prompt: str = OAG_SYSTEM_PROMPT
     """base_prompt + 技能指令块；无技能时原样返回 base_prompt。
 
     base_prompt 默认为 OAG_SYSTEM_PROMPT；智能体配置传自定义人设时覆盖默认人设。
+    base_prompt 为 None / 空串时回退到默认人设。
     skills 列表元素应含 {name, instructions}。
     按 sort_order 排序拼接；超预算时从尾部截断并返回 truncated 标记。
     """
+    if not base_prompt:
+        base_prompt = OAG_SYSTEM_PROMPT
     if not skills:
         return base_prompt
 
@@ -404,6 +407,43 @@ class OAGService:
             yield _sse({"type": "token", "content": "\n\n[生成回答时出错]"})
 
         yield "data: [DONE]\n\n"
+
+    @staticmethod
+    async def run(kb_id: str, query: str, kb_name: str, ontology_schema, skills=None, persona=None) -> dict:
+        """非流式：完整执行 OAG 管线，返回 {answer, chunks, entities, subgraph}。
+
+        供工作流引擎等需要「拿到完整结果」的调用方使用；内部复用 query_stream，
+        收集 token 与结构化事件，不重复检索逻辑。
+        """
+        answer_parts: list[str] = []
+        chunks: list[dict] = []
+        entities: list[dict] = []
+        subgraph: dict | None = None
+        async for s in OAGService.query_stream(kb_id, query, kb_name, ontology_schema, skills, persona):
+            if not s.startswith("data: "):
+                continue
+            payload = s[len("data: "):].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                evt = json.loads(payload)
+            except ValueError:
+                continue
+            t = evt.get("type")
+            if t == "token":
+                answer_parts.append(evt.get("content") or "")
+            elif t == "chunks":
+                chunks = evt.get("chunks") or []
+            elif t == "entities":
+                entities = evt.get("entities") or []
+            elif t == "subgraph":
+                subgraph = evt
+        return {
+            "answer": "".join(answer_parts),
+            "chunks": chunks,
+            "entities": entities,
+            "subgraph": subgraph or {"facts": "", "entities": [], "relations": [], "retrieval_path": {}},
+        }
 
     @staticmethod
     async def _stream_vector_only(kb_id: str, query: str, skills=None, persona=None):

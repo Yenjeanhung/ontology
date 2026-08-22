@@ -20,6 +20,8 @@ import EntityListPage from '../components/entity/EntityListPage.vue'
 import EntityDetailPage from '../components/entity/EntityDetailPage.vue'
 import RelationListPage from '../components/entity/RelationListPage.vue'
 import GraphCleanupPage from '../components/entity/GraphCleanupPage.vue'
+import WorkflowListPage from '../components/workflow/WorkflowListPage.vue'
+import WorkflowEditorPage from '../components/workflow/WorkflowEditorPage.vue'
 
 const routes = [
   { path: '/', name: 'home', component: HomeView },
@@ -46,6 +48,9 @@ const routes = [
   { path: '/vectors', name: 'vectors', component: VectorDataView, meta: { keepAlive: true } },
   { path: '/vectors/:fileId', name: 'vector-file-detail', component: VectorFileDetail, props: true },
   { path: '/graph', name: 'graph', component: GraphView, meta: { keepAlive: true } },
+  // 工作流
+  { path: '/workflows', name: 'workflows', component: WorkflowListPage, meta: { keepAlive: true } },
+  { path: '/workflows/:workflowId', name: 'workflow-editor', component: WorkflowEditorPage, props: true },
   // 配置
   { path: '/config/models', name: 'config-models', component: ModelConfigPage, meta: { keepAlive: true } },
 ]

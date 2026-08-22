@@ -296,3 +296,28 @@ CREATE TABLE IF NOT EXISTS agents (
     updated_at VARCHAR
 );
 CREATE INDEX IF NOT EXISTS idx_agents_kb ON agents(kb_id);
+
+-- ===== 工作流（定义 + 运行记录）=====
+CREATE TABLE IF NOT EXISTS workflows (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT DEFAULT '',
+    definition TEXT NOT NULL DEFAULT '{"nodes":[],"edges":[]}',
+    is_published INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    id VARCHAR PRIMARY KEY,
+    workflow_id VARCHAR NOT NULL,
+    status VARCHAR NOT NULL DEFAULT 'running',
+    inputs TEXT DEFAULT '{}',
+    outputs TEXT DEFAULT '{}',
+    node_states TEXT DEFAULT '{}',
+    error TEXT DEFAULT '',
+    started_at VARCHAR,
+    finished_at VARCHAR,
+    duration_ms INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_wf ON workflow_runs(workflow_id);
