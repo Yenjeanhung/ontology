@@ -13,21 +13,12 @@ import {
   fetchEntities, fetchEntityServices, fetchWorkflowRuns, getWorkflowRun,
 } from '../../api'
 import { useToast } from '../../composables/useToast'
+import { TYPE_META } from './nodeMeta.js'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 const wfId = route.params.workflowId
-
-const TYPE_META = {
-  start: { name: '开始', icon: '▶', color: '#64748b' },
-  end: { name: '结束', icon: '■', color: '#64748b' },
-  agent: { name: '智能体', icon: '🤖', color: '#d97706' },
-  service: { name: '实体服务', icon: '⚙️', color: '#2563eb' },
-  llm: { name: '大模型', icon: '✨', color: '#7c3aed' },
-  condition: { name: '条件分支', icon: '⇄', color: '#ea580c' },
-  code: { name: '代码', icon: '</>', color: '#059669' },
-}
 // 自定义节点组件映射（Vue Flow 按节点 type 渲染 WorkflowNode）
 // markRaw：组件对象不进响应式代理（Vue Flow 内部会 h() 渲染，代理化组件触发性能 warning）
 const nodeTypes = markRaw(Object.fromEntries(Object.keys(TYPE_META).map(t => [t, WorkflowNode])))
@@ -699,22 +690,25 @@ function setStatus(nodeId, status, durationMs = null) {
     if (status === 'running') {
       n.data.elapsedText = '0s'
       n.data.step = ''
+      n.data.steps = []
     }
     // succeeded/failed：定格最终耗时（durationMs 优先，缺省用本地计时）
     else if (status === 'succeeded' || status === 'failed') {
       n.data.elapsedText = fmtElapsed(durationMs ?? (runningSince[nodeId] ? Date.now() - runningSince[nodeId] : null))
       n.data.step = ''
+      n.data.steps = []
     }
     else {
       n.data.elapsedText = ''
       n.data.step = ''
+      n.data.steps = []
     }
   }
   if (status === 'running') runningSince[nodeId] = Date.now()
   else delete runningSince[nodeId]
 }
 function clearStatus() {
-  nodes.value.forEach(n => { n.data.status = ''; n.data.output = null; n.data.step = '' })
+  nodes.value.forEach(n => { n.data.status = ''; n.data.output = null; n.data.step = ''; n.data.steps = [] })
   Object.keys(runningSince).forEach(k => delete runningSince[k])
   logs.value = []
 }
@@ -741,7 +735,12 @@ async function startRun() {
           updateNode(d.node_id, (node) => {
             if (!node.data) node.data = {}
             if (d.output) node.data.output = d.output
-            if (d.step) node.data.step = d.step
+            if (d.step) {
+              node.data.step = d.step
+              const arr = [...(node.data.steps || [])]
+              if (arr[arr.length - 1] !== d.step) arr.push(d.step)
+              node.data.steps = arr
+            }
           })
         }
       },
@@ -842,6 +841,7 @@ function endConsoleResize() {
 // ── 抽屉宽度拖拽（左边缘把手，280–560px，记忆到 localStorage） ──
 const DRAWER_W_KEY = 'knowsource.workflow.drawerWidth'
 const drawerWidth = ref(parseInt(localStorage.getItem(DRAWER_W_KEY) || '', 10) || 340)
+const drawerCollapsed = ref(false)
 let resizing = false
 function startDrawerResize(e) {
   resizing = true
@@ -934,7 +934,7 @@ watch(nowTick, () => {
       <aside class="wf-palette">
         <div class="pal-group">节点</div>
         <button v-for="t in palette.node_types" :key="t.type" class="pal-item" draggable="true" @dragstart="onDragStart($event, t.type)" @click="addNode(t.type)">
-          <span class="pal-ico" :style="{ background: TYPE_META[t.type]?.color || '#64748b' }">{{ t.icon }}</span>
+          <span class="pal-ico" :style="{ background: TYPE_META[t.type]?.color || '#64748b' }" v-html="TYPE_META[t.type]?.icon"></span>
           <span class="pal-name">{{ t.name }}</span>
         </button>
         <div class="pal-hint">点击节点加入画布，拖拽连线组装。变量用 <code v-pre>{{节点.字段}}</code> 引用上游输出。</div>
@@ -962,11 +962,15 @@ watch(nowTick, () => {
       </div>
 
       <!-- 右：配置抽屉 -->
-      <aside class="wf-drawer" :style="{ width: drawerWidth + 'px' }">
-        <div class="drawer-resizer" title="拖拽调节宽度" @pointerdown="startDrawerResize"></div>
-        <template v-if="selectedNode">
+      <aside class="wf-drawer" :class="{ collapsed: drawerCollapsed }" :style="{ width: drawerCollapsed ? '28px' : drawerWidth + 'px' }">
+        <div class="drawer-resizer" v-if="!drawerCollapsed" title="拖拽调节宽度" @pointerdown="startDrawerResize"></div>
+        <button type="button" class="drawer-toggle" :title="drawerCollapsed ? '展开配置' : '收起配置'" @click="drawerCollapsed = !drawerCollapsed">
+          <span v-if="drawerCollapsed">«</span>
+          <span v-else>»</span>
+        </button>
+        <template v-if="!drawerCollapsed && selectedNode">
           <div class="dr-head">
-            <span class="dr-ico" :style="{ background: TYPE_META[selectedType]?.color || '#64748b' }">{{ TYPE_META[selectedType]?.icon }}</span>
+            <span class="dr-ico" :style="{ background: TYPE_META[selectedType]?.color || '#64748b' }" v-html="TYPE_META[selectedType]?.icon"></span>
             <div class="dr-head-t">
               <div class="dr-title">{{ TYPE_META[selectedType]?.name }}</div>
               <div class="dr-sub">{{ selectedNodeId }}</div>
@@ -1232,7 +1236,7 @@ watch(nowTick, () => {
           </div>
         </template>
 
-        <div class="dr-empty" v-else>点击画布上的节点<br>编辑它的配置</div>
+        <div class="dr-empty" v-if="!drawerCollapsed && !selectedNode">点击画布上的节点<br>编辑它的配置</div>
       </aside>
     </div>
 
@@ -1348,6 +1352,7 @@ watch(nowTick, () => {
 .pal-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--c-border); border-radius: 8px; background: var(--c-bg); cursor: pointer; font-family: var(--font); color: var(--c-fg); transition: border-color 120ms, transform 120ms; }
 .pal-item:hover { border-color: var(--c-accent); transform: translateY(-1px); }
 .pal-ico { width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 12px; flex-shrink: 0; }
+.pal-ico svg { width: 14px; height: 14px; }
 .pal-name { font-size: 12.5px; font-weight: 600; }
 .pal-hint { margin-top: auto; padding: 8px; font-size: 11px; color: var(--c-secondary); border: 1px dashed var(--c-border); border-radius: 8px; line-height: 1.6; }
 .pal-hint code { font-family: ui-monospace, monospace; color: var(--c-accent); }
@@ -1421,7 +1426,14 @@ watch(nowTick, () => {
 .ctx-item.danger:hover { background: color-mix(in srgb, var(--c-danger) 12%, transparent); }
 
 /* 右抽屉 */
-.wf-drawer { position: relative; width: 340px; flex-shrink: 0; display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: 12px; background: var(--c-panel); overflow: hidden; }
+.wf-drawer { position: relative; width: 340px; flex-shrink: 0; display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: 12px; background: var(--c-panel); overflow: hidden; transition: width .2s ease; }
+.wf-drawer.collapsed { width: 28px; align-items: center; padding-top: 8px; border-radius: 12px 0 0 12px; }
+.drawer-toggle {
+  width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none; color: var(--c-secondary); cursor: pointer;
+  font-size: 14px; line-height: 1; z-index: 10;
+}
+.drawer-toggle:hover { color: var(--c-accent); }
 /* 左边缘拖拽把手：hover/拖动时高亮 */
 .drawer-resizer {
   position: absolute; left: -3px; top: 0; bottom: 0; width: 7px;
@@ -1434,6 +1446,7 @@ watch(nowTick, () => {
 .drawer-resizer:hover::after { background: var(--c-accent); width: 2px; }
 .dr-head { display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-bottom: 1px solid var(--c-border); }
 .dr-ico { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 13px; flex-shrink: 0; }
+.dr-ico svg { width: 15px; height: 15px; }
 .dr-head-t { flex: 1; min-width: 0; }
 .dr-title { font-size: 13px; font-weight: 700; color: var(--c-fg); }
 .dr-sub { font-size: 10.5px; color: var(--c-secondary); }

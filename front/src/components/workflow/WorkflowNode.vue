@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
+import { TYPE_META } from './nodeMeta.js'
 
 const FIXED_KEYS = ['answer', 'chunks', 'entities', 'subgraph', 'success', 'data', 'error', 'stdout', 'duration_ms', 'text', 'result']
 
@@ -10,16 +11,6 @@ const props = defineProps({
   selected: { type: Boolean, default: false },
 })
 
-const TYPE_META = {
-  start: { name: '开始', icon: '▶', color: '#64748b' },
-  end: { name: '结束', icon: '■', color: '#64748b' },
-  agent: { name: '智能体', icon: '🤖', color: '#d97706' },
-  service: { name: '实体服务', icon: '⚙️', color: '#2563eb' },
-  llm: { name: '大模型', icon: '✨', color: '#7c3aed' },
-  condition: { name: '条件分支', icon: '⇄', color: '#ea580c' },
-  code: { name: '代码', icon: '</>', color: '#059669' },
-}
-
 const type = computed(() => props.data?.nodeType || 'start')
 const meta = computed(() => TYPE_META[type.value] || TYPE_META.start)
 const title = computed(() => props.data?.title || meta.value.name)
@@ -27,6 +18,7 @@ const isCondition = computed(() => type.value === 'condition')
 const status = computed(() => props.data?.status || '')
 const elapsedText = computed(() => props.data?.elapsedText || '')
 const currentStep = computed(() => props.data?.step || '')
+const runningSteps = computed(() => props.data?.steps || [])
 
 const STATUS_LABEL = { running: '运行中', succeeded: '完成', failed: '失败', skipped: '跳过' }
 
@@ -58,6 +50,13 @@ function fmtValPop(v, maxLen = 300) {
     const s = JSON.stringify(v)
     return s.length > maxLen ? s.slice(0, maxLen) + '…' : s
   } catch { return String(v) }
+}
+// 弹窗内完整值：双击展开后使用，支持滚动与复制
+function fmtValPopFull(v) {
+  if (v == null) return 'null'
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  try { return JSON.stringify(v, null, 2) } catch { return String(v) }
 }
 
 // 自定义（非固定）字段的键值对：智能体结构化输出（count/names 等）一眼可见
@@ -94,6 +93,11 @@ const outOpen = ref(false)
 const fixedPopExpanded = ref(false)
 const rawJsonExpanded = ref(false)
 const copied = ref(false)
+const expandedPopKey = ref('')
+
+function togglePopKey(key) {
+  expandedPopKey.value = expandedPopKey.value === key ? '' : key
+}
 let copiedTimer = null
 
 // 弹窗用：固定输出分组（默认折叠）
@@ -152,7 +156,7 @@ async function copyOutputJson() {
     <Handle v-else type="source" :position="Position.Right" class="wf-handle" />
 
     <div class="wf-head">
-      <span class="wf-ico" :style="{ background: meta.color }">{{ meta.icon }}</span>
+      <span class="wf-ico" :style="{ background: meta.color }" v-html="meta.icon"></span>
       <div class="wf-title">{{ title }}</div>
       <span v-if="status" class="wf-status-chip" :class="'sc-' + status">
         <span v-if="status === 'running'" class="wf-pulse"></span>
@@ -161,16 +165,17 @@ async function copyOutputJson() {
     </div>
     <div class="wf-body">{{ bodyText(type, props.data?.config) }}</div>
 
-    <!-- 运行时显示步骤 + 流式输出预览；运行后：卡片只展示自定义输出；固定输出进弹窗查看 -->
+    <!-- 运行时显示全部步骤 + 流式输出预览；运行后：卡片只展示自定义输出；固定输出进弹窗查看 -->
     <div class="wf-out" v-if="status === 'succeeded' || status === 'failed' || status === 'running'">
-      <div v-if="status === 'running'" class="wf-out-stream" @click.stop="outOpen = !outOpen" title="点击展开完整输出">
-        <span class="wf-stream-dot"></span>
-        <div class="wf-stream-wrap">
-          <div v-if="currentStep" class="wf-stream-step">{{ currentStep }}</div>
-          <div v-if="streamPreview" class="wf-stream-marquee">
-            <span class="wf-stream-text">{{ streamPreview }}</span>
+      <div v-if="status === 'running'" class="wf-out-running" @click.stop="outOpen = !outOpen" title="点击展开完整输出">
+        <div class="wf-out-steps">
+          <div v-for="(s, i) in runningSteps" :key="i" class="wf-step-line" :class="{ 'wf-step-current': i === runningSteps.length - 1 }">
+            <span class="wf-step-dot"></span>
+            <span class="wf-step-label">{{ s }}</span>
           </div>
-          <span v-else class="wf-stream-text">生成中...</span>
+        </div>
+        <div v-if="streamPreview" class="wf-stream-marquee">
+          <span class="wf-stream-text">{{ streamPreview }}</span>
         </div>
       </div>
       <template v-else-if="status !== 'running'">
@@ -196,7 +201,12 @@ async function copyOutputJson() {
           <div class="wf-pop-kvs">
             <div v-for="o in popCustomOuts" :key="o.k" class="wf-pop-kv">
               <span class="wf-pop-k">{{ o.k }}</span>
-              <span class="wf-pop-v" :title="String(o.v)">{{ o.v }}</span>
+              <span
+                class="wf-pop-v"
+                :class="{ 'wf-pop-v-expanded': expandedPopKey === 'custom:' + o.k }"
+                :title="expandedPopKey === 'custom:' + o.k ? '' : String(o.full)"
+                @dblclick.stop="togglePopKey('custom:' + o.k)"
+              >{{ expandedPopKey === 'custom:' + o.k ? o.full : o.v }}</span>
             </div>
           </div>
         </div>
@@ -210,7 +220,12 @@ async function copyOutputJson() {
           <div v-if="fixedPopExpanded" class="wf-pop-kvs">
             <div v-for="o in popFixedOuts" :key="o.k" class="wf-pop-kv">
               <span class="wf-pop-k">{{ o.k }}</span>
-              <span class="wf-pop-v" :title="String(o.v)">{{ o.v }}</span>
+              <span
+                class="wf-pop-v"
+                :class="{ 'wf-pop-v-expanded': expandedPopKey === 'fixed:' + o.k }"
+                :title="expandedPopKey === 'fixed:' + o.k ? '' : String(o.full)"
+                @dblclick.stop="togglePopKey('fixed:' + o.k)"
+              >{{ expandedPopKey === 'fixed:' + o.k ? o.full : o.v }}</span>
             </div>
           </div>
         </div>
@@ -279,6 +294,7 @@ async function copyOutputJson() {
   width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center; color: #fff; font-size: 12px;
 }
+.wf-ico svg { width: 14px; height: 14px; }
 .wf-title {
   font-size: 12.5px; font-weight: 700; color: var(--c-fg);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
@@ -294,22 +310,23 @@ async function copyOutputJson() {
 }
 .wf-out-answer:hover { color: var(--c-accent); }
 .wf-out-kv { cursor: pointer; }
-.wf-out-stream {
-  display: flex; align-items: flex-start; gap: 6px;
-  font-size: 10px; line-height: 1.45; color: var(--c-fg);
-  cursor: pointer;
+.wf-out-running { display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
+.wf-out-steps { display: flex; flex-direction: column; gap: 3px; }
+.wf-step-line {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10px; line-height: 1.4; color: var(--c-secondary);
 }
-.wf-stream-dot {
-  flex-shrink: 0; width: 6px; height: 6px; margin-top: 4px; border-radius: 50%;
-  background: var(--c-accent);
-  animation: wf-pulse 1.2s infinite;
+.wf-step-line.wf-step-current { color: var(--c-fg); }
+.wf-step-dot {
+  flex-shrink: 0; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--c-accent); opacity: .7;
 }
+.wf-step-current .wf-step-dot { opacity: 1; animation: wf-pulse 1.2s infinite; }
+.wf-step-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wf-stream-text {
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
   overflow: hidden; word-break: break-all;
 }
-.wf-stream-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.wf-stream-step { font-size: 10px; color: var(--c-accent); font-weight: 600; line-height: 1.3; }
 .wf-stream-marquee { overflow: hidden; white-space: nowrap; }
 .wf-stream-marquee .wf-stream-text {
   display: inline-block; white-space: nowrap; word-break: normal;
@@ -395,6 +412,18 @@ async function copyOutputJson() {
 }
 .wf-pop-k { flex-shrink: 0; color: var(--c-accent); font-weight: 700; }
 .wf-pop-v { color: var(--c-fg); word-break: break-all; }
+.wf-pop-v-expanded {
+  display: block;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  cursor: text;
+  background: rgba(255,255,255,0.04);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
 .wf-out-kvs { display: flex; flex-wrap: wrap; gap: 4px; }
 .wf-out-kv {
   display: inline-flex; align-items: center; gap: 4px;
