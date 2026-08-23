@@ -97,8 +97,6 @@ async function toggleEnabled(a) {
 
 async function save() {
   if (!editForm.value.name.trim()) { toast.error('名称不能为空'); return }
-  if (!editForm.value.kb_id && !selectedIsPreset() && !isNew.value) { toast.error('请选择知识库'); return }
-  if (!editForm.value.kb_id && isNew.value) { toast.error('请选择知识库'); return }
   saving.value = true
   try {
     if (isNew.value) {
@@ -205,7 +203,7 @@ async function doRemove() {
             </div>
             <div class="card-desc" v-if="a.description">{{ a.description }}</div>
             <div class="card-meta">
-              <span class="meta-tag">📚 {{ kbName(a.kb_id) }}</span>
+              <span class="meta-tag">📚 {{ a.kb_id ? kbName(a.kb_id) : '问答时选择' }}</span>
               <span class="meta-tag">🧩 {{ a.skill_count }} 技能</span>
               <span v-if="!a.is_enabled" class="off-tag">已禁用</span>
             </div>
@@ -233,12 +231,12 @@ async function doRemove() {
               <input type="text" v-model="editForm.description" placeholder="一句话说明用途">
             </div>
             <div class="field">
-              <label>知识库 <span class="req" v-if="!selectedIsPreset()">*</span></label>
+              <label>知识库（选填）</label>
               <select v-model="editForm.kb_id">
-                <option value="">{{ selectedIsPreset() ? '不绑定（问答时选择）' : '请选择知识库' }}</option>
+                <option value="">不绑定（不使用知识库）</option>
                 <option v-for="kb in kbs" :key="kb.id" :value="kb.id">{{ kb.name }} ({{ kb.file_count }} 文件)</option>
               </select>
-              <span class="hint" v-if="selectedIsPreset()">内置智能体可不绑 KB：KB 与技能跟随问答页面的选择</span>
+              <span class="hint">绑定后检索该知识库；不绑定则不使用知识库，仅按人设/技能直接回答</span>
             </div>
             <div class="field">
               <label>技能（可多选）</label>

@@ -150,6 +150,7 @@ async def get_workflow_run(workflow_id: str, run_id: str, db: AsyncSession = Dep
 async def workflow_palette(db: AsyncSession = Depends(get_db)):
     kbs = await KBService.list_all(db)
     skills = [s for s in await SkillService.list(db) if s.get("is_enabled")]
+    # 工作流可引用的智能体：启用即可（未绑 KB 的以「无知识库纯对话」模式执行）
     agents = [a for a in await AgentService.list(db) if a.get("is_enabled")]
     return {
         "node_types": NODE_TYPES,

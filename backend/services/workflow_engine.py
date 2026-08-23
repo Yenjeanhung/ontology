@@ -115,11 +115,15 @@ async def _exec_agent(cfg: dict, context: dict, db) -> dict:
             raise RuntimeError("智能体不存在或已禁用")
         kb_id, skill_ids, persona = agent["kb_id"], agent["skill_ids"], agent["system_prompt"]
     else:
-        kb_id = cfg.get("kb_id")
+        kb_id = cfg.get("kb_id") or ""
         skill_ids = cfg.get("skill_ids") or []
         persona = None
+
+    # 未绑 KB：无知识库纯对话（人设 + 技能直接 LLM 回答），与问答页行为一致
     if not kb_id:
-        raise RuntimeError("智能体节点缺少 kb_id 或 agent_id")
+        skills = await SkillService.resolve(db, skill_ids)
+        return await _agent_chat_no_kb(query, persona, skills)
+
     kb = await KBService.get(db, kb_id)
     if not kb:
         raise RuntimeError("知识库不存在")
@@ -145,6 +149,32 @@ async def _exec_agent(cfg: dict, context: dict, db) -> dict:
             if name and isinstance(expr, str):
                 out[name] = render(expr, local_ctx)
     return out
+
+
+async def _agent_chat_no_kb(query: str, persona: str | None, skills: list[dict]) -> dict:
+    """未绑 KB 智能体的纯对话执行：LLM 按人设+技能回答，返回与 OAG 一致的结构。"""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from oag_service import build_system_prompt
+
+    llm = create_llm()
+    if llm is None:
+        raise RuntimeError("尚未配置大模型，请先在「系统配置」中激活 LLM")
+    system_prompt = build_system_prompt(skills, base_prompt=persona or "") or None
+    messages = [HumanMessage(content=query)]
+    if system_prompt:
+        messages.insert(0, SystemMessage(content=system_prompt))
+    try:
+        resp = await llm.ainvoke(messages)
+        text = resp.content if hasattr(resp, "content") else str(resp)
+    except Exception as e:
+        raise RuntimeError(f"LLM 调用失败：{e}")
+    return {
+        "answer": text,
+        "chunks": [],
+        "entities": [],
+        "subgraph": None,
+    }
 
 
 async def _exec_service(cfg: dict, context: dict, db) -> dict:

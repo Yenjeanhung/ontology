@@ -25,10 +25,10 @@ class AgentQueryRequest(BaseModel):
 
 
 class AgentCreate(BaseModel):
-    """创建智能体（KB + 技能 + 人设）。"""
+    """创建智能体（KB + 技能 + 人设；KB 可选，空 = 问答时跟随页面选择）。"""
     name: str
     description: str = ""
-    kb_id: str
+    kb_id: str = ""
     system_prompt: str = ""
     skill_ids: list[str] = []
     is_enabled: int = 1

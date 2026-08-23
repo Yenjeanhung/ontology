@@ -499,7 +499,8 @@ async def create_agent(req: AgentCreate, db: AsyncSession = Depends(get_db)):
     name = (req.name or "").strip()
     if not name:
         raise HTTPException(400, "智能体名称不能为空")
-    if not await db.get(KnowledgeBase, req.kb_id):
+    # KB 选填：填了才校验存在
+    if req.kb_id and not await db.get(KnowledgeBase, req.kb_id):
         raise HTTPException(404, "知识库不存在")
     data = req.model_dump()
     data["name"] = name
@@ -562,6 +563,44 @@ async def test_agent(agent_id: str, req: AgentQueryRequest, db: AsyncSession = D
 # ─────────────────────── 智能体查询 ───────────────────────
 
 
+async def _chat_no_kb(query: str, persona: str | None, skills=None):
+    """未绑 KB 的智能体：无检索直接 LLM 回答（人设 + 技能），事件结构与 OAG 一致。"""
+    from oag_service import build_system_prompt
+
+    skills = skills or []
+    yield _sse_evt({"type": "skills", "skills": [{"id": s["id"], "name": s["name"], "code": s["code"]} for s in skills]})
+    yield _sse_evt({"type": "entities", "entities": []})
+    yield _sse_evt({"type": "subgraph", "facts": "（无知识库）", "entities": [], "relations": [],
+                    "retrieval_path": {"vector": 0, "graph": 0, "both": 0, "entities": 0, "degraded": True}})
+    yield _sse_evt({"type": "chunks", "chunks": []})
+
+    from providers.llm import create_llm
+    from langchain_core.messages import HumanMessage
+
+    llm = create_llm()
+    if llm is None:
+        yield _sse_evt({"type": "token", "content": "尚未配置大模型，请先在「系统配置」中激活 LLM。"})
+        yield "data: [DONE]\n\n"
+        return
+    system_prompt = build_system_prompt(skills, base_prompt=persona or "") or None
+    messages = [HumanMessage(content=query)]
+    if system_prompt:
+        from langchain_core.messages import SystemMessage
+        messages.insert(0, SystemMessage(content=system_prompt))
+    try:
+        async for chunk in llm.astream(messages):
+            if chunk.content:
+                yield _sse_evt({"type": "token", "content": chunk.content})
+    except Exception:
+        yield _sse_evt({"type": "token", "content": "\n\n[生成回答时出错]"})
+    yield "data: [DONE]\n\n"
+
+
+def _sse_evt(payload: dict) -> str:
+    import json as _json
+    return f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 @router.post("/agent/query")
 async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)):
     # 引用智能体（可选）：传 agent_id 时以其 KB / 技能 / 人设为准；
@@ -578,6 +617,13 @@ async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)
 
     kb_id = agent["kb_id"] if agent else req.kb_id
     if not kb_id:
+        # 未绑 KB 的智能体：不使用知识库，直接 LLM 按人设+技能回答
+        if agent and agent["id"] != "agent_default":
+            return StreamingResponse(
+                _chat_no_kb(req.query, agent["system_prompt"] or None, skills=await SkillService.resolve(db, agent["skill_ids"])),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
         raise HTTPException(400, "缺少 kb_id 或 agent_id")
     kb = await KBService.get(db, kb_id)
     if not kb:
