@@ -22,6 +22,7 @@ from schemas import (
 from services.ontology_action_service import (
     OntologyServiceService,
     ServiceRuntimeService,
+    serialize_service,
 )
 from services.service_runtime import IMPORT_WHITELIST, check_code
 
@@ -95,6 +96,15 @@ async def delete_ontology_service(service_id: str, db: AsyncSession = Depends(ge
     if not await OntologyServiceService.delete(db, service_id):
         raise _nf("服务不存在")
     return {"status": "deleted"}
+
+
+@router.get("/ontology-services/{service_id}")
+async def get_ontology_service(service_id: str, db: AsyncSession = Depends(get_db)):
+    """按 id 取服务详情（适用于本体服务与实体自定义服务，service.id 全局唯一）。"""
+    svc = await OntologyServiceService.get(db, service_id)
+    if not svc:
+        raise _nf("服务不存在")
+    return serialize_service(svc)
 
 
 @router.post("/ontology-services/{service_id}/test")

@@ -22,6 +22,7 @@ import RelationListPage from '../components/entity/RelationListPage.vue'
 import GraphCleanupPage from '../components/entity/GraphCleanupPage.vue'
 import WorkflowListPage from '../components/workflow/WorkflowListPage.vue'
 import WorkflowEditorPage from '../components/workflow/WorkflowEditorPage.vue'
+import ServiceEditorPage from '../components/ontology/ServiceEditorPage.vue'
 
 const routes = [
   { path: '/', name: 'home', component: HomeView },
@@ -51,6 +52,11 @@ const routes = [
   // 工作流
   { path: '/workflows', name: 'workflows', component: WorkflowListPage, meta: { keepAlive: true } },
   { path: '/workflows/:workflowId', name: 'workflow-editor', component: WorkflowEditorPage, props: true },
+  // 服务编辑器（本体服务 / 实体自定义动作，独立大页面）
+  { path: '/ontology-services/new', name: 'ontology-service-new', component: ServiceEditorPage, meta: { keepAlive: false, fullscreen: true } },
+  { path: '/ontology-services/:serviceId/edit', name: 'ontology-service-edit', component: ServiceEditorPage, props: true, meta: { keepAlive: false, fullscreen: true } },
+  { path: '/entity-services/new', name: 'entity-service-new', component: ServiceEditorPage, meta: { keepAlive: false, fullscreen: true } },
+  { path: '/entity-services/:serviceId/edit', name: 'entity-service-edit', component: ServiceEditorPage, props: true, meta: { keepAlive: false, fullscreen: true } },
   // 配置
   { path: '/config/models', name: 'config-models', component: ModelConfigPage, meta: { keepAlive: true } },
 ]

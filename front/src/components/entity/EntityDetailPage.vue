@@ -1,15 +1,13 @@
 <script setup>
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, watch, nextTick, onActivated } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl, fetchEntityServices, copyServiceToEntity, deleteOntologyService } from '../../api'
 import { marked } from 'marked'
 import ServiceInvokeDialog from './ServiceInvokeDialog.vue'
-import ServiceEditorDialog from '../ontology/ServiceEditorDialog.vue'
 
 const props = defineProps({
   entityId: { type: String, required: true },
 })
-
 const router = useRouter()
 const route = useRoute()
 const entity = ref(null)
@@ -44,8 +42,6 @@ const services = ref([])
 const servicesLoading = ref(false)
 const showInvoke = ref(false)
 const invokeTarget = ref(null)
-const showSvcEditor = ref(false)
-const svcEditing = ref(null)
 
 const inheritedServices = computed(() =>
   services.value.filter(s => s.source === 'ontology')
@@ -71,13 +67,11 @@ function openInvoke(svc) {
 }
 
 function openSvcCreate() {
-  svcEditing.value = null
-  showSvcEditor.value = true
+  router.push({ name: 'entity-service-new', query: { entityId: props.entityId, entityName: entity.value?.name || '' } })
 }
 
 function openSvcEdit(svc) {
-  svcEditing.value = svc
-  showSvcEditor.value = true
+  router.push({ name: 'entity-service-edit', params: { serviceId: svc.id } })
 }
 
 async function onSvcSaved() {
@@ -102,6 +96,9 @@ async function removeCustomService(svc) {
     alert('删除失败：' + e.message)
   }
 }
+
+// 从服务编辑大页面返回时刷新服务列表
+onActivated(() => { loadServices() })
 
 const parsedProperties = computed(() => {
   if (!entity.value) return {}
@@ -586,7 +583,6 @@ onMounted(load)
       </div>
 
       <ServiceInvokeDialog v-model="showInvoke" :entity-id="entityId" :entity-name="entity?.name || ''" :service="invokeTarget" />
-      <ServiceEditorDialog v-model="showSvcEditor" :owner="{ type: 'entity', entityId: entityId, entityName: entity?.name || '' }" :service="svcEditing" @saved="onSvcSaved" />
     </div>
   </div>
 </template>

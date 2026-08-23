@@ -252,8 +252,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'is-collapsed': isSidebarCollapsed }">
-    <aside class="sidebar">
+  <div class="app-shell" :class="{ 'is-collapsed': isSidebarCollapsed, 'is-fullscreen': !!route.meta?.fullscreen }">
+    <aside class="sidebar" v-if="!route.meta?.fullscreen">
       <div class="sidebar-head">
         <button class="brand" type="button" aria-label="返回首页" @click="goHome">
           <span class="brand-mark">K</span>
@@ -353,8 +353,8 @@ onBeforeUnmount(() => {
       </button>
     </aside>
 
-    <main class="main-area" :class="{ 'home-main': route.path === '/' }">
-      <header class="topbar">
+    <main class="main-area" :class="{ 'home-main': route.path === '/', 'is-fullscreen': !!route.meta?.fullscreen }">
+      <header class="topbar" v-if="!route.meta?.fullscreen">
         <nav class="topbar-crumb" aria-label="面包屑">
           <router-link to="/" class="crumb-link">首页</router-link>
           <template v-if="routeTitle.group">
@@ -1100,6 +1100,16 @@ onBeforeUnmount(() => {
 
 .main-area.home-main .main-content {
   padding-bottom: 0;
+}
+
+/* 全屏路由：ServiceEditorPage 等独占整个屏幕 */
+.main-area.is-fullscreen {
+  flex: 1;
+  width: 100%;
+}
+.main-area.is-fullscreen .main-content {
+  padding: 0;
+  height: 100%;
 }
 
 @media (max-width: 640px) {

@@ -931,6 +931,12 @@ export async function fetchOntologyServices(categoryId, ontologyId) {
   return res.json()
 }
 
+export async function getOntologyService(serviceId) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}`)
+  if (!res.ok) throw new Error('Fetch service failed')
+  return res.json()
+}
+
 export async function createOntologyService(categoryId, ontologyId, data) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/services`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

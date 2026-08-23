@@ -13,6 +13,7 @@ import {
   fetchEntities, fetchEntityServices, fetchWorkflowRuns, getWorkflowRun, deleteWorkflowRun,
 } from '../../api'
 import { useToast } from '../../composables/useToast'
+import PythonEditor from './PythonEditor.vue'
 import { TYPE_META } from './nodeMeta.js'
 
 const route = useRoute()
@@ -1243,7 +1244,7 @@ watch(nowTick, () => {
             <template v-else-if="selectedType === 'code'">
               <div class="field">
                 <label>代码（沙箱 Python）</label>
-                <textarea v-model="selectedConfig.code_text" rows="10" style="font-family:ui-monospace,monospace"></textarea>
+                <PythonEditor v-model="selectedConfig.code_text" :height="280" :max-length="50000" />
               </div>
             </template>
 

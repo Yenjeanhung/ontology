@@ -1,5 +1,6 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, onActivated } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   createOntology, updateOntology, deleteOntology,
   replaceOntologyAttributes,
@@ -14,7 +15,6 @@ import {
 } from '../../api'
 import AttributeEditor from '../common/AttributeEditor.vue'
 import SearchableSelect from '../common/SearchableSelect.vue'
-import ServiceEditorDialog from './ServiceEditorDialog.vue'
 
 const props = defineProps({
   categoryId: { type: String, required: true },
@@ -66,9 +66,7 @@ const mergedVisible = ref(false)
 // 本体服务（仅当前本体）
 const services = ref([])
 const svcLoading = ref(false)
-const showSvcDialog = ref(false)
-const svcEditing = ref(null)
-const svcOwner = ref(null)
+const router = useRouter()
 
 // 新建本体
 const showCreate = ref(false)
@@ -309,17 +307,14 @@ function attrSourceLabel(source) {
 function openSvcCreate() {
   const d = detail.value
   if (!d) return
-  svcEditing.value = null
-  svcOwner.value = { type: 'ontology', categoryId: props.categoryId, ontologyId: d.id, ontologyName: d.name }
-  showSvcDialog.value = true
+  router.push({
+    name: 'ontology-service-new',
+    query: { categoryId: props.categoryId, ontologyId: d.id, ontologyName: d.name },
+  })
 }
 
 function openSvcEdit(svc) {
-  const d = detail.value
-  if (!d) return
-  svcEditing.value = svc
-  svcOwner.value = { type: 'ontology', categoryId: props.categoryId, ontologyId: d.id, ontologyName: d.name }
-  showSvcDialog.value = true
+  router.push({ name: 'ontology-service-edit', params: { serviceId: svc.id } })
 }
 
 async function onSvcSaved() {
@@ -354,6 +349,9 @@ function paramSummary(svc) {
   const n = svc.params?.length || 0
   return n ? `${n} 参数` : '无参数'
 }
+
+// 从服务编辑大页面返回时刷新服务列表
+onActivated(() => { onSvcSaved() })
 </script>
 
 <template>
@@ -595,14 +593,6 @@ function paramSummary(svc) {
         </div>
       </div>
     </div>
-
-    <!-- 服务编辑弹窗 -->
-    <ServiceEditorDialog
-      v-model="showSvcDialog"
-      :owner="svcOwner"
-      :service="svcEditing"
-      @saved="onSvcSaved"
-    />
 
     <!-- 新建本体弹窗 -->
     <div v-if="showCreate" class="oe-modal-mask" @click.self="showCreate = false">
