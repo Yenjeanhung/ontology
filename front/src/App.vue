@@ -101,13 +101,6 @@ const menuItems = [
     ],
   },
   { key: 'entities', label: '实体', icon: 'entities', to: '/entities' },
-  {
-    key: 'graph', label: '知识图谱', icon: 'graph',
-    children: [
-      { to: '/graph', label: '图谱浏览' },
-      { to: '/graph-cleanup', label: '图谱清洗' },
-    ],
-  },
   { type: 'group', label: '知识生产', icon: 'groupProd' },
   { key: 'files', label: '文件管理', icon: 'files', to: '/files', badgeKey: 'files' },
   {
@@ -117,6 +110,14 @@ const menuItems = [
       { to: '/query', label: '知识库检索' },
     ],
   },
+  {
+    key: 'graph', label: '知识图谱', icon: 'graph',
+    children: [
+      { to: '/graph', label: '图谱浏览' },
+      { to: '/graph-cleanup', label: '图谱清洗' },
+    ],
+  },
+  { key: 'data', label: '向量数据', icon: 'data', to: '/vectors' },
   { type: 'group', label: '应用', icon: 'groupApp' },
   {
     key: 'agent', label: '智能体', icon: 'agent',
@@ -128,7 +129,6 @@ const menuItems = [
   },
   { key: 'workflow', label: '工作流', icon: 'workflow', to: '/workflows' },
   { key: 'schedule', label: '定时管理', icon: 'schedule', to: '/schedules', badgeKey: 'schedule_alerts' },
-  { key: 'data', label: '向量数据', icon: 'data', to: '/vectors' },
   {
     key: 'config', label: '系统配置', icon: 'config',
     children: [
