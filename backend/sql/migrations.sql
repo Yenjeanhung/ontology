@@ -146,3 +146,6 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     duration_ms INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_wf ON workflow_runs(workflow_id);
+
+-- migration_013: 智能体内置标记 + kb_id 放宽（内置「默认智能体」不绑 KB）
+ALTER TABLE agents ADD COLUMN is_preset INTEGER NOT NULL DEFAULT 0;

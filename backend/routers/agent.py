@@ -523,6 +523,11 @@ async def update_agent(agent_id: str, req: AgentUpdate, db: AsyncSession = Depen
 
 @router.delete("/agents/{agent_id}")
 async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
+    agent = await AgentService.get(db, agent_id)
+    if not agent:
+        raise HTTPException(404, "智能体不存在")
+    if agent.is_preset:
+        raise HTTPException(400, "内置智能体不能删除，只能禁用")
     if not await AgentService.delete(db, agent_id):
         raise HTTPException(404, "智能体不存在")
     return {"status": "deleted"}
@@ -559,10 +564,15 @@ async def test_agent(agent_id: str, req: AgentQueryRequest, db: AsyncSession = D
 
 @router.post("/agent/query")
 async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)):
-    # 引用智能体（可选）：传 agent_id 时以其 KB / 技能 / 人设为准
+    # 引用智能体（可选）：传 agent_id 时以其 KB / 技能 / 人设为准；
+    # 内置「默认智能体」kb/技能为空 → 回退页面传的 kb_id / skill_ids（原 OAG 行为）
     agent = None
     if req.agent_id:
-        agent = await AgentService.resolve(db, req.agent_id)
+        agent = await AgentService.resolve(
+            db, req.agent_id,
+            fallback_kb_id=req.kb_id,
+            fallback_skill_ids=req.skill_ids,
+        )
         if not agent:
             raise HTTPException(404, "智能体不存在或已禁用")
 
@@ -582,7 +592,7 @@ async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)
     # 预加载技能：db 会话在响应返回后释放
     if agent:
         skills = await SkillService.resolve(db, agent["skill_ids"])
-        persona = agent["system_prompt"]
+        persona = agent["system_prompt"] or None
     else:
         skills = await SkillService.resolve(db, req.skill_ids)
         persona = None

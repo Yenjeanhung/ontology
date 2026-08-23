@@ -286,11 +286,12 @@ CREATE TABLE IF NOT EXISTS agents (
     id VARCHAR PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     description TEXT DEFAULT '',
-    kb_id VARCHAR NOT NULL,
+    kb_id VARCHAR NOT NULL DEFAULT '',
     system_prompt TEXT DEFAULT '',
     skill_ids TEXT DEFAULT '[]',
     model VARCHAR DEFAULT '',
     temperature REAL DEFAULT 0.7,
+    is_preset INTEGER NOT NULL DEFAULT 0,
     is_enabled INTEGER NOT NULL DEFAULT 1,
     created_at VARCHAR,
     updated_at VARCHAR

@@ -665,55 +665,11 @@ watch(nowTick, () => {
           </div>
 
           <div class="dr-body">
+            <!-- ═══ 分区一：智能体配置（节点名称 + 该类型专属配置） ═══ -->
+            <div class="section-title">{{ TYPE_META[selectedType]?.name }}配置</div>
             <div class="field">
               <label>节点名称</label>
               <input type="text" v-model="selectedNode.data.title">
-            </div>
-
-            <!-- 输入变量：沿连线可流入本节点的上游输出（非开始节点展示） -->
-            <div class="field" v-if="selectedType !== 'start'">
-              <label>可用输入变量（来自上游，点一下复制引用）</label>
-              <div v-for="n in upstreamNodes" :key="n.id" class="upstream-node">
-                <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
-                <div class="var-chips">
-                  <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
-                </div>
-              </div>
-              <span class="hint" v-if="!upstreamNodes.length">还没有连线的上游节点，先从上游节点拖一条线过来</span>
-            </div>
-
-            <!-- 输出变量：固定字段（锁定）+ 手动追加（回车添加），下游据此引用 -->
-            <div class="field" v-if="selectedType !== 'end'">
-              <label>输出变量（🔒 固定输出不可删；输入名称回车可追加自定义）</label>
-              <div class="var-chips" v-if="displayOutputFields(selectedNode).length">
-                <span
-                  v-for="(f, fi) in displayOutputFields(selectedNode)" :key="f"
-                  class="var-chip var-chip-edit" :class="{ 'var-chip-fixed': isFixedField(selectedType, f) }"
-                >
-                  <span class="vc-name" @click="copyText(varRef(selectedNodeId, f))">{{ isFixedField(selectedType, f) ? '🔒 ' : '' }}{{ f }}</span>
-                  <span v-if="!isFixedField(selectedType, f)" class="vc-del" title="删除" @click="removeOutputField(fi)">×</span>
-                </span>
-              </div>
-              <input
-                type="text" v-model="outputFieldInput"
-                placeholder="自定义输出字段名（回车添加，可逗号分隔多个）"
-                @keydown.enter.prevent="addOutputField"
-              >
-              <span class="hint">点字段名复制引用；🔒 固定输出始终传给下游；自定义字段需节点执行结果里有同名键</span>
-            </div>
-
-            <!-- 智能体：自定义输出提取（extra_outputs） -->
-            <div class="field" v-if="selectedType === 'agent'">
-              <label>自定义输出提取（可选：名称 + 表达式，从本节点结果中再提取）</label>
-              <div class="end-rows">
-                <div v-for="(row, ri) in extraRows" :key="ri" class="end-row">
-                  <input type="text" v-model="row.name" placeholder="输出名（如 summary）" class="er-name" @change="flushExtraRows">
-                  <input type="text" v-model="row.expr" placeholder="表达式，如 {{_self.answer}} 或 {{_self.chunks.0.file_name}}" class="er-value" @change="flushExtraRows">
-                  <button type="button" class="btn sm" @click="extraRows.splice(ri, 1); flushExtraRows()">×</button>
-                </div>
-                <button type="button" class="btn sm" @click="extraRows.push({ name: '', expr: '' }); flushExtraRows()">＋ 添加一条</button>
-              </div>
-              <span class="hint">表达式用 <code v-pre>{{_self.字段}}</code> 引用本节点固定输出；结果会成为新的输出字段供下游引用</span>
             </div>
 
             <!-- 开始 -->
@@ -774,11 +730,6 @@ watch(nowTick, () => {
                   </div>
                 </div>
               </template>
-              <div class="field">
-                <label>问题模板</label>
-                <textarea v-model="selectedConfig.query_template" rows="3"></textarea>
-                <span class="var-btn" @click="insertVar('query_template')">⊕ 插入变量</span>
-              </div>
             </template>
 
             <!-- 实体服务 -->
@@ -855,9 +806,76 @@ watch(nowTick, () => {
                 <label>代码（沙箱 Python）</label>
                 <textarea v-model="selectedConfig.code_text" rows="10" style="font-family:ui-monospace,monospace"></textarea>
               </div>
+            </template>
+
+            <!-- ═══ 分区二：变量配置（输入引用 / 参数插值 / 输出声明） ═══ -->
+            <template v-if="selectedType !== 'start' && selectedType !== 'end'">
+              <div class="section-title">变量配置</div>
+
+              <!-- 输入变量：沿连线可流入本节点的上游输出 -->
               <div class="field">
+                <label>可用输入变量（来自上游，点一下复制引用）</label>
+                <div v-for="n in upstreamNodes" :key="n.id" class="upstream-node">
+                  <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
+                  <div class="var-chips">
+                    <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
+                  </div>
+                </div>
+                <span class="hint" v-if="!upstreamNodes.length">还没有连线的上游节点，先从上游节点拖一条线过来</span>
+              </div>
+
+              <!-- 各类型的变量插值输入 -->
+              <div class="field" v-if="selectedType === 'agent'">
+                <label>问题模板</label>
+                <textarea v-model="selectedConfig.query_template" rows="3"></textarea>
+                <span class="var-btn" @click="insertVar('query_template')">⊕ 插入变量</span>
+              </div>
+              <div class="field" v-if="selectedType === 'service'">
+                <label>参数（JSON，可用变量）</label>
+                <textarea :value="jsonText('params')" @input="setJson('params', $event.target.value)" rows="4" placeholder='{"ticker":"HUAWEI"}'></textarea>
+              </div>
+              <div class="field" v-if="selectedType === 'llm'">
+                <label>Prompt 模板</label>
+                <textarea v-model="selectedConfig.prompt_template" rows="4"></textarea>
+                <span class="var-btn" @click="insertVar('prompt_template')">⊕ 插入变量</span>
+              </div>
+              <div class="field" v-if="selectedType === 'code'">
                 <label>参数（JSON，可用变量）</label>
                 <textarea :value="jsonText('params')" @input="setJson('params', $event.target.value)" rows="3" placeholder='{"x":"{{agent.answer}}"}'></textarea>
+              </div>
+
+              <!-- 输出变量：固定字段（锁定）+ 手动追加 -->
+              <div class="field">
+                <label>输出变量（🔒 固定输出不可删；输入名称回车可追加自定义）</label>
+                <div class="var-chips" v-if="displayOutputFields(selectedNode).length">
+                  <span
+                    v-for="(f, fi) in displayOutputFields(selectedNode)" :key="f"
+                    class="var-chip var-chip-edit" :class="{ 'var-chip-fixed': isFixedField(selectedType, f) }"
+                  >
+                    <span class="vc-name" @click="copyText(varRef(selectedNodeId, f))">{{ isFixedField(selectedType, f) ? '🔒 ' : '' }}{{ f }}</span>
+                    <span v-if="!isFixedField(selectedType, f)" class="vc-del" title="删除" @click="removeOutputField(fi)">×</span>
+                  </span>
+                </div>
+                <input
+                  type="text" v-model="outputFieldInput"
+                  placeholder="自定义输出字段名（回车添加，可逗号分隔多个）"
+                  @keydown.enter.prevent="addOutputField"
+                >
+                <span class="hint">点字段名复制引用；🔒 固定输出始终传给下游；自定义字段需节点执行结果里有同名键</span>
+              </div>
+
+              <!-- 智能体：自定义输出提取（extra_outputs） -->
+              <div class="field" v-if="selectedType === 'agent'">
+                <label>自定义输出提取（可选：名称 + 表达式，从本节点结果中再提取）</label>
+                <div class="end-rows">
+                  <div v-for="(row, ri) in extraRows" :key="ri" class="end-row">
+                    <input type="text" v-model="row.name" placeholder="输出名（如 summary）" class="er-name" @change="flushExtraRows">
+                    <input type="text" v-model="row.expr" placeholder="表达式，如 {{_self.answer}} 或 {{_self.chunks.0.file_name}}" class="er-value" @change="flushExtraRows">
+                    <button type="button" class="btn sm" @click="extraRows.splice(ri, 1); flushExtraRows()">×</button>
+                  </div>
+                  <button type="button" class="btn sm" @click="extraRows.push({ name: '', expr: '' }); flushExtraRows()">＋ 添加一条</button>
+                </div>
+                <span class="hint">表达式用 <code v-pre>{{_self.字段}}</code> 引用本节点固定输出；结果会成为新的输出字段供下游引用</span>
               </div>
             </template>
           </div>
@@ -981,6 +999,14 @@ watch(nowTick, () => {
 .dr-title { font-size: 13px; font-weight: 700; color: var(--c-fg); }
 .dr-sub { font-size: 10.5px; color: var(--c-secondary); }
 .dr-body { flex: 1; overflow-y: auto; padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+
+/* 分区标题：智能体配置 / 变量配置 */
+.section-title {
+  font-size: 11px; font-weight: 700; color: var(--c-accent); letter-spacing: 1px;
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 6px;
+}
+.section-title::after { content: ''; flex: 1; height: 1px; background: color-mix(in srgb, var(--c-accent) 30%, transparent); }
 
 /* 配置分区卡片：每个 field 变成独立小节 */
 .field {

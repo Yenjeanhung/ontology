@@ -27,6 +27,9 @@ const editForm = ref({
 })
 
 const enabledSkills = computed(() => skills.value.filter(s => s.is_enabled))
+const presetAgents = computed(() => agents.value.filter(a => a.is_preset))
+const customAgents = computed(() => agents.value.filter(a => !a.is_preset))
+const selectedIsPreset = () => !!selectedAgent()?.is_preset
 
 onMounted(async () => {
   loading.value = true
@@ -94,7 +97,8 @@ async function toggleEnabled(a) {
 
 async function save() {
   if (!editForm.value.name.trim()) { toast.error('名称不能为空'); return }
-  if (!editForm.value.kb_id) { toast.error('请选择知识库'); return }
+  if (!editForm.value.kb_id && !selectedIsPreset() && !isNew.value) { toast.error('请选择知识库'); return }
+  if (!editForm.value.kb_id && isNew.value) { toast.error('请选择知识库'); return }
   saving.value = true
   try {
     if (isNew.value) {
@@ -163,12 +167,32 @@ async function doRemove() {
     </div>
 
     <div class="page-body">
-      <!-- 左：智能体列表 -->
+      <!-- 左：智能体列表（内置 / 自定义 分组） -->
       <div class="list-col">
-        <div class="list-title">全部智能体 ({{ agents.length }})</div>
         <div class="list-items">
+          <template v-if="presetAgents.length">
+            <div class="group-title">内置</div>
+            <div
+              v-for="a in presetAgents" :key="a.id"
+              class="agent-card" :class="{ active: selectedId === a.id, off: !a.is_enabled }"
+              @click="selectAgent(a.id)"
+            >
+              <div class="card-top">
+                <span class="card-name"><span class="preset-star" title="内置">★</span>{{ a.name }}</span>
+                <span class="preset-tag" title="内置智能体不可禁用、不可删除">内置</span>
+              </div>
+              <div class="card-desc" v-if="a.description">{{ a.description }}</div>
+              <div class="card-meta">
+                <span class="meta-tag">📚 {{ a.kb_id ? kbName(a.kb_id) : '问答时选择' }}</span>
+                <span class="meta-tag">🧩 {{ a.skill_count }} 技能</span>
+                <span v-if="!a.is_enabled" class="off-tag">已禁用</span>
+              </div>
+            </div>
+          </template>
+
+          <div class="group-title">自定义 ({{ customAgents.length }})</div>
           <div
-            v-for="a in agents" :key="a.id"
+            v-for="a in customAgents" :key="a.id"
             class="agent-card" :class="{ active: selectedId === a.id, off: !a.is_enabled }"
             @click="selectAgent(a.id)"
           >
@@ -186,7 +210,7 @@ async function doRemove() {
               <span v-if="!a.is_enabled" class="off-tag">已禁用</span>
             </div>
           </div>
-          <div class="list-empty" v-if="!loading && !agents.length">暂无智能体，点击右上角新建</div>
+          <div class="list-empty" v-if="!loading && !customAgents.length">暂无自定义智能体，点击右上角新建</div>
           <div class="list-empty" v-if="loading">加载中...</div>
         </div>
       </div>
@@ -209,11 +233,12 @@ async function doRemove() {
               <input type="text" v-model="editForm.description" placeholder="一句话说明用途">
             </div>
             <div class="field">
-              <label>知识库 <span class="req">*</span></label>
+              <label>知识库 <span class="req" v-if="!selectedIsPreset()">*</span></label>
               <select v-model="editForm.kb_id">
-                <option value="" disabled>请选择知识库</option>
+                <option value="">{{ selectedIsPreset() ? '不绑定（问答时选择）' : '请选择知识库' }}</option>
                 <option v-for="kb in kbs" :key="kb.id" :value="kb.id">{{ kb.name }} ({{ kb.file_count }} 文件)</option>
               </select>
+              <span class="hint" v-if="selectedIsPreset()">内置智能体可不绑 KB：KB 与技能跟随问答页面的选择</span>
             </div>
             <div class="field">
               <label>技能（可多选）</label>
@@ -246,7 +271,7 @@ async function doRemove() {
             <button class="btn primary" @click="save" :disabled="saving">
               {{ saving ? '保存中...' : '保存' }}
             </button>
-            <button v-if="!isNew" class="btn danger" @click="askRemove">删除智能体</button>
+            <button v-if="!isNew && !selectedIsPreset()" class="btn danger" @click="askRemove">删除智能体</button>
           </div>
         </template>
 
@@ -285,6 +310,13 @@ async function doRemove() {
 /* 左列表 */
 .list-col { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; }
 .list-title { font-size: 12px; font-weight: 700; color: var(--c-secondary); padding: 0 2px; }
+.group-title { font-size: 11px; font-weight: 700; color: var(--c-secondary); letter-spacing: 1px; padding: 8px 2px 2px; }
+.preset-star { color: var(--c-accent); font-size: 12px; margin-right: 4px; }
+.preset-tag {
+  flex-shrink: 0; font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
+  color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-accent) 30%, transparent);
+}
 .list-items { display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - 240px); overflow-y: auto; }
 
 .agent-card {

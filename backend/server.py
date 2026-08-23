@@ -136,6 +136,16 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to seed preset agent skills")
 
+    # seed 内置默认智能体（幂等）
+    logger.info("Seeding default agent...")
+    from services.agent_service import seed_default
+    async for db in get_db():
+        try:
+            if await seed_default(db):
+                logger.info("Seeded default agent")
+        except Exception:
+            logger.exception("Failed to seed default agent")
+
     # 存量迁移：旧版本把配套文件内容存在数据库里 → 迁到磁盘（幂等，失败不阻断启动）
     logger.info("Syncing skill files to disk...")
     from services.skill_import_service import sync_skill_files_to_disk

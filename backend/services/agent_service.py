@@ -42,10 +42,38 @@ def _serialize(
         "system_prompt": a.system_prompt or "",
         "skill_ids": skill_ids,
         "skill_count": len(skill_ids) if skill_count is None else skill_count,
+        "is_preset": a.is_preset,
         "is_enabled": a.is_enabled,
         "created_at": a.created_at,
         "updated_at": a.updated_at,
     }
+
+
+# 内置「默认智能体」固定 id（跨实例稳定，seed 幂等依据）
+DEFAULT_AGENT_ID = "agent_default"
+
+
+async def seed_default(db: AsyncSession) -> int:
+    """写入内置默认智能体（幂等：存在则跳过）。返回新建数。
+
+    默认智能体 = 原 OAG 行为的等价包装：不绑 KB（问答时用页面选的 KB）、
+    不勾技能（用页面勾选）、无人设（OAG 默认人设）。
+    """
+    existing = await db.get(Agent, DEFAULT_AGENT_ID)
+    if existing is not None:
+        return 0
+    db.add(Agent(
+        id=DEFAULT_AGENT_ID,
+        name="默认智能体",
+        description="内置 · 使用页面选择的知识库与技能，无人设（OAG 默认人设）",
+        kb_id="",
+        system_prompt="",
+        skill_ids="[]",
+        is_preset=1,
+        is_enabled=1,
+    ))
+    await db.commit()
+    return 1
 
 
 class AgentService:
@@ -87,6 +115,8 @@ class AgentService:
     async def create(db: AsyncSession, data: dict) -> dict:
         if isinstance(data.get("skill_ids"), list):
             data["skill_ids"] = json.dumps(data["skill_ids"], ensure_ascii=False)
+        data = dict(data)
+        data.setdefault("is_preset", 0)  # 页面创建的都是自定义智能体
         agent = Agent(**data)
         db.add(agent)
         await db.commit()
@@ -100,6 +130,9 @@ class AgentService:
             return None
         if isinstance(data.get("skill_ids"), list):
             data["skill_ids"] = json.dumps(data["skill_ids"], ensure_ascii=False)
+        # 内置智能体：仅允许改名称/描述/KB/技能/人设，禁止禁用（is_enabled 恒为 1）
+        if agent.is_preset and "is_enabled" in data:
+            data = {k: v for k, v in data.items() if k != "is_enabled"}
         for key, value in data.items():
             if value is not None:
                 setattr(agent, key, value)
@@ -118,18 +151,25 @@ class AgentService:
         return True
 
     @staticmethod
-    async def resolve(db: AsyncSession, agent_id: str) -> dict | None:
+    async def resolve(db: AsyncSession, agent_id: str, *, fallback_kb_id: str | None = None,
+                      fallback_skill_ids: list[str] | None = None) -> dict | None:
         """按 agent_id 展开出 OAG 入参 {id, name, kb_id, system_prompt, skill_ids}。
 
         不存在 / 已禁用返回 None；skill_ids 的无效 id 交由 SkillService.resolve 容错过滤。
+        内置「默认智能体」kb 为空 → 回退 fallback_kb_id（页面选的 KB）；
+        技能空 → 回退 fallback_skill_ids（页面勾选），保持原 OAG 行为。
         """
         agent = await AgentService.get(db, agent_id)
         if not agent or not agent.is_enabled:
             return None
+        kb_id = agent.kb_id or fallback_kb_id or ""
+        skill_ids = _skill_ids_to_list(agent.skill_ids)
+        if not skill_ids and fallback_skill_ids:
+            skill_ids = fallback_skill_ids
         return {
             "id": agent.id,
             "name": agent.name,
-            "kb_id": agent.kb_id,
+            "kb_id": kb_id,
             "system_prompt": agent.system_prompt or "",
-            "skill_ids": _skill_ids_to_list(agent.skill_ids),
+            "skill_ids": skill_ids,
         }

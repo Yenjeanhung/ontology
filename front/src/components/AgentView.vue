@@ -27,13 +27,16 @@ async function loadSkills() {
   } catch {}
 }
 
-// ---------- 智能体（可选：引用已配置智能体） ----------
+// ---------- 智能体（下拉只列自定义；不选 = 内置默认智能体） ----------
 const agents = ref([])
 const selectedAgentId = ref('')
-const enabledAgents = computed(() => agents.value.filter(a => a.is_enabled))
+// 下拉只展示自定义且启用的智能体；内置作为默认态不进下拉
+const enabledAgents = computed(() => agents.value.filter(a => a.is_enabled && !a.is_preset))
+const selectedAgent = computed(() => agents.value.find(x => x.id === selectedAgentId.value))
+// 自定义智能体：切换时预填 kb+技能；选回「默认」= 内置行为（kb/技能跟随页面选择）
 function onAgentChange() {
-  const a = agents.value.find(x => x.id === selectedAgentId.value)
-  if (a) {
+  const a = selectedAgent.value
+  if (a && a.kb_id) {
     queryKbId.value = a.kb_id
     selectedSkillIds.value = a.skill_ids || []
   }
@@ -251,11 +254,11 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
       <p>结合知识图谱与本体的结构化事实进行检索与生成，回答更准、过程可追溯。</p>
     </div>
 
-    <!-- 智能体（可选：引用已配置智能体，自动预填 KB 与技能） -->
+    <!-- 智能体：默认内置（不显示选择），有自定义智能体时可选切换 -->
     <div class="agent-pick" v-if="enabledAgents.length">
-      <label>智能体（可选）</label>
+      <label>智能体</label>
       <select v-model="selectedAgentId" @change="onAgentChange">
-        <option value="">（快速模式 · 手动选知识库与技能）</option>
+        <option value="">默认智能体（内置 · 手动选知识库与技能）</option>
         <option v-for="a in enabledAgents" :key="a.id" :value="a.id">{{ a.name }} · {{ a.kb_name || '未知知识库' }}</option>
       </select>
       <span class="agent-pick-hint" v-if="selectedAgentId">已按该智能体预填知识库与技能，人设由智能体提供</span>
