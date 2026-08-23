@@ -155,6 +155,51 @@ async def _exec_agent(cfg: dict, context: dict, db) -> dict:
     return out
 
 
+async def _exec_agent_stream(cfg: dict, context: dict, db, on_token=None) -> dict:
+    """智能体节点流式执行：LLM 生成过程中持续调用 on_token(token)。
+
+    最终返回结果与非流式 _exec_agent 完全一致。
+    """
+    query = str(render(cfg.get("query_template", ""), context))
+    struct_fields = [f for f in (cfg.get("structured_outputs") or []) if isinstance(f, dict) and f.get("name")]
+    if struct_fields:
+        query += _build_structured_suffix(struct_fields)
+    if cfg.get("agent_id"):
+        agent = await AgentService.resolve(db, cfg["agent_id"])
+        if not agent:
+            raise RuntimeError("智能体不存在或已禁用")
+        kb_id, skill_ids, persona = agent["kb_id"], agent["skill_ids"], agent["system_prompt"]
+    else:
+        kb_id = cfg.get("kb_id") or ""
+        skill_ids = cfg.get("skill_ids") or []
+        persona = None
+
+    if not kb_id:
+        skills = await SkillService.resolve(db, skill_ids)
+        out = await _agent_chat_no_kb_stream(query, persona, skills, on_token)
+    else:
+        kb = await KBService.get(db, kb_id)
+        if not kb:
+            raise RuntimeError("知识库不存在")
+        try:
+            ontology_schema = await OntologyService.get_kb_extraction_constraints(db, kb_id)
+        except Exception:
+            ontology_schema = None
+        skills = await SkillService.resolve(db, skill_ids)
+        out = await _oag_stream_collect(kb_id, query, kb["name"], ontology_schema, skills, persona, on_token)
+
+    if struct_fields:
+        out.update(_parse_structured(out.get("answer") or "", struct_fields))
+    extra = cfg.get("extra_outputs") or {}
+    if isinstance(extra, dict):
+        local_ctx = dict(context)
+        local_ctx["_self"] = out
+        for name, expr in extra.items():
+            if name and isinstance(expr, str):
+                out[name] = render(expr, local_ctx)
+    return out
+
+
 async def _agent_chat_no_kb(query: str, persona: str | None, skills: list[dict]) -> dict:
     """未绑 KB 智能体的纯对话执行：LLM 按人设+技能回答，返回与 OAG 一致的结构。"""
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -181,6 +226,87 @@ async def _agent_chat_no_kb(query: str, persona: str | None, skills: list[dict])
     }
 
 
+async def _agent_chat_no_kb_stream(
+    query: str,
+    persona: str | None,
+    skills: list[dict],
+    on_token=None,
+) -> dict:
+    """未绑 KB 智能体的纯对话执行（流式），每收到一个 token 调用 on_token。"""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from oag_service import build_system_prompt
+
+    llm = create_llm()
+    if llm is None:
+        raise RuntimeError("尚未配置大模型，请先在「系统配置」中激活 LLM")
+    system_prompt = build_system_prompt(skills, base_prompt=persona or "") or None
+    messages = [HumanMessage(content=query)]
+    if system_prompt:
+        messages.insert(0, SystemMessage(content=system_prompt))
+    try:
+        parts = []
+        async for chunk in llm.astream(messages):
+            content = chunk.content if hasattr(chunk, "content") else str(chunk)
+            if content:
+                parts.append(content)
+                if on_token:
+                    await on_token(content)
+        text = "".join(parts)
+    except Exception as e:
+        raise RuntimeError(f"LLM 调用失败：{e}")
+    return {
+        "answer": text,
+        "chunks": [],
+        "entities": [],
+        "subgraph": None,
+    }
+
+
+async def _oag_stream_collect(
+    kb_id: str,
+    query: str,
+    kb_name: str,
+    ontology_schema,
+    skills,
+    persona,
+    on_token=None,
+) -> dict:
+    """复用 OAGService.query_stream 收集完整结果，同时把 token 透传给 on_token。"""
+    answer_parts: list[str] = []
+    chunks: list[dict] = []
+    entities: list[dict] = []
+    subgraph: dict | None = None
+    async for s in OAGService.query_stream(kb_id, query, kb_name, ontology_schema, skills, persona):
+        if not s.startswith("data: "):
+            continue
+        payload = s[len("data: "):].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            evt = json.loads(payload)
+        except ValueError:
+            continue
+        t = evt.get("type")
+        if t == "token":
+            content = evt.get("content") or ""
+            answer_parts.append(content)
+            if on_token:
+                await on_token(content)
+        elif t == "chunks":
+            chunks = evt.get("chunks") or []
+        elif t == "entities":
+            entities = evt.get("entities") or []
+        elif t == "subgraph":
+            subgraph = evt
+    return {
+        "answer": "".join(answer_parts),
+        "chunks": chunks,
+        "entities": entities,
+        "subgraph": subgraph or {"facts": "", "entities": [], "relations": [], "retrieval_path": {}},
+    }
+
+
 def _build_structured_suffix(fields: list[dict]) -> str:
     """根据声明的结构化字段（支持任意多个）生成追加指令，要求 LLM 在回答末尾输出 JSON 块。"""
     type_hint = {"string": "字符串", "number": "数字", "boolean": "true/false", "array": "JSON数组", "object": "JSON对象"}
@@ -201,25 +327,111 @@ def _build_structured_suffix(fields: list[dict]) -> str:
     )
 
 
+def _coerce_structured_value(value, typ: str):
+    """把模型输出的值强制转换为用户声明的类型，减少模型格式差异影响。"""
+    if value is None:
+        return None
+    if typ == "string":
+        if isinstance(value, (list, dict)):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
+    if typ == "number":
+        try:
+            return float(value) if isinstance(value, str) else (value if isinstance(value, (int, float)) else None)
+        except (TypeError, ValueError):
+            return None
+    if typ == "boolean":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "是")
+        return bool(value)
+    if typ == "array":
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                return parsed if isinstance(parsed, list) else [value]
+            except ValueError:
+                # 中文逗号/换行分隔的字符串也尝试拆成数组
+                parts = [p.strip() for p in re.split(r"[,，;；\n]+", value) if p.strip()]
+                return parts if parts else [value]
+        return [value]
+    if typ == "object":
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                return parsed if isinstance(parsed, dict) else None
+            except ValueError:
+                return None
+        return None
+    return value
+
+
 def _parse_structured(answer: str, fields: list[dict]) -> dict:
-    """从回答末尾的 ```json 代码块解析结构化字段；解析失败的字段值为 null。"""
+    """从回答中解析结构化字段，兼容不同模型的输出差异；解析失败的字段值为 null。
+
+    支持：
+    - ```json ... ``` / ``` ... ``` 代码块
+    - 普通 JSON 对象（大括号匹配）
+    - 选择包含最多声明字段的候选块，避免取到示例/无关 JSON
+    """
     import re as _re
 
-    out: dict = {}
-    m = None
-    for m in _re.finditer(r"```json\s*\n([\s\S]*?)```", answer):
-        pass  # 取最后一个 json 块
-    if m:
+    field_names = {f.get("name") for f in fields if isinstance(f, dict) and f.get("name")}
+    candidates: list[str] = []
+
+    # 1. markdown 代码块（带或不带 json 标签）
+    for pat in (r"```json\s*\n([\s\S]*?)```", r"```\s*\n([\s\S]*?)```"):
+        for block in _re.finditer(pat, answer):
+            candidates.append(block.group(1).strip())
+
+    # 2. 普通 JSON 对象（尽可能贪婪地匹配大括号）
+    # 用简单计数找到最外层大括号范围
+    for start in _re.finditer(r"\{", answer):
+        i = start.start()
+        depth = 0
+        end = -1
+        for j in range(i, len(answer)):
+            if answer[j] == "{":
+                depth += 1
+            elif answer[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = j + 1
+                    break
+        if end > i:
+            candidates.append(answer[i:end])
+
+    best_data: dict = {}
+    best_score = -1
+    for raw in candidates:
+        # 去除可能的 markdown 标记残余和前后说明文字
+        cleaned = _re.sub(r"^```.*$|```$", "", raw, flags=_re.MULTILINE).strip()
+        if not cleaned:
+            continue
         try:
-            data = json.loads(m.group(1))
-            if isinstance(data, dict):
-                out = data
+            data = json.loads(cleaned)
         except ValueError:
-            out = {}
+            continue
+        if not isinstance(data, dict):
+            continue
+        # 优先选择包含最多声明字段的 JSON 块
+        score = len(field_names & set(data.keys()))
+        if score > best_score:
+            best_score = score
+            best_data = data
+
+    # 3. 按声明字段输出，并做类型强制转换
+    out: dict = {}
     for f in fields:
         name = f.get("name") if isinstance(f, dict) else None
-        if name and name not in out:
-            out[name] = None
+        if not name:
+            continue
+        out[name] = _coerce_structured_value(best_data.get(name), f.get("type", "string"))
     return out
 
 
@@ -310,19 +522,32 @@ FIXED_OUTPUTS = {
 
 
 def _project_output(node: dict, result) -> dict:
-    """按节点声明的 output_fields 投影结果：只保留「声明的键 + 该类型固定输出」。
+    """按节点声明的 output_fields 投影结果：只保留「声明的键 + 该类型固定输出 + 结构化自定义字段」。
+    智能体节点的 structured_outputs 字段名强制纳入保留，消除前端 output_fields 同步遗漏导致的模型差异。
     固定输出（如智能体的 answer）强制保留，删不掉；未声明 / 结果非 dict /
     声明的键全不存在时，原样返回全部结果（兼容旧数据）。"""
-    fields = (node.get("config") or {}).get("output_fields")
-    if not fields or not isinstance(result, dict):
+    cfg = node.get("config") or {}
+    fields = cfg.get("output_fields")
+    if not isinstance(result, dict):
         return result
-    keep = set(fields) | FIXED_OUTPUTS.get(node.get("type"), set())
+    keep = set(fields or []) | FIXED_OUTPUTS.get(node.get("type"), set())
+    # agent 节点：structured_outputs 里的字段名强制保留，确保下游结束节点能拿到自定义输出
+    if node.get("type") == "agent":
+        for so in cfg.get("structured_outputs") or []:
+            name = so.get("name") if isinstance(so, dict) else so
+            if name:
+                keep.add(name)
     projected = {k: result[k] for k in keep if k in result}
     # 声明的键全都不在结果里（用户随便写的名字）→ 保留全部，避免下游拿空对象
     return projected if projected else result
 
 
-def _truncate_output(result):
+def _truncate_output(result, max_field_len: int = 4000):
+    """截断输出对象中过长的字段值，优先保留结构化自定义字段的完整可读性。
+
+    当整体 JSON 超过 WORKFLOW_NODE_OUTPUT_LIMIT 时，仅截断单字段值（如 answer/text），
+    而不是把全部字段替换为一个 text 字符串，确保下游自定义输出仍能正常引用。
+    """
     limit = settings.WORKFLOW_NODE_OUTPUT_LIMIT
     try:
         s = json.dumps(result, ensure_ascii=False, default=str)
@@ -330,7 +555,21 @@ def _truncate_output(result):
         s = str(result)
     if len(s) <= limit:
         return result
-    return {"_truncated": True, "text": s[:limit] + f"\n…（共 {len(s)} 字符）"}
+
+    if not isinstance(result, dict):
+        return {"_truncated": True, "text": s[:limit] + f"\n…（共 {len(s)} 字符）"}
+
+    truncated = {"_truncated": True}
+    for k, v in result.items():
+        try:
+            vs = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, default=str)
+        except Exception:
+            vs = str(v)
+        if len(vs) > max_field_len:
+            truncated[k] = vs[:max_field_len] + f"\n…（该字段共 {len(vs)} 字符）"
+        else:
+            truncated[k] = v
+    return truncated
 
 
 def _short(value, limit: int = 80) -> str:
@@ -436,17 +675,33 @@ def _make_node_fn(rt: _Runtime, node: dict):
         rt.node_states[nid] = {"status": "running", "input": input_view, "title": title}
         t0 = time.monotonic()
 
-        task = asyncio.create_task(_execute_node(node, context, rt.db))
+        # 智能体节点流式执行：token 实时下发，同时保持最终 result 一致
+        accumulated: list[str] = []
+
+        async def _on_token(token: str):
+            accumulated.append(token)
+            rt.emit({
+                "type": "node_progress", "node_id": nid, "title": title,
+                "elapsed_ms": int((time.monotonic() - t0) * 1000),
+                "output": {"answer": "".join(accumulated)},
+            })
+
+        if node.get("type") == "agent":
+            task = asyncio.create_task(_exec_agent_stream(node.get("config") or {}, context, rt.db, _on_token))
+        else:
+            task = asyncio.create_task(_execute_node(node, context, rt.db))
         try:
-            # 执行期间每 2s 发一次 node_progress 心跳（含已运行毫秒数）
+            # 非流式节点：执行期间每 2s 发一次 node_progress 心跳
+            # 流式节点：token 到达时已由 _on_token 持续发送，这里只需等待完成
             while True:
                 done, _ = await asyncio.wait({task}, timeout=2.0)
                 if done:
                     break
-                rt.emit({
-                    "type": "node_progress", "node_id": nid, "title": title,
-                    "elapsed_ms": int((time.monotonic() - t0) * 1000),
-                })
+                if node.get("type") != "agent":
+                    rt.emit({
+                        "type": "node_progress", "node_id": nid, "title": title,
+                        "elapsed_ms": int((time.monotonic() - t0) * 1000),
+                    })
             result = task.result()
             dur = int((time.monotonic() - t0) * 1000)
             projected = _project_output(node, result)

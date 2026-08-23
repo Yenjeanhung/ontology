@@ -639,6 +639,10 @@ function validateVarRefs() {
 // ───── 保存 ─────
 async function save() {
   if (!wfName.value.trim()) { toast.error('名称不能为空'); return }
+  // 保存前先同步一次结构化输出字段到 output_fields，避免运行/保存时遗漏
+  if (selectedNode.value && selectedNode.value.type === 'agent') {
+    flushStructRows()
+  }
   if (!validateStructRows()) return
   if (!validateVarRefs()) return
   saving.value = true
@@ -678,7 +682,8 @@ function fmtElapsed(ms) {
 }
 const startInputs = computed(() => {
   const s = nodes.value.find(n => n.type === 'start')
-  return s?.data?.config?.inputs || []
+  const inputs = s?.data?.config?.inputs
+  return Array.isArray(inputs) ? inputs : []
 })
 
 function openRunModal() {
@@ -724,6 +729,11 @@ async function startRun() {
         // 心跳：更新对应 running 日志行的已运行时长
         const line = [...logs.value].reverse().find(l => l.kind === 'node' && l.node_id === d.node_id && l.status === 'running')
         if (line) line.elapsed_ms = d.elapsed_ms
+        // 流式执行：把实时输出挂载到节点上，节点卡片可动态渲染
+        const n = nodes.value.find(x => x.id === d.node_id)
+        if (n && d.output) {
+          n.data = { ...n.data, output: d.output }
+        }
       },
       onNodeFinished(d) {
         setStatus(d.node_id, 'succeeded', d.duration_ms)
@@ -1269,8 +1279,8 @@ watch(nowTick, () => {
         <h3>运行工作流</h3>
         <div class="m-sub">填写「开始」节点的输入变量</div>
         <div class="field" v-for="it in startInputs" :key="it.name">
-          <label>{{ it.label || it.name }} <span v-if="it.required" class="req">*</span></label>
-          <input type="text" v-model="runInputs[it.name]" :placeholder="it.name">
+          <label>{{ (it && (it.label || it.name)) || '未命名输入' }} <span v-if="it && it.required" class="req">*</span></label>
+          <input type="text" v-model="runInputs[it.name]" :placeholder="it && it.name">
         </div>
         <div class="m-sub" v-if="!startInputs.length">该工作流没有声明输入变量，直接运行。</div>
         <div class="m-actions">
