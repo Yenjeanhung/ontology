@@ -149,3 +149,31 @@ CREATE INDEX IF NOT EXISTS idx_workflow_runs_wf ON workflow_runs(workflow_id);
 
 -- migration_013: 智能体内置标记 + kb_id 放宽（内置「默认智能体」不绑 KB）
 ALTER TABLE agents ADD COLUMN is_preset INTEGER NOT NULL DEFAULT 0;
+
+-- migration_014: 定时调度模块
+-- workflow_runs 增加触发来源标记（定时触发 vs 手动运行）
+ALTER TABLE workflow_runs ADD COLUMN trigger_source VARCHAR DEFAULT NULL;
+ALTER TABLE workflow_runs ADD COLUMN schedule_id VARCHAR DEFAULT NULL;
+-- 定时调度计划表
+CREATE TABLE IF NOT EXISTS schedules (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT DEFAULT '',
+    workflow_id VARCHAR NOT NULL,
+    trigger VARCHAR NOT NULL,
+    trigger_config TEXT NOT NULL DEFAULT '{}',
+    input_params TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    muted INTEGER NOT NULL DEFAULT 0,
+    next_run_at VARCHAR,
+    last_run_at VARCHAR,
+    last_status VARCHAR,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    max_failures_alert INTEGER NOT NULL DEFAULT 3,
+    alert_on_failure INTEGER NOT NULL DEFAULT 1,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_schedules_wf ON schedules(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_schedule ON workflow_runs(schedule_id);

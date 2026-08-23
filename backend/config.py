@@ -139,5 +139,17 @@ class Settings(BaseSettings):
         # 否则 pydantic-settings 默认 extra="forbid" 会在启动时直接报 ValidationError
         extra = "ignore"
 
+    # ───────────────────────── 定时调度（Scheduler）─────────────────────────
+    # 触发器计算时区（cron / interval / once 均按此时区）
+    SCHEDULER_TIMEZONE: str = "Asia/Shanghai"
+    # 调度引擎总开关：false 时不启动 APScheduler，仅保留计划 CRUD
+    SCHEDULER_ENABLED: bool = True
+    # 同时进行的调度触发执行上限（防止堆积）
+    SCHEDULER_MAX_CONCURRENT_RUNS: int = 5
+    # 服务重启/宕机后，错过触发时间在此窗口内仍补触发（秒）
+    SCHEDULER_MISFIRE_GRACE_SECONDS: int = 300
+    # 多个错过的触发合并为一次
+    SCHEDULER_COALESCE: bool = True
+
 
 settings = Settings()

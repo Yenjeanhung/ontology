@@ -1392,3 +1392,108 @@ export async function runWorkflowStream(workflowId, inputs, { onStarted, onNodeS
     }
   }
 }
+
+// ───────────────────── 定时调度（Scheduler） ─────────────────────
+
+export async function fetchSchedules() {
+  const res = await fetch(`${API}/api/schedules`)
+  if (!res.ok) throw new Error('获取调度计划失败')
+  return res.json()
+}
+
+export async function getSchedule(scheduleId) {
+  const res = await fetch(`${API}/api/schedules/${scheduleId}`)
+  if (!res.ok) throw new Error('获取计划详情失败')
+  return res.json()
+}
+
+export async function createSchedule(payload) {
+  const res = await fetch(`${API}/api/schedules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || '创建计划失败')
+  }
+  return res.json()
+}
+
+export async function updateSchedule(scheduleId, payload) {
+  const res = await fetch(`${API}/api/schedules/${scheduleId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || '更新计划失败')
+  }
+  return res.json()
+}
+
+export async function deleteSchedule(scheduleId) {
+  const res = await fetch(`${API}/api/schedules/${scheduleId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || '删除计划失败')
+  }
+  return res.json()
+}
+
+export async function toggleSchedule(scheduleId, enabled) {
+  const res = await fetch(`${API}/api/schedules/${scheduleId}/toggle`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || '切换计划状态失败')
+  }
+  return res.json()
+}
+
+export async function runScheduleNow(scheduleId) {
+  const res = await fetch(`${API}/api/schedules/${scheduleId}/run-now`, { method: 'POST' })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || '立即执行失败')
+  }
+  return res.json()
+}
+
+export async function fetchScheduleRuns(scheduleId) {
+  try {
+    const res = await fetch(`${API}/api/schedules/${scheduleId}/runs`)
+    if (!res.ok) return []
+    return res.json()
+  } catch {
+    return []
+  }
+}
+
+export async function previewNextRun(trigger, triggerConfig) {
+  const res = await fetch(`${API}/api/schedules/preview-next-run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trigger, trigger_config: triggerConfig }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || '预览失败')
+  }
+  return res.json()
+}
+
+export async function validateCron(cfg) {
+  const res = await fetch(`${API}/api/schedules/validate-cron`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cfg),
+  })
+  if (!res.ok) throw new Error('校验失败')
+  return res.json()
+}
+

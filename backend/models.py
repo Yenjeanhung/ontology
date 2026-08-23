@@ -410,3 +410,31 @@ class WorkflowRun(Base):
     started_at = Column(String, nullable=True)
     finished_at = Column(String, nullable=True)
     duration_ms = Column(Integer, default=0)
+    # 触发来源标记（定时调度模块写入）：schedule=定时触发 / manual=手动运行；NULL 为旧记录
+    trigger_source = Column(String, nullable=True)
+    schedule_id = Column(String, nullable=True)
+
+
+class Schedule(Base):
+    """定时调度计划：绑定一个工作流 + 触发规则 + 固定入参，到点自动执行。"""
+
+    __tablename__ = "schedules"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String(100), nullable=False)
+    description = Column(Text, default="")
+    workflow_id = Column(String, nullable=False)
+    trigger = Column(String, nullable=False)                 # cron | interval | once
+    trigger_config = Column(Text, nullable=False, default="{}")
+    input_params = Column(Text, nullable=False, default="{}")
+    enabled = Column(Integer, nullable=False, default=1)     # 1 启用 / 0 停用
+    muted = Column(Integer, nullable=False, default=0)       # 1 静默（仍执行，不告警）
+    next_run_at = Column(String, nullable=True)
+    last_run_at = Column(String, nullable=True)
+    last_status = Column(String, nullable=True)              # succeeded | failed | running | none
+    consecutive_failures = Column(Integer, nullable=False, default=0)
+    max_failures_alert = Column(Integer, nullable=False, default=3)
+    alert_on_failure = Column(Integer, nullable=False, default=1)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+

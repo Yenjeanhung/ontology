@@ -24,6 +24,10 @@ langchain-text-splitters>=0.3.0
 langgraph>=0.2.0
 langgraph-checkpoint-sqlite>=2.0.0   # 预留：断点恢复/重放时启用
 
+# 定时调度引擎（services/scheduler_engine.py）
+apscheduler>=3.10
+croniter>=2.0.0                     # cron 表达式解析与 next_run 计算 / 语法校验
+
 # LangChain 嵌入模型（按需启用）
 langchain-huggingface>=0.1.0    # EMBEDDING_PROVIDER=local
 # langchain-openai>=0.2.0       # EMBEDDING_PROVIDER=openai 时取消注释

@@ -154,9 +154,24 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to sync skill files to disk")
 
+    # 启动定时调度引擎（从历史计划恢复启用任务；失败不阻断主服务启动）
+    logger.info("Starting scheduler engine...")
+    try:
+        from services.scheduler_engine import start as scheduler_start
+        await scheduler_start()
+    except Exception:
+        logger.exception("Failed to start scheduler engine")
+
     logger.info("KnowSource started.")
     yield
     logger.info("KnowSource stopped.")
+
+    # 关闭调度引擎
+    try:
+        from services.scheduler_engine import shutdown as scheduler_shutdown
+        await scheduler_shutdown()
+    except Exception:
+        logger.exception("Failed to shutdown scheduler engine")
 
 
 app = FastAPI(title="KnowSource", lifespan=lifespan)
@@ -168,7 +183,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from routers import agent, config, entity, files, graph, kb, library, notifications, ontology, ontology_service, query, vector_data, workflow
+from routers import agent, config, entity, files, graph, kb, library, notifications, ontology, ontology_service, query, scheduler, vector_data, workflow
 
 app.include_router(kb.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
@@ -183,6 +198,7 @@ app.include_router(entity.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")
 app.include_router(config.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
+app.include_router(scheduler.router, prefix="/api")
 
 front_dist = Path(__file__).parent.parent / "front" / "dist"
 if front_dist.exists():

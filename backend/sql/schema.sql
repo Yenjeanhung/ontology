@@ -319,6 +319,30 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     error TEXT DEFAULT '',
     started_at VARCHAR,
     finished_at VARCHAR,
-    duration_ms INTEGER DEFAULT 0
+    duration_ms INTEGER DEFAULT 0,
+    trigger_source VARCHAR DEFAULT NULL,
+    schedule_id VARCHAR DEFAULT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_wf ON workflow_runs(workflow_id);
+
+CREATE TABLE IF NOT EXISTS schedules (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT DEFAULT '',
+    workflow_id VARCHAR NOT NULL,
+    trigger VARCHAR NOT NULL,
+    trigger_config TEXT NOT NULL DEFAULT '{}',
+    input_params TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    muted INTEGER NOT NULL DEFAULT 0,
+    next_run_at VARCHAR,
+    last_run_at VARCHAR,
+    last_status VARCHAR,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    max_failures_alert INTEGER NOT NULL DEFAULT 3,
+    alert_on_failure INTEGER NOT NULL DEFAULT 1,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_schedules_wf ON schedules(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);

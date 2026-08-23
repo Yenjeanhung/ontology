@@ -19,7 +19,7 @@ import logging
 import re
 import time
 from datetime import datetime
-from typing import Annotated, TypedDict
+from typing import Annotated, TypedDict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -835,8 +835,12 @@ def _build_graph(rt: _Runtime):
     return compiled
 
 
-async def run_stream(workflow_id: str, definition: dict, inputs: dict):
-    """执行工作流，逐事件 yield SSE 字符串（事件契约与旧引擎完全一致）。"""
+async def run_stream(workflow_id: str, definition: dict, inputs: dict,
+                   trigger_source: Optional[str] = None, schedule_id: Optional[str] = None):
+    """执行工作流，逐事件 yield SSE 字符串（事件契约与旧引擎完全一致）。
+
+    trigger_source / schedule_id 用于定时调度模块标记运行来源（写入 workflow_runs）。
+    """
     started = time.monotonic()
     nodes = definition.get("nodes") or []
     edges = definition.get("edges") or []
@@ -850,6 +854,8 @@ async def run_stream(workflow_id: str, definition: dict, inputs: dict):
             inputs=json.dumps(inputs or {}, ensure_ascii=False, default=str),
             node_states="{}",
             started_at=datetime.now().isoformat(),
+            trigger_source=trigger_source,
+            schedule_id=schedule_id,
         )
         db.add(run)
         await db.commit()
