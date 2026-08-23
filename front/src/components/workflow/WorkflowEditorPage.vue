@@ -63,6 +63,14 @@ const FIXED_OUTPUTS = {
 }
 function isFixedField(type, f) { return (FIXED_OUTPUTS[type] || []).includes(f) }
 
+// 把某个节点的可用输出拆分为「固定输出 / 自定义输出」，供下游节点分组展示
+function groupedOutputFieldsOf(nodeLike) {
+  const all = outputFieldsOf(nodeLike)
+  const fixed = all.filter(f => isFixedField(nodeLike.type, f))
+  const custom = all.filter(f => !isFixedField(nodeLike.type, f))
+  return { fixed, custom }
+}
+
 // 结构化输出表顶部展示的固定字段（锁定行，仅智能体节点用）
 const FIXED_STRUCT_FIELDS = [
   { name: 'answer', type: 'string', desc: '完整回答文本（固定）' },
@@ -970,8 +978,17 @@ watch(nowTick, () => {
                   <template v-for="n in upstreamNodes" :key="n.id">
                     <div v-if="outputFieldsOf(n).length" class="upstream-node">
                       <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
-                      <div class="var-chips">
-                        <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @mouseenter="showVarTooltip($event, n, f)" @mousemove="moveVarTooltip" @mouseleave="hideVarTooltip" @click="appendEndRowFromVar(n.id, f)">{{ n.id }}.{{ f }}</button>
+                      <div v-if="groupedOutputFieldsOf(n).fixed.length" class="var-group">
+                        <div class="var-group-title">固定输出</div>
+                        <div class="var-chips">
+                          <button v-for="f in groupedOutputFieldsOf(n).fixed" :key="'f-' + f" type="button" class="var-chip var-chip-fixed" @mouseenter="showVarTooltip($event, n, f)" @mousemove="moveVarTooltip" @mouseleave="hideVarTooltip" @click="appendEndRowFromVar(n.id, f)">{{ n.id }}.{{ f }}</button>
+                        </div>
+                      </div>
+                      <div v-if="groupedOutputFieldsOf(n).custom.length" class="var-group">
+                        <div class="var-group-title">自定义输出</div>
+                        <div class="var-chips">
+                          <button v-for="f in groupedOutputFieldsOf(n).custom" :key="'c-' + f" type="button" class="var-chip" @mouseenter="showVarTooltip($event, n, f)" @mousemove="moveVarTooltip" @mouseleave="hideVarTooltip" @click="appendEndRowFromVar(n.id, f)">{{ n.id }}.{{ f }}</button>
+                        </div>
                       </div>
                     </div>
                   </template>
@@ -1105,8 +1122,17 @@ watch(nowTick, () => {
                   <template v-for="n in upstreamNodes" :key="n.id">
                     <div v-if="outputFieldsOf(n).length" class="upstream-node">
                       <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
-                      <div class="var-chips">
-                        <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @mouseenter="showVarTooltip($event, n, f)" @mousemove="moveVarTooltip" @mouseleave="hideVarTooltip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
+                      <div v-if="groupedOutputFieldsOf(n).fixed.length" class="var-group">
+                        <div class="var-group-title">固定输出</div>
+                        <div class="var-chips">
+                          <button v-for="f in groupedOutputFieldsOf(n).fixed" :key="'f-' + f" type="button" class="var-chip var-chip-fixed" @mouseenter="showVarTooltip($event, n, f)" @mousemove="moveVarTooltip" @mouseleave="hideVarTooltip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
+                        </div>
+                      </div>
+                      <div v-if="groupedOutputFieldsOf(n).custom.length" class="var-group">
+                        <div class="var-group-title">自定义输出</div>
+                        <div class="var-chips">
+                          <button v-for="f in groupedOutputFieldsOf(n).custom" :key="'c-' + f" type="button" class="var-chip" @mouseenter="showVarTooltip($event, n, f)" @mousemove="moveVarTooltip" @mouseleave="hideVarTooltip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
+                        </div>
                       </div>
                     </div>
                   </template>
@@ -1440,6 +1466,9 @@ watch(nowTick, () => {
 .upstream-node { margin-bottom: 4px; padding: 6px 8px; border: 1px dashed var(--c-border); border-radius: 8px; background: var(--c-panel); }
 .up-node-name { font-size: 11px; color: var(--c-secondary); margin-bottom: 3px; }
 .up-node-name code { color: var(--c-fg); }
+.var-group { margin-top: 4px; }
+.var-group + .var-group { margin-top: 6px; }
+.var-group-title { font-size: 10px; color: var(--c-secondary); margin-bottom: 2px; }
 
 /* 结束节点 key-value 行 */
 .end-rows { display: flex; flex-direction: column; gap: 6px; }
