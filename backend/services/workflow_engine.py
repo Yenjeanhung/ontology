@@ -947,5 +947,9 @@ async def _finalize_run(run_id, status: str, outputs: dict, node_states: dict, f
                 row.finished_at = datetime.now().isoformat()
                 row.duration_ms = duration_ms
                 await db.commit()
+                # 写入新记录后裁剪，保持每个工作流仅保留最近 N 次
+                from services.workflow_run_service import WorkflowRunService
+                workflow_id = row.workflow_id
+                await WorkflowRunService.trim(db, workflow_id)
     except Exception:
         pass

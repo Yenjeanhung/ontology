@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
+from config import settings
 from models import WorkflowRun
 from schemas import RunWorkflowRequest, WorkflowSaveRequest
 from services.agent_service import AgentService
@@ -111,22 +112,48 @@ async def run_workflow(workflow_id: str, req: RunWorkflowRequest, db: AsyncSessi
     )
 
 
+def _preview(obj, max_keys=6, max_len=80):
+    """压缩预览：仅取前若干 key，value 截断，避免大对象撑爆列表接口。"""
+    if not isinstance(obj, dict):
+        return obj
+    out = {}
+    for i, (k, v) in enumerate(obj.items()):
+        if i >= max_keys:
+            break
+        s = json.dumps(v, ensure_ascii=False, default=str) if not isinstance(v, str) else v
+        out[k] = s[:max_len] + ("…" if len(s) > max_len else "")
+    return out
+
+
 @router.get("/workflows/{workflow_id}/runs")
 async def list_workflow_runs(workflow_id: str, db: AsyncSession = Depends(get_db)):
-    rows = await db.execute(
-        select(WorkflowRun)
-        .where(WorkflowRun.workflow_id == workflow_id)
-        .order_by(WorkflowRun.started_at.desc())
-        .limit(50)
-    )
-    return [
-        {
+    rows = (
+        await db.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.workflow_id == workflow_id)
+            .order_by(WorkflowRun.started_at.desc())
+            .limit(settings.WORKFLOW_KEEP_RUNS)
+        )
+    ).scalars().all()
+
+    out = []
+    for r in rows:
+        node_states = _json(r.node_states) or {}
+        ns = [s for s in node_states.values() if isinstance(s, dict) and s.get("status")]
+        out.append({
             "id": r.id, "workflow_id": r.workflow_id, "status": r.status,
             "started_at": r.started_at, "finished_at": r.finished_at,
             "duration_ms": r.duration_ms, "error": r.error or "",
-        }
-        for r in rows.scalars().all()
-    ]
+            "node_count": len(ns),
+            "node_summary": {
+                "succeeded": sum(1 for s in ns if s.get("status") == "succeeded"),
+                "failed": sum(1 for s in ns if s.get("status") == "failed"),
+                "skipped": sum(1 for s in ns if s.get("status") == "skipped"),
+            },
+            "input_preview": _preview(_json(r.inputs)),
+            "output_preview": _preview(_json(r.outputs)),
+        })
+    return out
 
 
 @router.get("/workflows/{workflow_id}/runs/{run_id}")
@@ -141,6 +168,16 @@ async def get_workflow_run(workflow_id: str, run_id: str, db: AsyncSession = Dep
         "started_at": row.started_at, "finished_at": row.finished_at,
         "duration_ms": row.duration_ms,
     }
+
+
+@router.delete("/workflows/{workflow_id}/runs/{run_id}")
+async def delete_workflow_run(workflow_id: str, run_id: str, db: AsyncSession = Depends(get_db)):
+    row = await db.get(WorkflowRun, run_id)
+    if not row or row.workflow_id != workflow_id:
+        raise HTTPException(404, "运行记录不存在")
+    await db.delete(row)
+    await db.commit()
+    return {"ok": True}
 
 
 # ─────────────────────── 节点面板数据源 ───────────────────────

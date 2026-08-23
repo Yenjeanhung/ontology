@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     MILVUS_HOST: str
     MILVUS_PORT: int
 
+    # 工作流
+    WORKFLOW_KEEP_RUNS: int = 10  # 每个工作流保留的最近运行记录数（超出自动裁剪）
+
     # 图存储
     GRAPH_STORE_PROVIDER: Literal["kuzu", "neo4j"] = "kuzu"
     KUZU_DB_PATH: str = "./data/graph/graph.kuzu"

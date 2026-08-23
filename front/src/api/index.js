@@ -1342,6 +1342,12 @@ export async function getWorkflowRun(workflowId, runId) {
   return res.json()
 }
 
+export async function deleteWorkflowRun(workflowId, runId) {
+  const res = await fetch(`${API}/api/workflows/${workflowId}/runs/${runId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
 export async function runWorkflowStream(workflowId, inputs, { onStarted, onNodeStarted, onNodeProgress, onNodeFinished, onNodeFailed, onNodeSkipped, onFinished } = {}) {
 
   const res = await fetch(`${API}/api/workflows/${workflowId}/run`, {

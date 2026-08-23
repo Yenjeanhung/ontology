@@ -10,7 +10,7 @@ import '@vue-flow/controls/dist/style.css'
 import WorkflowNode from './WorkflowNode.vue'
 import {
   getWorkflow, updateWorkflow, fetchWorkflowPalette, runWorkflowStream,
-  fetchEntities, fetchEntityServices, fetchWorkflowRuns, getWorkflowRun,
+  fetchEntities, fetchEntityServices, fetchWorkflowRuns, getWorkflowRun, deleteWorkflowRun,
 } from '../../api'
 import { useToast } from '../../composables/useToast'
 import { TYPE_META } from './nodeMeta.js'
@@ -257,6 +257,8 @@ onMounted(async () => {
     edgeSeq = maxEdgeSeq
     // 恢复最近一次运行的状态与日志（刷新页面后不丢）
     await restoreLastRun()
+    // 预拉历史运行列表（不阻塞）
+    refreshHistory()
   } catch (err) {
     toast.error(`加载失败: ${err.message}`)
   }
@@ -495,6 +497,112 @@ function onEdgeContextMenu({ event, edge }) {
 }
 function closeContextMenu() { contextMenu.visible = false }
 function clearLogs() { logs.value = [] }
+
+// ───── 运行历史（保留最近 N 次） ─────
+const KEEP_RUNS = 10
+const logTab = ref('current')           // 'current' | 'history'
+const runHistory = ref([])              // 列表（摘要）
+const loadingHistory = ref(false)
+const historyDetail = ref(null)         // 正在查看详情的 run（全量）
+const loadingDetail = ref(false)
+const deletingRunId = ref('')
+
+async function refreshHistory() {
+  loadingHistory.value = true
+  try {
+    runHistory.value = await fetchWorkflowRuns(wfId)
+  } catch {
+    runHistory.value = []
+  } finally {
+    loadingHistory.value = false
+  }
+}
+
+async function openRunDetail(runId) {
+  loadingDetail.value = true
+  historyDetail.value = { id: runId, loading: true }
+  try {
+    historyDetail.value = await getWorkflowRun(wfId, runId)
+  } catch (e) {
+    toast.error(`加载详情失败: ${e.message}`)
+    historyDetail.value = null
+  } finally {
+    loadingDetail.value = false
+  }
+}
+function closeRunDetail() { historyDetail.value = null }
+
+// 把一条历史 run 的 node_states 回放到画布（节点染色 + 抽开启节点输出面板）
+async function replayRun(runId) {
+  try {
+    const run = await getWorkflowRun(wfId, runId)
+    const states = run.node_states || {}
+    let count = 0
+    for (const n of nodes.value) {
+      const st = states[n.id]
+      if (!st || !st.status || st.status === 'running') continue
+      n.data.status = st.status
+      n.data.output = st.output ?? null
+      if (st.duration_ms != null) n.data.elapsedText = fmtElapsed(st.duration_ms)
+      count++
+    }
+    if (count) {
+      consoleOpen.value = true
+      logTab.value = 'current'
+      clearLogs()
+      logs.value = [{ kind: 'meta', text: `回放历史运行 · run ${run.id} · ${fmtStatusText(run.status)} · ${run.duration_ms}ms` }]
+      for (const n of nodes.value) {
+        const st = states[n.id]
+        if (!st || !st.status) continue
+        logs.value.push({
+          kind: 'node', node_id: n.id,
+          title: st.title || n.data?.title || n.id,
+          status: st.status, input: st.input, output: st.output,
+          summary: st.summary, error: st.error, duration_ms: st.duration_ms,
+        })
+      }
+      toast.success(`已回放 ${count} 个节点状态`)
+    } else {
+      toast.info('该运行无节点状态可回放')
+    }
+    closeRunDetail()
+  } catch (e) {
+    toast.error(`回放失败: ${e.message}`)
+  }
+}
+
+function fmtStatusText(s) {
+  return s === 'succeeded' ? '成功' : s === 'failed' ? '失败' : s === 'cancelled' ? '已取消' : (s || '未知')
+}
+function fmtTime(ts) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  if (isNaN(d)) return String(ts)
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+function fmtMs(ms) {
+  if (ms == null) return ''
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+}
+
+async function deleteRun(runId) {
+  if (!confirm('确定删除这条运行记录？删除后无法恢复。')) return
+  deletingRunId.value = runId
+  try {
+    await deleteWorkflowRun(wfId, runId)
+    runHistory.value = runHistory.value.filter(r => r.id !== runId)
+    if (historyDetail.value?.id === runId) historyDetail.value = null
+    toast.success('已删除')
+  } catch (e) {
+    toast.error(`删除失败: ${e.message}`)
+  } finally {
+    deletingRunId.value = ''
+  }
+}
+
+// 进入历史 Tab 时自动拉取
+watch(logTab, (t) => { if (t === 'history') refreshHistory() })
 
 // ───── 实体服务下拉 ─────
 async function loadSvc(cfg) {
@@ -759,7 +867,11 @@ async function startRun() {
         setStatus(d.node_id, 'skipped')
         logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'skipped' })
       },
-      onFinished(d) { logs.value.push({ kind: 'meta', text: `工作流${d.status === 'failed' ? '失败' : '完成'} · 耗时 ${d.duration_ms}ms` }) },
+      onFinished(d) {
+        logs.value.push({ kind: 'meta', text: `工作流${d.status === 'failed' ? '失败' : '完成'} · 耗时 ${d.duration_ms}ms` })
+        // 运行结束后刷新历史列表（不阻塞 UI）
+        refreshHistory()
+      },
     })
   } catch (err) {
     toast.error(`运行失败: ${err.message}`)
@@ -1244,12 +1356,20 @@ watch(nowTick, () => {
     <div class="wf-console" v-if="consoleOpen" :style="{ height: consoleHeight + 'px' }">
       <div class="console-resizer" title="拖拽调节高度" @pointerdown="startConsoleResize"></div>
       <div class="console-head">
-        <span class="console-title">{{ running ? '运行中...' : '运行日志' }}</span>
+        <div class="console-tabs">
+          <button class="ctab" :class="{ active: logTab === 'current' }" @click="logTab = 'current'">当前运行</button>
+          <button class="ctab" :class="{ active: logTab === 'history' }" @click="logTab = 'history'">
+            历史 <span class="ctab-badge">{{ runHistory.length }}/{{ KEEP_RUNS }}</span>
+          </button>
+        </div>
         <span class="console-spacer"></span>
-        <button class="btn sm" @click="clearLogs">清空</button>
+        <button class="btn sm" v-if="logTab === 'current'" @click="clearLogs">清空</button>
+        <button class="btn sm" v-else @click="refreshHistory" :disabled="loadingHistory">刷新</button>
         <button class="btn sm" @click="consoleOpen = false">收起</button>
       </div>
-      <div class="console-body">
+
+      <!-- 当前运行：SSE 流式日志 -->
+      <div class="console-body" v-show="logTab === 'current'">
         <div v-for="(l, i) in logs" :key="i">
           <div v-if="l.kind === 'meta'" class="log-line log-meta">{{ l.text }}</div>
           <!-- 节点日志卡片：头部（状态+节点名+耗时）可点开，展开后分输入/输出 -->
@@ -1277,6 +1397,85 @@ watch(nowTick, () => {
           </div>
         </div>
         <div class="console-empty" v-if="!logs.length">暂无运行日志，点击「▶ 运行」开始</div>
+      </div>
+
+      <!-- 历史运行：最近 N 次记录列表 -->
+      <div class="console-body" v-show="logTab === 'history'">
+        <div class="history-hint" v-if="runHistory.length >= KEEP_RUNS">已达上限（{{ KEEP_RUNS }} 条），更早的记录会自动清理</div>
+        <div v-for="r in runHistory" :key="r.id" class="run-row" :class="'stc-' + r.status">
+          <div class="run-row-head">
+            <span class="run-status">{{ statusIcon(r.status) }}</span>
+            <span class="run-badge" :class="'b-' + r.status">{{ fmtStatusText(r.status) }}</span>
+            <span class="run-time">{{ fmtTime(r.started_at) }}</span>
+            <span class="run-dur" v-if="r.duration_ms != null">{{ fmtMs(r.duration_ms) }}</span>
+            <span class="run-nodes" v-if="r.node_count">· {{ r.node_count }} 节点
+              <b class="ok" v-if="r.node_summary.succeeded">✓{{ r.node_summary.succeeded }}</b>
+              <b class="bad" v-if="r.node_summary.failed">✗{{ r.node_summary.failed }}</b>
+              <b class="skp" v-if="r.node_summary.skipped">⊘{{ r.node_summary.skipped }}</b>
+            </span>
+            <span class="run-actions">
+              <button class="btn xs" @click="openRunDetail(r.id)">详情</button>
+              <button class="btn xs" @click="replayRun(r.id)">回放</button>
+              <button class="btn xs danger" :disabled="deletingRunId === r.id" @click="deleteRun(r.id)">删除</button>
+            </span>
+          </div>
+          <div class="run-row-preview" v-if="r.error">
+            <span class="run-err" :title="r.error">{{ r.error }}</span>
+          </div>
+        </div>
+        <div class="console-empty" v-if="!loadingHistory && !runHistory.length">暂无历史运行，点击「▶ 运行」开始</div>
+        <div class="console-empty" v-if="loadingHistory">加载中...</div>
+      </div>
+    </div>
+
+    <!-- 历史运行详情抽屉 -->
+    <div class="run-drawer-mask" v-if="historyDetail" @click.self="closeRunDetail">
+      <div class="run-drawer">
+        <div class="rd-head">
+          <span class="rd-title">运行详情 · {{ historyDetail.id }}</span>
+          <span class="rd-spacer"></span>
+          <button class="btn sm" @click="closeRunDetail">关闭</button>
+        </div>
+        <div class="rd-body" v-if="historyDetail.loading">加载中...</div>
+        <div class="rd-body" v-else>
+          <div class="rd-meta">
+            <span class="run-badge" :class="'b-' + historyDetail.status">{{ fmtStatusText(historyDetail.status) }}</span>
+            <span>开始：{{ fmtTime(historyDetail.started_at) }}</span>
+            <span v-if="historyDetail.duration_ms != null">耗时：{{ fmtMs(historyDetail.duration_ms) }}</span>
+          </div>
+          <div class="rd-io">
+            <div class="rd-io-title">输入</div>
+            <pre class="log-pre">{{ JSON.stringify(historyDetail.inputs ?? {}, null, 2) }}</pre>
+          </div>
+          <div class="rd-io">
+            <div class="rd-io-title">输出</div>
+            <pre class="log-pre" :class="{ 'log-pre-err': historyDetail.error }">{{ JSON.stringify(historyDetail.outputs ?? (historyDetail.error || {}), null, 2) }}</pre>
+          </div>
+          <div v-if="historyDetail.error" class="rd-io">
+            <div class="rd-io-title err">运行错误</div>
+            <pre class="log-pre log-pre-err">{{ historyDetail.error }}</pre>
+          </div>
+          <div class="rd-nodes-title">节点输出（{{ Object.keys(historyDetail.node_states || {}).length }}）</div>
+          <div v-for="(st, nid) in (historyDetail.node_states || {})" :key="nid" class="log-card" :class="'stc-' + (st.status || 'running')">
+            <div class="log-card-head">
+              <span class="log-status">{{ statusIcon(st.status || 'running') }}</span>
+              <span class="log-title">{{ st.title || nid }}</span>
+              <span class="log-nodeid">{{ nid }}</span>
+              <span class="log-dur" v-if="st.duration_ms != null">{{ st.duration_ms }}ms</span>
+            </div>
+            <div class="log-card-detail-open">
+              <div class="log-pane">
+                <div class="log-pane-title">输入</div>
+                <pre class="log-pre">{{ st.input ? JSON.stringify(st.input, null, 2) : '（无）' }}</pre>
+              </div>
+              <div class="log-pane">
+                <div class="log-pane-title">输出</div>
+                <pre class="log-pre" :class="{ 'log-pre-err': st.error }">{{ st.output != null ? JSON.stringify(st.output, null, 2) : (st.error || '（无）') }}</pre>
+              </div>
+            </div>
+          </div>
+          <div class="rd-empty" v-if="!Object.keys(historyDetail.node_states || {}).length">该运行无节点状态记录</div>
+        </div>
       </div>
     </div>
 
@@ -1417,6 +1616,69 @@ watch(nowTick, () => {
 .log-expand { flex-shrink: 0; color: var(--c-secondary); }
 .log-output { padding: 0 12px 8px 26px; }
 .log-output pre { margin: 0; padding: 8px; border-radius: 6px; background: var(--c-muted); font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow-y: auto; }
+
+/* 控制台 Tab 切换 */
+.console-tabs { display: flex; gap: 4px; }
+.ctab {
+  border: 1px solid transparent; background: transparent; color: var(--c-secondary);
+  font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  font-family: var(--font); display: inline-flex; align-items: center; gap: 6px;
+}
+.ctab:hover { background: color-mix(in srgb, var(--c-fg) 8%, transparent); }
+.ctab.active { color: var(--c-fg); background: var(--c-panel); border-color: var(--c-border); }
+.ctab-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--c-muted);
+  color: var(--c-secondary); font-weight: 700;
+}
+.ctab.active .ctab-badge { background: color-mix(in srgb, var(--c-accent) 22%, transparent); color: var(--c-fg); }
+
+/* 历史运行列表 */
+.history-hint { font-size: 11px; color: var(--c-secondary); padding: 6px 8px; background: color-mix(in srgb, var(--c-accent) 10%, transparent); border-radius: 6px; }
+.run-row { border: 1px solid var(--c-border); border-radius: 8px; background: var(--c-panel); flex-shrink: 0; overflow: hidden; }
+.run-row.stc-failed { border-left: 3px solid var(--c-danger); }
+.run-row.stc-succeeded { border-left: 3px solid var(--c-success); }
+.run-row.stc-running,
+.run-row.stc-cancelled,
+.run-row.stc-skipped { border-left: 3px solid var(--c-border); }
+.run-row-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; flex-wrap: wrap; }
+.run-status { width: 14px; text-align: center; }
+.run-badge { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; }
+.run-badge.b-succeeded { background: color-mix(in srgb, var(--c-success) 18%, transparent); color: var(--c-success); }
+.run-badge.b-failed { background: color-mix(in srgb, var(--c-danger) 18%, transparent); color: var(--c-danger); }
+.run-badge.b-running { background: color-mix(in srgb, var(--c-accent) 18%, transparent); color: var(--c-accent); }
+.run-badge.b-cancelled, .run-badge.b-skipped { background: var(--c-muted); color: var(--c-secondary); }
+.run-time { font-size: 11.5px; color: var(--c-fg); }
+.run-dur { font-size: 11.5px; color: var(--c-secondary); opacity: .85; }
+.run-nodes { font-size: 11.5px; color: var(--c-secondary); }
+.run-nodes .ok { color: var(--c-success); }
+.run-nodes .bad { color: var(--c-danger); }
+.run-nodes .skp { color: var(--c-secondary); }
+.run-actions { margin-left: auto; display: flex; gap: 4px; }
+.btn.xs { padding: 3px 9px; font-size: 11px; }
+.btn.xs.danger { color: var(--c-danger); }
+.btn.xs.danger:hover { background: color-mix(in srgb, var(--c-danger) 14%, transparent); }
+.run-row-preview { padding: 0 10px 8px 32px; }
+.run-err { font-size: 11.5px; color: var(--c-danger); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 历史运行详情抽屉 */
+.run-drawer-mask { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,.35); display: flex; justify-content: flex-end; }
+.run-drawer {
+  width: 560px; max-width: 92vw; height: 100%; display: flex; flex-direction: column;
+  background: var(--c-panel); border-left: 1px solid var(--c-border); box-shadow: -12px 0 32px rgba(0,0,0,.18);
+}
+.rd-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--c-border); flex-shrink: 0; }
+.rd-title { font-size: 13px; font-weight: 700; }
+.rd-spacer { flex: 1; }
+.rd-body { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+.rd-meta { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--c-secondary); flex-wrap: wrap; }
+.rd-io-title { font-size: 11px; font-weight: 700; color: var(--c-secondary); margin-bottom: 5px; letter-spacing: .5px; }
+.rd-io-title.err { color: var(--c-danger); }
+.rd-io .log-pre { max-height: 200px; border: 1px solid var(--c-border); border-radius: 6px; padding: 8px; background: var(--c-muted); }
+.rd-nodes-title { font-size: 11px; font-weight: 700; color: var(--c-secondary); border-top: 1px solid var(--c-border); padding-top: 10px; letter-spacing: .5px; }
+.rd-empty { font-size: 12px; color: var(--c-secondary); text-align: center; padding: 12px; }
+
+/* 历史详情里的节点卡片：默认展开 */
+.log-card-detail-open { display: flex; gap: 0; border-top: 1px solid var(--c-border); background: var(--c-muted); }
 
 /* 右键菜单 */
 .ctx-menu { position: fixed; z-index: 200; min-width: 120px; padding: 4px; border: 1px solid var(--c-border); border-radius: 8px; background: var(--c-panel-elevated, var(--c-panel)); box-shadow: 0 8px 24px rgba(0,0,0,.18); }
