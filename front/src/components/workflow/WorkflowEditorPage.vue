@@ -31,7 +31,7 @@ const TYPE_META = {
 // 自定义节点组件映射（Vue Flow 按节点 type 渲染 WorkflowNode）
 // markRaw：组件对象不进响应式代理（Vue Flow 内部会 h() 渲染，代理化组件触发性能 warning）
 const nodeTypes = markRaw(Object.fromEntries(Object.keys(TYPE_META).map(t => [t, WorkflowNode])))
-const { screenToFlowCoordinate } = useVueFlow()
+const { screenToFlowCoordinate, updateNode } = useVueFlow()
 
 const DEFAULT_CONFIG = {
   start: { inputs: [] },
@@ -696,18 +696,25 @@ function setStatus(nodeId, status, durationMs = null) {
   const n = nodes.value.find(x => x.id === nodeId)
   if (n) {
     n.data.status = status
-    if (status === 'running') n.data.elapsedText = '0s'
+    if (status === 'running') {
+      n.data.elapsedText = '0s'
+      n.data.step = ''
+    }
     // succeeded/failed：定格最终耗时（durationMs 优先，缺省用本地计时）
     else if (status === 'succeeded' || status === 'failed') {
       n.data.elapsedText = fmtElapsed(durationMs ?? (runningSince[nodeId] ? Date.now() - runningSince[nodeId] : null))
+      n.data.step = ''
     }
-    else n.data.elapsedText = ''
+    else {
+      n.data.elapsedText = ''
+      n.data.step = ''
+    }
   }
   if (status === 'running') runningSince[nodeId] = Date.now()
   else delete runningSince[nodeId]
 }
 function clearStatus() {
-  nodes.value.forEach(n => { n.data.status = ''; n.data.output = null })
+  nodes.value.forEach(n => { n.data.status = ''; n.data.output = null; n.data.step = '' })
   Object.keys(runningSince).forEach(k => delete runningSince[k])
   logs.value = []
 }
@@ -729,10 +736,13 @@ async function startRun() {
         // 心跳：更新对应 running 日志行的已运行时长
         const line = [...logs.value].reverse().find(l => l.kind === 'node' && l.node_id === d.node_id && l.status === 'running')
         if (line) line.elapsed_ms = d.elapsed_ms
-        // 流式执行：把实时输出挂载到节点上，节点卡片可动态渲染
-        const n = nodes.value.find(x => x.id === d.node_id)
-        if (n && d.output) {
-          n.data = { ...n.data, output: d.output }
+        // 流式执行：把实时输出 / 当前步骤挂载到节点上，节点卡片可动态渲染
+        if (d.output || d.step) {
+          updateNode(d.node_id, (node) => {
+            if (!node.data) node.data = {}
+            if (d.output) node.data.output = d.output
+            if (d.step) node.data.step = d.step
+          })
         }
       },
       onNodeFinished(d) {

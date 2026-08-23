@@ -26,6 +26,7 @@ const title = computed(() => props.data?.title || meta.value.name)
 const isCondition = computed(() => type.value === 'condition')
 const status = computed(() => props.data?.status || '')
 const elapsedText = computed(() => props.data?.elapsedText || '')
+const currentStep = computed(() => props.data?.step || '')
 
 const STATUS_LABEL = { running: '运行中', succeeded: '完成', failed: '失败', skipped: '跳过' }
 
@@ -160,15 +161,17 @@ async function copyOutputJson() {
     </div>
     <div class="wf-body">{{ bodyText(type, props.data?.config) }}</div>
 
-    <!-- 运行时显示流式输出预览；运行后：卡片只展示自定义输出；固定输出进弹窗查看 -->
+    <!-- 运行时显示步骤 + 流式输出预览；运行后：卡片只展示自定义输出；固定输出进弹窗查看 -->
     <div class="wf-out" v-if="status === 'succeeded' || status === 'failed' || status === 'running'">
-      <div v-if="status === 'running' && streamPreview" class="wf-out-stream" @click.stop="outOpen = !outOpen" title="点击展开完整输出">
+      <div v-if="status === 'running'" class="wf-out-stream" @click.stop="outOpen = !outOpen" title="点击展开完整输出">
         <span class="wf-stream-dot"></span>
-        <span class="wf-stream-text">{{ streamPreview }}</span>
-      </div>
-      <div v-else-if="status === 'running'" class="wf-out-stream">
-        <span class="wf-stream-dot"></span>
-        <span class="wf-stream-text">生成中...</span>
+        <div class="wf-stream-wrap">
+          <div v-if="currentStep" class="wf-stream-step">{{ currentStep }}</div>
+          <div v-if="streamPreview" class="wf-stream-marquee">
+            <span class="wf-stream-text">{{ streamPreview }}</span>
+          </div>
+          <span v-else class="wf-stream-text">生成中...</span>
+        </div>
       </div>
       <template v-else-if="status !== 'running'">
         <div class="wf-out-kvs" v-if="customOuts.length">
@@ -304,6 +307,19 @@ async function copyOutputJson() {
 .wf-stream-text {
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
   overflow: hidden; word-break: break-all;
+}
+.wf-stream-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.wf-stream-step { font-size: 10px; color: var(--c-accent); font-weight: 600; line-height: 1.3; }
+.wf-stream-marquee { overflow: hidden; white-space: nowrap; }
+.wf-stream-marquee .wf-stream-text {
+  display: inline-block; white-space: nowrap; word-break: normal;
+  padding-left: 100%;
+  -webkit-line-clamp: unset;
+  animation: wf-marquee 12s linear infinite;
+}
+@keyframes wf-marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-100%); }
 }
 @keyframes wf-pulse {
   0%, 100% { opacity: 1; }

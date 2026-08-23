@@ -155,16 +155,24 @@ async def _exec_agent(cfg: dict, context: dict, db) -> dict:
     return out
 
 
-async def _exec_agent_stream(cfg: dict, context: dict, db, on_token=None) -> dict:
+async def _exec_agent_stream(cfg: dict, context: dict, db, on_token=None, on_step=None) -> dict:
     """智能体节点流式执行：LLM 生成过程中持续调用 on_token(token)。
 
+    通过 on_step(label) 把固定前置步骤逐一下发，让前端知道当前进度。
     最终返回结果与非流式 _exec_agent 完全一致。
     """
+    def _step(label: str):
+        if on_step:
+            on_step(label)
+
     query = str(render(cfg.get("query_template", ""), context))
     struct_fields = [f for f in (cfg.get("structured_outputs") or []) if isinstance(f, dict) and f.get("name")]
     if struct_fields:
         query += _build_structured_suffix(struct_fields)
+    _step("准备查询")
+
     if cfg.get("agent_id"):
+        _step("解析智能体配置")
         agent = await AgentService.resolve(db, cfg["agent_id"])
         if not agent:
             raise RuntimeError("智能体不存在或已禁用")
@@ -176,8 +184,9 @@ async def _exec_agent_stream(cfg: dict, context: dict, db, on_token=None) -> dic
 
     if not kb_id:
         skills = await SkillService.resolve(db, skill_ids)
-        out = await _agent_chat_no_kb_stream(query, persona, skills, on_token)
+        out = await _agent_chat_no_kb_stream(query, persona, skills, on_token, on_step)
     else:
+        _step("加载知识库")
         kb = await KBService.get(db, kb_id)
         if not kb:
             raise RuntimeError("知识库不存在")
@@ -186,10 +195,13 @@ async def _exec_agent_stream(cfg: dict, context: dict, db, on_token=None) -> dic
         except Exception:
             ontology_schema = None
         skills = await SkillService.resolve(db, skill_ids)
-        out = await _oag_stream_collect(kb_id, query, kb["name"], ontology_schema, skills, persona, on_token)
+        _step("检索相关知识")
+        out = await _oag_stream_collect(kb_id, query, kb["name"], ontology_schema, skills, persona, on_token, on_step)
 
     if struct_fields:
+        _step("解析结构化输出")
         out.update(_parse_structured(out.get("answer") or "", struct_fields))
+    _step("整理输出")
     extra = cfg.get("extra_outputs") or {}
     if isinstance(extra, dict):
         local_ctx = dict(context)
@@ -231,12 +243,15 @@ async def _agent_chat_no_kb_stream(
     persona: str | None,
     skills: list[dict],
     on_token=None,
+    on_step=None,
 ) -> dict:
     """未绑 KB 智能体的纯对话执行（流式），每收到一个 token 调用 on_token。"""
     from langchain_core.messages import HumanMessage, SystemMessage
 
     from oag_service import build_system_prompt
 
+    if on_step:
+        on_step("调用大模型")
     llm = create_llm()
     if llm is None:
         raise RuntimeError("尚未配置大模型，请先在「系统配置」中激活 LLM")
@@ -246,13 +261,17 @@ async def _agent_chat_no_kb_stream(
         messages.insert(0, SystemMessage(content=system_prompt))
     try:
         parts = []
+        token_count = 0
         async for chunk in llm.astream(messages):
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
             if content:
+                token_count += 1
                 parts.append(content)
                 if on_token:
-                    await on_token(content)
+                    on_token(content)
         text = "".join(parts)
+        if token_count == 0:
+            logger.warning("_agent_chat_no_kb_stream 未收到任何 token，可能当前模型不支持流式输出")
     except Exception as e:
         raise RuntimeError(f"LLM 调用失败：{e}")
     return {
@@ -271,18 +290,24 @@ async def _oag_stream_collect(
     skills,
     persona,
     on_token=None,
+    on_step=None,
 ) -> dict:
     """复用 OAGService.query_stream 收集完整结果，同时把 token 透传给 on_token。"""
+    if on_step:
+        on_step("调用大模型")
     answer_parts: list[str] = []
     chunks: list[dict] = []
     entities: list[dict] = []
     subgraph: dict | None = None
     async for s in OAGService.query_stream(kb_id, query, kb_name, ontology_schema, skills, persona):
-        if not s.startswith("data: "):
+        # SSE 格式兼容：data: 后可能有不同数量空格，也可能有 ID 前缀
+        m = re.match(r"^(?:id:[^\n]*\n)?data:\s*", s, re.MULTILINE)
+        if not m:
             continue
-        payload = s[len("data: "):].strip()
+        payload = s[m.end():].strip()
         if payload == "[DONE]":
             break
+        # 某些 SSE 实现会把 JSON 分在多个 data: 行，这里只处理单行完整 JSON
         try:
             evt = json.loads(payload)
         except ValueError:
@@ -292,13 +317,15 @@ async def _oag_stream_collect(
             content = evt.get("content") or ""
             answer_parts.append(content)
             if on_token:
-                await on_token(content)
+                on_token(content)
         elif t == "chunks":
             chunks = evt.get("chunks") or []
         elif t == "entities":
             entities = evt.get("entities") or []
         elif t == "subgraph":
             subgraph = evt
+    if len(answer_parts) == 0:
+        logger.warning("_oag_stream_collect 未收到任何 token，可能当前模型/OAG 不支持流式输出")
     return {
         "answer": "".join(answer_parts),
         "chunks": chunks,
@@ -677,17 +704,38 @@ def _make_node_fn(rt: _Runtime, node: dict):
 
         # 智能体节点流式执行：token 实时下发，同时保持最终 result 一致
         accumulated: list[str] = []
+        first_token_emitted = False
+        last_progress_emit = 0.0
 
-        async def _on_token(token: str):
-            accumulated.append(token)
+        def _emit_progress(payload: dict):
             rt.emit({
                 "type": "node_progress", "node_id": nid, "title": title,
                 "elapsed_ms": int((time.monotonic() - t0) * 1000),
-                "output": {"answer": "".join(accumulated)},
+                **payload,
             })
 
+        def _on_step(step: str):
+            _emit_progress({"step": step})
+
+        def _on_token(token: str):
+            nonlocal first_token_emitted, last_progress_emit
+            accumulated.append(token)
+            now = time.monotonic()
+            # 每 80ms 最多发一次 progress，避免高频事件导致前端响应式批处理无法及时渲染
+            if now - last_progress_emit < 0.08:
+                return
+            last_progress_emit = now
+            _emit_progress({
+                "output": {"answer": "".join(accumulated)},
+                "step": "生成中..." if accumulated else "调用大模型",
+            })
+            if not first_token_emitted:
+                first_token_emitted = True
+                logger.info("[run %s] 智能体节点 %s 首次 token 已下发", rt.run_id, nid)
+
         if node.get("type") == "agent":
-            task = asyncio.create_task(_exec_agent_stream(node.get("config") or {}, context, rt.db, _on_token))
+            logger.info("[run %s] 使用流式执行智能体节点 %s", rt.run_id, nid)
+            task = asyncio.create_task(_exec_agent_stream(node.get("config") or {}, context, rt.db, _on_token, _on_step))
         else:
             task = asyncio.create_task(_execute_node(node, context, rt.db))
         try:
