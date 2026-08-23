@@ -69,6 +69,20 @@ const FIXED_STRUCT_FIELDS = [
   { name: 'chunks', type: 'array', desc: '引用来源分片（固定）' },
   { name: 'entities', type: 'array', desc: '识别实体（固定）' },
 ]
+// 常见固定输出字段的说明（用于 hover 提示）
+const FIELD_DESC = {
+  answer: '完整回答文本',
+  chunks: '引用来源分片',
+  entities: '识别实体',
+  subgraph: '子图结果',
+  success: '是否执行成功',
+  data: '返回数据',
+  error: '错误信息',
+  stdout: '标准输出',
+  duration_ms: '耗时（毫秒）',
+  text: '模型生成文本',
+  result: '判断结果',
+}
 // 节点声明输出变量 = 固定输出 ∪ output_fields ∪ 结构化输出自定义字段（智能体）
 // 智能体节点：非固定字段以 structured_outputs 为准（output_fields 里的历史残留会被剔除）
 function outputFieldsOf(nodeLike) {
@@ -86,6 +100,66 @@ function outputFieldsOf(nodeLike) {
   }
   for (const f of fixed) if (!fields.includes(f)) fields.push(f)
   return fields
+}
+
+// 获取某个字段的说明（用于变量 hover 提示）
+function fieldDesc(nodeLike, field) {
+  const cfg = nodeLike.data?.config ?? nodeLike.config ?? {}
+  const t = nodeLike.type
+  // 智能体结构化输出自定义字段：以 description 为准
+  if (t === 'agent' && Array.isArray(cfg.structured_outputs)) {
+    const s = cfg.structured_outputs.find(s => s.name === field)
+    if (s?.description) return s.description
+  }
+  // 开始节点输入变量：label / description
+  if (t === 'start' && Array.isArray(cfg.inputs)) {
+    const inp = cfg.inputs.find(i => i.name === field)
+    if (inp?.description) return inp.description
+    if (inp?.label) return inp.label
+  }
+  // 固定字段说明
+  const fixed = FIXED_STRUCT_FIELDS.find(x => x.name === field)
+  if (fixed) return fixed.desc.replace('（固定）', '')
+  if (FIELD_DESC[field]) return FIELD_DESC[field]
+  return ''
+}
+
+// ── 自定义变量提示（替代原生 title，即时显示 + 可美化）──
+const tooltip = ref({ visible: false, x: 0, y: 0, title: '', desc: '' })
+let tooltipHideTimer = null
+
+function positionTooltip(x, y) {
+  const pad = 12
+  const w = 280
+  const h = 72
+  let nx = x + pad
+  let ny = y + pad
+  if (nx + w > window.innerWidth) nx = Math.max(8, x - w - pad)
+  if (ny + h > window.innerHeight) ny = Math.max(8, y - h - pad)
+  return { x: nx, y: ny }
+}
+
+function showVarTooltip(e, nodeLike, field) {
+  const desc = fieldDesc(nodeLike, field)
+  if (!desc) return
+  clearTimeout(tooltipHideTimer)
+  const pos = positionTooltip(e.clientX, e.clientY)
+  tooltip.value = {
+    visible: true,
+    x: pos.x,
+    y: pos.y,
+    title: `${nodeLike.id}.${field}`,
+    desc
+  }
+}
+function moveVarTooltip(e) {
+  if (!tooltip.value.visible) return
+  const pos = positionTooltip(e.clientX, e.clientY)
+  tooltip.value.x = pos.x
+  tooltip.value.y = pos.y
+}
+function hideVarTooltip() {
+  tooltipHideTimer = setTimeout(() => { tooltip.value.visible = false }, 120)
 }
 
 const wfName = ref('')
@@ -897,7 +971,7 @@ watch(nowTick, () => {
                     <div v-if="outputFieldsOf(n).length" class="upstream-node">
                       <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
                       <div class="var-chips">
-                        <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @click="appendEndRowFromVar(n.id, f)">{{ n.id }}.{{ f }}</button>
+                        <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @mouseenter="showVarTooltip($event, n, f)" @mousemove="moveVarTooltip" @mouseleave="hideVarTooltip" @click="appendEndRowFromVar(n.id, f)">{{ n.id }}.{{ f }}</button>
                       </div>
                     </div>
                   </template>
@@ -1032,7 +1106,7 @@ watch(nowTick, () => {
                     <div v-if="outputFieldsOf(n).length" class="upstream-node">
                       <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
                       <div class="var-chips">
-                        <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
+                        <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @mouseenter="showVarTooltip($event, n, f)" @mousemove="moveVarTooltip" @mouseleave="hideVarTooltip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
                       </div>
                     </div>
                   </template>
@@ -1067,6 +1141,9 @@ watch(nowTick, () => {
                   <span
                     v-for="f in displayOutputFields(selectedNode)" :key="f"
                     class="var-chip var-chip-edit var-chip-fixed"
+                    @mouseenter="showVarTooltip($event, selectedNode, f)"
+                    @mousemove="moveVarTooltip"
+                    @mouseleave="hideVarTooltip"
                   >
                     <span class="vc-name" @click="copyText(varRef(selectedNodeId, f))">{{ f }}</span>
                   </span>
@@ -1176,10 +1253,40 @@ watch(nowTick, () => {
         </div>
       </div>
     </div>
+
+    <!-- 变量说明悬浮提示（即时显示，替代原生 title） -->
+    <div
+      v-show="tooltip.visible"
+      class="var-tooltip"
+      :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }"
+    >
+      <div class="var-tooltip-title">{{ tooltip.title }}</div>
+      <div class="var-tooltip-desc">{{ tooltip.desc }}</div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* 变量说明悬浮提示：即时显示、主题化、带阴影 */
+.var-tooltip {
+  position: fixed; left: 0; top: 0; z-index: 1000;
+  max-width: 280px; min-width: 80px;
+  padding: 8px 12px;
+  background: var(--c-panel-elevated, var(--c-panel));
+  border: 1px solid var(--c-border-strong, var(--c-border));
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.28), 0 2px 6px rgba(0,0,0,.12);
+  pointer-events: none;
+  font-size: 12px; line-height: 1.5;
+  color: var(--c-fg);
+}
+.var-tooltip-title {
+  font-weight: 700; color: var(--c-accent);
+  font-family: ui-monospace, monospace;
+  margin-bottom: 3px; font-size: 12px;
+}
+.var-tooltip-desc { color: var(--c-secondary); font-size: 11.5px; }
+
 .wf-editor { display: flex; flex-direction: column; gap: 12px; height: calc(100vh - 170px); min-height: 480px; }
 .wf-toolbar { display: flex; align-items: center; gap: 10px; }
 .wf-name { flex: 0 0 auto; width: 240px; padding: 7px 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px); font-size: 14px; font-weight: 600; font-family: var(--font); outline: none; background: var(--c-panel); color: var(--c-fg); }

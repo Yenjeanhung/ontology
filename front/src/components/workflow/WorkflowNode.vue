@@ -199,8 +199,14 @@ function fullOutputJson() {
   padding: 7px 10px; font-size: 11px; font-weight: 700; color: var(--c-secondary);
   border-bottom: 1px solid var(--c-border); background: var(--c-muted);
 }
-.wf-pop-close { cursor: pointer; color: var(--c-secondary); font-size: 14px; line-height: 1; padding: 0 2px; }
-.wf-pop-close:hover { color: var(--c-danger); }
+.wf-pop-close {
+  cursor: pointer; color: var(--c-secondary); font-size: 18px; font-weight: 700;
+  line-height: 1; padding: 6px 10px; margin: -4px -6px -4px 0;
+  border-radius: 6px; user-select: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 28px; min-height: 28px;
+}
+.wf-pop-close:hover { color: var(--c-danger); background: color-mix(in srgb, var(--c-danger) 10%, transparent); }
 .wf-pop-pre {
   margin: 0; padding: 10px; max-height: 300px; overflow-y: auto;
   font-family: ui-monospace, monospace; font-size: 10.5px; line-height: 1.55;
