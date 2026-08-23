@@ -20,6 +20,10 @@ tika>=2.6.0            # 兜底解析器，覆盖 pptx/xlsx/html/eml 等（运�
 langchain-core>=0.3.0
 langchain-text-splitters>=0.3.0
 
+# 工作流引擎（调度层，services/workflow_engine.py）
+langgraph>=0.2.0
+langgraph-checkpoint-sqlite>=2.0.0   # 预留：断点恢复/重放时启用
+
 # LangChain 嵌入模型（按需启用）
 langchain-huggingface>=0.1.0    # EMBEDDING_PROVIDER=local
 # langchain-openai>=0.2.0       # EMBEDDING_PROVIDER=openai 时取消注释

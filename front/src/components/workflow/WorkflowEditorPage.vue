@@ -733,14 +733,18 @@ watch(nowTick, () => {
             <!-- 结束 -->
             <template v-else-if="selectedType === 'end'">
               <div class="field">
-                <label>可用变量（点击直接添加为输出）</label>
-                <div v-for="n in upstreamNodes" :key="n.id" class="upstream-node">
-                  <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
-                  <div class="var-chips">
-                    <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @click="appendEndRowFromVar(n.id, f)">{{ n.id }}.{{ f }}</button>
-                  </div>
-                </div>
-                <span class="hint" v-if="!upstreamNodes.length">还没有上游节点，先把前面的节点连过来</span>
+                <template v-if="upstreamNodes.some(n => outputFieldsOf(n).length)">
+                  <label>可用变量（点击直接添加为输出）</label>
+                  <template v-for="n in upstreamNodes" :key="n.id">
+                    <div v-if="outputFieldsOf(n).length" class="upstream-node">
+                      <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
+                      <div class="var-chips">
+                        <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @click="appendEndRowFromVar(n.id, f)">{{ n.id }}.{{ f }}</button>
+                      </div>
+                    </div>
+                  </template>
+                </template>
+                <span class="hint" v-else>暂无可用变量：上游节点还未声明输出（开始节点需先配置输入变量）</span>
               </div>
               <div class="field">
                 <label>输出映射（最终返回的结果）</label>
@@ -864,14 +868,18 @@ watch(nowTick, () => {
 
               <!-- 输入变量：沿连线可流入本节点的上游输出（智能体用「⊕ 插入变量」，不显示此块） -->
               <div class="field" v-if="selectedType !== 'agent'">
-                <label>输入变量（上游，点击复制）</label>
-                <div v-for="n in upstreamNodes" :key="n.id" class="upstream-node">
-                  <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
-                  <div class="var-chips">
-                    <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
-                  </div>
-                </div>
-                <span class="hint" v-if="!upstreamNodes.length">还没有连线的上游节点，先从上游节点拖一条线过来</span>
+                <template v-if="upstreamNodes.some(n => outputFieldsOf(n).length)">
+                  <label>输入变量（上游，点击复制）</label>
+                  <template v-for="n in upstreamNodes" :key="n.id">
+                    <div v-if="outputFieldsOf(n).length" class="upstream-node">
+                      <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
+                      <div class="var-chips">
+                        <button v-for="f in outputFieldsOf(n)" :key="f" type="button" class="var-chip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
+                      </div>
+                    </div>
+                  </template>
+                </template>
+                <span class="hint" v-else>暂无可用变量：上游节点还未声明输出（开始节点需先配置输入变量）</span>
               </div>
 
               <!-- 各类型的变量插值输入 -->
