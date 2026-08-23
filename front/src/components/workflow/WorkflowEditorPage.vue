@@ -10,7 +10,7 @@ import '@vue-flow/controls/dist/style.css'
 import WorkflowNode from './WorkflowNode.vue'
 import {
   getWorkflow, updateWorkflow, fetchWorkflowPalette, runWorkflowStream,
-  fetchEntities, fetchEntityServices,
+  fetchEntities, fetchEntityServices, fetchWorkflowRuns, getWorkflowRun,
 } from '../../api'
 import { useToast } from '../../composables/useToast'
 
@@ -69,11 +69,23 @@ const FIXED_STRUCT_FIELDS = [
   { name: 'chunks', type: 'array', desc: '引用来源分片（固定）' },
   { name: 'entities', type: 'array', desc: '识别实体（固定）' },
 ]
-// 节点声明输出变量：优先 config.output_fields（用户手动管理），旧数据回退到类型默认
+// 节点声明输出变量 = 固定输出 ∪ output_fields ∪ 结构化输出自定义字段（智能体）
+// 智能体节点：非固定字段以 structured_outputs 为准（output_fields 里的历史残留会被剔除）
 function outputFieldsOf(nodeLike) {
   const t = nodeLike.type
-  const arr = nodeLike.data?.config?.output_fields ?? nodeLike.config?.output_fields
-  return Array.isArray(arr) && arr.length ? arr : (OUTPUT_FIELDS_DEFAULT[t] || [])
+  const cfg = nodeLike.data?.config ?? nodeLike.config ?? {}
+  const fixed = FIXED_OUTPUTS[t] || []
+  let fields = Array.isArray(cfg.output_fields)
+    ? [...cfg.output_fields]
+    : [...(OUTPUT_FIELDS_DEFAULT[t] || [])]
+  const struct = cfg.structured_outputs
+  if (t === 'agent' && Array.isArray(struct)) {
+    const structNames = struct.map(s => s?.name).filter(Boolean)
+    fields = fields.filter(f => fixed.includes(f) || structNames.includes(f))
+    for (const n of structNames) if (!fields.includes(n)) fields.push(n)
+  }
+  for (const f of fixed) if (!fields.includes(f)) fields.push(f)
+  return fields
 }
 
 const wfName = ref('')
@@ -170,10 +182,45 @@ onMounted(async () => {
     const maxEdgeSeq = Math.max(0, ...edges.value.map(e => parseInt(String(e.id).replace(/^e/, ''), 10) || 0))
     nodeSeq = maxNodeSeq
     edgeSeq = maxEdgeSeq
+    // 恢复最近一次运行的状态与日志（刷新页面后不丢）
+    await restoreLastRun()
   } catch (err) {
     toast.error(`加载失败: ${err.message}`)
   }
 })
+
+// 拉取最近一条运行记录，回放节点状态/输出/日志卡片
+async function restoreLastRun() {
+  try {
+    const runs = await fetchWorkflowRuns(wfId)
+    if (!runs?.length) return
+    const last = runs[0]
+    const run = await getWorkflowRun(wfId, last.id)
+    const states = run.node_states || {}
+    const hasAny = Object.values(states).some(s => s && s.status && s.status !== 'running')
+    if (!hasAny) return
+
+    logs.value = [{ kind: 'meta', text: `上次运行 · run ${run.id} · ${run.status === 'succeeded' ? '成功' : run.status === 'failed' ? '失败' : run.status} · ${run.duration_ms}ms` }]
+    for (const n of nodes.value) {
+      const st = states[n.id]
+      if (!st) continue
+      n.data.status = st.status
+      n.data.output = st.output ?? null
+      if (st.duration_ms != null) n.data.elapsedText = fmtElapsed(st.duration_ms)
+      logs.value.push({
+        kind: 'node', node_id: n.id,
+        title: st.title || n.data?.title || n.id,
+        status: st.status,
+        input: st.input,
+        output: st.output ?? null,
+        summary: st.summary,
+        error: st.error,
+        duration_ms: st.duration_ms,
+      })
+    }
+    if (logs.value.length > 1) consoleOpen.value = true
+  } catch { /* 静默：恢复失败不影响编辑 */ }
+}
 
 function toFlowNode(n) {
   return {
@@ -323,10 +370,35 @@ function deleteSelected() {
   if (selectedNodeId.value) deleteNodeById(selectedNodeId.value)
 }
 function deleteNodeById(id) {
+  // 删除前：清理下游对被删节点的变量引用（输出映射 / 条件 / 模板 / 参数）
+  const ref = new RegExp(`\\{\\{\\s*${id}\\.[\\w.\\[\\]-]+\\s*\\}\\}`, 'g')
+  const refShort = new RegExp(`\\{\\{\\s*${id}\\s*\\.`, 'g')
+  let cleaned = []
+  for (const n of nodes.value) {
+    if (n.id === id) continue
+    const cfg = n.data?.config
+    if (!cfg) continue
+    // 结束节点：删引用它的输出映射行
+    if (Array.isArray(cfg.outputs)) {
+      const before = cfg.outputs.length
+      cfg.outputs = cfg.outputs.filter(r => !(typeof r.value === 'string' && (ref.test(r.value) || r.value.includes(`{{${id}.`))))
+      ref.lastIndex = 0
+      if (cfg.outputs.length !== before) cleaned.push(`${n.data?.title || n.id} 的输出映射`)
+    }
+    // 字符串型配置：问题模板 / prompt / 条件左右值
+    for (const k of ['query_template', 'prompt_template', 'left', 'right']) {
+      if (typeof cfg[k] === 'string' && cfg[k].includes(`{{${id}.`)) {
+        cfg[k] = cfg[k].replace(refShort, '')
+        cleaned.push(`${n.data?.title || n.id} 的 ${k}`)
+      }
+    }
+    refShort.lastIndex = 0
+  }
   nodes.value = nodes.value.filter(n => n.id !== id)
   edges.value = edges.value.filter(e => e.source !== id && e.target !== id)
   if (selectedNodeId.value === id) selectedNodeId.value = null
   closeContextMenu()
+  if (cleaned.length) toast.info(`已删除节点 ${id}，并清理了：${cleaned.join('、')}`)
 }
 function deleteEdgeById(id) {
   edges.value = edges.value.filter(e => e.id !== id)
@@ -443,10 +515,50 @@ function insertVar(field) {
   cfg[field] = (cfg[field] || '') + token
 }
 
+// 保存前校验：扫描所有 {{节点.字段}} 引用——节点不存在或字段不在其可用输出集 → 报错拦下
+function validateVarRefs() {
+  const VAR = /\{\{\s*([\w-]+)\.([\w.\[\]-]*)\s*\}\}/g
+  const fieldsByNode = new Map(nodes.value.map(n => [n.id, outputFieldsOf(n)]))
+  const nameOf = new Map(nodes.value.map(n => [n.id, n.data?.title || n.id]))
+  const errors = []
+  for (const n of nodes.value) {
+    const cfg = n.data?.config
+    if (!cfg) continue
+    const scan = (where, val) => {
+      if (typeof val !== 'string') return
+      let m
+      VAR.lastIndex = 0
+      while ((m = VAR.exec(val)) !== null) {
+        const [, refId, refField] = m
+        const root = refField.split('.')[0]
+        if (!fieldsByNode.has(refId)) {
+          errors.push(`节点「${nameOf.get(n.id)}」${where} 引用了不存在的节点 {{${refId}.${refField}}}`)
+        } else if (root && !fieldsByNode.get(refId).includes(root)) {
+          errors.push(`节点「${nameOf.get(n.id)}」${where} 引用了 {{${refId}.${root}}}，但「${nameOf.get(refId)}」没有输出字段 ${root}`)
+        }
+      }
+    }
+    scan('问题模板', cfg.query_template)
+    scan('Prompt', cfg.prompt_template)
+    scan('条件', cfg.left)
+    scan('条件', cfg.right)
+    if (Array.isArray(cfg.outputs)) cfg.outputs.forEach((r, i) => scan(`输出映射第${i + 1}行`, r?.value))
+    if (cfg.params && typeof cfg.params === 'object') {
+      for (const [k, v] of Object.entries(cfg.params)) scan(`参数 ${k}`, String(v))
+    }
+  }
+  if (errors.length) {
+    toast.error(errors[0] + (errors.length > 1 ? `（共 ${errors.length} 处引用问题）` : ''))
+    return false
+  }
+  return true
+}
+
 // ───── 保存 ─────
 async function save() {
   if (!wfName.value.trim()) { toast.error('名称不能为空'); return }
   if (!validateStructRows()) return
+  if (!validateVarRefs()) return
   saving.value = true
   const definition = {
     nodes: nodes.value.map(fromFlowNode),
@@ -508,7 +620,7 @@ function setStatus(nodeId, status, durationMs = null) {
   else delete runningSince[nodeId]
 }
 function clearStatus() {
-  nodes.value.forEach(n => { n.data.status = '' })
+  nodes.value.forEach(n => { n.data.status = ''; n.data.output = null })
   Object.keys(runningSince).forEach(k => delete runningSince[k])
   logs.value = []
 }
@@ -524,7 +636,7 @@ async function startRun() {
       onStarted(d) { logs.value.push({ kind: 'meta', text: `工作流开始 · run ${d.run_id}` }) },
       onNodeStarted(d) {
         setStatus(d.node_id, 'running')
-        logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'running' })
+        logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'running', input: d.input })
       },
       onNodeProgress(d) {
         // 心跳：更新对应 running 日志行的已运行时长
@@ -533,6 +645,9 @@ async function startRun() {
       },
       onNodeFinished(d) {
         setStatus(d.node_id, 'succeeded', d.duration_ms)
+        // 输出注入节点 data：卡片上直接展示 answer 摘要 + 自定义字段（count 等）
+        const n = nodes.value.find(x => x.id === d.node_id)
+        if (n) n.data.output = d.output
         logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'succeeded', summary: d.summary, output: d.output, duration_ms: d.duration_ms })
       },
       onNodeFailed(d) {
@@ -586,7 +701,41 @@ onBeforeUnmount(() => {
   window.removeEventListener('click', closeContextMenu)
   clearInterval(tickTimer)
   endDrawerResize()
+  endConsoleResize()
 })
+
+// ── 日志控制台高度拖拽（顶边缘把手，120–60% 视口，记忆） ──
+const CONSOLE_H_KEY = 'knowsource.workflow.consoleHeight'
+const consoleHeight = ref(parseInt(localStorage.getItem(CONSOLE_H_KEY) || '', 10) || 220)
+let cResizing = false
+let cStartY = 0      // 按下时的鼠标 y
+let cStartH = 0      // 按下时的控制台高度
+function startConsoleResize(e) {
+  cResizing = true
+  cStartY = e.clientY
+  cStartH = consoleHeight.value
+  e.preventDefault()
+  window.addEventListener('pointermove', onConsoleResize)
+  window.addEventListener('pointerup', endConsoleResize)
+  document.body.style.cursor = 'row-resize'
+  document.body.style.userSelect = 'none'
+}
+function onConsoleResize(e) {
+  if (!cResizing) return
+  // 增量式：按位移差调整（向上拖 y 变小 → 高度增加），手柄跟手、无跳变
+  const delta = cStartY - e.clientY
+  const h = Math.min(Math.round(window.innerHeight * 0.6), Math.max(120, cStartH + delta))
+  consoleHeight.value = h
+}
+function endConsoleResize() {
+  if (!cResizing) return
+  cResizing = false
+  window.removeEventListener('pointermove', onConsoleResize)
+  window.removeEventListener('pointerup', endConsoleResize)
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  localStorage.setItem(CONSOLE_H_KEY, String(consoleHeight.value))
+}
 
 // ── 抽屉宽度拖拽（左边缘把手，280–560px，记忆到 localStorage） ──
 const DRAWER_W_KEY = 'knowsource.workflow.drawerWidth'
@@ -629,9 +778,18 @@ function syncStructRows() {
 }
 function flushStructRows() {
   if (!selectedNode.value) return
-  selectedNode.value.data.config.structured_outputs = structRows.value
+  const cfg = selectedNode.value.data.config
+  cfg.structured_outputs = structRows.value
     .filter(r => r.name.trim())
     .map(r => ({ name: r.name.trim(), type: r.type, description: r.description.trim() }))
+  // 同步：结构化自定义字段并入 output_fields（固定字段始终保留），下游可用变量即时更新
+  if (!Array.isArray(cfg.output_fields)) cfg.output_fields = [...(FIXED_OUTPUTS[selectedNode.value.type] || [])]
+  const fixed = FIXED_OUTPUTS[selectedNode.value.type] || []
+  cfg.output_fields = [
+    ...fixed,
+    ...cfg.output_fields.filter(f => !fixed.includes(f) && cfg.structured_outputs.some(s => s.name === f)),
+    ...cfg.structured_outputs.map(s => s.name).filter(n => !cfg.output_fields.includes(n) && !fixed.includes(n)),
+  ]
 }
 // 保存前校验：结构化输出里字段名填了但说明为空 → 提示（说明是大模型识别字段的关键）
 function validateStructRows() {
@@ -956,7 +1114,8 @@ watch(nowTick, () => {
     </div>
 
     <!-- 底部运行日志控制台 -->
-    <div class="wf-console" v-if="consoleOpen">
+    <div class="wf-console" v-if="consoleOpen" :style="{ height: consoleHeight + 'px' }">
+      <div class="console-resizer" title="拖拽调节高度" @pointerdown="startConsoleResize"></div>
       <div class="console-head">
         <span class="console-title">{{ running ? '运行中...' : '运行日志' }}</span>
         <span class="console-spacer"></span>
@@ -966,16 +1125,28 @@ watch(nowTick, () => {
       <div class="console-body">
         <div v-for="(l, i) in logs" :key="i">
           <div v-if="l.kind === 'meta'" class="log-line log-meta">{{ l.text }}</div>
-          <div v-else class="log-line log-node" :class="'st-' + l.status" @click="toggleLog(i)">
-            <span class="log-status">{{ statusIcon(l.status) }}</span>
-            <span class="log-title">{{ l.title || l.node_id }}</span>
-            <span class="log-summary" v-if="l.summary || l.error">{{ l.summary || l.error }}</span>
-            <span class="log-dur" v-if="l.status === 'running' && runningSince[l.node_id]">{{ fmtElapsed(nowTick - runningSince[l.node_id]) }}</span>
-            <span class="log-dur" v-else-if="l.duration_ms != null">{{ l.duration_ms }}ms</span>
-            <span class="log-expand" v-if="l.output != null || l.error">{{ expandedLog === i ? '▾' : '▸' }}</span>
-          </div>
-          <div class="log-output" v-if="expandedLog === i && (l.output != null || l.error)">
-            <pre>{{ logDetail(l) }}</pre>
+          <!-- 节点日志卡片：头部（状态+节点名+耗时）可点开，展开后分输入/输出 -->
+          <div v-else class="log-card" :class="'stc-' + l.status">
+            <div class="log-card-head" @click="toggleLog(i)">
+              <span class="log-status">{{ statusIcon(l.status) }}</span>
+              <span class="log-title">{{ l.title || l.node_id }}</span>
+              <span class="log-nodeid">{{ l.node_id }}</span>
+              <span class="log-summary" v-if="l.error" :title="l.error">{{ l.error }}</span>
+              <span class="log-summary" v-else-if="l.summary">{{ l.summary }}</span>
+              <span class="log-dur" v-if="l.status === 'running' && runningSince[l.node_id]">{{ fmtElapsed(nowTick - runningSince[l.node_id]) }}</span>
+              <span class="log-dur" v-else-if="l.duration_ms != null">{{ l.duration_ms }}ms</span>
+              <span class="log-expand">{{ expandedLog === i ? '▾ 收起' : '▸ 详情' }}</span>
+            </div>
+            <div class="log-card-detail" v-if="expandedLog === i">
+              <div class="log-pane">
+                <div class="log-pane-title">输入</div>
+                <pre class="log-pre">{{ l.input ? JSON.stringify(l.input, null, 2) : '（无）' }}</pre>
+              </div>
+              <div class="log-pane">
+                <div class="log-pane-title">输出</div>
+                <pre class="log-pre" :class="{ 'log-pre-err': l.error }">{{ l.output != null ? JSON.stringify(l.output, null, 2) : (l.error || '（无）') }}</pre>
+              </div>
+            </div>
           </div>
         </div>
         <div class="console-empty" v-if="!logs.length">暂无运行日志，点击「▶ 运行」开始</div>
@@ -1030,11 +1201,46 @@ watch(nowTick, () => {
 
 /* 画布 */
 .wf-canvas-wrap { flex: 1; position: relative; border: 1px solid var(--c-border); border-radius: 12px; overflow: hidden; background: var(--c-bg); }
-.wf-console { flex-shrink: 0; height: 200px; display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: 10px; background: var(--c-panel); overflow: hidden; }
-.console-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--c-border); flex-shrink: 0; }
+.wf-console { position: relative; flex-shrink: 0; height: 220px; display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: 10px; background: var(--c-panel); overflow: hidden; }
+/* 顶边缘拖拽把手：hover/拖动时高亮横线 */
+.console-resizer {
+  position: absolute; top: -4px; left: 0; right: 0; height: 9px;
+  cursor: row-resize; z-index: 6;
+}
+.console-resizer::after {
+  content: ''; position: absolute; top: 4px; left: 0; right: 0; height: 1px;
+  background: transparent; transition: background 150ms, height 150ms;
+}
+.console-resizer:hover::after { background: var(--c-accent); height: 2px; }
+.console-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--c-border); flex-shrink: 0; background: var(--c-muted); }
 .console-title { font-size: 12px; font-weight: 700; }
 .console-spacer { flex: 1; }
-.console-body { flex: 1; overflow-y: auto; padding: 6px 0; font-size: 12px; font-family: ui-monospace, monospace; }
+.console-body { flex: 1; overflow-y: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+
+/* 节点日志卡片 */
+.log-card { border: 1px solid var(--c-border); border-radius: 8px; overflow: hidden; background: var(--c-panel); flex-shrink: 0; }
+.log-card.stc-running { border-color: color-mix(in srgb, var(--c-accent) 55%, transparent); }
+.log-card.stc-succeeded { border-left: 3px solid var(--c-success); }
+.log-card.stc-failed { border-left: 3px solid var(--c-danger); }
+.log-card.stc-skipped { opacity: .55; }
+.log-card-head {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  cursor: pointer; font-family: ui-monospace, monospace; font-size: 12px;
+  background: var(--c-muted);
+}
+.log-card-head:hover { background: var(--c-muted-hover, var(--c-muted)); }
+.log-nodeid { font-size: 10px; color: var(--c-secondary); opacity: .7; }
+.log-expand { margin-left: auto; flex-shrink: 0; font-size: 10.5px; color: var(--c-secondary); }
+.log-card-detail { display: flex; gap: 0; border-top: 1px solid var(--c-border); }
+.log-pane { flex: 1; min-width: 0; padding: 8px 10px; }
+.log-pane + .log-pane { border-left: 1px solid var(--c-border); }
+.log-pane-title { font-size: 10.5px; font-weight: 700; color: var(--c-secondary); margin-bottom: 4px; font-family: var(--font); letter-spacing: .5px; }
+.log-pre {
+  margin: 0; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow-y: auto;
+  color: var(--c-fg);
+}
+.log-pre-err { color: var(--c-danger); }
 .console-empty { padding: 24px; text-align: center; color: var(--c-secondary); }
 .log-line { padding: 4px 12px; color: var(--c-secondary); }
 .log-meta { font-weight: 600; color: var(--c-fg); border-bottom: 1px solid var(--c-border); }

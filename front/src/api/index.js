@@ -1330,7 +1330,20 @@ export async function fetchWorkflowPalette() {
   return res.json()
 }
 
+export async function fetchWorkflowRuns(workflowId) {
+  const res = await fetch(`${API}/api/workflows/${workflowId}/runs`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function getWorkflowRun(workflowId, runId) {
+  const res = await fetch(`${API}/api/workflows/${workflowId}/runs/${runId}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
 export async function runWorkflowStream(workflowId, inputs, { onStarted, onNodeStarted, onNodeProgress, onNodeFinished, onNodeFailed, onNodeSkipped, onFinished } = {}) {
+
   const res = await fetch(`${API}/api/workflows/${workflowId}/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

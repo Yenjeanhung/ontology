@@ -401,6 +401,25 @@ class _Runtime:
         self.events.put_nowait(payload)
 
 
+def _node_input_view(node: dict, context: dict):
+    """构造节点的「输入视图」：渲染后的关键入参（问题/参数/条件），供日志展示。"""
+    t = node.get("type")
+    cfg = node.get("config") or {}
+    if t == "agent":
+        return {"query": render(cfg.get("query_template", ""), context)}
+    if t in ("service", "code"):
+        return {"params": render(cfg.get("params") or {}, context)}
+    if t == "llm":
+        return {"prompt": render(cfg.get("prompt_template", ""), context)}
+    if t == "condition":
+        return {
+            "left": render(cfg.get("left"), context),
+            "op": cfg.get("operator", "=="),
+            "right": render(cfg.get("right"), context),
+        }
+    return {}
+
+
 def _make_node_fn(rt: _Runtime, node: dict):
     """把业务节点包装成 LangGraph 节点函数：执行 + 发 SSE 事件 + 记状态。"""
     nid = node["id"]
@@ -409,7 +428,12 @@ def _make_node_fn(rt: _Runtime, node: dict):
         title = node.get("title") or node["type"]
         context = {**state.get("outputs", {}), "start": state.get("start", {})}
         logger.info("[run %s] 节点开始 %s (%s)", rt.run_id, nid, title)
-        rt.emit({"type": "node_started", "node_id": nid, "title": title})
+        input_view = _truncate_output(_node_input_view(node, context))
+        rt.emit({
+            "type": "node_started", "node_id": nid, "title": title,
+            "input": input_view,
+        })
+        rt.node_states[nid] = {"status": "running", "input": input_view, "title": title}
         t0 = time.monotonic()
 
         task = asyncio.create_task(_execute_node(node, context, rt.db))
@@ -426,7 +450,10 @@ def _make_node_fn(rt: _Runtime, node: dict):
             result = task.result()
             dur = int((time.monotonic() - t0) * 1000)
             projected = _project_output(node, result)
-            rt.node_states[nid] = {"status": "succeeded", "output": result, "duration_ms": dur}
+            rt.node_states[nid] = {
+                "status": "succeeded", "output": result, "duration_ms": dur,
+                "summary": _summarize(node, result), "title": title,
+            }
             logger.info("[run %s] 节点完成 %s (%s) %dms", rt.run_id, nid, title, dur)
             rt.emit({
                 "type": "node_finished", "node_id": nid, "title": title,
@@ -437,7 +464,7 @@ def _make_node_fn(rt: _Runtime, node: dict):
             return {"outputs": {nid: projected}}
         except Exception as e:
             dur = int((time.monotonic() - t0) * 1000)
-            rt.node_states[nid] = {"status": "failed", "error": str(e), "duration_ms": dur}
+            rt.node_states[nid] = {"status": "failed", "error": str(e), "duration_ms": dur, "title": title}
             logger.error("[run %s] 节点失败 %s (%s) %dms: %s", rt.run_id, nid, title, dur, e, exc_info=True)
             rt.emit({"type": "node_failed", "node_id": nid, "title": title, "error": str(e), "duration_ms": dur})
             raise  # 上抛 → LangGraph 终止整图，fail-fast 与旧引擎一致
