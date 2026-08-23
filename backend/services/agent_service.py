@@ -49,29 +49,16 @@ def _serialize(
     }
 
 
-# 内置「默认智能体」固定 id（跨实例稳定，seed 幂等依据）
+# 内置智能体固定 id（保留机制供未来内置智能体使用；当前无内置项）
 DEFAULT_AGENT_ID = "agent_default"
 
 
-async def seed_default(db: AsyncSession) -> int:
-    """写入内置默认智能体（幂等：存在则跳过）。返回新建数。
-
-    默认智能体 = 原 OAG 行为的等价包装：不绑 KB（问答时用页面选的 KB）、
-    不勾技能（用页面勾选）、无人设（OAG 默认人设）。
-    """
+async def cleanup_default_agent(db: AsyncSession) -> int:
+    """清理由旧版本 seed 的「默认智能体」（行为与「系统默认」重复，已废弃）。"""
     existing = await db.get(Agent, DEFAULT_AGENT_ID)
-    if existing is not None:
+    if existing is None:
         return 0
-    db.add(Agent(
-        id=DEFAULT_AGENT_ID,
-        name="默认智能体",
-        description="内置 · 使用页面选择的知识库与技能，无人设（OAG 默认人设）",
-        kb_id="",
-        system_prompt="",
-        skill_ids="[]",
-        is_preset=1,
-        is_enabled=1,
-    ))
+    await db.delete(existing)
     await db.commit()
     return 1
 

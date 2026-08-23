@@ -618,7 +618,7 @@ async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)
     kb_id = agent["kb_id"] if agent else req.kb_id
     if not kb_id:
         # 未绑 KB 的智能体：不使用知识库，直接 LLM 按人设+技能回答
-        if agent and agent["id"] != "agent_default":
+        if agent:
             return StreamingResponse(
                 _chat_no_kb(req.query, agent["system_prompt"] or None, skills=await SkillService.resolve(db, agent["skill_ids"])),
                 media_type="text/event-stream",

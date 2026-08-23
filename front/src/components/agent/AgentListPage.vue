@@ -188,7 +188,8 @@ async function doRemove() {
             </div>
           </template>
 
-          <div class="group-title">自定义 ({{ customAgents.length }})</div>
+          <div class="group-title" v-if="!presetAgents.length">全部智能体 ({{ customAgents.length }})</div>
+          <div class="group-title" v-else>自定义 ({{ customAgents.length }})</div>
           <div
             v-for="a in customAgents" :key="a.id"
             class="agent-card" :class="{ active: selectedId === a.id, off: !a.is_enabled }"

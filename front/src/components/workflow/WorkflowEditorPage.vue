@@ -62,6 +62,13 @@ const FIXED_OUTPUTS = {
   code: ['success', 'data', 'error', 'stdout', 'duration_ms'],
 }
 function isFixedField(type, f) { return (FIXED_OUTPUTS[type] || []).includes(f) }
+
+// 结构化输出表顶部展示的固定字段（锁定行，仅智能体节点用）
+const FIXED_STRUCT_FIELDS = [
+  { name: 'answer', type: 'string', desc: '完整回答文本（固定）' },
+  { name: 'chunks', type: 'array', desc: '引用来源分片（固定）' },
+  { name: 'entities', type: 'array', desc: '识别实体（固定）' },
+]
 // 节点声明输出变量：优先 config.output_fields（用户手动管理），旧数据回退到类型默认
 function outputFieldsOf(nodeLike) {
   const t = nodeLike.type
@@ -439,6 +446,7 @@ function insertVar(field) {
 // ───── 保存 ─────
 async function save() {
   if (!wfName.value.trim()) { toast.error('名称不能为空'); return }
+  if (!validateStructRows()) return
   saving.value = true
   const definition = {
     nodes: nodes.value.map(fromFlowNode),
@@ -567,7 +575,7 @@ watch(selectedNodeId, (id) => {
     const n = nodes.value.find(x => x.id === id)
     if (n?.type === 'service') loadSvc(n.data.config)
     if (n?.type === 'end') syncEndRows()
-    if (n?.type === 'agent') syncExtraRows()
+    if (n?.type === 'agent') { syncStructRows() }
   }
 })
 
@@ -577,27 +585,68 @@ onMounted(() => { tickTimer = setInterval(() => { nowTick.value = Date.now() }, 
 onBeforeUnmount(() => {
   window.removeEventListener('click', closeContextMenu)
   clearInterval(tickTimer)
+  endDrawerResize()
 })
+
+// ── 抽屉宽度拖拽（左边缘把手，280–560px，记忆到 localStorage） ──
+const DRAWER_W_KEY = 'knowsource.workflow.drawerWidth'
+const drawerWidth = ref(parseInt(localStorage.getItem(DRAWER_W_KEY) || '', 10) || 340)
+let resizing = false
+function startDrawerResize(e) {
+  resizing = true
+  e.preventDefault()
+  window.addEventListener('pointermove', onDrawerResize)
+  window.addEventListener('pointerup', endDrawerResize)
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+}
+function onDrawerResize(e) {
+  if (!resizing) return
+  // 抽屉贴右侧：宽度 = 视口右边界 - 指针 x（减去主区右 padding 的近似余量）
+  const w = Math.min(560, Math.max(280, window.innerWidth - e.clientX - 40))
+  drawerWidth.value = w
+}
+function endDrawerResize() {
+  if (!resizing) return
+  resizing = false
+  window.removeEventListener('pointermove', onDrawerResize)
+  window.removeEventListener('pointerup', endDrawerResize)
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  localStorage.setItem(DRAWER_W_KEY, String(drawerWidth.value))
+}
 function nodeElapsed(nid) {
   const since = runningSince[nid]
   return since == null ? null : nowTick.value - since
 }
-// 智能体节点自定义输出（extra_outputs：{名: 表达式}）的行编辑
-const extraRows = ref([])
-function syncExtraRows() {
-  const extra = selectedConfig.value?.extra_outputs
-  extraRows.value = extra && typeof extra === 'object'
-    ? Object.entries(extra).map(([name, expr]) => ({ name, expr: String(expr) }))
+// 智能体节点结构化输出（structured_outputs：[{name,type,description}]）行编辑
+const structRows = ref([])
+function syncStructRows() {
+  const arr = selectedConfig.value?.structured_outputs
+  structRows.value = Array.isArray(arr)
+    ? arr.map(f => ({ name: f.name || '', type: f.type || 'string', description: f.description || '' }))
     : []
 }
-function flushExtraRows() {
+function flushStructRows() {
   if (!selectedNode.value) return
-  const out = {}
-  for (const r of extraRows.value) {
-    if (r.name.trim() && r.expr.trim()) out[r.name.trim()] = r.expr.trim()
-  }
-  selectedNode.value.data.config.extra_outputs = out
+  selectedNode.value.data.config.structured_outputs = structRows.value
+    .filter(r => r.name.trim())
+    .map(r => ({ name: r.name.trim(), type: r.type, description: r.description.trim() }))
 }
+// 保存前校验：结构化输出里字段名填了但说明为空 → 提示（说明是大模型识别字段的关键）
+function validateStructRows() {
+  for (const n of nodes.value) {
+    if (n.type !== 'agent') continue
+    for (const f of n.data.config?.structured_outputs || []) {
+      if (f.name && !f.description) {
+        toast.error(`节点「${n.data.title || n.id}」结构化输出字段 ${f.name} 缺少说明（大模型靠它识别输出）`)
+        return false
+      }
+    }
+  }
+  return true
+}
+
 watch(nowTick, () => {
   for (const nid of Object.keys(runningSince)) {
     const n = nodes.value.find(x => x.id === nid)
@@ -653,7 +702,8 @@ watch(nowTick, () => {
       </div>
 
       <!-- 右：配置抽屉 -->
-      <aside class="wf-drawer">
+      <aside class="wf-drawer" :style="{ width: drawerWidth + 'px' }">
+        <div class="drawer-resizer" title="拖拽调节宽度" @pointerdown="startDrawerResize"></div>
         <template v-if="selectedNode">
           <div class="dr-head">
             <span class="dr-ico" :style="{ background: TYPE_META[selectedType]?.color || '#64748b' }">{{ TYPE_META[selectedType]?.icon }}</span>
@@ -711,8 +761,8 @@ watch(nowTick, () => {
               <div class="field">
                 <label>绑定方式</label>
                 <select v-model="selectedConfig.agent_id">
-                  <option value="">内联配置（现场选 KB + 技能）</option>
-                  <option v-for="a in palette.agents" :key="a.id" :value="a.id">{{ a.name }} · {{ a.kb_name || a.kb_id }}</option>
+                  <option value="">内置智能体（需选知识库）</option>
+                  <option v-for="a in palette.agents" :key="a.id" :value="a.id">{{ a.name }}</option>
                 </select>
               </div>
               <template v-if="!selectedConfig.agent_id">
@@ -812,9 +862,9 @@ watch(nowTick, () => {
             <template v-if="selectedType !== 'start' && selectedType !== 'end'">
               <div class="section-title">变量配置</div>
 
-              <!-- 输入变量：沿连线可流入本节点的上游输出 -->
-              <div class="field">
-                <label>可用输入变量（来自上游，点一下复制引用）</label>
+              <!-- 输入变量：沿连线可流入本节点的上游输出（智能体用「⊕ 插入变量」，不显示此块） -->
+              <div class="field" v-if="selectedType !== 'agent'">
+                <label>输入变量（上游，点击复制）</label>
                 <div v-for="n in upstreamNodes" :key="n.id" class="upstream-node">
                   <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
                   <div class="var-chips">
@@ -844,38 +894,50 @@ watch(nowTick, () => {
                 <textarea :value="jsonText('params')" @input="setJson('params', $event.target.value)" rows="3" placeholder='{"x":"{{agent.answer}}"}'></textarea>
               </div>
 
-              <!-- 输出变量：固定字段（锁定）+ 手动追加 -->
-              <div class="field">
-                <label>输出变量（🔒 固定输出不可删；输入名称回车可追加自定义）</label>
+              <!-- 输出变量：固定字段（只读，点击复制；智能体节点在结构化输出表中展示，不重复显示） -->
+              <div class="field" v-if="selectedType !== 'agent'">
+                <label>输出变量（🔒 固定，点击复制）</label>
                 <div class="var-chips" v-if="displayOutputFields(selectedNode).length">
                   <span
-                    v-for="(f, fi) in displayOutputFields(selectedNode)" :key="f"
-                    class="var-chip var-chip-edit" :class="{ 'var-chip-fixed': isFixedField(selectedType, f) }"
+                    v-for="f in displayOutputFields(selectedNode)" :key="f"
+                    class="var-chip var-chip-edit var-chip-fixed"
                   >
-                    <span class="vc-name" @click="copyText(varRef(selectedNodeId, f))">{{ isFixedField(selectedType, f) ? '🔒 ' : '' }}{{ f }}</span>
-                    <span v-if="!isFixedField(selectedType, f)" class="vc-del" title="删除" @click="removeOutputField(fi)">×</span>
+                    <span class="vc-name" @click="copyText(varRef(selectedNodeId, f))">{{ f }}</span>
                   </span>
                 </div>
-                <input
-                  type="text" v-model="outputFieldInput"
-                  placeholder="自定义输出字段名（回车添加，可逗号分隔多个）"
-                  @keydown.enter.prevent="addOutputField"
-                >
-                <span class="hint">点字段名复制引用；🔒 固定输出始终传给下游；自定义字段需节点执行结果里有同名键</span>
               </div>
 
-              <!-- 智能体：自定义输出提取（extra_outputs） -->
+              <!-- 智能体：结构化输出（固定字段锁定行 + 自定义字段行） -->
               <div class="field" v-if="selectedType === 'agent'">
-                <label>自定义输出提取（可选：名称 + 表达式，从本节点结果中再提取）</label>
-                <div class="end-rows">
-                  <div v-for="(row, ri) in extraRows" :key="ri" class="end-row">
-                    <input type="text" v-model="row.name" placeholder="输出名（如 summary）" class="er-name" @change="flushExtraRows">
-                    <input type="text" v-model="row.expr" placeholder="表达式，如 {{_self.answer}} 或 {{_self.chunks.0.file_name}}" class="er-value" @change="flushExtraRows">
-                    <button type="button" class="btn sm" @click="extraRows.splice(ri, 1); flushExtraRows()">×</button>
+                <label>结构化输出（🔒 固定始终输出；自定义字段由大模型根据「说明」生成，下游引用 <code v-pre>{{节点.字段}}</code>）</label>
+                <div class="struct-table">
+                  <div class="st-head">
+                    <span class="st-col st-col-name">字段名</span>
+                    <span class="st-col st-col-type">类型</span>
+                    <span class="st-col st-col-desc">说明（必填，供大模型识别）</span>
+                    <span class="st-col st-col-op"></span>
                   </div>
-                  <button type="button" class="btn sm" @click="extraRows.push({ name: '', expr: '' }); flushExtraRows()">＋ 添加一条</button>
+                  <!-- 固定字段：锁定行（不可编辑/删除） -->
+                  <div v-for="f in FIXED_STRUCT_FIELDS" :key="f.name" class="end-row struct-row struct-row-fixed">
+                    <span class="st-col st-col-name st-lock">🔒 {{ f.name }}</span>
+                    <span class="st-col st-col-type st-lock">{{ f.type }}</span>
+                    <span class="st-col st-col-desc st-lock">{{ f.desc }}</span>
+                    <span class="st-col st-col-op"></span>
+                  </div>
+                  <!-- 自定义字段行 -->
+                  <div v-for="(row, ri) in structRows" :key="ri" class="end-row struct-row">
+                    <input type="text" v-model="row.name" placeholder="如 count" class="st-col st-col-name" @change="flushStructRows">
+                    <select v-model="row.type" class="st-col st-col-type" @change="flushStructRows">
+                      <option value="string">string</option>
+                      <option value="number">number</option>
+                      <option value="boolean">boolean</option>
+                      <option value="array">array</option>
+                    </select>
+                    <input type="text" v-model="row.description" placeholder="如 奥雷里亚诺的个数" class="st-col st-col-desc" @change="flushStructRows">
+                    <button type="button" class="btn sm st-col st-col-op" @click="structRows.splice(ri, 1); flushStructRows()">×</button>
+                  </div>
+                  <button type="button" class="btn sm" @click="structRows.push({ name: '', type: 'string', description: '' }); flushStructRows()">＋ 添加字段</button>
                 </div>
-                <span class="hint">表达式用 <code v-pre>{{_self.字段}}</code> 引用本节点固定输出；结果会成为新的输出字段供下游引用</span>
               </div>
             </template>
           </div>
@@ -992,7 +1054,17 @@ watch(nowTick, () => {
 .ctx-item.danger:hover { background: color-mix(in srgb, var(--c-danger) 12%, transparent); }
 
 /* 右抽屉 */
-.wf-drawer { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: 12px; background: var(--c-panel); overflow: hidden; }
+.wf-drawer { position: relative; width: 340px; flex-shrink: 0; display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: 12px; background: var(--c-panel); overflow: hidden; }
+/* 左边缘拖拽把手：hover/拖动时高亮 */
+.drawer-resizer {
+  position: absolute; left: -3px; top: 0; bottom: 0; width: 7px;
+  cursor: col-resize; z-index: 5;
+}
+.drawer-resizer::after {
+  content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px;
+  background: transparent; transition: background 150ms, width 150ms;
+}
+.drawer-resizer:hover::after { background: var(--c-accent); width: 2px; }
 .dr-head { display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-bottom: 1px solid var(--c-border); }
 .dr-ico { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 13px; flex-shrink: 0; }
 .dr-head-t { flex: 1; min-width: 0; }
@@ -1051,7 +1123,36 @@ watch(nowTick, () => {
 /* 结束节点 key-value 行 */
 .end-rows { display: flex; flex-direction: column; gap: 6px; }
 .end-row { display: flex; align-items: center; gap: 6px; }
+
+/* 结构化输出表：表头 + 弹性列宽（说明列吃剩余空间） */
+.struct-table { display: flex; flex-direction: column; gap: 6px; }
+.struct-table .end-row { gap: 4px; }
+.st-head {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 10.5px; font-weight: 700; color: var(--c-secondary);
+  padding: 0 2px;
+}
+.st-col { flex-shrink: 0; }
+.st-col-name { width: 84px; }
+.st-col-type { width: 74px; }
+.st-col-desc { flex: 1; min-width: 0; }  /* 说明列弹性伸缩 */
+.st-col-op { width: 26px; text-align: center; }
+.struct-row-fixed { opacity: .8; }
+.st-lock {
+  display: flex; align-items: center; font-size: 11.5px; color: var(--c-secondary);
+  background: var(--c-muted); border-radius: var(--radius-sm, 6px);
+  padding: 0 6px; height: 30px;
+  font-family: ui-monospace, monospace;
+}
+.st-col input, .st-col select {
+  width: 100%; padding: 6px 6px; border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm, 6px); font-size: 12px;
+  background: var(--c-panel); color: var(--c-fg); outline: none;
+}
+.st-col select { padding: 6px 2px; }
+.st-col input:focus, .st-col select:focus { border-color: var(--c-accent); }
 .er-name { width: 90px; flex-shrink: 0; padding: 6px 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px); font-size: 12px; font-family: ui-monospace, monospace; background: var(--c-bg); color: var(--c-fg); outline: none; }
+.struct-row .er-type { width: 84px; flex-shrink: 0; padding: 6px 4px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px); font-size: 12px; background: var(--c-bg); color: var(--c-fg); outline: none; }
 .er-value { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px); font-size: 12px; font-family: ui-monospace, monospace; background: var(--c-bg); color: var(--c-fg); outline: none; }
 .er-name:focus, .er-value:focus { border-color: var(--c-accent); }
 

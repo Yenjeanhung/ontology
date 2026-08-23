@@ -254,12 +254,12 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
       <p>结合知识图谱与本体的结构化事实进行检索与生成，回答更准、过程可追溯。</p>
     </div>
 
-    <!-- 智能体：默认内置（不显示选择），有自定义智能体时可选切换 -->
+    <!-- 智能体：不选 = 系统默认行为；有自定义智能体时可选切换 -->
     <div class="agent-pick" v-if="enabledAgents.length">
       <label>智能体</label>
       <select v-model="selectedAgentId" @change="onAgentChange">
-        <option value="">默认智能体（内置 · 手动选知识库与技能）</option>
-        <option v-for="a in enabledAgents" :key="a.id" :value="a.id">{{ a.name }} · {{ a.kb_name || '未知知识库' }}</option>
+        <option value="">系统默认</option>
+        <option v-for="a in enabledAgents" :key="a.id" :value="a.id">{{ a.name }}{{ a.kb_name ? ' · ' + a.kb_name : '' }}</option>
       </select>
       <span class="agent-pick-hint" v-if="selectedAgentId">已按该智能体预填知识库与技能，人设由智能体提供</span>
     </div>

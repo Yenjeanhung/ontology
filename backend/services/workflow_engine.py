@@ -109,6 +109,10 @@ def _eval_condition(op: str, left, right) -> bool:
 
 async def _exec_agent(cfg: dict, context: dict, db) -> dict:
     query = str(render(cfg.get("query_template", ""), context))
+    # 结构化输出字段声明：[{name, type, description}]，声明后要求 LLM 末尾输出 JSON 块并解析
+    struct_fields = [f for f in (cfg.get("structured_outputs") or []) if isinstance(f, dict) and f.get("name")]
+    if struct_fields:
+        query += _build_structured_suffix(struct_fields)
     if cfg.get("agent_id"):
         agent = await AgentService.resolve(db, cfg["agent_id"])
         if not agent:
@@ -122,7 +126,10 @@ async def _exec_agent(cfg: dict, context: dict, db) -> dict:
     # 未绑 KB：无知识库纯对话（人设 + 技能直接 LLM 回答），与问答页行为一致
     if not kb_id:
         skills = await SkillService.resolve(db, skill_ids)
-        return await _agent_chat_no_kb(query, persona, skills)
+        out = await _agent_chat_no_kb(query, persona, skills)
+        if struct_fields:
+            out.update(_parse_structured(out.get("answer") or "", struct_fields))
+        return out
 
     kb = await KBService.get(db, kb_id)
     if not kb:
@@ -139,6 +146,9 @@ async def _exec_agent(cfg: dict, context: dict, db) -> dict:
         "entities": result["entities"],
         "subgraph": result.get("subgraph"),
     }
+    # 结构化字段解析后并入输出（如 count、names）
+    if struct_fields:
+        out.update(_parse_structured(out["answer"], struct_fields))
     # 手动追加的自定义输出：extra_outputs = {自定义名: 表达式}
     # 表达式可引用本节点固定输出（{{answer}} 等）与上游变量（{{n1.x}}），经 render 求值
     extra = cfg.get("extra_outputs") or {}
@@ -175,6 +185,48 @@ async def _agent_chat_no_kb(query: str, persona: str | None, skills: list[dict])
         "entities": [],
         "subgraph": None,
     }
+
+
+def _build_structured_suffix(fields: list[dict]) -> str:
+    """根据声明的结构化字段（支持任意多个）生成追加指令，要求 LLM 在回答末尾输出 JSON 块。"""
+    type_hint = {"string": "字符串", "number": "数字", "boolean": "true/false", "array": "JSON数组", "object": "JSON对象"}
+    lines = []
+    for i, f in enumerate(fields):
+        if not (isinstance(f, dict) and f.get("name")):
+            continue
+        desc = f"，{f['description']}" if f.get("description") else ""
+        hint = type_hint.get(f.get("type", "string"), "字符串")
+        comma = "," if i < len(fields) - 1 else ""
+        lines.append(f'    "{f["name"]}": <{hint}{desc}>{comma}')
+    schema = "\n".join(lines)
+    return (
+        "\n\n【输出要求】请先正常回答；然后在最后单独输出一个 JSON 代码块，"
+        "必须包含且仅包含以下全部字段（字段名保持一致，值为对应类型的 JSON 值）：\n"
+        "```json\n{\n" + schema + "\n}\n```\n"
+        "注意：数组用 [\"a\", \"b\"] 形式；数字不要加引号；不要添加未声明的字段。"
+    )
+
+
+def _parse_structured(answer: str, fields: list[dict]) -> dict:
+    """从回答末尾的 ```json 代码块解析结构化字段；解析失败的字段值为 null。"""
+    import re as _re
+
+    out: dict = {}
+    m = None
+    for m in _re.finditer(r"```json\s*\n([\s\S]*?)```", answer):
+        pass  # 取最后一个 json 块
+    if m:
+        try:
+            data = json.loads(m.group(1))
+            if isinstance(data, dict):
+                out = data
+        except ValueError:
+            out = {}
+    for f in fields:
+        name = f.get("name") if isinstance(f, dict) else None
+        if name and name not in out:
+            out[name] = None
+    return out
 
 
 async def _exec_service(cfg: dict, context: dict, db) -> dict:
