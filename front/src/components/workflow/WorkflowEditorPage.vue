@@ -277,7 +277,7 @@ async function restoreLastRun() {
     if (!hasAny) return
 
     logs.value = [{ kind: 'meta', text: `上次运行 · run ${run.id} · ${run.status === 'succeeded' ? '成功' : run.status === 'failed' ? '失败' : run.status} · ${run.duration_ms}ms` }]
-    for (const n of nodes.value) {
+    for (const n of nodesInRunOrder(states)) {
       const st = states[n.id]
       if (!st) continue
       n.data.status = st.status
@@ -314,6 +314,41 @@ function toFlowEdge(e) {
     sourceHandle: e.handle && e.handle !== 'default' ? e.handle : undefined,
   }
 }
+
+// 按有向边拓扑排序（用于无 started_at 的历史运行回显兜底）
+function topoSortNodes(nodeList, edgeList) {
+  const inDegree = {}
+  const adj = {}
+  for (const n of nodeList) { inDegree[n.id] = 0; adj[n.id] = [] }
+  for (const e of edgeList) {
+    if (adj[e.source]) adj[e.source].push(e.target)
+    if (inDegree[e.target] != null) inDegree[e.target]++
+  }
+  const queue = nodeList.filter(n => inDegree[n.id] === 0).map(n => n.id)
+  const result = []
+  while (queue.length) {
+    const id = queue.shift()
+    const n = nodeList.find(x => x.id === id)
+    if (n) result.push(n)
+    for (const next of adj[id] || []) {
+      inDegree[next]--
+      if (inDegree[next] === 0) queue.push(next)
+    }
+  }
+  const seen = new Set(result.map(n => n.id))
+  for (const n of nodeList) if (!seen.has(n.id)) result.push(n)
+  return result
+}
+
+// 历史运行节点排序：优先按后端 started_at，无则按拓扑序
+function nodesInRunOrder(states) {
+  const hasTimes = nodes.value.some(n => states[n.id]?.started_at)
+  if (!hasTimes) return topoSortNodes(nodes.value, edges.value)
+  return [...nodes.value]
+    .filter(n => states[n.id]?.started_at)
+    .sort((a, b) => new Date(states[a.id].started_at) - new Date(states[b.id].started_at))
+}
+
 function fromFlowNode(n) {
   return { id: n.id, type: n.type, title: n.data?.title || TYPE_META[n.type]?.name, position: n.position, config: n.data?.config || {} }
 }
@@ -539,7 +574,8 @@ async function replayRun(runId) {
     const run = await getWorkflowRun(wfId, runId)
     const states = run.node_states || {}
     let count = 0
-    for (const n of nodes.value) {
+    const orderedNodes = nodesInRunOrder(states)
+    for (const n of orderedNodes) {
       const st = states[n.id]
       if (!st || !st.status || st.status === 'running') continue
       n.data.status = st.status
@@ -552,7 +588,7 @@ async function replayRun(runId) {
       logTab.value = 'current'
       clearLogs()
       logs.value = [{ kind: 'meta', text: `回放历史运行 · run ${run.id} · ${fmtStatusText(run.status)} · ${run.duration_ms}ms` }]
-      for (const n of nodes.value) {
+      for (const n of orderedNodes) {
         const st = states[n.id]
         if (!st || !st.status) continue
         logs.value.push({
@@ -886,6 +922,10 @@ function statusIcon(s) {
   if (s === 'failed') return '✗'
   if (s === 'skipped') return '⤼'
   return '·'
+}
+function nodeTypeOf(log) {
+  const n = nodes.value.find(n => n.id === log.node_id)
+  return n?.type || n?.data?.nodeType || ''
 }
 function logDetail(l) {
   if (l.error) return l.error
@@ -1394,7 +1434,11 @@ watch(nowTick, () => {
           <!-- 节点日志卡片：头部（状态+节点名+耗时）可点开，展开后分输入/输出 -->
           <div v-else class="log-card" :class="'stc-' + l.status">
             <div class="log-card-head" @click="toggleLog(i)">
-              <span class="log-status">{{ statusIcon(l.status) }}</span>
+              <span
+                class="log-ico"
+                :style="{ background: TYPE_META[nodeTypeOf(l)]?.color || 'var(--c-secondary)' }"
+                v-html="TYPE_META[nodeTypeOf(l)]?.icon || '●'"
+              ></span>
               <span class="log-title">{{ l.title || l.node_id }}</span>
               <span class="log-nodeid">{{ l.node_id }}</span>
               <span class="log-summary" v-if="l.error" :title="l.error">{{ l.error }}</span>
@@ -1640,6 +1684,15 @@ watch(nowTick, () => {
 .log-node.st-succeeded .log-status { color: var(--c-success); }
 .log-node.st-failed .log-status { color: var(--c-danger); }
 .log-node.st-skipped { opacity: .5; }
+.log-ico {
+  width: 18px; height: 18px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 5px; color: #fff; font-size: 10px;
+}
+.log-ico svg { width: 12px; height: 12px; }
+.log-card.stc-running .log-ico { animation: wf-blink 1s ease-in-out infinite; }
+.log-card.stc-failed .log-ico { filter: grayscale(0.35); }
+.log-card.stc-skipped .log-ico { opacity: .5; }
 .log-title { flex-shrink: 0; font-weight: 600; color: var(--c-fg); }
 .log-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--c-secondary); }
 .log-node.st-failed .log-summary { color: var(--c-danger); }

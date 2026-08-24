@@ -722,7 +722,7 @@ def _make_node_fn(rt: _Runtime, node: dict):
             "type": "node_started", "node_id": nid, "title": title,
             "input": input_view,
         })
-        rt.node_states[nid] = {"status": "running", "input": input_view, "title": title}
+        rt.node_states[nid] = {"status": "running", "input": input_view, "title": title, "started_at": datetime.now().isoformat()}
         t0 = time.monotonic()
 
         # 智能体节点流式执行：token / reasoning 实时下发，同时保持最终 result 一致
