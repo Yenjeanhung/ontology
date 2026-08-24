@@ -294,7 +294,7 @@ async function restoreLastRun() {
         duration_ms: st.duration_ms,
       })
     }
-    if (logs.value.length > 1) consoleOpen.value = true
+    if (logs.value.length > 1) consoleCollapsed.value = false
   } catch { /* 静默：恢复失败不影响编辑 */ }
 }
 
@@ -548,7 +548,7 @@ async function replayRun(runId) {
       count++
     }
     if (count) {
-      consoleOpen.value = true
+      consoleCollapsed.value = false
       logTab.value = 'current'
       clearLogs()
       logs.value = [{ kind: 'meta', text: `回放历史运行 · run ${run.id} · ${fmtStatusText(run.status)} · ${run.duration_ms}ms` }]
@@ -767,7 +767,7 @@ const logs = ref([])          // {kind, text, node_id, title, status, summary, e
 const expandedLog = ref(-1)
 const runModal = ref(false)
 const runInputs = reactive({})
-const consoleOpen = ref(false)
+const consoleCollapsed = ref(true)
 const contextMenu = reactive({ visible: false, x: 0, y: 0, type: '', id: '' })
 // 运行中节点：node_id -> 起始时间戳（用于节点/日志的实时计时）
 const runningSince = reactive({})
@@ -827,7 +827,7 @@ async function startRun() {
   clearStatus()
   running.value = true
   expandedLog.value = -1
-  consoleOpen.value = true
+  consoleCollapsed.value = false
   try {
     await runWorkflowStream(wfId, { ...runInputs }, {
       onStarted(d) { logs.value.push({ kind: 'meta', text: `工作流开始 · run ${d.run_id}` }) },
@@ -1037,7 +1037,7 @@ watch(nowTick, () => {
       <span v-if="saved" class="wf-saved">已保存</span>
       <div class="spacer"></div>
       <button class="btn" @click="autoLayout" title="按拓扑层级自动排列节点">一键整理</button>
-      <button class="btn" @click="consoleOpen = !consoleOpen">日志</button>
+      <button class="btn" @click="consoleCollapsed = !consoleCollapsed">日志</button>
       <button class="btn" @click="save" :disabled="saving">{{ saving ? '保存中...' : '保存' }}</button>
       <button class="btn primary" @click="openRunModal" :disabled="running">▶ 运行</button>
     </div>
@@ -1078,8 +1078,14 @@ watch(nowTick, () => {
       <aside class="wf-drawer" :class="{ collapsed: drawerCollapsed }" :style="{ width: drawerCollapsed ? '28px' : drawerWidth + 'px' }">
         <div class="drawer-resizer" v-if="!drawerCollapsed" title="拖拽调节宽度" @pointerdown="startDrawerResize"></div>
         <button type="button" class="drawer-toggle" :title="drawerCollapsed ? '展开配置' : '收起配置'" @click="drawerCollapsed = !drawerCollapsed">
-          <span v-if="drawerCollapsed">«</span>
-          <span v-else>»</span>
+          <svg v-if="drawerCollapsed" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 5 9 12 15 19" />
+            <polyline points="21 5 15 12 21 19" />
+          </svg>
+          <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 5 15 12 9 19" />
+            <polyline points="3 5 9 12 3 19" />
+          </svg>
         </button>
         <template v-if="!drawerCollapsed && selectedNode">
           <div class="dr-head">
@@ -1354,19 +1360,31 @@ watch(nowTick, () => {
     </div>
 
     <!-- 底部运行日志控制台 -->
-    <div class="wf-console" v-if="consoleOpen" :style="{ height: consoleHeight + 'px' }">
-      <div class="console-resizer" title="拖拽调节高度" @pointerdown="startConsoleResize"></div>
+    <div class="wf-console" :class="{ collapsed: consoleCollapsed }" :style="{ height: consoleCollapsed ? '32px' : consoleHeight + 'px' }">
+      <div class="console-resizer" v-if="!consoleCollapsed" title="拖拽调节高度" @pointerdown="startConsoleResize"></div>
       <div class="console-head">
-        <div class="console-tabs">
-          <button class="ctab" :class="{ active: logTab === 'current' }" @click="logTab = 'current'">当前运行</button>
-          <button class="ctab" :class="{ active: logTab === 'history' }" @click="logTab = 'history'">
-            历史 <span class="ctab-badge">{{ runHistory.length }}/{{ KEEP_RUNS }}</span>
-          </button>
-        </div>
-        <span class="console-spacer"></span>
-        <button class="btn sm" v-if="logTab === 'current'" @click="clearLogs">清空</button>
-        <button class="btn sm" v-else @click="refreshHistory" :disabled="loadingHistory">刷新</button>
-        <button class="btn sm" @click="consoleOpen = false">收起</button>
+        <template v-if="!consoleCollapsed">
+          <div class="console-tabs">
+            <button class="ctab" :class="{ active: logTab === 'current' }" @click="logTab = 'current'">当前运行</button>
+            <button class="ctab" :class="{ active: logTab === 'history' }" @click="logTab = 'history'">
+              历史 <span class="ctab-badge">{{ runHistory.length }}/{{ KEEP_RUNS }}</span>
+            </button>
+          </div>
+          <span class="console-spacer"></span>
+          <button class="btn sm" v-if="logTab === 'current'" @click="clearLogs">清空</button>
+          <button class="btn sm" v-else @click="refreshHistory" :disabled="loadingHistory">刷新</button>
+        </template>
+        <span class="console-spacer" v-else></span>
+        <button type="button" class="console-toggle" :title="consoleCollapsed ? '展开' : '收起'" @click="consoleCollapsed = !consoleCollapsed">
+          <svg v-if="consoleCollapsed" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="5 15 12 8 19 15" />
+            <polyline points="5 9 12 2 19 9" />
+          </svg>
+          <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="5 9 12 16 19 9" />
+            <polyline points="5 15 12 22 19 15" />
+          </svg>
+        </button>
       </div>
 
       <!-- 当前运行：SSE 流式日志 -->
@@ -1407,6 +1425,9 @@ watch(nowTick, () => {
           <div class="run-row-head">
             <span class="run-status">{{ statusIcon(r.status) }}</span>
             <span class="run-badge" :class="'b-' + r.status">{{ fmtStatusText(r.status) }}</span>
+            <span class="run-type" :class="r.trigger_source === 'schedule' ? 't-schedule' : 't-manual'">
+              {{ r.trigger_source === 'schedule' ? '定时' : '手动' }}
+            </span>
             <span class="run-time">{{ fmtTime(r.started_at) }}</span>
             <span class="run-dur" v-if="r.duration_ms != null">{{ fmtMs(r.duration_ms) }}</span>
             <span class="run-nodes" v-if="r.node_count">· {{ r.node_count }} 节点
@@ -1571,6 +1592,15 @@ watch(nowTick, () => {
 }
 .console-resizer:hover::after { background: var(--c-accent); height: 2px; }
 .console-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--c-border); flex-shrink: 0; background: var(--c-muted); }
+.wf-console.collapsed { height: 32px; }
+.wf-console.collapsed .console-head { height: 100%; padding: 0 12px; border-bottom: none; }
+.console-toggle {
+  width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--c-border); border-radius: 6px;
+  color: var(--c-secondary); cursor: pointer; transition: color .15s, border-color .15s;
+}
+.console-toggle:hover { color: var(--c-accent); border-color: var(--c-accent); }
+.console-toggle svg { width: 20px; height: 20px; }
 .console-title { font-size: 12px; font-weight: 700; }
 .console-spacer { flex: 1; }
 .console-body { flex: 1; overflow-y: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
@@ -1644,6 +1674,9 @@ watch(nowTick, () => {
 .run-row-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; flex-wrap: wrap; }
 .run-status { width: 14px; text-align: center; }
 .run-badge { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; }
+.run-type { font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px; }
+.run-type.t-schedule { background: color-mix(in srgb, var(--c-warn, #d98b00) 18%, transparent); color: var(--c-warn, #d98b00); }
+.run-type.t-manual { background: var(--c-muted); color: var(--c-secondary); }
 .run-badge.b-succeeded { background: color-mix(in srgb, var(--c-success) 18%, transparent); color: var(--c-success); }
 .run-badge.b-failed { background: color-mix(in srgb, var(--c-danger) 18%, transparent); color: var(--c-danger); }
 .run-badge.b-running { background: color-mix(in srgb, var(--c-accent) 18%, transparent); color: var(--c-accent); }
@@ -1692,11 +1725,12 @@ watch(nowTick, () => {
 .wf-drawer { position: relative; width: 340px; flex-shrink: 0; display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: 12px; background: var(--c-panel); overflow: hidden; transition: width .2s ease; }
 .wf-drawer.collapsed { width: 28px; align-items: center; padding-top: 8px; border-radius: 12px 0 0 12px; }
 .drawer-toggle {
-  width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
-  background: transparent; border: none; color: var(--c-secondary); cursor: pointer;
-  font-size: 14px; line-height: 1; z-index: 10;
+  width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--c-border); border-radius: 6px;
+  color: var(--c-secondary); cursor: pointer; transition: color .15s, border-color .15s; z-index: 10;
 }
-.drawer-toggle:hover { color: var(--c-accent); }
+.drawer-toggle:hover { color: var(--c-accent); border-color: var(--c-accent); }
+.drawer-toggle svg { width: 20px; height: 20px; }
 /* 左边缘拖拽把手：hover/拖动时高亮 */
 .drawer-resizer {
   position: absolute; left: -3px; top: 0; bottom: 0; width: 7px;

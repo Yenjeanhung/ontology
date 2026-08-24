@@ -106,7 +106,8 @@ async def run_workflow(workflow_id: str, req: RunWorkflowRequest, db: AsyncSessi
     if err:
         raise HTTPException(400, err)
     return StreamingResponse(
-        run_stream(workflow_id, definition, req.inputs or {}),
+        run_stream(workflow_id, definition, req.inputs or {},
+                   trigger_source="manual"),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -152,6 +153,7 @@ async def list_workflow_runs(workflow_id: str, db: AsyncSession = Depends(get_db
             },
             "input_preview": _preview(_json(r.inputs)),
             "output_preview": _preview(_json(r.outputs)),
+            "trigger_source": r.trigger_source, "schedule_id": r.schedule_id,
         })
     return out
 

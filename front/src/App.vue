@@ -124,7 +124,7 @@ const menuItems = [
     children: [
       { to: '/agent/skills', label: '技能管理' },
       { to: '/agent/configs', label: '智能体配置' },
-      { to: '/agent', label: '本体问答' },
+      { to: '/agent', label: '智能体问答' },
     ],
   },
   { key: 'workflow', label: '工作流', icon: 'workflow', to: '/workflows' },
