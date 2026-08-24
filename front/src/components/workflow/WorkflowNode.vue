@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch, nextTick } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { TYPE_META } from './nodeMeta.js'
 import { marked } from 'marked'
@@ -98,25 +98,35 @@ const answerPreview = computed(() => {
   return plain.length > 60 ? plain.slice(0, 60) + '…' : plain
 })
 
-// 运行中流式输出预览（取 answer/text 当前累积内容）
+// 运行中流式输出预览（取 answer/text 当前累积内容，不截断，用于容器内滚动）
 const streamPreview = computed(() => {
   if (status.value !== 'running') return ''
   const out = props.data?.output
   if (!out || typeof out !== 'object') return ''
   const s = out.answer ?? out.text ?? ''
-  const plain = typeof s === 'string' ? stripMd(s) : ''
-  return plain.length > 90 ? plain.slice(0, 90) + '…' : plain
+  return typeof s === 'string' ? stripMd(s) : ''
 })
 
-// 运行中反思/思考过程预览（与答案并行流式展示）
+// 运行中反思/思考过程预览（与答案并行流式展示，不截断）
 const reasoningPreview = computed(() => {
   if (status.value !== 'running') return ''
   const out = props.data?.output
   if (!out || typeof out !== 'object') return ''
   const s = out.reasoning ?? ''
-  const plain = typeof s === 'string' ? stripMd(s) : ''
-  return plain.length > 160 ? plain.slice(0, 160) + '…' : plain
+  return typeof s === 'string' ? stripMd(s) : ''
 })
+
+// 运行中预览容器自动滚到最底部，保证始终看到最新输出
+const answerScrollRef = ref(null)
+const reasoningScrollRef = ref(null)
+function scrollToBottom(el) {
+  if (!el) return
+  nextTick(() => {
+    el.scrollTop = el.scrollHeight
+  })
+}
+watch(streamPreview, () => scrollToBottom(answerScrollRef.value))
+watch(reasoningPreview, () => scrollToBottom(reasoningScrollRef.value))
 
 const showTooltip = computed(() => !!props.data?.output && typeof props.data.output === 'object')
 
@@ -221,11 +231,11 @@ async function copyOutputJson() {
             <span class="wf-step-label">{{ s }}</span>
           </div>
         </div>
-        <div v-if="reasoningPreview" class="wf-stream-reasoning" title="模型思考过程">
+        <div v-if="reasoningPreview" ref="reasoningScrollRef" class="wf-stream-reasoning" title="模型思考过程">
           <span class="wf-stream-r-label">思考</span>
           <span class="wf-stream-r-text">{{ reasoningPreview }}</span>
         </div>
-        <div v-if="streamPreview" class="wf-stream-marquee">
+        <div v-if="streamPreview" ref="answerScrollRef" class="wf-stream-answer">
           <span class="wf-stream-text">{{ streamPreview }}</span>
         </div>
       </div>
@@ -393,16 +403,16 @@ async function copyOutputJson() {
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
   overflow: hidden; word-break: break-all;
 }
-.wf-stream-marquee { overflow: hidden; white-space: nowrap; }
-.wf-stream-marquee .wf-stream-text {
-  display: inline-block; white-space: nowrap; word-break: normal;
-  padding-left: 100%;
-  -webkit-line-clamp: unset;
-  animation: wf-marquee 12s linear infinite;
+.wf-stream-answer {
+  max-height: 100px; overflow-y: auto;
+  padding: 4px 6px; border-radius: 6px;
+  background: var(--c-bg-soft, rgba(255,255,255,.05));
+  font-size: 10px; line-height: 1.45; color: var(--c-fg);
+  scroll-behavior: smooth;
 }
-@keyframes wf-marquee {
-  0% { transform: translateX(0); }
-  100% { transform: translateX(-100%); }
+.wf-stream-answer .wf-stream-text {
+  display: block; white-space: normal; word-break: break-all;
+  -webkit-line-clamp: unset;
 }
 @keyframes wf-pulse {
   0%, 100% { opacity: 1; }
@@ -410,10 +420,11 @@ async function copyOutputJson() {
 }
 .wf-stream-reasoning {
   display: flex; align-items: flex-start; gap: 5px;
-  max-height: 64px; overflow: hidden;
+  max-height: 100px; overflow-y: auto;
   padding: 4px 6px; border-radius: 6px;
   background: var(--c-accent-weak, rgba(161,98,7,.08));
   font-size: 10px; line-height: 1.45; color: var(--c-secondary);
+  scroll-behavior: smooth;
 }
 .wf-stream-r-label {
   flex-shrink: 0; font-weight: 600; color: var(--c-accent);
@@ -421,8 +432,7 @@ async function copyOutputJson() {
   padding: 0 3px; font-size: 9px; line-height: 1.5;
 }
 .wf-stream-r-text {
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
-  overflow: hidden; word-break: break-all; white-space: normal;
+  white-space: normal; word-break: break-all;
 }
 .wf-out-kv:hover { border-color: var(--c-accent); }
 
