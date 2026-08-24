@@ -149,6 +149,8 @@ const outOpen = ref(false)
 const fixedPopExpanded = ref(false)
 const rawJsonExpanded = ref(false)
 const reasoningExpanded = ref(true)
+const mainExpanded = ref(true)
+const customExpanded = ref(true)
 const copied = ref(false)
 const expandedPopKey = ref('')
 
@@ -267,14 +269,20 @@ async function copyOutputJson() {
 
         <!-- 主输出：渲染为优雅 Markdown -->
         <div v-if="mainText" class="wf-pop-section">
-          <div class="wf-pop-sec-title">模型输出</div>
-          <div class="wf-pop-md" v-html="renderMd(mainText)"></div>
+          <div class="wf-pop-sec-title wf-pop-toggle" @click.stop="mainExpanded = !mainExpanded">
+            <span>模型输出</span>
+            <span class="wf-toggle-ico">{{ mainExpanded ? '▲' : '▼' }}</span>
+          </div>
+          <div v-if="mainExpanded" class="wf-pop-md" v-html="renderMd(mainText)"></div>
         </div>
 
         <!-- 自定义输出：默认展开，优先展示 -->
         <div v-if="popCustomOuts.length" class="wf-pop-section">
-          <div class="wf-pop-sec-title">自定义输出</div>
-          <div class="wf-pop-kvs">
+          <div class="wf-pop-sec-title wf-pop-toggle" @click.stop="customExpanded = !customExpanded">
+            <span>自定义输出（{{ popCustomOuts.length }} 项）</span>
+            <span class="wf-toggle-ico">{{ customExpanded ? '▲' : '▼' }}</span>
+          </div>
+          <div v-if="customExpanded" class="wf-pop-kvs">
             <div v-for="o in popCustomOuts" :key="o.k" class="wf-pop-kv">
               <span class="wf-pop-k">{{ o.k }}</span>
               <span
@@ -404,11 +412,11 @@ async function copyOutputJson() {
   overflow: hidden; word-break: break-all;
 }
 .wf-stream-answer {
-  max-height: 100px; overflow-y: auto;
+  max-height: 100px; overflow-y: scroll;
   padding: 4px 6px; border-radius: 6px;
   background: var(--c-bg-soft, rgba(255,255,255,.05));
   font-size: 10px; line-height: 1.45; color: var(--c-fg);
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }
 .wf-stream-answer .wf-stream-text {
   display: block; white-space: normal; word-break: break-all;
@@ -420,12 +428,16 @@ async function copyOutputJson() {
 }
 .wf-stream-reasoning {
   display: flex; align-items: flex-start; gap: 5px;
-  max-height: 100px; overflow-y: auto;
+  max-height: 100px; overflow-y: scroll;
   padding: 4px 6px; border-radius: 6px;
   background: var(--c-accent-weak, rgba(161,98,7,.08));
   font-size: 10px; line-height: 1.45; color: var(--c-secondary);
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }
+.wf-stream-reasoning::-webkit-scrollbar,
+.wf-stream-answer::-webkit-scrollbar { width: 3px; }
+.wf-stream-reasoning::-webkit-scrollbar-thumb,
+.wf-stream-answer::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 2px; }
 .wf-stream-r-label {
   flex-shrink: 0; font-weight: 600; color: var(--c-accent);
   border: 1px solid var(--c-accent, transparent); border-radius: 4px;
