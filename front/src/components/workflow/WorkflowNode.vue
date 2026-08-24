@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { TYPE_META } from './nodeMeta.js'
+import { marked } from 'marked'
 
 const FIXED_KEYS = ['answer', 'chunks', 'entities', 'subgraph', 'success', 'data', 'error', 'stdout', 'duration_ms', 'text', 'result']
 
@@ -21,6 +22,25 @@ const currentStep = computed(() => props.data?.step || '')
 const runningSteps = computed(() => props.data?.steps || [])
 
 const STATUS_LABEL = { running: '运行中', succeeded: '完成', failed: '失败', skipped: '跳过' }
+
+function stripMd(s) {
+  if (typeof s !== 'string') return String(s ?? '')
+  return s
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\[(.+?)\]\(.+?\)/g, '$1')
+    .replace(/!\[.*?\]\(.+?\)/g, '[图片]')
+    .replace(/\n+/g, ' ')
+    .trim()
+}
+
+function renderMd(s) {
+  if (typeof s !== 'string') return String(s ?? '')
+  return marked.parse(s, { breaks: true, gfm: true })
+}
 
 function bodyText(t, cfg = {}) {
   if (t === 'agent') return cfg.agent_id ? '引用已配置智能体' : (cfg.kb_id ? '内联 · KB + 技能' : '未配置知识库')
@@ -69,12 +89,13 @@ const customOuts = computed(() => {
     .slice(0, 6)
 })
 
-// answer/text 摘要一行
+// answer/text 摘要一行（去除 markdown 标记，卡片上更清爽）
 const answerPreview = computed(() => {
   const out = props.data?.output
   if (!out || typeof out !== 'object') return ''
   const s = out.answer ?? out.text ?? ''
-  return typeof s === 'string' ? (s.length > 52 ? s.slice(0, 52) + '…' : s) : ''
+  const plain = typeof s === 'string' ? stripMd(s) : ''
+  return plain.length > 60 ? plain.slice(0, 60) + '…' : plain
 })
 
 // 运行中流式输出预览（取 answer/text 当前累积内容）
@@ -83,15 +104,31 @@ const streamPreview = computed(() => {
   const out = props.data?.output
   if (!out || typeof out !== 'object') return ''
   const s = out.answer ?? out.text ?? ''
-  return typeof s === 'string' ? (s.length > 90 ? s.slice(0, 90) + '…' : s) : ''
+  const plain = typeof s === 'string' ? stripMd(s) : ''
+  return plain.length > 90 ? plain.slice(0, 90) + '…' : plain
 })
 
 const showTooltip = computed(() => !!props.data?.output && typeof props.data.output === 'object')
+
+// 主输出文本（answer/text）与思考过程
+const mainText = computed(() => {
+  const out = props.data?.output
+  if (!out || typeof out !== 'object') return ''
+  const s = out.answer ?? out.text ?? ''
+  return typeof s === 'string' ? s : ''
+})
+const reasoningText = computed(() => {
+  const out = props.data?.output
+  if (!out || typeof out !== 'object') return ''
+  const s = out.reasoning ?? ''
+  return typeof s === 'string' ? s : ''
+})
 
 // 完整输出浮层
 const outOpen = ref(false)
 const fixedPopExpanded = ref(false)
 const rawJsonExpanded = ref(false)
+const reasoningExpanded = ref(true)
 const copied = ref(false)
 const expandedPopKey = ref('')
 
@@ -100,12 +137,12 @@ function togglePopKey(key) {
 }
 let copiedTimer = null
 
-// 弹窗用：固定输出分组（默认折叠）
+// 弹窗用：固定输出分组（默认折叠），排除 answer/text/reasoning 避免重复展示
 const popFixedOuts = computed(() => {
   const out = props.data?.output
   if (!out || typeof out !== 'object' || Array.isArray(out)) return []
   return Object.entries(out)
-    .filter(([k]) => FIXED_KEYS.includes(k) && !k.startsWith('_'))
+    .filter(([k]) => FIXED_KEYS.includes(k) && !k.startsWith('_') && !['answer', 'text', 'reasoning'].includes(k))
     .map(([k, v]) => ({ k, v: fmtValPop(v) }))
 })
 
@@ -193,6 +230,21 @@ async function copyOutputJson() {
         <div class="wf-pop-head">
           <span>输出 · {{ title }}</span>
           <span class="wf-pop-close" @click.stop="outOpen = false">×</span>
+        </div>
+
+        <!-- 思考过程（模型反思/推理内容）-->
+        <div v-if="reasoningText" class="wf-pop-section">
+          <div class="wf-pop-sec-title wf-pop-toggle" @click.stop="reasoningExpanded = !reasoningExpanded">
+            <span>思考过程</span>
+            <span class="wf-toggle-ico">{{ reasoningExpanded ? '▲' : '▼' }}</span>
+          </div>
+          <pre v-if="reasoningExpanded" class="wf-pop-reasoning">{{ reasoningText }}</pre>
+        </div>
+
+        <!-- 主输出：渲染为优雅 Markdown -->
+        <div v-if="mainText" class="wf-pop-section">
+          <div class="wf-pop-sec-title">模型输出</div>
+          <div class="wf-pop-md" v-html="renderMd(mainText)"></div>
         </div>
 
         <!-- 自定义输出：默认展开，优先展示 -->
@@ -304,7 +356,7 @@ async function copyOutputJson() {
 /* 运行结果展示区 */
 .wf-out { border-top: 1px dashed var(--c-border); padding: 6px 10px 8px; display: flex; flex-direction: column; gap: 5px; background: color-mix(in srgb, var(--c-accent) 4%, var(--c-panel)); border-radius: 0 0 var(--radius, 8px) var(--radius, 8px); }
 .wf-out-answer {
-  font-size: 10.5px; color: var(--c-fg); line-height: 1.45;
+  font-size: 9.5px; color: var(--c-secondary); line-height: 1.35;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   cursor: pointer;
 }
@@ -424,6 +476,27 @@ async function copyOutputJson() {
   border-radius: 4px;
   padding: 4px 6px;
 }
+.wf-pop-reasoning {
+  margin: 0; padding: 10px; max-height: 260px; overflow-y: auto;
+  font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-all; color: var(--c-secondary);
+  background: color-mix(in srgb, var(--c-fg) 3%, var(--c-panel));
+  border-top: 1px solid var(--c-border);
+}
+.wf-pop-md {
+  padding: 10px; font-size: 13px; line-height: 1.7; color: var(--c-fg);
+  max-height: 320px; overflow-y: auto; user-select: text; cursor: text;
+}
+.wf-pop-md :deep(p) { margin: 0 0 8px; }
+.wf-pop-md :deep(p:last-child) { margin-bottom: 0; }
+.wf-pop-md :deep(strong) { font-weight: 700; color: var(--c-fg); }
+.wf-pop-md :deep(code) { font-family: ui-monospace, monospace; font-size: 11.5px; padding: 1px 4px; border-radius: 4px; background: color-mix(in srgb, var(--c-fg) 8%, var(--c-panel)); color: var(--c-accent); }
+.wf-pop-md :deep(pre) { margin: 6px 0; padding: 8px; border-radius: 6px; background: color-mix(in srgb, var(--c-fg) 6%, var(--c-panel)); overflow-x: auto; }
+.wf-pop-md :deep(pre code) { background: transparent; padding: 0; color: var(--c-fg); }
+.wf-pop-md :deep(ul), .wf-pop-md :deep(ol) { margin: 6px 0; padding-left: 18px; }
+.wf-pop-md :deep(li) { margin: 2px 0; }
+.wf-pop-md :deep(h1), .wf-pop-md :deep(h2), .wf-pop-md :deep(h3), .wf-pop-md :deep(h4) { font-size: 13px; margin: 10px 0 6px; color: var(--c-fg); }
+.wf-pop-md :deep(blockquote) { margin: 6px 0; padding-left: 10px; border-left: 2px solid var(--c-border); color: var(--c-secondary); }
 .wf-out-kvs { display: flex; flex-wrap: wrap; gap: 4px; }
 .wf-out-kv {
   display: inline-flex; align-items: center; gap: 4px;

@@ -400,6 +400,9 @@ class OAGService:
 
         try:
             async for chunk in llm.astream(messages):
+                reasoning = _extract_reasoning(chunk)
+                if reasoning:
+                    yield _sse({"type": "reasoning", "content": reasoning})
                 if chunk.content:
                     yield _sse({"type": "token", "content": chunk.content})
         except Exception:
@@ -407,6 +410,20 @@ class OAGService:
             yield _sse({"type": "token", "content": "\n\n[生成回答时出错]"})
 
         yield "data: [DONE]\n\n"
+
+
+def _extract_reasoning(chunk) -> str:
+    """从 LLM 流式 chunk 中提取推理/反思内容（如 DeepSeek R1 的 reasoning_content）。"""
+    if hasattr(chunk, "additional_kwargs") and isinstance(chunk.additional_kwargs, dict):
+        r = chunk.additional_kwargs.get("reasoning_content")
+        if r:
+            return str(r)
+    if hasattr(chunk, "response_metadata") and isinstance(chunk.response_metadata, dict):
+        r = chunk.response_metadata.get("reasoning_content")
+        if r:
+            return str(r)
+    return ""
+
 
     @staticmethod
     async def run(kb_id: str, query: str, kb_name: str, ontology_schema, skills=None, persona=None) -> dict:
@@ -511,6 +528,9 @@ class OAGService:
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
         try:
             async for chunk in llm.astream(messages):
+                reasoning = _extract_reasoning(chunk)
+                if reasoning:
+                    yield _sse({"type": "reasoning", "content": reasoning})
                 if chunk.content:
                     yield _sse({"type": "token", "content": chunk.content})
         except Exception:

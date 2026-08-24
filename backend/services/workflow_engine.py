@@ -155,8 +155,8 @@ async def _exec_agent(cfg: dict, context: dict, db) -> dict:
     return out
 
 
-async def _exec_agent_stream(cfg: dict, context: dict, db, on_token=None, on_step=None) -> dict:
-    """智能体节点流式执行：LLM 生成过程中持续调用 on_token(token)。
+async def _exec_agent_stream(cfg: dict, context: dict, db, on_token=None, on_step=None, on_reasoning=None) -> dict:
+    """智能体节点流式执行：LLM 生成过程中持续调用 on_token(token)、on_reasoning(token)。
 
     通过 on_step(label) 把固定前置步骤逐一下发，让前端知道当前进度。
     最终返回结果与非流式 _exec_agent 完全一致。
@@ -184,7 +184,7 @@ async def _exec_agent_stream(cfg: dict, context: dict, db, on_token=None, on_ste
 
     if not kb_id:
         skills = await SkillService.resolve(db, skill_ids)
-        out = await _agent_chat_no_kb_stream(query, persona, skills, on_token, on_step)
+        out = await _agent_chat_no_kb_stream(query, persona, skills, on_token, on_step, on_reasoning)
     else:
         _step("加载知识库")
         kb = await KBService.get(db, kb_id)
@@ -196,7 +196,7 @@ async def _exec_agent_stream(cfg: dict, context: dict, db, on_token=None, on_ste
             ontology_schema = None
         skills = await SkillService.resolve(db, skill_ids)
         _step("检索相关知识")
-        out = await _oag_stream_collect(kb_id, query, kb["name"], ontology_schema, skills, persona, on_token, on_step)
+        out = await _oag_stream_collect(kb_id, query, kb["name"], ontology_schema, skills, persona, on_token, on_step, on_reasoning)
 
     if struct_fields:
         _step("解析结构化输出")
@@ -244,8 +244,9 @@ async def _agent_chat_no_kb_stream(
     skills: list[dict],
     on_token=None,
     on_step=None,
+    on_reasoning=None,
 ) -> dict:
-    """未绑 KB 智能体的纯对话执行（流式），每收到一个 token 调用 on_token。"""
+    """未绑 KB 智能体的纯对话执行（流式），每收到一个 token 调用 on_token、on_reasoning。"""
     from langchain_core.messages import HumanMessage, SystemMessage
 
     from oag_service import build_system_prompt
@@ -261,9 +262,15 @@ async def _agent_chat_no_kb_stream(
         messages.insert(0, SystemMessage(content=system_prompt))
     try:
         parts = []
+        reasoning_parts = []
         token_count = 0
         async for chunk in llm.astream(messages):
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
+            reasoning = _extract_reasoning(chunk)
+            if reasoning:
+                reasoning_parts.append(reasoning)
+                if on_reasoning:
+                    on_reasoning(reasoning)
             if content:
                 token_count += 1
                 parts.append(content)
@@ -275,10 +282,11 @@ async def _agent_chat_no_kb_stream(
     except Exception as e:
         raise RuntimeError(f"LLM 调用失败：{e}")
     return {
-        "answer": text,
-        "chunks": [],
-        "entities": [],
-        "subgraph": None,
+    "answer": text,
+    "reasoning": "".join(reasoning_parts),
+    "chunks": [],
+    "entities": [],
+    "subgraph": None,
     }
 
 
@@ -291,11 +299,13 @@ async def _oag_stream_collect(
     persona,
     on_token=None,
     on_step=None,
+    on_reasoning=None,
 ) -> dict:
-    """复用 OAGService.query_stream 收集完整结果，同时把 token 透传给 on_token。"""
+    """复用 OAGService.query_stream 收集完整结果，同时把 token/reasoning 透传。"""
     if on_step:
         on_step("调用大模型")
     answer_parts: list[str] = []
+    reasoning_parts: list[str] = []
     chunks: list[dict] = []
     entities: list[dict] = []
     subgraph: dict | None = None
@@ -318,6 +328,11 @@ async def _oag_stream_collect(
             answer_parts.append(content)
             if on_token:
                 on_token(content)
+        elif t == "reasoning":
+            r = evt.get("content") or ""
+            reasoning_parts.append(r)
+            if on_reasoning:
+                on_reasoning(r)
         elif t == "chunks":
             chunks = evt.get("chunks") or []
         elif t == "entities":
@@ -328,10 +343,24 @@ async def _oag_stream_collect(
         logger.warning("_oag_stream_collect 未收到任何 token，可能当前模型/OAG 不支持流式输出")
     return {
         "answer": "".join(answer_parts),
+        "reasoning": "".join(reasoning_parts),
         "chunks": chunks,
         "entities": entities,
         "subgraph": subgraph or {"facts": "", "entities": [], "relations": [], "retrieval_path": {}},
     }
+
+
+def _extract_reasoning(chunk) -> str:
+    """从 LLM 流式 chunk 中提取 reasoning_content（DeepSeek R1 / QwQ 等）。"""
+    if hasattr(chunk, "additional_kwargs") and isinstance(chunk.additional_kwargs, dict):
+        r = chunk.additional_kwargs.get("reasoning_content")
+        if r:
+            return str(r)
+    if hasattr(chunk, "response_metadata") and isinstance(chunk.response_metadata, dict):
+        r = chunk.response_metadata.get("reasoning_content")
+        if r:
+            return str(r)
+    return ""
 
 
 def _build_structured_suffix(fields: list[dict]) -> str:
@@ -702,8 +731,9 @@ def _make_node_fn(rt: _Runtime, node: dict):
         rt.node_states[nid] = {"status": "running", "input": input_view, "title": title}
         t0 = time.monotonic()
 
-        # 智能体节点流式执行：token 实时下发，同时保持最终 result 一致
+        # 智能体节点流式执行：token / reasoning 实时下发，同时保持最终 result 一致
         accumulated: list[str] = []
+        reasoning_accumulated: list[str] = []
         first_token_emitted = False
         last_progress_emit = 0.0
 
@@ -726,16 +756,28 @@ def _make_node_fn(rt: _Runtime, node: dict):
                 return
             last_progress_emit = now
             _emit_progress({
-                "output": {"answer": "".join(accumulated)},
+                "output": {"answer": "".join(accumulated), "reasoning": "".join(reasoning_accumulated)},
                 "step": "生成中..." if accumulated else "调用大模型",
             })
             if not first_token_emitted:
                 first_token_emitted = True
                 logger.info("[run %s] 智能体节点 %s 首次 token 已下发", rt.run_id, nid)
 
+        def _on_reasoning(token: str):
+            nonlocal last_progress_emit
+            reasoning_accumulated.append(token)
+            now = time.monotonic()
+            if now - last_progress_emit < 0.08:
+                return
+            last_progress_emit = now
+            _emit_progress({
+                "output": {"answer": "".join(accumulated), "reasoning": "".join(reasoning_accumulated)},
+                "step": "思考中...",
+            })
+
         if node.get("type") == "agent":
             logger.info("[run %s] 使用流式执行智能体节点 %s", rt.run_id, nid)
-            task = asyncio.create_task(_exec_agent_stream(node.get("config") or {}, context, rt.db, _on_token, _on_step))
+            task = asyncio.create_task(_exec_agent_stream(node.get("config") or {}, context, rt.db, _on_token, _on_step, _on_reasoning))
         else:
             task = asyncio.create_task(_execute_node(node, context, rt.db))
         try:
@@ -753,6 +795,8 @@ def _make_node_fn(rt: _Runtime, node: dict):
             result = task.result()
             dur = int((time.monotonic() - t0) * 1000)
             projected = _project_output(node, result)
+            if isinstance(result, dict):
+                result.setdefault("reasoning", "".join(reasoning_accumulated))
             rt.node_states[nid] = {
                 "status": "succeeded", "output": result, "duration_ms": dur,
                 "summary": _summarize(node, result), "title": title,
