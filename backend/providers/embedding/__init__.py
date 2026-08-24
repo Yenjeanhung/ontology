@@ -37,3 +37,23 @@ def create_embeddings():
         raise ValueError(f"未知的嵌入模型 Provider: {settings.EMBEDDING_PROVIDER}")
 
     return _embeddings
+
+
+def get_embedding_provider_name() -> str:
+    """返回当前嵌入模型 Provider 名称。"""
+    return settings.EMBEDDING_PROVIDER
+
+
+def health_check() -> tuple[bool, str, dict]:
+    """嵌入模型连通性检测：构造实例并 embed 一段短文本。
+
+    注意：本地模型首次加载耗时较长，调用方需放宽超时。
+    返回 (ok, message, extra)。
+    """
+    try:
+        embeddings = create_embeddings()
+        vector = embeddings.embed_query("ping")
+        dim = len(vector) if vector else 0
+        return True, f"embed ok, dim={dim}", {"dimension": dim, "model": settings.EMBEDDING_MODEL}
+    except Exception as e:
+        return False, f"embed failed: {e}", {}

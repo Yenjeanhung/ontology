@@ -24,6 +24,10 @@ class VectorStoreAdapter(ABC):
     def delete_collection(self, kb_id: str):
         raise NotImplementedError
 
+    def health_check(self) -> tuple[bool, str, dict]:
+        """连通性检测。返回 (ok, message, extra)。"""
+        return True, "not implemented", {}
+
     def enrich_index_records(self, kb_id: str, records: list[dict]) -> list[dict]:
         """Best-effort provider-specific enrichment for inspector pages."""
         return records
@@ -49,6 +53,20 @@ class ChromaAdapter(VectorStoreAdapter):
             client.delete_collection(kb_id)
         except Exception:
             pass
+
+    def health_check(self) -> tuple[bool, str, dict]:
+        import chromadb
+
+        try:
+            client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+            heartbeat = client.heartbeat()
+            collections = client.list_collections()
+            return True, f"connected (heartbeat={heartbeat:.1f}s)", {
+                "collection_count": len(collections),
+                "persist_dir": settings.CHROMA_PERSIST_DIR,
+            }
+        except Exception as e:
+            return False, f"connection failed: {e}", {}
 
     def enrich_index_records(self, kb_id: str, records: list[dict]) -> list[dict]:
         if not records:
@@ -107,6 +125,31 @@ class MilvusAdapter(VectorStoreAdapter):
         # implemented against the chosen collection schema without touching the app.
         pass
 
+    def health_check(self) -> tuple[bool, str, dict]:
+        from pymilvus import connections
+
+        try:
+            connections.connect(
+                alias="monitor_health",
+                host=settings.MILVUS_HOST,
+                port=settings.MILVUS_PORT,
+            )
+            try:
+                from pymilvus import utility
+
+                has_default = utility.has_collection("default", using="monitor_health")
+                extra = {"has_default_collection": bool(has_default)}
+            except Exception:
+                extra = {}
+            finally:
+                try:
+                    connections.disconnect("monitor_health")
+                except Exception:
+                    pass
+            return True, f"connected to {settings.MILVUS_HOST}:{settings.MILVUS_PORT}", extra
+        except Exception as e:
+            return False, f"connection failed: {e}", {}
+
 
 def _get_adapter() -> VectorStoreAdapter:
     if settings.VECTOR_STORE_PROVIDER == "chroma":
@@ -130,3 +173,8 @@ def enrich_vector_index_records(kb_id: str, records: list[dict]) -> list[dict]:
 
 def get_vector_store_provider_name() -> str:
     return _get_adapter().provider_name
+
+
+def health_check() -> tuple[bool, str, dict]:
+    """向量库连通性检测。返回 (ok, message, extra)。"""
+    return _get_adapter().health_check()

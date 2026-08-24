@@ -183,7 +183,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from routers import agent, config, entity, files, graph, kb, library, notifications, ontology, ontology_service, query, scheduler, vector_data, workflow
+from routers import agent, config, entity, files, graph, kb, library, monitor, notifications, ontology, ontology_service, query, scheduler, vector_data, workflow
 
 app.include_router(kb.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
@@ -199,6 +199,7 @@ app.include_router(workflow.router, prefix="/api")
 app.include_router(config.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(scheduler.router, prefix="/api")
+app.include_router(monitor.router, prefix="/api")
 
 front_dist = Path(__file__).parent.parent / "front" / "dist"
 if front_dist.exists():

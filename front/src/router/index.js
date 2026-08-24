@@ -16,6 +16,7 @@ import RelationDictPage from '../components/ontology/RelationDictPage.vue'
 import ConstraintPage from '../components/ontology/ConstraintPage.vue'
 import SuggestionListPage from '../components/ontology/SuggestionListPage.vue'
 import ModelConfigPage from '../components/config/ModelConfigPage.vue'
+import MonitorPage from '../components/monitor/MonitorPage.vue'
 import EntityListPage from '../components/entity/EntityListPage.vue'
 import EntityDetailPage from '../components/entity/EntityDetailPage.vue'
 import RelationListPage from '../components/entity/RelationListPage.vue'
@@ -64,6 +65,7 @@ const routes = [
   { path: '/entity-services/:serviceId/edit', name: 'entity-service-edit', component: ServiceEditorPage, props: true, meta: { keepAlive: false, fullscreen: true } },
   // 配置
   { path: '/config/models', name: 'config-models', component: ModelConfigPage, meta: { keepAlive: true } },
+  { path: '/config/monitor', name: 'config-monitor', component: MonitorPage, meta: { keepAlive: true } },
 ]
 
 const router = createRouter({

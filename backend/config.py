@@ -151,5 +151,9 @@ class Settings(BaseSettings):
     # 多个错过的触发合并为一次
     SCHEDULER_COALESCE: bool = True
 
+    # ───────────────────────── 系统监控（Monitor）─────────────────────────
+    # SSE 定时推送组件状态的间隔（秒）；打开监控页面时生效
+    MONITOR_PUSH_INTERVAL_SECONDS: int = 30
+
 
 settings = Settings()

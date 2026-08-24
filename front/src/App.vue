@@ -133,6 +133,7 @@ const menuItems = [
     key: 'config', label: '系统配置', icon: 'config',
     children: [
       { to: '/config/models', label: '模型配置' },
+      { to: '/config/monitor', label: '系统监控' },
     ],
   },
 ]
