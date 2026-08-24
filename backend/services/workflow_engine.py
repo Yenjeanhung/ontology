@@ -28,7 +28,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from config import settings
 from database import async_session
 from models import WorkflowRun
-from providers.llm import create_llm
+from providers.llm import chunk_text, create_llm, extract_reasoning
 from schemas import TestOntologyServiceRequest
 from services.agent_service import AgentService
 from services.kb_service import KBService
@@ -227,7 +227,7 @@ async def _agent_chat_no_kb(query: str, persona: str | None, skills: list[dict])
         messages.insert(0, SystemMessage(content=system_prompt))
     try:
         resp = await llm.ainvoke(messages)
-        text = resp.content if hasattr(resp, "content") else str(resp)
+        text = chunk_text(resp)
     except Exception as e:
         raise RuntimeError(f"LLM 调用失败：{e}")
     return {
@@ -264,10 +264,14 @@ async def _agent_chat_no_kb_stream(
         parts = []
         reasoning_parts = []
         token_count = 0
+        reasoning_seen = False
         async for chunk in llm.astream(messages):
-            content = chunk.content if hasattr(chunk, "content") else str(chunk)
-            reasoning = _extract_reasoning(chunk)
+            content = chunk_text(chunk)
+            reasoning = extract_reasoning(chunk)
             if reasoning:
+                if not reasoning_seen:
+                    reasoning_seen = True
+                    logger.debug("[agent %s] 首次收到反思内容（len=%d）", nid, len(reasoning))
                 reasoning_parts.append(reasoning)
                 if on_reasoning:
                     on_reasoning(reasoning)
@@ -350,17 +354,7 @@ async def _oag_stream_collect(
     }
 
 
-def _extract_reasoning(chunk) -> str:
-    """从 LLM 流式 chunk 中提取 reasoning_content（DeepSeek R1 / QwQ 等）。"""
-    if hasattr(chunk, "additional_kwargs") and isinstance(chunk.additional_kwargs, dict):
-        r = chunk.additional_kwargs.get("reasoning_content")
-        if r:
-            return str(r)
-    if hasattr(chunk, "response_metadata") and isinstance(chunk.response_metadata, dict):
-        r = chunk.response_metadata.get("reasoning_content")
-        if r:
-            return str(r)
-    return ""
+
 
 
 def _build_structured_suffix(fields: list[dict]) -> str:
@@ -519,7 +513,7 @@ async def _exec_llm(cfg: dict, context: dict) -> dict:
         messages.append(SystemMessage(content=system))
     messages.append(HumanMessage(content=prompt_text))
     resp = await llm.ainvoke(messages)
-    return {"text": resp.content if hasattr(resp, "content") else str(resp)}
+    return {"text": chunk_text(resp)}
 
 
 async def _exec_code(cfg: dict, context: dict) -> dict:

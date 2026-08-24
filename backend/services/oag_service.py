@@ -24,7 +24,7 @@ from providers.graph_store import (
     entity_neighborhood,
     list_kb_entities,
 )
-from providers.llm import create_llm
+from providers.llm import chunk_text, create_llm, extract_reasoning
 from providers.vector_store import create_vector_store
 
 logger = logging.getLogger(__name__)
@@ -399,30 +399,22 @@ class OAGService:
         ]
 
         try:
+            reasoning_seen = False
             async for chunk in llm.astream(messages):
-                reasoning = _extract_reasoning(chunk)
+                reasoning = extract_reasoning(chunk)
                 if reasoning:
+                    if not reasoning_seen:
+                        reasoning_seen = True
+                        logger.debug("[OAG kb_id=%s] 首次收到反思内容（len=%d）", kb_id, len(reasoning))
                     yield _sse({"type": "reasoning", "content": reasoning})
-                if chunk.content:
-                    yield _sse({"type": "token", "content": chunk.content})
+                text = chunk_text(chunk)
+                if text:
+                    yield _sse({"type": "token", "content": text})
         except Exception:
             logger.exception("OAG LLM stream failed: kb_id=%s", kb_id)
             yield _sse({"type": "token", "content": "\n\n[生成回答时出错]"})
 
         yield "data: [DONE]\n\n"
-
-
-def _extract_reasoning(chunk) -> str:
-    """从 LLM 流式 chunk 中提取推理/反思内容（如 DeepSeek R1 的 reasoning_content）。"""
-    if hasattr(chunk, "additional_kwargs") and isinstance(chunk.additional_kwargs, dict):
-        r = chunk.additional_kwargs.get("reasoning_content")
-        if r:
-            return str(r)
-    if hasattr(chunk, "response_metadata") and isinstance(chunk.response_metadata, dict):
-        r = chunk.response_metadata.get("reasoning_content")
-        if r:
-            return str(r)
-    return ""
 
 
     @staticmethod
@@ -528,11 +520,12 @@ def _extract_reasoning(chunk) -> str:
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
         try:
             async for chunk in llm.astream(messages):
-                reasoning = _extract_reasoning(chunk)
+                reasoning = extract_reasoning(chunk)
                 if reasoning:
                     yield _sse({"type": "reasoning", "content": reasoning})
-                if chunk.content:
-                    yield _sse({"type": "token", "content": chunk.content})
+                text = chunk_text(chunk)
+                if text:
+                    yield _sse({"type": "token", "content": text})
         except Exception:
             logger.exception("OAG degraded LLM stream failed: kb_id=%s", kb_id)
             yield _sse({"type": "token", "content": "\n\n[生成回答时出错]"})

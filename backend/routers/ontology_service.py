@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from database import get_db
 from models import Entity, Ontology
-from providers.llm import build_llm
+from providers.llm import build_llm, chunk_text
 from schemas import (
     AiAssistServiceCodeRequest,
     InvokeEntityServiceRequest,
@@ -230,9 +230,7 @@ async def ai_assist_service_code(req: AiAssistServiceCodeRequest):
         full = ""
         try:
             async for chunk in llm.astream(messages):
-                delta = chunk.content if hasattr(chunk, "content") else ""
-                if isinstance(delta, list):
-                    delta = "".join(str(x) for x in delta)
+                delta = chunk_text(chunk)
                 if not delta:
                     continue
                 full += delta

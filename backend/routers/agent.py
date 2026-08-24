@@ -574,7 +574,7 @@ async def _chat_no_kb(query: str, persona: str | None, skills=None):
                     "retrieval_path": {"vector": 0, "graph": 0, "both": 0, "entities": 0, "degraded": True}})
     yield _sse_evt({"type": "chunks", "chunks": []})
 
-    from providers.llm import create_llm
+    from providers.llm import chunk_text, create_llm
     from langchain_core.messages import HumanMessage
 
     llm = create_llm()
@@ -589,8 +589,9 @@ async def _chat_no_kb(query: str, persona: str | None, skills=None):
         messages.insert(0, SystemMessage(content=system_prompt))
     try:
         async for chunk in llm.astream(messages):
-            if chunk.content:
-                yield _sse_evt({"type": "token", "content": chunk.content})
+            text = chunk_text(chunk)
+            if text:
+                yield _sse_evt({"type": "token", "content": text})
     except Exception:
         yield _sse_evt({"type": "token", "content": "\n\n[生成回答时出错]"})
     yield "data: [DONE]\n\n"

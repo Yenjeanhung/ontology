@@ -108,6 +108,16 @@ const streamPreview = computed(() => {
   return plain.length > 90 ? plain.slice(0, 90) + '…' : plain
 })
 
+// 运行中反思/思考过程预览（与答案并行流式展示）
+const reasoningPreview = computed(() => {
+  if (status.value !== 'running') return ''
+  const out = props.data?.output
+  if (!out || typeof out !== 'object') return ''
+  const s = out.reasoning ?? ''
+  const plain = typeof s === 'string' ? stripMd(s) : ''
+  return plain.length > 160 ? plain.slice(0, 160) + '…' : plain
+})
+
 const showTooltip = computed(() => !!props.data?.output && typeof props.data.output === 'object')
 
 // 主输出文本（answer/text）与思考过程
@@ -210,6 +220,10 @@ async function copyOutputJson() {
             <span class="wf-step-dot"></span>
             <span class="wf-step-label">{{ s }}</span>
           </div>
+        </div>
+        <div v-if="reasoningPreview" class="wf-stream-reasoning" title="模型思考过程">
+          <span class="wf-stream-r-label">思考</span>
+          <span class="wf-stream-r-text">{{ reasoningPreview }}</span>
         </div>
         <div v-if="streamPreview" class="wf-stream-marquee">
           <span class="wf-stream-text">{{ streamPreview }}</span>
@@ -393,6 +407,22 @@ async function copyOutputJson() {
 @keyframes wf-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: .35; }
+}
+.wf-stream-reasoning {
+  display: flex; align-items: flex-start; gap: 5px;
+  max-height: 64px; overflow: hidden;
+  padding: 4px 6px; border-radius: 6px;
+  background: var(--c-accent-weak, rgba(161,98,7,.08));
+  font-size: 10px; line-height: 1.45; color: var(--c-secondary);
+}
+.wf-stream-r-label {
+  flex-shrink: 0; font-weight: 600; color: var(--c-accent);
+  border: 1px solid var(--c-accent, transparent); border-radius: 4px;
+  padding: 0 3px; font-size: 9px; line-height: 1.5;
+}
+.wf-stream-r-text {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: break-all; white-space: normal;
 }
 .wf-out-kv:hover { border-color: var(--c-accent); }
 

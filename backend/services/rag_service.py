@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from providers.embedding import create_embeddings
 from providers.vector_store import create_vector_store
-from providers.llm import create_llm
+from providers.llm import chunk_text, create_llm
 
 RAG_SYSTEM_PROMPT = (
     "你是一个知识库问答助手。请根据以下参考资料回答用户的问题。"
@@ -143,7 +143,8 @@ class RAGService:
         ]
 
         async for chunk in llm.astream(messages):
-            if chunk.content:
-                yield f"data: {json.dumps({'type': 'token', 'content': chunk.content}, ensure_ascii=False)}\n\n"
+            text = chunk_text(chunk)
+            if text:
+                yield f"data: {json.dumps({'type': 'token', 'content': text}, ensure_ascii=False)}\n\n"
 
         yield "data: [DONE]\n\n"
