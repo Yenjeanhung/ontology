@@ -60,11 +60,26 @@ function onDrop(ev) {
   if (text) insertAtCursor(text)
 }
 
+function varPyRef(id, field) { return `var("${id}", "${field}")` }
+
 const dropHandlers = EditorView.domEventHandlers({
   drop(ev) {
+    // 工作流变量拖拽：优先读取元数据生成 var(...) 插入代码
     const hasVar = ev.dataTransfer?.types.includes('application/x-wf-var')
+    if (hasVar) {
+      const raw = ev.dataTransfer?.getData('application/x-wf-var')
+      try {
+        const { node, field } = JSON.parse(raw || '{}')
+        if (node && field !== undefined) {
+          ev.preventDefault()
+          ev.stopPropagation()
+          insertAtCursor(varPyRef(node, field))
+          return true
+        }
+      } catch {}
+    }
     const text = ev.dataTransfer?.getData('text/plain')
-    if (hasVar && text) {
+    if (text) {
       ev.preventDefault()
       ev.stopPropagation()
       insertAtCursor(text)

@@ -692,7 +692,8 @@ function varRef(id, field) { return `{{${id}.${field}}}` }
 const varRefPlaceholder = '{{节点.字段}}'
 function varPyRef(id, field) { return `var("${id}", "${field}")` }
 function onVarDragStart(ev, id, field) {
-  ev.dataTransfer.setData('text/plain', varPyRef(id, field))
+  // 普通输入框/条件节点/模板用 {{n.f}}；Python 编辑器读取 application/x-wf-var 自己生成 var(...)
+  ev.dataTransfer.setData('text/plain', varRef(id, field))
   ev.dataTransfer.setData('application/x-wf-var', JSON.stringify({ node: id, field }))
   ev.dataTransfer.effectAllowed = 'copy'
 }
