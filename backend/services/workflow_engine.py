@@ -358,7 +358,7 @@ async def _oag_stream_collect(
 
 
 def _build_structured_suffix(fields: list[dict]) -> str:
-    """根据声明的结构化字段（支持任意多个）生成追加指令，要求 LLM 在回答末尾输出 JSON 块。"""
+    """根据声明的结构化字段（支持任意多个）生成追加指令，要求 LLM 只输出 JSON。"""
     type_hint = {"string": "字符串", "number": "数字", "boolean": "true/false", "array": "JSON数组", "object": "JSON对象"}
     lines = []
     for i, f in enumerate(fields):
@@ -370,9 +370,9 @@ def _build_structured_suffix(fields: list[dict]) -> str:
         lines.append(f'    "{f["name"]}": <{hint}{desc}>{comma}')
     schema = "\n".join(lines)
     return (
-        "\n\n【输出要求】请先正常回答；然后在最后单独输出一个 JSON 代码块，"
-        "必须包含且仅包含以下全部字段（字段名保持一致，值为对应类型的 JSON 值）：\n"
-        "```json\n{\n" + schema + "\n}\n```\n"
+        "\n\n【输出要求】请只输出一个 JSON 对象，不要任何解释、不要 markdown 代码块，"
+        "直接输出原始 JSON。必须包含且仅包含以下全部字段（字段名保持一致，值为对应类型的 JSON 值）：\n"
+        "{\n" + schema + "\n}\n"
         "注意：数组用 [\"a\", \"b\"] 形式；数字不要加引号；不要添加未声明的字段。"
     )
 
@@ -519,7 +519,9 @@ async def _exec_llm(cfg: dict, context: dict) -> dict:
     text = chunk_text(resp)
     out = {"text": text}
     if struct_fields:
-        out.update(_parse_structured(text, struct_fields))
+        parsed = _parse_structured(text, struct_fields)
+        logger.debug("[llm] structured parse: fields=%s, parsed=%s", [f.get("name") for f in struct_fields], parsed)
+        out.update(parsed)
     return out
 
 
@@ -590,7 +592,9 @@ async def _exec_llm_stream(
     if struct_fields:
         if on_step:
             on_step("解析结构化输出")
-        out.update(_parse_structured(text, struct_fields))
+        parsed = _parse_structured(text, struct_fields)
+        logger.debug("[llm stream] structured parse: fields=%s, parsed=%s", [f.get("name") for f in struct_fields], parsed)
+        out.update(parsed)
     return out
 
 
@@ -601,7 +605,8 @@ async def _exec_code(cfg: dict, context: dict) -> dict:
         language=cfg.get("language", "python"),
         params=params,
         entity={},
-        context={},
+        # 把上游节点输出透传给沙箱，代码里可通过 context['节点id'] 直接读取
+        context=context or {},
         timeout_seconds=cfg.get("timeout_seconds", 30),
     )
 
@@ -760,7 +765,13 @@ class _Runtime:
 
     def __init__(self, run_id: str, nodes: list, edges: list):
         self.run_id = run_id
-        self.node_by_id = {n["id"]: n for n in nodes}
+        # 前端保存时配置放在 node.data.config；统一提升到 node.config，避免各执行函数取空配置
+        self.node_by_id = {}
+        for n in nodes:
+            node = dict(n)
+            if "config" not in node and isinstance(node.get("data"), dict):
+                node["config"] = node["data"].get("config") or {}
+            self.node_by_id[n["id"]] = node
         self.edges = edges
         self.events: asyncio.Queue = asyncio.Queue()
         self.node_states: dict = {}

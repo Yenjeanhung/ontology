@@ -12,7 +12,7 @@ const props = defineProps({
   modelValue: { type: String, default: '' },
   height: { type: [Number, String], default: 280 },
   maxLength: { type: Number, default: 50000 },
-  /** 服务参数名，作为可补全来源 */
+  /** service param names, used as completion source */
   params: { type: Array, default: () => [] },
   /** 允许 import 的模块白名单 */
   allowedImports: {
@@ -38,12 +38,52 @@ const props = defineProps({
   },
   enableLinter: { type: Boolean, default: true },
 })
-const emit = defineEmits(['update:modelValue', 'selection-change', 'lint'])
+const emit = defineEmits(['update:modelValue', 'selection-change', 'lint', 'drop-text'])
 
 const host = ref(null)
 let view = null
 
-// ───── 自动补全 ─────
+function insertAtCursor(text) {
+  if (!view) return
+  const pos = view.state.selection.main.head
+  view.dispatch({
+    changes: { from: pos, to: pos, insert: text },
+    selection: { anchor: pos + text.length },
+  })
+  view.focus()
+}
+
+function onDrop(ev) {
+  ev.preventDefault()
+  ev.stopPropagation()
+  const text = ev.dataTransfer.getData('text/plain')
+  if (text) insertAtCursor(text)
+}
+
+const dropHandlers = EditorView.domEventHandlers({
+  drop(ev) {
+    const hasVar = ev.dataTransfer?.types.includes('application/x-wf-var')
+    const text = ev.dataTransfer?.getData('text/plain')
+    if (hasVar && text) {
+      ev.preventDefault()
+      ev.stopPropagation()
+      insertAtCursor(text)
+      return true
+    }
+    return false
+  },
+})
+
+defineExpose({
+  getSelection() {
+    if (!view) return { from: 0, to: 0, text: '' }
+    const sel = view.state.selection.main
+    return { from: sel.from, to: sel.to, text: view.state.doc.sliceString(sel.from, sel.to) }
+  },
+  insertAtCursor,
+})
+
+// completion
 const PY_KEYWORDS = ['def', 'return', 'import', 'from', 'for', 'if', 'elif', 'else', 'while', 'try', 'except', 'finally', 'with', 'lambda', 'class', 'yield', 'in', 'not', 'and', 'or', 'is', 'None', 'True', 'False', 'async', 'await', 'pass', 'break', 'continue', 'raise', 'assert', 'global', 'nonlocal', 'del']
 
 function buildSnippets(word) {
@@ -148,10 +188,9 @@ const lintMarker = (sev) => new class extends GutterMarker {
 const lintGutterField = gutter({
   class: 'cm-lint-gutter',
   markers: (view) => {
-    const diags = runLint(view.state.doc.toString())
     const marks = []
     const seen = new Set()
-    for (const d of diags) {
+    for (const d of lintDiags.value) {
       if (seen.has(d.line)) continue
       seen.add(d.line)
       marks.push({ line: d.line, marker: lintMarker(d.sev) })
@@ -162,11 +201,45 @@ const lintGutterField = gutter({
 })
 
 const lintDiags = ref([])
+const backendError = ref(null)
+let backendLintTimer = null
+
 function refreshLint() {
   if (!view) return
   const diags = props.enableLinter ? runLint(view.state.doc.toString()) : []
+  if (backendError.value) {
+    diags.push({ line: backendError.value.line, sev: 'error', msg: backendError.value.msg })
+  }
   lintDiags.value = diags
   emit('lint', diags)
+}
+
+async function refreshBackendLint(text) {
+  if (!props.enableLinter) return
+  window.clearTimeout(backendLintTimer)
+  backendLintTimer = window.setTimeout(async () => {
+    try {
+      const res = await fetch('/api/services/validate-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code_text: text }),
+      })
+      const data = await res.json()
+      if (data.valid) {
+        backendError.value = null
+      } else {
+        const m = (data.error || '').match(/第\s*(\d+)\s*行/)
+        const line = m ? Math.max(0, parseInt(m[1], 10) - 1) : 0
+        backendError.value = { line, msg: data.error }
+      }
+    } catch (e) {
+      backendError.value = null
+    }
+    if (view) {
+      view.dispatch({ effects: [] }) // trigger gutter redraw
+      refreshLint()
+    }
+  }, 600)
 }
 
 function createState(doc) {
@@ -185,6 +258,7 @@ function createState(doc) {
     python(),
     oneDark,
     lintGutterField,
+    dropHandlers,
     EditorView.theme({
       '&': { height: typeof props.height === 'number' ? props.height + 'px' : props.height, fontSize: '13px' },
       '.cm-scroller': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', lineHeight: '1.6' },
@@ -200,7 +274,10 @@ function createState(doc) {
             return
           }
           emit('update:modelValue', text)
-          if (props.enableLinter) refreshLint()
+          if (props.enableLinter) {
+            refreshLint()
+            refreshBackendLint(text)
+          }
         }
         if (u.selectionSet || u.docChanged) {
           const sel = u.state.selection.main
@@ -234,19 +311,12 @@ watch(() => props.modelValue, (val) => {
 })
 
 // params 变化后重算补全（CM6 通过 prop 直接读，无需重建）
-defineExpose({
-  getSelection() {
-    if (!view) return { from: 0, to: 0, text: '' }
-    const sel = view.state.selection.main
-    return { from: sel.from, to: sel.to, text: view.state.doc.sliceString(sel.from, sel.to) }
-  },
-})
 
 onBeforeUnmount(() => { if (view) view.destroy() })
 </script>
 
 <template>
-  <div class="py-editor">
+  <div class="py-editor" @dragover.prevent @drop="onDrop">
     <div v-if="lintDiags.length" class="py-lint">
       <div v-for="(d, i) in lintDiags.slice(0, 6)" :key="i" class="py-lint-row" :class="d.sev">
         <span class="py-lint-icon">{{ d.sev === 'error' ? '✕' : '!' }}</span>

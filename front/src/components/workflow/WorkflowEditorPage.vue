@@ -32,7 +32,7 @@ const DEFAULT_CONFIG = {
   service: { kb_id: '', entity_id: '', service_id: '', params: {} },
   llm: { system_prompt: '', prompt_template: '', structured_outputs: [] },
   condition: { operator: '==', left: '', right: '' },
-  code: { code_text: 'def run(params, entity, context):\n    return {"data": params}', params: {} },
+  code: { code_text: 'def run(params, entity, context):\n    # params：本节点「参数(JSON)」中定义的数据（已渲染变量）\n    # var(节点id, 字段)：左侧变量拖拽后自动插入的安全读取函数\n    return {"summary": var("llm1", "text"), "params": params}', params: {} },
 }
 
 // 各节点类型的默认输出字段（新节点预填，之后可手动增删）
@@ -678,6 +678,12 @@ function setJson(field, text) {
   try { selectedNode.value.data.config[field] = JSON.parse(text) } catch {}
 }
 function varRef(id, field) { return `{{${id}.${field}}}` }
+function varPyRef(id, field) { return `var("${id}", "${field}")` }
+function onVarDragStart(ev, id, field) {
+  ev.dataTransfer.setData('text/plain', varPyRef(id, field))
+  ev.dataTransfer.setData('application/x-wf-var', JSON.stringify({ node: id, field }))
+  ev.dataTransfer.effectAllowed = 'copy'
+}
 function copyText(text) {
   if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(text).then(() => toast.success('已复制 ' + text)).catch(() => {})
@@ -1311,6 +1317,7 @@ watch(nowTick, () => {
             <template v-else-if="selectedType === 'code'">
               <div class="field">
                 <label>代码（沙箱 Python）</label>
+                <p class="field-hint">函数签名为 <code v-pre>def run(params, entity, context) -> dict:</code>。返回 dict 即本节点的 <code>data</code> 输出。左侧变量可拖拽到编辑器，自动插入 <code v-pre>var("节点id", "字段")</code>，无需手写 context。</p>
                 <PythonEditor v-model="selectedConfig.code_text" :height="280" :max-length="50000" />
               </div>
             </template>
@@ -1322,20 +1329,20 @@ watch(nowTick, () => {
               <!-- 输入变量：沿连线可流入本节点的上游输出（智能体用「⊕ 插入变量」，不显示此块） -->
               <div class="field" v-if="selectedType !== 'agent'">
                 <template v-if="upstreamNodes.some(n => outputFieldsOf(n).length)">
-                  <label>输入变量（上游，点击复制）</label>
+                  <label>输入变量（上游，点击复制 / 拖拽到代码中）</label>
                   <template v-for="n in upstreamNodes" :key="n.id">
                     <div v-if="outputFieldsOf(n).length" class="upstream-node">
                       <div class="up-node-name">{{ n.data?.title || n.type }} · <code>{{ n.id }}</code></div>
                       <div v-if="groupedOutputFieldsOf(n).fixed.length" class="var-group">
                         <div class="var-group-title">固定输出</div>
                         <div class="var-chips">
-                          <button v-for="f in groupedOutputFieldsOf(n).fixed" :key="'f-' + f" type="button" class="var-chip var-chip-fixed" @mouseenter="showVarTooltip($event, n, f)" @mousemove="moveVarTooltip" @mouseleave="hideVarTooltip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
+                          <button v-for="f in groupedOutputFieldsOf(n).fixed" :key="'f-' + f" type="button" class="var-chip var-chip-fixed" draggable="true" @dragstart="ev => onVarDragStart(ev, n.id, f)" @mouseenter="showVarTooltip($event, n, f)" @mousemove="moveVarTooltip" @mouseleave="hideVarTooltip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
                         </div>
                       </div>
                       <div v-if="groupedOutputFieldsOf(n).custom.length" class="var-group">
                         <div class="var-group-title">自定义输出</div>
                         <div class="var-chips">
-                          <button v-for="f in groupedOutputFieldsOf(n).custom" :key="'c-' + f" type="button" class="var-chip" @mouseenter="showVarTooltip($event, n, f)" @mousemove="moveVarTooltip" @mouseleave="hideVarTooltip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
+                          <button v-for="f in groupedOutputFieldsOf(n).custom" :key="'c-' + f" type="button" class="var-chip" draggable="true" @dragstart="ev => onVarDragStart(ev, n.id, f)" @mouseenter="showVarTooltip($event, n, f)" @mousemove="moveVarTooltip" @mouseleave="hideVarTooltip" @click="copyText(varRef(n.id, f))">{{ n.id }}.{{ f }}</button>
                         </div>
                       </div>
                     </div>
@@ -1356,7 +1363,8 @@ watch(nowTick, () => {
               </div>
               <div class="field" v-if="selectedType === 'code'">
                 <label>参数（JSON，可用变量）</label>
-                <textarea :value="jsonText('params')" @input="setJson('params', $event.target.value)" rows="3" placeholder='{"x":"{{agent.answer}}"}'></textarea>
+                <p class="field-hint">把需要用到的上游变量写到这里，代码里通过 <code v-pre>params["键名"]</code> 读取；也可以不填，直接在代码里用 <code v-pre>context["节点id"]["字段"]</code> 读取上游输出。</p>
+                <textarea :value="jsonText('params')" @input="setJson('params', $event.target.value)" rows="3" placeholder='{"summary":"{{llm1.text}}","cc":"{{llm1.cc}}"}'></textarea>
               </div>
 
               <!-- 输出变量：固定字段（只读，点击复制；配置了结构化输出的节点在结构化输出表中展示，不重复显示） -->

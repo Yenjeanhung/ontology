@@ -29,6 +29,20 @@ from services.service_runtime import IMPORT_WHITELIST, check_code
 router = APIRouter()
 
 
+@router.post("/services/validate-code")
+async def validate_code(payload: dict):
+    """校验 Python 代码语法与入口函数定义，用于工作流代码节点实时检查。"""
+    code_text = (payload.get("code_text") or "").strip()
+    if not code_text:
+        return {"valid": False, "error": "代码为空"}
+    err = check_code(code_text)
+    return {"valid": not err, "error": err or None}
+
+
+def _nf(detail: str):
+    return HTTPException(status_code=404, detail=detail)
+
+
 def _nf(detail: str):
     return HTTPException(status_code=404, detail=detail)
 

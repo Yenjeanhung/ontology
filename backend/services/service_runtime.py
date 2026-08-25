@@ -39,6 +39,20 @@ try:
 except Exception:
     pass
 
+def _var(ctx, node, field=None, default=None):
+    # safely read upstream node output by node_id / field
+    # supports service/code nodes: { "data": { ... } } and llm/agent nodes: { "text": ..., "cc": ..., ... }
+    out = ctx.get(node, {})
+    if not isinstance(out, dict):
+        return default if field else out
+    if field is None:
+        return out
+    target = out.get("data", out) if "data" in out else out
+    if not isinstance(target, dict):
+        return default
+    return target.get(field, default)
+
+
 def main():
     payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     code = payload.get("code") or ""
@@ -49,7 +63,10 @@ def main():
     error = None
     data = None
     try:
-        g = {"__name__": "__sandbox__"}
+        g = {
+            "__name__": "__sandbox__",
+            "var": lambda node, field=None, default=None: _var(context, node, field, default),
+        }
         with redirect_stdout(buf):
             exec(compile(code, "<service>", "exec"), g)
             fn = g.get("run")
