@@ -55,8 +55,21 @@ def _lookup(path: str, context: dict):
 
 
 def _strip_citations(text: str) -> str:
-    """去掉 OAG 问答返回的 [来源N] 引用标记。"""
-    return re.sub(r"\[\s*来源\s*\d+\s*\]", "", text or "")
+    """去掉 OAG 问答返回的 [来源N] / [事实] 引用标记。"""
+    text = re.sub(r"\[\s*来源\s*\d+\s*\]", "", text or "")
+    text = re.sub(r"\[\s*事实\s*\]", "", text)
+    return text
+
+
+def _strip_citations_in_value(value):
+    """递归清理字符串中的 [来源N]/[事实] 标记，保留其他类型。"""
+    if isinstance(value, str):
+        return _strip_citations(value)
+    if isinstance(value, dict):
+        return {k: _strip_citations_in_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_citations_in_value(v) for v in value]
+    return value
 
 
 def render(value, context: dict):
@@ -128,27 +141,7 @@ async def _exec_agent(cfg: dict, context: dict, db) -> dict:
         out = await _agent_chat_no_kb(query, persona, skills)
         if struct_fields:
             out.update(_parse_structured(out.get("answer") or "", struct_fields))
-        return out
-
-    # 工作流智能体节点：不复用 OAG 知识库问答（带了 [来源N] 引用、检索/图谱等副作用），
-    # 而是走独立的 agent 问答逻辑——按人设+技能用 LLM 直接回答，无来源标注。
-    if cfg.get("agent_id"):
-        agent = await AgentService.resolve(db, cfg["agent_id"])
-        if not agent:
-            raise RuntimeError("智能体不存在或已禁用")
-        kb_id, skill_ids, persona = agent["kb_id"], agent["skill_ids"], agent["system_prompt"]
-    else:
-        kb_id = cfg.get("kb_id") or ""
-        skill_ids = cfg.get("skill_ids") or []
-        persona = None
-
-    # 未绑 KB：纯对话（人设 + 技能直接 LLM 回答）
-    if not kb_id:
-        skills = await SkillService.resolve(db, skill_ids)
-        out = await _agent_chat_no_kb(query, persona, skills)
-        if struct_fields:
-            out.update(_parse_structured(out.get("answer") or "", struct_fields))
-        return out
+        return _strip_citations_in_value(out)
 
     # 绑定 KB：仍然走 OAG 检索问答（保留知识库能力），但去掉来源标注
     kb = await KBService.get(db, kb_id)
@@ -178,7 +171,7 @@ async def _exec_agent(cfg: dict, context: dict, db) -> dict:
         for name, expr in extra.items():
             if name and isinstance(expr, str):
                 out[name] = render(expr, local_ctx)
-    return out
+    return _strip_citations_in_value(out)
 
 
 async def _exec_agent_stream(cfg: dict, context: dict, db, on_token=None, on_step=None, on_reasoning=None) -> dict:
@@ -235,7 +228,7 @@ async def _exec_agent_stream(cfg: dict, context: dict, db, on_token=None, on_ste
         for name, expr in extra.items():
             if name and isinstance(expr, str):
                 out[name] = render(expr, local_ctx)
-    return out
+    return _strip_citations_in_value(out)
 
 
 async def _agent_chat_no_kb(query: str, persona: str | None, skills: list[dict]) -> dict:
@@ -373,7 +366,7 @@ async def _oag_stream_collect(
         logger.warning("_oag_stream_collect 未收到任何 token，可能当前模型/OAG 不支持流式输出")
     return {
         "answer": _strip_citations("".join(answer_parts)),
-        "reasoning": "".join(reasoning_parts),
+        "reasoning": _strip_citations("".join(reasoning_parts)),
         "chunks": chunks,
         "entities": entities,
         "subgraph": subgraph or {"facts": "", "entities": [], "relations": [], "retrieval_path": {}},
