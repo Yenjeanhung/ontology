@@ -32,6 +32,17 @@ class VectorStoreAdapter(ABC):
         """Best-effort provider-specific enrichment for inspector pages."""
         return records
 
+    def list_kb_documents(self, kb_id: str) -> list[dict]:
+        """返回 KB 下全部分片 [{id, content, metadata}]，供 BM25 等关键词索引构建。
+
+        provider 不支持时抛 NotImplementedError；调用方需捕获并降级。
+        """
+        raise NotImplementedError
+
+    def kb_document_count(self, kb_id: str) -> int:
+        """KB 下分片总数（用于 BM25 缓存指纹）。默认 0 表示不支持。"""
+        return 0
+
 
 class ChromaAdapter(VectorStoreAdapter):
     provider_name = "chroma"
@@ -107,6 +118,37 @@ class ChromaAdapter(VectorStoreAdapter):
             enriched.append({**record, **extra})
         return enriched
 
+    def list_kb_documents(self, kb_id: str) -> list[dict]:
+        import chromadb
+
+        client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+        try:
+            collection = client.get_collection(kb_id)
+            raw = collection.get(include=["documents", "metadatas"])
+        except Exception:
+            return []
+
+        ids = raw.get("ids") or []
+        documents = raw.get("documents") or []
+        metadatas = raw.get("metadatas") or []
+        return [
+            {
+                "id": ids[idx],
+                "content": documents[idx] or "",
+                "metadata": metadatas[idx] or {},
+            }
+            for idx in range(len(ids))
+        ]
+
+    def kb_document_count(self, kb_id: str) -> int:
+        import chromadb
+
+        client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+        try:
+            return client.get_collection(kb_id).count()
+        except Exception:
+            return 0
+
 
 class MilvusAdapter(VectorStoreAdapter):
     provider_name = "milvus"
@@ -169,6 +211,14 @@ def delete_kb_collection(kb_id: str):
 
 def enrich_vector_index_records(kb_id: str, records: list[dict]) -> list[dict]:
     return _get_adapter().enrich_index_records(kb_id, records)
+
+
+def list_kb_documents(kb_id: str) -> list[dict]:
+    return _get_adapter().list_kb_documents(kb_id)
+
+
+def kb_document_count(kb_id: str) -> int:
+    return _get_adapter().kb_document_count(kb_id)
 
 
 def get_vector_store_provider_name() -> str:

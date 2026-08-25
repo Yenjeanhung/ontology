@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     OAG_NEIGHBOR_LIMIT: int = 40          # 子图关系条数上限
     OAG_ENTITY_LIST_LIMIT: int = 5000     # 实体链接词面匹配时加载的实体数上限
 
+    # 知识问答混合检索（BM25 + 向量）
+    BM25_ENABLED: bool = True        # 知识问答是否启用 BM25 关键词召回
+    BM25_RECALL_K: int = 50          # BM25 召回候选数（参与 RRF 融合）
+    HYBRID_TOP_N: int = 12           # 融合后最终来源分片数
+    HYBRID_RRF_K: int = 60           # RRF 融合常数
+
     # 技能指令
     AGENT_SKILL_CHAR_BUDGET: int = 24000   # 技能指令总字符软上限（市场技能包 SKILL.md 常见 8-15K）
 

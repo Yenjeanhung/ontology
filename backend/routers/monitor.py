@@ -8,7 +8,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from config import settings
+from database import async_session
 from services import monitor_service
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +146,88 @@ async def monitor_stream():
 
 class LlmStreamRequest(BaseModel):
     prompt: str = "你好，请介绍一下你自己"
+
+
+class DbQueryRequest(BaseModel):
+    """在关系数据库中执行只读 SQL。"""
+    sql: str = "SELECT 1"
+
+
+def _is_readonly_sql(sql: str) -> bool:
+    """仅允许以 SELECT / PRAGMA / WITH(select) 开头，禁止写/改/删/DDL。"""
+    s = sql.strip().lower()
+    if not s:
+        return False
+    if s.startswith(("select", "pragma", "with", "explain")):
+        return True
+    return False
+
+
+# ═══════════════════════ 关系数据库手动测试 ═══════════════════════
+
+
+@router.post("/monitor/database/schemas")
+async def db_schemas():
+    """列出全部 schema（库）及其下的表结构，供前端下拉展示。"""
+    from database import async_session
+
+    result = {"schemas": [], "error": None}
+    try:
+        async with async_session() as db:
+            # sqlite_master 中 type in (table,view) 即库内所有对象
+            rows = await db.execute(text(
+                "SELECT name, type FROM sqlite_master "
+                "WHERE type IN ('table','view') ORDER BY type, name"
+            ))
+            objects = [{"name": r[0], "type": r[1]} for r in rows]
+            schemas = []
+            for obj in objects:
+                cols = await db.execute(text(f"PRAGMA table_info('{obj['name']}')"))
+                columns = [
+                    {
+                        "name": c[1],
+                        "type": c[2],
+                        "notnull": bool(c[3]),
+                        "pk": bool(c[5]),
+                    }
+                    for c in cols
+                ]
+                schemas.append({
+                    "name": obj["name"],
+                    "type": obj["type"],
+                    "columns": columns,
+                })
+            result["schemas"] = schemas
+    except Exception as e:
+        logger.warning("monitor db schemas failed: %s", e)
+        result["error"] = str(e)
+    return result
+
+
+@router.post("/monitor/database/query")
+async def db_query(req: DbQueryRequest):
+    """在关系数据库中执行只读 SQL，返回行数据（最多 200 行）。"""
+    from database import async_session
+
+    sql = (req.sql or "").strip()
+    if not _is_readonly_sql(sql):
+        raise HTTPException(400, "仅支持只读 SQL（SELECT / PRAGMA / WITH / EXPLAIN）")
+
+    try:
+        async with async_session() as db:
+            rows = await db.execute(text(sql))
+            keys = list(rows.keys())
+            data = [dict(zip(keys, row)) for row in rows.fetchmany(200)]
+        return {
+            "columns": keys,
+            "rows": data,
+            "row_count": len(data),
+            "truncated": False,
+            "error": None,
+        }
+    except Exception as e:
+        logger.warning("monitor db query failed: %s", e)
+        return {"columns": [], "rows": [], "row_count": 0, "truncated": False, "error": str(e)}
 
 
 @router.post("/monitor/llm/stream")

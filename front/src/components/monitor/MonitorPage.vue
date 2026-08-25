@@ -2,7 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   connectMonitorStream,
+  fetchDatabaseSchemas,
   fetchMonitorOverview,
+  runDatabaseQuery,
   streamMonitorLlm,
   triggerMonitorCheck,
 } from '../../api/monitor'
@@ -33,6 +35,7 @@ const llmError = ref('')
 
 const dialogCompRef = ref(null)
 const isLlmDialog = computed(() => dialogKey.value === 'llm')
+const isDbDialog = computed(() => dialogKey.value === 'database')
 
 const CATEGORIES = [
   { key: 'data_store', label: '数据存储' },
@@ -63,6 +66,12 @@ function fmtTime(iso) {
   return d.toLocaleString()
 }
 
+function formatCell(v) {
+  if (v === null || v === undefined) return 'NULL'
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+
 async function doRefresh() {
   checking.value = true
   errorMsg.value = ''
@@ -85,6 +94,68 @@ function openTest(comp) {
   llmReasoning.value = ''
   llmAnswer.value = ''
   llmError.value = ''
+  // 数据库弹窗：进入即拉取 schema 列表
+  if (comp.key === 'database') {
+    loadSchemas()
+  }
+}
+
+// 关系数据库手动测试状态
+const dbSchemas = ref([])
+const dbSchemasLoading = ref(false)
+const dbSchemasError = ref('')
+const dbSelectedSchema = ref('')
+const dbSql = ref('SELECT * FROM sqlite_master LIMIT 20;')
+const dbResult = ref(null)
+const dbQueryLoading = ref(false)
+const dbQueryError = ref('')
+
+async function loadSchemas() {
+  dbSchemasLoading.value = true
+  dbSchemasError.value = ''
+  try {
+    const data = await fetchDatabaseSchemas()
+    if (data.error) {
+      dbSchemasError.value = data.error
+      dbSchemas.value = []
+    } else {
+      dbSchemas.value = data.schemas || []
+      if (dbSchemas.value.length) dbSelectedSchema.value = dbSchemas.value[0].name
+    }
+  } catch (e) {
+    dbSchemasError.value = e.message || '获取 schema 失败'
+  } finally {
+    dbSchemasLoading.value = false
+  }
+}
+
+function onSchemaSelect(name) {
+  dbSelectedSchema.value = name
+  const t = dbSchemas.value.find((s) => s.name === name)
+  if (t) {
+    dbSql.value = `SELECT * FROM "${name}" LIMIT 20;`
+    dbResult.value = null
+    dbQueryError.value = ''
+  }
+}
+
+async function runDbQuery() {
+  if (dbQueryLoading.value) return
+  dbQueryLoading.value = true
+  dbQueryError.value = ''
+  dbResult.value = null
+  try {
+    const data = await runDatabaseQuery(dbSql.value)
+    if (data.error) {
+      dbQueryError.value = data.error
+    } else {
+      dbResult.value = data
+    }
+  } catch (e) {
+    dbQueryError.value = e.message || '查询失败'
+  } finally {
+    dbQueryLoading.value = false
+  }
 }
 
 function closeDialog() {
@@ -197,7 +268,7 @@ onBeforeUnmount(() => {
               <h3>
                 <span v-if="dialogCompRef">{{ dialogCompRef.name }}</span>
                 <span v-else>组件测试</span>
-                <span class="dlg-sub">{{ isLlmDialog ? '流式调用测试' : '手动连通性检测' }}</span>
+                <span class="dlg-sub">{{ isLlmDialog ? '流式调用测试' : (isDbDialog ? 'SQL 查询测试' : '手动连通性检测') }}</span>
               </h3>
               <button class="dlg-close" @click="closeDialog">&times;</button>
             </header>
@@ -225,6 +296,73 @@ onBeforeUnmount(() => {
                     <div class="dlg-answer">{{ llmAnswer }}</div>
                   </div>
                   <div v-if="llmError" class="dlg-error">调用出错：{{ llmError }}</div>
+                </div>
+              </div>
+            </template>
+
+            <!-- 关系数据库测试：schema 下拉 + 写 SQL -->
+            <template v-else-if="isDbDialog">
+              <div class="dlg-body">
+                <div class="dlg-field">
+                  <label>Schema（库 / 表）</label>
+                  <select
+                    v-if="!dbSchemasLoading && dbSchemas.length"
+                    v-model="dbSelectedSchema"
+                    class="dlg-select"
+                    @change="onSchemaSelect(dbSelectedSchema)"
+                  >
+                    <option v-for="s in dbSchemas" :key="s.name" :value="s.name">
+                      {{ s.name }}（{{ s.type }} · {{ s.columns.length }} 列）
+                    </option>
+                  </select>
+                  <div v-else-if="dbSchemasLoading" class="dlg-hint">加载 schema 中…</div>
+                  <div v-else-if="dbSchemasError" class="dlg-error">获取失败：{{ dbSchemasError }}</div>
+                  <div v-else class="dlg-hint">无可用 schema</div>
+                </div>
+
+                <!-- 选中表结构 -->
+                <div v-if="dbSelectedSchema" class="dlg-schema">
+                  <div class="dlg-schema-cols">
+                    <span
+                      v-for="col in (dbSchemas.find(s => s.name === dbSelectedSchema)?.columns || [])"
+                      :key="col.name"
+                      class="dlg-col-chip"
+                      :class="{ pk: col.pk }"
+                    >{{ col.name }}<i>{{ col.type }}{{ col.pk ? ' PK' : '' }}</i></span>
+                  </div>
+                </div>
+
+                <div class="dlg-field">
+                  <label>SQL（仅只读：SELECT / PRAGMA / WITH / EXPLAIN）</label>
+                  <textarea v-model="dbSql" rows="4" class="dlg-sql" spellcheck="false" />
+                </div>
+                <div class="dlg-actions">
+                  <button class="btn primary" :disabled="dbQueryLoading" @click="runDbQuery">
+                    <span v-if="dbQueryLoading" class="spinner" style="border-top-color:#fff" />
+                    {{ dbQueryLoading ? '执行中…' : '执行 SQL' }}
+                  </button>
+                </div>
+
+                <div v-if="dbQueryError" class="dlg-error">{{ dbQueryError }}</div>
+
+                <div v-if="dbResult" class="dlg-query-result">
+                  <div class="dlg-res-row">
+                    <span class="dlg-res-k">行数</span>
+                    <span class="dlg-res-v">{{ dbResult.row_count }}</span>
+                  </div>
+                  <div v-if="dbResult.columns.length" class="dlg-table-wrap">
+                    <table class="dlg-table">
+                      <thead>
+                        <tr><th v-for="c in dbResult.columns" :key="c">{{ c }}</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(row, i) in dbResult.rows" :key="i">
+                          <td v-for="c in dbResult.columns" :key="c">{{ formatCell(row[c]) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div v-else class="dlg-hint">无返回列（如 PRAGMA / 建表类语句）</div>
                 </div>
               </div>
             </template>
@@ -345,6 +483,37 @@ onBeforeUnmount(() => {
   border: 1px solid var(--c-border); border-radius: var(--radius-sm);
   padding: 10px 12px; font-size: 13px; line-height: 1.6; resize: vertical;
 }
+.dlg-select {
+  background: var(--c-panel-elevated); color: var(--c-fg);
+  border: 1px solid var(--c-border); border-radius: var(--radius-sm);
+  padding: 8px 10px; font-size: 13px;
+}
+.dlg-sql {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 12.5px; line-height: 1.6;
+}
+.dlg-hint { font-size: 12px; color: var(--c-secondary); padding: 4px 0; }
+
+.dlg-schema { margin-bottom: 12px; }
+.dlg-schema-cols { display: flex; flex-wrap: wrap; gap: 6px; }
+.dlg-col-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; padding: 2px 8px; border-radius: 6px;
+  background: var(--c-muted); color: var(--c-fg);
+  border: 1px solid var(--c-border);
+}
+.dlg-col-chip i { font-style: normal; color: var(--c-secondary); font-size: 10px; }
+.dlg-col-chip.pk { border-color: color-mix(in srgb, var(--c-primary) 40%, transparent); color: var(--c-primary); }
+
+.dlg-query-result { margin-top: 8px; }
+.dlg-table-wrap { overflow-x: auto; border: 1px solid var(--c-border); border-radius: var(--radius-sm); margin-top: 8px; }
+.dlg-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.dlg-table th, .dlg-table td {
+  border: 1px solid var(--c-border); padding: 6px 10px; text-align: left;
+  white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis;
+}
+.dlg-table th { background: var(--c-muted); color: var(--c-secondary); font-weight: 700; position: sticky; top: 0; }
+.dlg-table td { color: var(--c-fg); }
 .dlg-actions { display: flex; justify-content: flex-end; margin-bottom: 14px; }
 
 .dlg-output { display: flex; flex-direction: column; gap: 14px; }

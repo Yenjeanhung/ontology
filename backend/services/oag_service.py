@@ -25,6 +25,7 @@ from providers.graph_store import (
     list_kb_entities,
 )
 from providers.llm import chunk_text, create_llm, extract_reasoning
+from providers.retrieval import chunk_id_from_vector_metadata, rrf_fuse
 from providers.vector_store import create_vector_store
 
 logger = logging.getLogger(__name__)
@@ -100,27 +101,13 @@ _FACTS_CHAR_BUDGET = 1600
 
 
 def _vector_chunk_id(metadata: dict) -> str | None:
-    """从向量分片元数据重建与 Kùzu Chunk.id 一致的 chunk_id。
-
-    写入侧 chunk_id = f"{file_id}_{chunk_index}"（file_service.py），向量库 id 同源。
-    """
-    file_id = metadata.get("file_id")
-    chunk_index = metadata.get("chunk_index")
-    if file_id is None or chunk_index is None:
-        return None
-    return f"{file_id}_{chunk_index}"
+    """从向量分片元数据重建与 Kùzu Chunk.id 一致的 chunk_id（委托共享工具）。"""
+    return chunk_id_from_vector_metadata(metadata)
 
 
 def _rrf_fuse(rank_lists: list[list[str]], k: int | None = None) -> list[tuple[str, float]]:
-    """Reciprocal Rank Fusion：多个有序 id 列表 → 按 RRF 分数降序。"""
-    k = k or settings.OAG_RRF_K
-    scores: dict[str, float] = {}
-    for ranks in rank_lists:
-        for rank, chunk_id in enumerate(ranks):
-            if not chunk_id:
-                continue
-            scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
-    return sorted(scores.items(), key=lambda x: -x[1])
+    """Reciprocal Rank Fusion：多个有序 id 列表 → 按 RRF 分数降序（委托共享工具）。"""
+    return rrf_fuse(rank_lists, k=k or settings.OAG_RRF_K)
 
 
 def _format_subgraph_facts(neighborhood: dict) -> str:

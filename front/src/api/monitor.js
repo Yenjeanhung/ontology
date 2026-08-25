@@ -50,6 +50,27 @@ export function connectMonitorStream({ onSnapshot, onHeartbeat, onError }) {
   }
 }
 
+// 关系数据库手动测试：列出全部 schema（库/表结构）
+export async function fetchDatabaseSchemas() {
+  const res = await fetch(`${API}/api/monitor/database/schemas`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return await res.json()
+}
+
+// 关系数据库手动测试：在选定 schema 中执行只读 SQL
+export async function runDatabaseQuery(sql) {
+  const res = await fetch(`${API}/api/monitor/database/query`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || `HTTP ${res.status}`)
+  }
+  return await res.json()
+}
+
 // LLM 流式调用：SSE 输出 thinking / reasoning / content / done
 export async function streamMonitorLlm(prompt, { onReasoning, onContent, onDone, onError } = {}) {
   const res = await fetch(`${API}/api/monitor/llm/stream`, {

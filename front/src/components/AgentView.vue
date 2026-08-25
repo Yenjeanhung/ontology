@@ -76,6 +76,7 @@ function renderMd(text) {
 // ---------- 来源标记 ----------
 const RETRIEVAL_META = {
   vector: { label: '向量', color: '#6366f1' },
+  bm25: { label: '关键词', color: '#f59e0b' },
   graph: { label: '图谱', color: '#10b981' },
   both: { label: '交集', color: '#8b5cf6' },
 }
