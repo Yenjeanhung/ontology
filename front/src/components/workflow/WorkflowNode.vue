@@ -254,12 +254,16 @@ async function copyOutputJson() {
     <Handle v-else type="source" :position="Position.Right" class="wf-handle" />
 
     <div class="wf-head">
-      <span class="wf-ico" :style="{ background: meta.color }" v-html="meta.icon"></span>
-      <div class="wf-title">{{ title }}</div>
-      <span v-if="status" class="wf-status-chip" :class="'sc-' + status">
-        <span v-if="status === 'running'" class="wf-pulse"></span>
-        {{ STATUS_LABEL[status] }}<template v-if="elapsedText"> · {{ elapsedText }}</template>
-      </span>
+      <div class="wf-head-row">
+        <span class="wf-ico" :style="{ background: meta.color }" v-html="meta.icon"></span>
+        <div class="wf-title" :title="title">{{ title }}</div>
+      </div>
+      <div class="wf-head-meta">
+        <span v-if="status" class="wf-status-chip" :class="'sc-' + status">
+          <span v-if="status === 'running'" class="wf-pulse"></span>
+          {{ STATUS_LABEL[status] }}<template v-if="elapsedText"> · {{ elapsedText }}</template>
+        </span>
+      </div>
     </div>
     <div class="wf-body">{{ bodyText(type, props.data?.config) }}</div>
 
@@ -396,13 +400,15 @@ async function copyOutputJson() {
 .wf-node.running .n-head { background: var(--c-accent-weak, rgba(161,98,7,.10)); }
 
 .wf-status-chip {
+  position: absolute; top: -11px; right: 8px; z-index: 5;
   display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
-  padding: 1px 7px; border-radius: 999px; font-size: 9.5px; font-weight: 700; line-height: 1.5;
+  padding: 2px 8px; border-radius: 999px; font-size: 9.5px; font-weight: 700; line-height: 1.5;
+  box-shadow: 0 1px 3px rgba(0,0,0,.12);
 }
-.wf-status-chip.sc-running { color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 14%, transparent); }
-.wf-status-chip.sc-succeeded { color: var(--c-success); background: color-mix(in srgb, var(--c-success) 14%, transparent); }
-.wf-status-chip.sc-failed { color: var(--c-danger); background: color-mix(in srgb, var(--c-danger) 14%, transparent); }
-.wf-status-chip.sc-skipped { color: var(--c-secondary); background: var(--c-muted); }
+.wf-status-chip.sc-running { color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 16%, var(--c-panel)); border: 1px solid var(--c-accent); }
+.wf-status-chip.sc-succeeded { color: var(--c-success); background: color-mix(in srgb, var(--c-success) 16%, var(--c-panel)); border: 1px solid var(--c-success); }
+.wf-status-chip.sc-failed { color: var(--c-danger); background: color-mix(in srgb, var(--c-danger) 16%, var(--c-panel)); border: 1px solid var(--c-danger); }
+.wf-status-chip.sc-skipped { color: var(--c-secondary); background: var(--c-panel); border: 1px solid var(--c-border); }
 .wf-pulse {
   width: 7px; height: 7px; border-radius: 50%; background: currentColor;
   animation: wf-dot 1s ease-in-out infinite;
@@ -413,12 +419,20 @@ async function copyOutputJson() {
 .wf-node.skipped { opacity: .45; }
 
 .wf-head {
-  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 4px; padding: 8px 10px;
   border-bottom: 1px solid var(--c-border); border-radius: var(--radius, 8px) var(--radius, 8px) 0 0;
 }
 .wf-node.succeeded .wf-head { background: rgba(22,163,74,.08); }
 .wf-node.failed .wf-head { background: rgba(220,38,38,.08); }
 .wf-node.running .wf-head { background: var(--c-accent-weak, rgba(161,98,7,.10)); }
+
+.wf-head-row {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+.wf-head-meta {
+  display: flex; align-items: center; justify-content: flex-end; gap: 6px;
+  min-height: 16px;
+}
 
 .wf-ico {
   width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0;
