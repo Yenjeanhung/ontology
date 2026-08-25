@@ -14,6 +14,7 @@ const props = defineProps({
 
 const type = computed(() => props.data?.nodeType || 'start')
 const meta = computed(() => TYPE_META[type.value] || TYPE_META.start)
+const hasReasoning = computed(() => type.value === 'agent' || type.value === 'llm')
 const title = computed(() => props.data?.title || meta.value.name)
 const isCondition = computed(() => type.value === 'condition')
 const status = computed(() => props.data?.status || '')
@@ -84,7 +85,7 @@ const customOuts = computed(() => {
   const out = props.data?.output
   if (!out || typeof out !== 'object' || Array.isArray(out)) return []
   return Object.entries(out)
-    .filter(([k]) => !FIXED_KEYS.includes(k) && !k.startsWith('_'))
+    .filter(([k]) => !FIXED_KEYS.includes(k) && !k.startsWith('_') && (hasReasoning.value || k !== 'reasoning'))
     .map(([k, v]) => ({ k, v: fmtVal(v) }))
     .slice(0, 6)
 })
@@ -109,7 +110,7 @@ const streamPreview = computed(() => {
 
 // 运行中反思/思考过程预览（与答案并行流式展示，不截断）
 const reasoningPreview = computed(() => {
-  if (status.value !== 'running') return ''
+  if (status.value !== 'running' || !hasReasoning.value) return ''
   const out = props.data?.output
   if (!out || typeof out !== 'object') return ''
   const s = out.reasoning ?? ''
@@ -137,7 +138,23 @@ const mainText = computed(() => {
   const s = out.answer ?? out.text ?? ''
   return typeof s === 'string' ? s : ''
 })
+
+// 代码/服务节点：卡片上直接展示 data 返回值（无 answer/text 时）
+const codePreview = computed(() => {
+  if (type.value !== 'code' && type.value !== 'service') return ''
+  const out = props.data?.output
+  if (!out || typeof out !== 'object') return ''
+  if (status.value === 'failed') {
+    const e = out.error ?? ''
+    return typeof e === 'string' ? e : ''
+  }
+  if (out.data !== undefined) return fmtVal(out.data, 60)
+  if (out.stdout) return fmtVal(out.stdout, 60)
+  return ''
+})
+
 const reasoningText = computed(() => {
+  if (!hasReasoning.value) return ''
   const out = props.data?.output
   if (!out || typeof out !== 'object') return ''
   const s = out.reasoning ?? ''
@@ -173,7 +190,7 @@ const popCustomOuts = computed(() => {
   const out = props.data?.output
   if (!out || typeof out !== 'object' || Array.isArray(out)) return []
   return Object.entries(out)
-    .filter(([k]) => !FIXED_KEYS.includes(k) && !k.startsWith('_'))
+    .filter(([k]) => !FIXED_KEYS.includes(k) && !k.startsWith('_') && (hasReasoning.value || k !== 'reasoning'))
     .map(([k, v]) => ({ k, v: fmtValPop(v) }))
 })
 
@@ -248,6 +265,7 @@ async function copyOutputJson() {
           </span>
         </div>
         <div v-else-if="answerPreview" class="wf-out-answer" @click.stop="outOpen = !outOpen">{{ answerPreview }}</div>
+        <div v-else-if="codePreview" class="wf-out-answer wf-out-code" @click.stop="outOpen = !outOpen">{{ codePreview }}</div>
         <div v-else class="wf-out-raw" @click.stop="outOpen = !outOpen">✓ 已执行</div>
       </template>
 
@@ -393,6 +411,7 @@ async function copyOutputJson() {
   cursor: pointer;
 }
 .wf-out-answer:hover { color: var(--c-accent); }
+.wf-out-code { font-family: ui-monospace, monospace; white-space: normal; word-break: break-all; }
 .wf-out-kv { cursor: pointer; }
 .wf-out-running { display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
 .wf-out-steps { display: flex; flex-direction: column; gap: 3px; }

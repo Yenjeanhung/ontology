@@ -32,7 +32,11 @@ const DEFAULT_CONFIG = {
   service: { kb_id: '', entity_id: '', service_id: '', params: {} },
   llm: { system_prompt: '', prompt_template: '', structured_outputs: [] },
   condition: { operator: '==', left: '', right: '' },
-  code: { code_text: 'def run(params, entity, context):\n    # params：本节点「参数(JSON)」中定义的数据（已渲染变量）\n    # var(节点id, 字段)：左侧变量拖拽后自动插入的安全读取函数\n    return {"summary": var("llm1", "text"), "params": params}', params: {} },
+  code: {
+    code_text: 'def run(params, entity, context):\n    # params：本节点「参数(JSON)」中定义的数据（已渲染变量）\n    # var(节点id, 字段)：左侧变量拖拽后自动插入的安全读取函数\n    return {"summary": var("llm1", "text"), "params": params}',
+    params: {},
+    structured_outputs: [],
+  },
 }
 
 // 各节点类型的默认输出字段（新节点预填，之后可手动增删）
@@ -72,6 +76,13 @@ const FIXED_STRUCT_FIELDS = [
 const FIXED_STRUCT_FIELDS_LLM = [
   { name: 'text', type: 'string', desc: '模型生成文本（固定）' },
 ]
+const FIXED_STRUCT_FIELDS_CODE = [
+  { name: 'data', type: 'object', desc: 'return 返回的完整字典（固定）' },
+  { name: 'success', type: 'boolean', desc: '是否执行成功（固定）' },
+  { name: 'error', type: 'string', desc: '错误信息（固定）' },
+  { name: 'stdout', type: 'string', desc: '标准输出日志（固定）' },
+  { name: 'duration_ms', type: 'number', desc: '执行耗时（毫秒，固定）' },
+]
 // 常见固定输出字段的说明（用于 hover 提示）
 const FIELD_DESC = {
   answer: '完整回答文本',
@@ -96,7 +107,7 @@ function outputFieldsOf(nodeLike) {
     ? [...cfg.output_fields]
     : [...(OUTPUT_FIELDS_DEFAULT[t] || [])]
   const struct = cfg.structured_outputs
-  if ((t === 'agent' || t === 'llm') && Array.isArray(struct)) {
+  if ((t === 'agent' || t === 'llm' || t === 'code') && Array.isArray(struct)) {
     const structNames = struct.map(s => s?.name).filter(Boolean)
     fields = fields.filter(f => fixed.includes(f) || structNames.includes(f))
     for (const n of structNames) if (!fields.includes(n)) fields.push(n)
@@ -110,7 +121,7 @@ function fieldDesc(nodeLike, field) {
   const cfg = nodeLike.data?.config ?? nodeLike.config ?? {}
   const t = nodeLike.type
   // 配置了结构化输出的节点：自定义字段以 description 为准
-  if ((t === 'agent' || t === 'llm') && Array.isArray(cfg.structured_outputs)) {
+  if ((t === 'agent' || t === 'llm' || t === 'code') && Array.isArray(cfg.structured_outputs)) {
     const s = cfg.structured_outputs.find(s => s.name === field)
     if (s?.description) return s.description
   }
@@ -678,6 +689,7 @@ function setJson(field, text) {
   try { selectedNode.value.data.config[field] = JSON.parse(text) } catch {}
 }
 function varRef(id, field) { return `{{${id}.${field}}}` }
+const varRefPlaceholder = '{{节点.字段}}'
 function varPyRef(id, field) { return `var("${id}", "${field}")` }
 function onVarDragStart(ev, id, field) {
   ev.dataTransfer.setData('text/plain', varPyRef(id, field))
@@ -785,7 +797,7 @@ function validateVarRefs() {
 async function save() {
   if (!wfName.value.trim()) { toast.error('名称不能为空'); return }
   // 保存前先同步一次结构化输出字段到 output_fields，避免运行/保存时遗漏
-  if (selectedNode.value && (selectedNode.value.type === 'agent' || selectedNode.value.type === 'llm')) {
+  if (selectedNode.value && (selectedNode.value.type === 'agent' || selectedNode.value.type === 'llm' || selectedNode.value.type === 'code')) {
     flushStructRows()
   }
   if (!validateStructRows()) return
@@ -969,7 +981,7 @@ watch(selectedNodeId, (id) => {
     const n = nodes.value.find(x => x.id === id)
     if (n?.type === 'service') loadSvc(n.data.config)
     if (n?.type === 'end') syncEndRows()
-    if (n?.type === 'agent' || n?.type === 'llm') { syncStructRows() }
+    if (n?.type === 'agent' || n?.type === 'llm' || n?.type === 'code') { syncStructRows() }
   }
 })
 
@@ -1071,7 +1083,7 @@ function flushStructRows() {
     ...cfg.structured_outputs.map(s => s.name).filter(n => !cfg.output_fields.includes(n) && !fixed.includes(n)),
   ]
 }
-// 保存前校验：结构化输出里字段名填了但说明为空 → 提示（说明是大模型识别字段的关键）
+// 保存前校验：agent/llm 节点结构化输出里字段名填了但说明为空 → 提示（说明是大模型识别字段的关键）
 function validateStructRows() {
   for (const n of nodes.value) {
     if (n.type !== 'agent' && n.type !== 'llm') continue
@@ -1368,7 +1380,7 @@ watch(nowTick, () => {
               </div>
 
               <!-- 输出变量：固定字段（只读，点击复制；配置了结构化输出的节点在结构化输出表中展示，不重复显示） -->
-              <div class="field" v-if="selectedType !== 'agent' && selectedType !== 'llm'">
+              <div class="field" v-if="selectedType !== 'agent' && selectedType !== 'llm' && selectedType !== 'code'">
                 <label>输出变量（🔒 固定，点击复制）</label>
                 <div class="var-chips" v-if="displayOutputFields(selectedNode).length">
                   <span
@@ -1384,17 +1396,17 @@ watch(nowTick, () => {
               </div>
 
               <!-- 结构化输出：固定字段锁定行 + 自定义字段行 -->
-              <div class="field" v-if="selectedType === 'agent' || selectedType === 'llm'">
-                <label>结构化输出（🔒 固定始终输出；自定义字段由大模型根据「说明」生成，下游引用 <code v-pre>{{节点.字段}}</code>）</label>
+              <div class="field" v-if="selectedType === 'agent' || selectedType === 'llm' || selectedType === 'code'">
+                <label>{{ selectedType === 'code' ? '输出变量（🔒 固定始终输出；自定义字段对应 return 字典里的键，下游引用 ' + varRefPlaceholder + '）' : '结构化输出（🔒 固定始终输出；自定义字段由大模型根据「说明」生成，下游引用 ' + varRefPlaceholder + '）' }}</label>
                 <div class="struct-table">
                   <div class="st-head">
                     <span class="st-col st-col-name">字段名</span>
                     <span class="st-col st-col-type">类型</span>
-                    <span class="st-col st-col-desc">说明（必填，供大模型识别）</span>
+                    <span class="st-col st-col-desc">说明</span>
                     <span class="st-col st-col-op"></span>
                   </div>
                   <!-- 固定字段：锁定行（不可编辑/删除） -->
-                  <div v-for="f in (selectedType === 'agent' ? FIXED_STRUCT_FIELDS : FIXED_STRUCT_FIELDS_LLM)" :key="f.name" class="end-row struct-row struct-row-fixed">
+                  <div v-for="f in (selectedType === 'agent' ? FIXED_STRUCT_FIELDS : selectedType === 'code' ? FIXED_STRUCT_FIELDS_CODE : FIXED_STRUCT_FIELDS_LLM)" :key="f.name" class="end-row struct-row struct-row-fixed">
                     <span class="st-col st-col-name st-lock">🔒 {{ f.name }}</span>
                     <span class="st-col st-col-type st-lock">{{ f.type }}</span>
                     <span class="st-col st-col-desc st-lock">{{ f.desc }}</span>
@@ -1409,7 +1421,7 @@ watch(nowTick, () => {
                       <option value="boolean">boolean</option>
                       <option value="array">array</option>
                     </select>
-                    <input type="text" v-model="row.description" placeholder="如 奥雷里亚诺的个数" class="st-col st-col-desc" @change="flushStructRows">
+                    <input type="text" v-model="row.description" :placeholder="selectedType === 'code' ? '如 电池容量' : '如 奥雷里亚诺的个数'" class="st-col st-col-desc" @change="flushStructRows">
                     <button type="button" class="btn sm st-col st-col-op" @click="structRows.splice(ri, 1); flushStructRows()">×</button>
                   </div>
                   <button type="button" class="btn sm" @click="structRows.push({ name: '', type: 'string', description: '' }); flushStructRows()">＋ 添加字段</button>

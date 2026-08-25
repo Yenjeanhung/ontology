@@ -664,13 +664,20 @@ def _project_output(node: dict, result) -> dict:
     if not isinstance(result, dict):
         return result
     keep = set(fields or []) | FIXED_OUTPUTS.get(node.get("type"), set())
-    # agent / llm 节点：structured_outputs 里的字段名强制保留，确保下游结束节点能拿到自定义输出
-    if node.get("type") in ("agent", "llm"):
+    # agent / llm / code 节点：structured_outputs 里的字段名强制保留，确保下游结束节点能拿到自定义输出
+    if node.get("type") in ("agent", "llm", "code"):
         for so in cfg.get("structured_outputs") or []:
             name = so.get("name") if isinstance(so, dict) else so
             if name:
                 keep.add(name)
     projected = {k: result[k] for k in keep if k in result}
+    # 代码节点：自定义字段值实际在 result["data"] 里，需要平铺到顶层供下游引用
+    if node.get("type") == "code":
+        data = result.get("data") if isinstance(result, dict) else None
+        if isinstance(data, dict):
+            for name in keep:
+                if name in data and name not in projected:
+                    projected[name] = data[name]
     # 声明的键全都不在结果里（用户随便写的名字）→ 保留全部，避免下游拿空对象
     return projected if projected else result
 
@@ -737,9 +744,11 @@ def _summarize(node: dict, result) -> str:
         return f"判断结果：{bool((result or {}).get('result'))}"
     if t == "code":
         r = result or {}
-        if r.get("success"):
-            return "代码执行完成"
-        return f"代码执行失败：{_short(r.get('error') or '未知错误')}"
+        if not r.get("success"):
+            return f"代码执行失败：{_short(r.get('error') or '未知错误')}"
+        struct_count = len([k for k in r if k not in FIXED_OUTPUTS.get("code", set())])
+        extra = f"，{struct_count} 个自定义输出" if struct_count else ""
+        return f"代码执行完成{extra}"
     return _short(result)
 
 
@@ -887,18 +896,18 @@ def _make_node_fn(rt: _Runtime, node: dict):
             result = task.result()
             dur = int((time.monotonic() - t0) * 1000)
             projected = _project_output(node, result)
-            if isinstance(result, dict):
+            if isinstance(result, dict) and node.get("type") in ("agent", "llm"):
                 result.setdefault("reasoning", "".join(reasoning_accumulated))
             rt.node_states[nid] = {
-                "status": "succeeded", "output": result, "duration_ms": dur,
-                "summary": _summarize(node, result), "title": title,
+                "status": "succeeded", "output": projected, "duration_ms": dur,
+                "summary": _summarize(node, projected), "title": title,
             }
             logger.info("[run %s] 节点完成 %s (%s) %dms", rt.run_id, nid, title, dur)
             rt.emit({
                 "type": "node_finished", "node_id": nid, "title": title,
-                "summary": _summarize(node, result),
+                "summary": _summarize(node, projected),
                 "duration_ms": dur,
-                "output": _truncate_output(result),
+                "output": _truncate_output(projected),
             })
             return {"outputs": {nid: projected}}
         except Exception as e:
