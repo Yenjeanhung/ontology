@@ -24,6 +24,20 @@ class VectorStoreAdapter(ABC):
     def delete_collection(self, kb_id: str):
         raise NotImplementedError
 
+    def list_collections(self) -> list[str]:
+        """列出当前向量库下全部 collection（KB）名称。"""
+        return []
+
+    def query_collection(
+        self,
+        kb_id: str,
+        query_text: str,
+        embeddings: Embeddings,
+        top_k: int = 5,
+    ) -> list[dict]:
+        """对指定 collection 执行向量相似度检索，返回文档列表。"""
+        raise NotImplementedError
+
     def health_check(self) -> tuple[bool, str, dict]:
         """连通性检测。返回 (ok, message, extra)。"""
         return True, "not implemented", {}
@@ -78,6 +92,54 @@ class ChromaAdapter(VectorStoreAdapter):
             }
         except Exception as e:
             return False, f"connection failed: {e}", {}
+
+    def list_collections(self) -> list[str]:
+        import chromadb
+
+        client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+        collections = client.list_collections()
+        # chromadb 新版本返回 Collection 对象，兼容旧版本字符串
+        return [getattr(c, "name", c) for c in collections]
+
+    def query_collection(
+        self,
+        kb_id: str,
+        query_text: str,
+        embeddings: Embeddings,
+        top_k: int = 5,
+    ) -> list[dict]:
+        import chromadb
+
+        client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+        collection = client.get_collection(kb_id)
+        # 使用与写入一致的 cosine 距离空间
+        query_embedding = embeddings.embed_query(query_text)
+        resp = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+        documents = (resp.get("documents") or [[]])[0]
+        metadatas = (resp.get("metadatas") or [[]])[0]
+        distances = (resp.get("distances") or [[]])[0]
+
+        results = []
+        for idx in range(len(documents)):
+            metadata = metadatas[idx] if idx < len(metadatas) else {}
+            # chroma 使用 cosine 距离，转成相似度分数（0~1，越大越相关）
+            distance = distances[idx] if idx < len(distances) else None
+            score = None
+            if distance is not None:
+                score = round(max(0.0, 1.0 - float(distance)), 4)
+            results.append(
+                {
+                    "content": documents[idx] or "",
+                    "metadata": metadata,
+                    "source": metadata.get("source") or metadata.get("file") or "",
+                    "score": score,
+                }
+            )
+        return results
 
     def enrich_index_records(self, kb_id: str, records: list[dict]) -> list[dict]:
         if not records:
@@ -192,6 +254,42 @@ class MilvusAdapter(VectorStoreAdapter):
         except Exception as e:
             return False, f"connection failed: {e}", {}
 
+    def list_collections(self) -> list[str]:
+        from pymilvus import connections, utility
+
+        connections.connect(
+            alias="monitor_list",
+            host=settings.MILVUS_HOST,
+            port=settings.MILVUS_PORT,
+        )
+        try:
+            return list(utility.list_collections(using="monitor_list"))
+        finally:
+            try:
+                connections.disconnect("monitor_list")
+            except Exception:
+                pass
+
+    def query_collection(
+        self,
+        kb_id: str,
+        query_text: str,
+        embeddings: Embeddings,
+        top_k: int = 5,
+    ) -> list[dict]:
+        store = self.create_store(kb_id, embeddings)
+        docs = store.similarity_search(query_text, k=top_k)
+        return [
+            {
+                "content": doc.page_content,
+                "metadata": doc.metadata,
+                "source": doc.metadata.get("source") or doc.metadata.get("file") or "",
+                # Milvus 经 langchain 不暴露距离分数，置 None
+                "score": None,
+            }
+            for doc in docs
+        ]
+
 
 def _get_adapter() -> VectorStoreAdapter:
     if settings.VECTOR_STORE_PROVIDER == "chroma":
@@ -228,3 +326,18 @@ def get_vector_store_provider_name() -> str:
 def health_check() -> tuple[bool, str, dict]:
     """向量库连通性检测。返回 (ok, message, extra)。"""
     return _get_adapter().health_check()
+
+
+def list_collections() -> list[str]:
+    """列出当前向量库下全部 collection/kb 名称。"""
+    return _get_adapter().list_collections()
+
+
+def query_collection(
+    kb_id: str,
+    query_text: str,
+    embeddings: Embeddings,
+    top_k: int = 5,
+) -> list[dict]:
+    """对指定 collection 执行向量相似度检索。"""
+    return _get_adapter().query_collection(kb_id, query_text, embeddings, top_k)

@@ -4,7 +4,9 @@ import {
   connectMonitorStream,
   fetchDatabaseSchemas,
   fetchMonitorOverview,
+  fetchVectorStoreSchemas,
   runDatabaseQuery,
+  runVectorStoreQuery,
   streamMonitorLlm,
   triggerMonitorCheck,
 } from '../../api/monitor'
@@ -36,6 +38,7 @@ const llmError = ref('')
 const dialogCompRef = ref(null)
 const isLlmDialog = computed(() => dialogKey.value === 'llm')
 const isDbDialog = computed(() => dialogKey.value === 'database')
+const isVectorStoreDialog = computed(() => dialogKey.value === 'vector_store')
 
 const CATEGORIES = [
   { key: 'data_store', label: '数据存储' },
@@ -98,6 +101,10 @@ function openTest(comp) {
   if (comp.key === 'database') {
     loadSchemas()
   }
+  // 向量库弹窗：进入即拉取 collection 列表
+  if (comp.key === 'vector_store') {
+    loadVectorStoreSchemas()
+  }
 }
 
 // 关系数据库手动测试状态
@@ -158,8 +165,73 @@ async function runDbQuery() {
   }
 }
 
+// 向量数据库手动测试状态
+const vsCollections = ref([])
+const vsSchemasLoading = ref(false)
+const vsSchemasError = ref('')
+const vsSelectedCollection = ref('')
+const vsQuery = ref('介绍一下')
+const vsTopK = ref(5)
+const vsResult = ref(null)
+const vsQueryLoading = ref(false)
+const vsQueryError = ref('')
+
+async function loadVectorStoreSchemas() {
+  vsSchemasLoading.value = true
+  vsSchemasError.value = ''
+  try {
+    const data = await fetchVectorStoreSchemas()
+    if (data.error) {
+      vsSchemasError.value = data.error
+      vsCollections.value = []
+    } else {
+      vsCollections.value = data.collections || []
+      if (vsCollections.value.length) vsSelectedCollection.value = vsCollections.value[0].name
+    }
+  } catch (e) {
+    vsSchemasError.value = e.message || '获取 collection 失败'
+  } finally {
+    vsSchemasLoading.value = false
+  }
+}
+
+function onVectorCollectionSelect(name) {
+  vsSelectedCollection.value = name
+  vsResult.value = null
+  vsQueryError.value = ''
+}
+
+async function runVectorQuery() {
+  if (vsQueryLoading.value || !vsSelectedCollection.value) return
+  vsQueryLoading.value = true
+  vsQueryError.value = ''
+  vsResult.value = null
+  try {
+    const data = await runVectorStoreQuery({
+      name: vsSelectedCollection.value,
+      query: vsQuery.value,
+      top_k: Number(vsTopK.value) || 5,
+    })
+    if (data.error) {
+      vsQueryError.value = data.error
+    } else {
+      vsResult.value = data
+    }
+  } catch (e) {
+    vsQueryError.value = e.message || '检索失败'
+  } finally {
+    vsQueryLoading.value = false
+  }
+}
+
 function closeDialog() {
   dialogVisible.value = false
+}
+
+function scoreClass(score) {
+  if (score >= 0.7) return 'high'
+  if (score >= 0.4) return 'mid'
+  return 'low'
 }
 
 async function runComponentTest() {
@@ -268,7 +340,11 @@ onBeforeUnmount(() => {
               <h3>
                 <span v-if="dialogCompRef">{{ dialogCompRef.name }}</span>
                 <span v-else>组件测试</span>
-                <span class="dlg-sub">{{ isLlmDialog ? '流式调用测试' : (isDbDialog ? 'SQL 查询测试' : '手动连通性检测') }}</span>
+                <span class="dlg-sub">{{
+                  isLlmDialog ? '流式调用测试' :
+                  isDbDialog ? 'SQL 查询测试' :
+                  isVectorStoreDialog ? '语义检索测试' : '手动连通性检测'
+                }}</span>
               </h3>
               <button class="dlg-close" @click="closeDialog">&times;</button>
             </header>
@@ -363,6 +439,81 @@ onBeforeUnmount(() => {
                     </table>
                   </div>
                   <div v-else class="dlg-hint">无返回列（如 PRAGMA / 建表类语句）</div>
+                </div>
+              </div>
+            </template>
+
+            <!-- 向量数据库测试：选择 collection + 语义检索 -->
+            <template v-else-if="isVectorStoreDialog">
+              <div class="dlg-body">
+                <div class="dlg-field">
+                  <label>Collection</label>
+                  <select
+                    v-if="!vsSchemasLoading && vsCollections.length"
+                    v-model="vsSelectedCollection"
+                    class="dlg-select"
+                    @change="onVectorCollectionSelect(vsSelectedCollection)"
+                  >
+                    <option
+                      v-for="c in vsCollections"
+                      :key="c.name"
+                      :value="c.name"
+                    >
+                      {{ c.display_name || c.name }}
+                      <template v-if="c.display_name !== c.name">({{ c.name }})</template>
+                    </option>
+                  </select>
+                  <div v-else-if="vsSchemasLoading" class="dlg-hint">加载 collection 中…</div>
+                  <div v-else-if="vsSchemasError" class="dlg-error">获取失败：{{ vsSchemasError }}</div>
+                  <div v-else class="dlg-hint">无可用 collection</div>
+                </div>
+
+                <div class="dlg-field-row">
+                  <div class="dlg-field" style="flex:1">
+                    <label>Query（语义查询文本）</label>
+                    <textarea v-model="vsQuery" rows="2" class="dlg-sql" placeholder="输入查询文本…" />
+                  </div>
+                  <div class="dlg-field" style="width:100px">
+                    <label>Top K</label>
+                    <input v-model.number="vsTopK" type="number" min="1" max="20" class="dlg-input-num">
+                  </div>
+                </div>
+
+                <div class="dlg-actions">
+                  <button class="btn primary" :disabled="vsQueryLoading || !vsSelectedCollection" @click="runVectorQuery">
+                    <span v-if="vsQueryLoading" class="spinner" style="border-top-color:#fff" />
+                    {{ vsQueryLoading ? '检索中…' : '执行检索' }}
+                  </button>
+                </div>
+
+                <div v-if="vsQueryError" class="dlg-error">{{ vsQueryError }}</div>
+
+                <div v-if="vsResult" class="dlg-vector-result">
+                  <div class="dlg-res-row">
+                    <span class="dlg-res-k">命中数</span>
+                    <span class="dlg-res-v">{{ vsResult.row_count }}</span>
+                  </div>
+                  <div v-if="vsResult.results.length" class="dlg-vector-list">
+                    <div v-for="(doc, i) in vsResult.results" :key="i" class="dlg-vector-doc">
+                      <div class="dlg-vector-index">
+                        #{{ i + 1 }}
+                        <span v-if="doc.score !== null" class="dlg-vector-score" :class="scoreClass(doc.score)">
+                          {{ doc.score }}
+                        </span>
+                        <span v-else class="dlg-vector-score muted">N/A</span>
+                      </div>
+                      <div class="dlg-vector-content">
+                        <div class="dlg-vector-source" v-if="doc.source">
+                          来源：{{ doc.source }}
+                          <span v-if="doc.score !== null" class="dlg-vector-bar">
+                            <span class="dlg-vector-bar-fill" :style="{ width: (doc.score * 100) + '%' }" :class="scoreClass(doc.score)" />
+                          </span>
+                        </div>
+                        <div class="dlg-vector-text">{{ doc.content }}</div>
+                        <div class="dlg-vector-meta">{{ JSON.stringify(doc.metadata || {}) }}</div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </template>
@@ -514,6 +665,42 @@ onBeforeUnmount(() => {
 }
 .dlg-table th { background: var(--c-muted); color: var(--c-secondary); font-weight: 700; position: sticky; top: 0; }
 .dlg-table td { color: var(--c-fg); }
+
+.dlg-field-row { display: flex; gap: 12px; }
+.dlg-input-num {
+  width: 100%; background: var(--c-panel-elevated); color: var(--c-fg);
+  border: 1px solid var(--c-border); border-radius: var(--radius-sm);
+  padding: 8px 10px; font-size: 13px;
+}
+.dlg-vector-result { margin-top: 8px; }
+.dlg-vector-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.dlg-vector-doc {
+  display: flex; gap: 10px;
+  border: 1px solid var(--c-border); border-radius: var(--radius-sm);
+  background: var(--c-panel-elevated); padding: 12px;
+}
+.dlg-vector-index {
+  font-size: 12px; font-weight: 700; color: var(--c-primary);
+  min-width: 28px;
+}
+.dlg-vector-score {
+  margin-left: 6px; padding: 1px 6px; border-radius: 6px;
+  font-size: 11px; font-weight: 600; font-family: monospace;
+  background: #eceff3; color: var(--c-secondary);
+}
+.dlg-vector-score.high { background: #e6f7ed; color: #1a8a4f; }
+.dlg-vector-score.mid { background: #eef4ff; color: #2f6fed; }
+.dlg-vector-score.low { background: #fdecea; color: #d4380d; }
+.dlg-vector-score.muted { background: #f1f1f1; color: #aaa; }
+.dlg-vector-bar { display: inline-block; width: 70px; height: 6px; margin-left: 8px; border-radius: 4px; background: #eceff3; vertical-align: middle; overflow: hidden; }
+.dlg-vector-bar-fill { display: block; height: 100%; border-radius: 4px; background: #2f6fed; }
+.dlg-vector-bar-fill.high { background: #1a8a4f; }
+.dlg-vector-bar-fill.mid { background: #2f6fed; }
+.dlg-vector-bar-fill.low { background: #d4380d; }
+.dlg-vector-content { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.dlg-vector-source { font-size: 11px; color: var(--c-secondary); word-break: break-all; }
+.dlg-vector-text { font-size: 13px; line-height: 1.7; color: var(--c-fg); white-space: pre-wrap; word-break: break-word; }
+.dlg-vector-meta { font-size: 11px; color: var(--c-secondary); word-break: break-all; }
 .dlg-actions { display: flex; justify-content: flex-end; margin-bottom: 14px; }
 
 .dlg-output { display: flex; flex-direction: column; gap: 14px; }

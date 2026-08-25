@@ -50,6 +50,27 @@ export function connectMonitorStream({ onSnapshot, onHeartbeat, onError }) {
   }
 }
 
+// 向量数据库手动测试：列出全部 collection
+export async function fetchVectorStoreSchemas() {
+  const res = await fetch(`${API}/api/monitor/vector_store/schemas`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return await res.json()
+}
+
+// 向量数据库手动测试：执行语义检索
+export async function runVectorStoreQuery(payload) {
+  const res = await fetch(`${API}/api/monitor/vector_store/query`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || `HTTP ${res.status}`)
+  }
+  return await res.json()
+}
+
 // 关系数据库手动测试：列出全部 schema（库/表结构）
 export async function fetchDatabaseSchemas() {
   const res = await fetch(`${API}/api/monitor/database/schemas`, { method: 'POST' })

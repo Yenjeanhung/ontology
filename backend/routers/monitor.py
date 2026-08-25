@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from config import settings
 from database import async_session
 from services import monitor_service
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +228,69 @@ async def db_query(req: DbQueryRequest):
     except Exception as e:
         logger.warning("monitor db query failed: %s", e)
         return {"columns": [], "rows": [], "row_count": 0, "truncated": False, "error": str(e)}
+
+
+# ═══════════════════════ 向量数据库手动测试 ═══════════════════════
+
+
+class VectorQueryRequest(BaseModel):
+    """向量库手动测试：选择 collection 执行语义检索。"""
+    name: str
+    query: str = "介绍一下"
+    top_k: int = 5
+
+
+@router.post("/monitor/vector_store/schemas")
+async def vector_store_schemas():
+    """列出当前向量库下全部 collection，并关联 knowledge_bases 表显示中文名称。"""
+    from providers import vector_store
+
+    try:
+        names = vector_store.list_collections()
+    except Exception as e:
+        logger.warning("monitor vector_store schemas failed: %s", e)
+        return {"collections": [], "error": str(e)}
+
+    name_map = {}
+    try:
+        async with async_session() as db:
+            if names:
+                stmt = text(
+                    "SELECT id, name FROM knowledge_bases WHERE id IN :ids"
+                ).bindparams(bindparam("ids", expanding=True))
+                rows = await db.execute(stmt, {"ids": names})
+                for r in rows:
+                    name_map[r[0]] = r[1]
+    except Exception as e:
+        logger.warning("monitor kb name mapping failed: %s", e)
+
+    collections = []
+    for n in names:
+        kb_name = name_map.get(n)
+        collections.append(
+            {
+                "name": n,
+                "display_name": kb_name if kb_name else n,
+                "has_mapping": bool(kb_name),
+            }
+        )
+    return {"collections": collections, "error": None}
+
+
+@router.post("/monitor/vector_store/query")
+async def vector_store_query(req: VectorQueryRequest):
+    """在指定 collection 中执行向量语义检索。"""
+    from providers import embedding, vector_store
+
+    try:
+        embeddings = embedding.create_embeddings()
+        docs = vector_store.query_collection(
+            req.name, req.query, embeddings, top_k=min(req.top_k, 20)
+        )
+        return {"results": docs, "row_count": len(docs), "error": None}
+    except Exception as e:
+        logger.warning("monitor vector_store query failed: %s", e)
+        return {"results": [], "row_count": 0, "error": str(e)}
 
 
 @router.post("/monitor/llm/stream")
