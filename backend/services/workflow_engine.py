@@ -39,6 +39,7 @@ from services.service_runtime import execute_service
 from services.skill_service import SkillService
 
 _VAR_RE = re.compile(r"\{\{\s*([\w.\[\]-]+)\s*\}\}")
+_VAR_FUNC_RE = re.compile(r'var\(\s*"([^"]*)"(?:\s*,\s*"([^"]*)")?(?:\s*,\s*"([^"]*)")?\s*\)')
 _MISSING = object()
 
 
@@ -52,6 +53,21 @@ def _lookup(path: str, context: dict):
         else:
             return _MISSING
     return cur
+
+
+def _var(ctx: dict, node: str, field=None, default=_MISSING):
+    """安全读取上游节点输出，兼容 code/service 节点的 {data: {...}} 与 agent/llm 节点的顶层字段。"""
+    out = ctx.get(node, _MISSING)
+    if out is _MISSING:
+        return default
+    if field is None:
+        return out
+    if not isinstance(out, dict):
+        return default
+    target = out.get("data", out) if "data" in out else out
+    if not isinstance(target, dict):
+        return default
+    return target.get(field, default)
 
 
 def _strip_citations(text: str) -> str:
@@ -73,17 +89,38 @@ def _strip_citations_in_value(value):
 
 
 def render(value, context: dict):
-    """解析变量引用 {{node.field}}。整串单引用返回原值（保留类型），嵌入则 str 化。"""
+    """解析变量引用 {{node.field}} 与 var(\"node\", \"field\")。
+
+    整串单引用返回原值（保留类型），嵌入则 str 化；字段缺失时保留原表达式不动。
+    """
     if isinstance(value, str):
+        # 1) 完整字符串是 var(...) → 保留原类型返回
+        m = re.fullmatch(_VAR_FUNC_RE.pattern, value)
+        if m:
+            node, field = m.group(1), m.group(2)
+            v = _var(context, node, field, _MISSING)
+            return value if v is _MISSING else v
+
+        # 2) 完整字符串是 {{...}} → 保留原类型返回
         m = re.fullmatch(r"\{\{\s*([\w.\[\]-]+)\s*\}\}", value)
         if m:
             v = _lookup(m.group(1), context)
             return value if v is _MISSING else v
 
+        # 3) 文本中嵌入 var(...) → 字符串化替换
+        def _sub_var(mm):
+            node, field = mm.group(1), mm.group(2)
+            v = _var(context, node, field, _MISSING)
+            return mm.group(0) if v is _MISSING else str(v)
+
+        s = _VAR_FUNC_RE.sub(_sub_var, value)
+
+        # 4) 文本中嵌入 {{...}} → 字符串化替换
         def _sub(mm):
             v = _lookup(mm.group(1), context)
             return mm.group(0) if v is _MISSING else str(v)
-        return _VAR_RE.sub(_sub, value)
+
+        return _VAR_RE.sub(_sub, s)
     if isinstance(value, dict):
         return {k: render(v, context) for k, v in value.items()}
     if isinstance(value, list):
