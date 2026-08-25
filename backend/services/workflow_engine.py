@@ -249,7 +249,7 @@ async def _agent_chat_no_kb_stream(
     """未绑 KB 智能体的纯对话执行（流式），每收到一个 token 调用 on_token、on_reasoning。"""
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    from oag_service import build_system_prompt
+    from services.oag_service import build_system_prompt
 
     if on_step:
         on_step("调用大模型")
@@ -271,7 +271,7 @@ async def _agent_chat_no_kb_stream(
             if reasoning:
                 if not reasoning_seen:
                     reasoning_seen = True
-                    logger.debug("[agent %s] 首次收到反思内容（len=%d）", nid, len(reasoning))
+                    logger.debug("[agent] 首次收到反思内容（len=%d）", len(reasoning))
                 reasoning_parts.append(reasoning)
                 if on_reasoning:
                     on_reasoning(reasoning)
@@ -508,12 +508,90 @@ async def _exec_llm(cfg: dict, context: dict) -> dict:
         raise RuntimeError("尚未配置大模型，请先在「系统配置」中激活 LLM")
     system = (cfg.get("system_prompt") or "").strip()
     prompt_text = str(render(cfg.get("prompt_template", ""), context))
+    struct_fields = [f for f in (cfg.get("structured_outputs") or []) if isinstance(f, dict) and f.get("name")]
+    if struct_fields:
+        prompt_text += _build_structured_suffix(struct_fields)
     messages = []
     if system:
         messages.append(SystemMessage(content=system))
     messages.append(HumanMessage(content=prompt_text))
     resp = await llm.ainvoke(messages)
-    return {"text": chunk_text(resp)}
+    text = chunk_text(resp)
+    out = {"text": text}
+    if struct_fields:
+        out.update(_parse_structured(text, struct_fields))
+    return out
+
+
+async def _exec_llm_stream(
+    cfg: dict,
+    context: dict,
+    on_token=None,
+    on_step=None,
+    on_reasoning=None,
+) -> dict:
+    """大模型节点流式执行：与智能体节点一致的 token / reasoning 实时下发。
+
+    若当前模型不支持流式（astream 抛错或无 token），自动降级为 ainvoke，
+    并一次性下发完整结果，保证节点仍能正常结束。
+    """
+    if on_step:
+        on_step("调用大模型")
+    llm = create_llm()
+    if llm is None:
+        raise RuntimeError("尚未配置大模型，请先在「系统配置」中激活 LLM")
+    system = (cfg.get("system_prompt") or "").strip()
+    prompt_text = str(render(cfg.get("prompt_template", ""), context))
+    struct_fields = [f for f in (cfg.get("structured_outputs") or []) if isinstance(f, dict) and f.get("name")]
+    if struct_fields:
+        prompt_text += _build_structured_suffix(struct_fields)
+    messages = []
+    if system:
+        messages.append(SystemMessage(content=system))
+    messages.append(HumanMessage(content=prompt_text))
+
+    parts: list[str] = []
+    reasoning_parts: list[str] = []
+    token_count = 0
+    reasoning_seen = False
+    stream_ok = True
+    try:
+        async for chunk in llm.astream(messages):
+            content = chunk_text(chunk)
+            reasoning = extract_reasoning(chunk)
+            if reasoning:
+                if not reasoning_seen:
+                    reasoning_seen = True
+                    logger.debug("[llm] 首次收到反思内容（len=%d）", len(reasoning))
+                reasoning_parts.append(reasoning)
+                if on_reasoning:
+                    on_reasoning(reasoning)
+            if content:
+                token_count += 1
+                parts.append(content)
+                if on_token:
+                    on_token(content)
+    except Exception as e:
+        logger.warning("[llm] 流式调用失败，将降级为非流式：%s", e)
+        stream_ok = False
+
+    text = "".join(parts)
+    if not stream_ok or token_count == 0:
+        # 降级：非流式调用并一次性下发完整结果
+        resp = await llm.ainvoke(messages)
+        text = chunk_text(resp)
+        if on_token:
+            on_token(text)
+        r = extract_reasoning(resp)
+        if r and on_reasoning:
+            on_reasoning(r)
+
+    out = {"text": text}
+    if struct_fields:
+        if on_step:
+            on_step("解析结构化输出")
+        out.update(_parse_structured(text, struct_fields))
+    return out
 
 
 async def _exec_code(cfg: dict, context: dict) -> dict:
@@ -581,8 +659,8 @@ def _project_output(node: dict, result) -> dict:
     if not isinstance(result, dict):
         return result
     keep = set(fields or []) | FIXED_OUTPUTS.get(node.get("type"), set())
-    # agent 节点：structured_outputs 里的字段名强制保留，确保下游结束节点能拿到自定义输出
-    if node.get("type") == "agent":
+    # agent / llm 节点：structured_outputs 里的字段名强制保留，确保下游结束节点能拿到自定义输出
+    if node.get("type") in ("agent", "llm"):
         for so in cfg.get("structured_outputs") or []:
             name = so.get("name") if isinstance(so, dict) else so
             if name:
@@ -645,8 +723,11 @@ def _summarize(node: dict, result) -> str:
             return f"执行成功（耗时 {r.get('duration_ms')}ms）"
         return f"执行失败：{_short(r.get('error') or '未知错误')}"
     if t == "llm":
-        text = (result or {}).get("text") or ""
-        return f"已生成文本（{len(text)} 字符）"
+        r = result or {}
+        text = r.get("text") or ""
+        struct_count = len([k for k in r if k != "text" and k != "reasoning"])
+        extra = f"，{struct_count} 个结构化字段" if struct_count else ""
+        return f"已生成文本（{len(text)} 字符{extra}）"
     if t == "condition":
         return f"判断结果：{bool((result or {}).get('result'))}"
     if t == "code":
@@ -741,6 +822,9 @@ def _make_node_fn(rt: _Runtime, node: dict):
         def _on_step(step: str):
             _emit_progress({"step": step})
 
+        # 智能体固定输出 answer，大模型节点固定输出 text；流式进度统一用 outputKey 构造
+        output_key = "answer" if node.get("type") == "agent" else "text"
+
         def _on_token(token: str):
             nonlocal first_token_emitted, last_progress_emit
             accumulated.append(token)
@@ -750,12 +834,12 @@ def _make_node_fn(rt: _Runtime, node: dict):
                 return
             last_progress_emit = now
             _emit_progress({
-                "output": {"answer": "".join(accumulated), "reasoning": "".join(reasoning_accumulated)},
+                "output": {output_key: "".join(accumulated), "reasoning": "".join(reasoning_accumulated)},
                 "step": "生成中..." if accumulated else "调用大模型",
             })
             if not first_token_emitted:
                 first_token_emitted = True
-                logger.info("[run %s] 智能体节点 %s 首次 token 已下发", rt.run_id, nid)
+                logger.info("[run %s] %s节点 %s 首次 token 已下发", rt.run_id, node.get("type"), nid)
 
         def _on_reasoning(token: str):
             nonlocal last_progress_emit
@@ -765,13 +849,16 @@ def _make_node_fn(rt: _Runtime, node: dict):
                 return
             last_progress_emit = now
             _emit_progress({
-                "output": {"answer": "".join(accumulated), "reasoning": "".join(reasoning_accumulated)},
+                "output": {output_key: "".join(accumulated), "reasoning": "".join(reasoning_accumulated)},
                 "step": "思考中...",
             })
 
         if node.get("type") == "agent":
             logger.info("[run %s] 使用流式执行智能体节点 %s", rt.run_id, nid)
             task = asyncio.create_task(_exec_agent_stream(node.get("config") or {}, context, rt.db, _on_token, _on_step, _on_reasoning))
+        elif node.get("type") == "llm":
+            logger.info("[run %s] 使用流式执行大模型节点 %s", rt.run_id, nid)
+            task = asyncio.create_task(_exec_llm_stream(node.get("config") or {}, context, _on_token, _on_step, _on_reasoning))
         else:
             task = asyncio.create_task(_execute_node(node, context, rt.db))
         try:

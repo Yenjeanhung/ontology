@@ -76,10 +76,6 @@ def validate_definition(definition: dict) -> str | None:
         if src_type == "end":
             return "「结束」节点之后不能再连接其他节点"
 
-    for n in nodes:
-        if n.get("type") != "condition" and out_degree.get(n["id"], 0) > 1:
-            return f"非条件节点「{n.get('title') or n['id']}」最多只能有一个出边"
-
     if _has_cycle(nodes, edges):
         return "工作流存在循环，不能包含环"
     return None

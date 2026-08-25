@@ -562,7 +562,7 @@ async function copyOutputJson() {
 .wf-out-kv b { font-weight: 600; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px; }
 .wf-out-raw { font-size: 10px; color: var(--c-secondary); }
 
-.wf-handle { width: 9px; height: 9px; border: 2px solid var(--c-border-strong, #d8cdbb); background: var(--c-panel); }
+.wf-handle { width: 14px; height: 14px; border: 2px solid var(--c-border-strong, #d8cdbb); background: var(--c-panel); }
 .wf-node:hover .wf-handle { border-color: var(--c-accent); }
 .wf-handle-true { border-color: var(--c-success) !important; }
 .wf-handle-false { border-color: var(--c-danger) !important; }

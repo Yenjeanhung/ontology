@@ -30,7 +30,7 @@ const DEFAULT_CONFIG = {
   end: { outputs: [] },
   agent: { agent_id: '', kb_id: '', skill_ids: [], query_template: '{{start.input}}' },
   service: { kb_id: '', entity_id: '', service_id: '', params: {} },
-  llm: { system_prompt: '', prompt_template: '' },
+  llm: { system_prompt: '', prompt_template: '', structured_outputs: [] },
   condition: { operator: '==', left: '', right: '' },
   code: { code_text: 'def run(params, entity, context):\n    return {"data": params}', params: {} },
 }
@@ -63,11 +63,14 @@ function groupedOutputFieldsOf(nodeLike) {
   return { fixed, custom }
 }
 
-// 结构化输出表顶部展示的固定字段（锁定行，仅智能体节点用）
+// 结构化输出表顶部展示的固定字段（锁定行）
 const FIXED_STRUCT_FIELDS = [
   { name: 'answer', type: 'string', desc: '完整回答文本（固定）' },
   { name: 'chunks', type: 'array', desc: '引用来源分片（固定）' },
   { name: 'entities', type: 'array', desc: '识别实体（固定）' },
+]
+const FIXED_STRUCT_FIELDS_LLM = [
+  { name: 'text', type: 'string', desc: '模型生成文本（固定）' },
 ]
 // 常见固定输出字段的说明（用于 hover 提示）
 const FIELD_DESC = {
@@ -83,8 +86,8 @@ const FIELD_DESC = {
   text: '模型生成文本',
   result: '判断结果',
 }
-// 节点声明输出变量 = 固定输出 ∪ output_fields ∪ 结构化输出自定义字段（智能体）
-// 智能体节点：非固定字段以 structured_outputs 为准（output_fields 里的历史残留会被剔除）
+// 节点声明输出变量 = 固定输出 ∪ output_fields ∪ 结构化输出自定义字段
+// 配置了结构化输出的节点：非固定字段以 structured_outputs 为准（output_fields 里的历史残留会被剔除）
 function outputFieldsOf(nodeLike) {
   const t = nodeLike.type
   const cfg = nodeLike.data?.config ?? nodeLike.config ?? {}
@@ -93,7 +96,7 @@ function outputFieldsOf(nodeLike) {
     ? [...cfg.output_fields]
     : [...(OUTPUT_FIELDS_DEFAULT[t] || [])]
   const struct = cfg.structured_outputs
-  if (t === 'agent' && Array.isArray(struct)) {
+  if ((t === 'agent' || t === 'llm') && Array.isArray(struct)) {
     const structNames = struct.map(s => s?.name).filter(Boolean)
     fields = fields.filter(f => fixed.includes(f) || structNames.includes(f))
     for (const n of structNames) if (!fields.includes(n)) fields.push(n)
@@ -106,8 +109,8 @@ function outputFieldsOf(nodeLike) {
 function fieldDesc(nodeLike, field) {
   const cfg = nodeLike.data?.config ?? nodeLike.config ?? {}
   const t = nodeLike.type
-  // 智能体结构化输出自定义字段：以 description 为准
-  if (t === 'agent' && Array.isArray(cfg.structured_outputs)) {
+  // 配置了结构化输出的节点：自定义字段以 description 为准
+  if ((t === 'agent' || t === 'llm') && Array.isArray(cfg.structured_outputs)) {
     const s = cfg.structured_outputs.find(s => s.name === field)
     if (s?.description) return s.description
   }
@@ -776,7 +779,7 @@ function validateVarRefs() {
 async function save() {
   if (!wfName.value.trim()) { toast.error('名称不能为空'); return }
   // 保存前先同步一次结构化输出字段到 output_fields，避免运行/保存时遗漏
-  if (selectedNode.value && selectedNode.value.type === 'agent') {
+  if (selectedNode.value && (selectedNode.value.type === 'agent' || selectedNode.value.type === 'llm')) {
     flushStructRows()
   }
   if (!validateStructRows()) return
@@ -894,15 +897,31 @@ async function startRun() {
         // 输出注入节点 data：卡片上直接展示 answer 摘要 + 自定义字段（count 等）
         const n = nodes.value.find(x => x.id === d.node_id)
         if (n) n.data.output = d.output
-        logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'succeeded', summary: d.summary, output: d.output, duration_ms: d.duration_ms })
+        // 把之前 running 的日志行更新为 succeeded，避免任务结束后仍显示闪烁的运行态
+        const line = [...logs.value].reverse().find(l => l.kind === 'node' && l.node_id === d.node_id && l.status === 'running')
+        if (line) {
+          Object.assign(line, { status: 'succeeded', summary: d.summary, output: d.output, duration_ms: d.duration_ms })
+        } else {
+          logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'succeeded', summary: d.summary, output: d.output, duration_ms: d.duration_ms })
+        }
       },
       onNodeFailed(d) {
         setStatus(d.node_id, 'failed', d.duration_ms)
-        logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'failed', error: d.error, duration_ms: d.duration_ms })
+        const line = [...logs.value].reverse().find(l => l.kind === 'node' && l.node_id === d.node_id && l.status === 'running')
+        if (line) {
+          Object.assign(line, { status: 'failed', error: d.error, duration_ms: d.duration_ms })
+        } else {
+          logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'failed', error: d.error, duration_ms: d.duration_ms })
+        }
       },
       onNodeSkipped(d) {
         setStatus(d.node_id, 'skipped')
-        logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'skipped' })
+        const line = [...logs.value].reverse().find(l => l.kind === 'node' && l.node_id === d.node_id && l.status === 'running')
+        if (line) {
+          Object.assign(line, { status: 'skipped' })
+        } else {
+          logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'skipped' })
+        }
       },
       onFinished(d) {
         logs.value.push({ kind: 'meta', text: `工作流${d.status === 'failed' ? '失败' : '完成'} · 耗时 ${d.duration_ms}ms` })
@@ -944,7 +963,7 @@ watch(selectedNodeId, (id) => {
     const n = nodes.value.find(x => x.id === id)
     if (n?.type === 'service') loadSvc(n.data.config)
     if (n?.type === 'end') syncEndRows()
-    if (n?.type === 'agent') { syncStructRows() }
+    if (n?.type === 'agent' || n?.type === 'llm') { syncStructRows() }
   }
 })
 
@@ -1049,7 +1068,7 @@ function flushStructRows() {
 // 保存前校验：结构化输出里字段名填了但说明为空 → 提示（说明是大模型识别字段的关键）
 function validateStructRows() {
   for (const n of nodes.value) {
-    if (n.type !== 'agent') continue
+    if (n.type !== 'agent' && n.type !== 'llm') continue
     for (const f of n.data.config?.structured_outputs || []) {
       if (f.name && !f.description) {
         toast.error(`节点「${n.data.title || n.id}」结构化输出字段 ${f.name} 缺少说明（大模型靠它识别输出）`)
@@ -1101,6 +1120,7 @@ watch(nowTick, () => {
           :node-types="nodeTypes"
           :min-zoom="0.3"
           :max-zoom="1.8"
+          :connection-radius="80"
           @node-click="onNodeClick"
           @pane-click="onPaneClick"
           @node-context-menu="onNodeContextMenu"
@@ -1255,6 +1275,7 @@ watch(nowTick, () => {
               </div>
               <div class="field">
                 <label>Prompt 模板</label>
+                <p class="field-hint">最终发送给大模型的用户消息，支持插入上游节点变量（<code v-pre>{{节点.字段}}</code>）。留空则仅发送 System Prompt。</p>
                 <textarea v-model="selectedConfig.prompt_template" rows="4"></textarea>
                 <span class="var-btn" @click="insertVar('prompt_template')">⊕ 插入变量</span>
               </div>
@@ -1333,18 +1354,13 @@ watch(nowTick, () => {
                 <label>参数（JSON，可用变量）</label>
                 <textarea :value="jsonText('params')" @input="setJson('params', $event.target.value)" rows="4" placeholder='{"ticker":"HUAWEI"}'></textarea>
               </div>
-              <div class="field" v-if="selectedType === 'llm'">
-                <label>Prompt 模板</label>
-                <textarea v-model="selectedConfig.prompt_template" rows="4"></textarea>
-                <span class="var-btn" @click="insertVar('prompt_template')">⊕ 插入变量</span>
-              </div>
               <div class="field" v-if="selectedType === 'code'">
                 <label>参数（JSON，可用变量）</label>
                 <textarea :value="jsonText('params')" @input="setJson('params', $event.target.value)" rows="3" placeholder='{"x":"{{agent.answer}}"}'></textarea>
               </div>
 
-              <!-- 输出变量：固定字段（只读，点击复制；智能体节点在结构化输出表中展示，不重复显示） -->
-              <div class="field" v-if="selectedType !== 'agent'">
+              <!-- 输出变量：固定字段（只读，点击复制；配置了结构化输出的节点在结构化输出表中展示，不重复显示） -->
+              <div class="field" v-if="selectedType !== 'agent' && selectedType !== 'llm'">
                 <label>输出变量（🔒 固定，点击复制）</label>
                 <div class="var-chips" v-if="displayOutputFields(selectedNode).length">
                   <span
@@ -1359,8 +1375,8 @@ watch(nowTick, () => {
                 </div>
               </div>
 
-              <!-- 智能体：结构化输出（固定字段锁定行 + 自定义字段行） -->
-              <div class="field" v-if="selectedType === 'agent'">
+              <!-- 结构化输出：固定字段锁定行 + 自定义字段行 -->
+              <div class="field" v-if="selectedType === 'agent' || selectedType === 'llm'">
                 <label>结构化输出（🔒 固定始终输出；自定义字段由大模型根据「说明」生成，下游引用 <code v-pre>{{节点.字段}}</code>）</label>
                 <div class="struct-table">
                   <div class="st-head">
@@ -1370,7 +1386,7 @@ watch(nowTick, () => {
                     <span class="st-col st-col-op"></span>
                   </div>
                   <!-- 固定字段：锁定行（不可编辑/删除） -->
-                  <div v-for="f in FIXED_STRUCT_FIELDS" :key="f.name" class="end-row struct-row struct-row-fixed">
+                  <div v-for="f in (selectedType === 'agent' ? FIXED_STRUCT_FIELDS : FIXED_STRUCT_FIELDS_LLM)" :key="f.name" class="end-row struct-row struct-row-fixed">
                     <span class="st-col st-col-name st-lock">🔒 {{ f.name }}</span>
                     <span class="st-col st-col-type st-lock">{{ f.type }}</span>
                     <span class="st-col st-col-desc st-lock">{{ f.desc }}</span>
@@ -1569,15 +1585,17 @@ watch(nowTick, () => {
       </div>
     </div>
 
-    <!-- 变量说明悬浮提示（即时显示，替代原生 title） -->
-    <div
-      v-show="tooltip.visible"
-      class="var-tooltip"
-      :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }"
-    >
-      <div class="var-tooltip-title">{{ tooltip.title }}</div>
-      <div class="var-tooltip-desc">{{ tooltip.desc }}</div>
-    </div>
+    <!-- 变量说明悬浮提示（即时显示，替代原生 title；Teleport 到 body 避免被节点遮挡） -->
+    <Teleport to="body">
+      <div
+        v-show="tooltip.visible"
+        class="var-tooltip"
+        :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }"
+      >
+        <div class="var-tooltip-title">{{ tooltip.title }}</div>
+        <div class="var-tooltip-desc">{{ tooltip.desc }}</div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -1830,6 +1848,7 @@ watch(nowTick, () => {
 .field textarea { resize: vertical; min-height: 56px; line-height: 1.5; }
 .req { color: var(--c-danger); }
 .hint { font-size: 10.5px; color: var(--c-secondary); line-height: 1.5; opacity: .85; }
+.field-hint { font-size: 11px; color: var(--c-secondary); line-height: 1.5; margin: -6px 0 6px; }
 .var-btn { display: inline-flex; align-items: center; gap: 3px; margin-top: 5px; font-size: 11px; font-weight: 600; color: var(--c-accent); cursor: pointer; padding: 2px 8px; border: 1px dashed var(--c-accent); border-radius: 4px; width: fit-content; }
 .var-btn:hover { background: var(--c-accent-weak, rgba(161,98,7,.10)); }
 
