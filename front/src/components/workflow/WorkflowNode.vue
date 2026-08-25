@@ -161,6 +161,8 @@ const reasoningText = computed(() => {
   return typeof s === 'string' ? s : ''
 })
 
+const nodeRef = ref(null)
+
 // 完整输出浮层
 const outOpen = ref(false)
 const fixedPopExpanded = ref(false)
@@ -171,10 +173,29 @@ const customExpanded = ref(true)
 const copied = ref(false)
 const expandedPopKey = ref('')
 
+const popX = ref(0)
+const popY = ref(0)
+function updatePopPos() {
+  const nodeEl = nodeRef.value
+  if (!nodeEl) return
+  const rect = nodeEl.getBoundingClientRect()
+  popX.value = rect.left
+  popY.value = rect.bottom + 6
+}
+
 function togglePopKey(key) {
   expandedPopKey.value = expandedPopKey.value === key ? '' : key
 }
+
+watch(outOpen, (open) => {
+  if (open) updatePopPos()
+})
 let copiedTimer = null
+
+function isMultiLine(v) {
+  const full = fmtValPopFull(v)
+  return typeof full === 'string' && full.includes('\n')
+}
 
 // 弹窗用：固定输出分组（默认折叠），排除 answer/text/reasoning 避免重复展示
 const popFixedOuts = computed(() => {
@@ -182,7 +203,7 @@ const popFixedOuts = computed(() => {
   if (!out || typeof out !== 'object' || Array.isArray(out)) return []
   return Object.entries(out)
     .filter(([k]) => FIXED_KEYS.includes(k) && !k.startsWith('_') && !['answer', 'text', 'reasoning'].includes(k))
-    .map(([k, v]) => ({ k, v: fmtValPop(v) }))
+    .map(([k, v]) => ({ k, v: fmtValPop(v), full: fmtValPopFull(v), multiLine: isMultiLine(v) }))
 })
 
 // 弹窗用：自定义输出分组（默认展开，优先展示）
@@ -191,7 +212,7 @@ const popCustomOuts = computed(() => {
   if (!out || typeof out !== 'object' || Array.isArray(out)) return []
   return Object.entries(out)
     .filter(([k]) => !FIXED_KEYS.includes(k) && !k.startsWith('_') && (hasReasoning.value || k !== 'reasoning'))
-    .map(([k, v]) => ({ k, v: fmtValPop(v) }))
+    .map(([k, v]) => ({ k, v: fmtValPop(v), full: fmtValPopFull(v), multiLine: isMultiLine(v) }))
 })
 
 function fullOutputJson() {
@@ -223,7 +244,7 @@ async function copyOutputJson() {
 </script>
 
 <template>
-  <div class="wf-node" :class="[status, { selected, condition: isCondition }]" :style="{ '--nc': meta.color }">
+  <div ref="nodeRef" class="wf-node" :class="[status, { selected, condition: isCondition }]" :style="{ '--nc': meta.color }">
     <Handle type="target" :position="Position.Left" class="wf-handle" />
     <template v-if="isCondition">
       <Handle id="true" type="source" :position="Position.Right" class="wf-handle wf-handle-true" style="top: 34%" />
@@ -269,12 +290,13 @@ async function copyOutputJson() {
         <div v-else class="wf-out-raw" @click.stop="outOpen = !outOpen">✓ 已执行</div>
       </template>
 
-      <!-- 点击输出区弹出的完整输出浮层：自定义输出优先，固定输出默认折叠 -->
-      <div v-if="outOpen" class="wf-out-pop" @click.stop @mousedown.stop @pointerdown.stop @wheel.stop>
-        <div class="wf-pop-head">
-          <span>输出 · {{ title }}</span>
-          <span class="wf-pop-close" @click.stop="outOpen = false">×</span>
-        </div>
+      <!-- 点击输出区弹出的完整输出浮层：通过 Teleport 到 body 避免被其它节点遮挡 -->
+      <Teleport v-if="outOpen" to="body">
+        <div class="wf-out-pop" :style="{ left: popX + 'px', top: popY + 'px' }" @click.stop @mousedown.stop @pointerdown.stop @wheel.stop>
+          <div class="wf-pop-head">
+            <span>输出 · {{ title }}</span>
+            <span class="wf-pop-close" @click.stop="outOpen = false">×</span>
+          </div>
 
         <!-- 思考过程（模型反思/推理内容）-->
         <div v-if="reasoningText" class="wf-pop-section">
@@ -305,10 +327,13 @@ async function copyOutputJson() {
               <span class="wf-pop-k">{{ o.k }}</span>
               <span
                 class="wf-pop-v"
-                :class="{ 'wf-pop-v-expanded': expandedPopKey === 'custom:' + o.k }"
+                :class="{ 'wf-pop-v-expanded': expandedPopKey === 'custom:' + o.k, 'wf-pop-v-collapsed': expandedPopKey !== 'custom:' + o.k && o.multiLine }"
                 :title="expandedPopKey === 'custom:' + o.k ? '' : String(o.full)"
-                @dblclick.stop="togglePopKey('custom:' + o.k)"
-              >{{ expandedPopKey === 'custom:' + o.k ? o.full : o.v }}</span>
+                @dblclick.stop="o.multiLine && togglePopKey('custom:' + o.k)"
+              >
+                <span class="wf-pop-v-text">{{ expandedPopKey === 'custom:' + o.k ? o.full : o.v }}</span>
+                <i v-if="o.multiLine" class="wf-pop-fold-ico">{{ expandedPopKey === 'custom:' + o.k ? '▲' : '▼' }}</i>
+              </span>
             </div>
           </div>
         </div>
@@ -324,10 +349,13 @@ async function copyOutputJson() {
               <span class="wf-pop-k">{{ o.k }}</span>
               <span
                 class="wf-pop-v"
-                :class="{ 'wf-pop-v-expanded': expandedPopKey === 'fixed:' + o.k }"
+                :class="{ 'wf-pop-v-expanded': expandedPopKey === 'fixed:' + o.k, 'wf-pop-v-collapsed': expandedPopKey !== 'fixed:' + o.k && o.multiLine }"
                 :title="expandedPopKey === 'fixed:' + o.k ? '' : String(o.full)"
-                @dblclick.stop="togglePopKey('fixed:' + o.k)"
-              >{{ expandedPopKey === 'fixed:' + o.k ? o.full : o.v }}</span>
+                @dblclick.stop="o.multiLine && togglePopKey('fixed:' + o.k)"
+              >
+                <span class="wf-pop-v-text">{{ expandedPopKey === 'fixed:' + o.k ? o.full : o.v }}</span>
+                <i v-if="o.multiLine" class="wf-pop-fold-ico">{{ expandedPopKey === 'fixed:' + o.k ? '▲' : '▼' }}</i>
+              </span>
             </div>
           </div>
         </div>
@@ -345,7 +373,8 @@ async function copyOutputJson() {
             <pre class="wf-pop-pre">{{ fullOutputJson() }}</pre>
           </template>
         </div>
-      </div>
+        </div>
+      </Teleport>
     </div>
   </div>
 </template>
@@ -469,12 +498,12 @@ async function copyOutputJson() {
 
 /* 完整输出浮层：卡片下方弹出，主题化样式 */
 .wf-out-pop {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 30;
-  width: 420px; max-width: 80vw;
+  position: fixed; z-index: 1000;
+  width: 420px; max-width: 80vw; max-height: 70vh;
   background: var(--c-panel-elevated, var(--c-panel));
   border: 1px solid var(--c-border); border-radius: 10px;
   box-shadow: 0 12px 32px rgba(0,0,0,.18);
-  overflow: hidden;
+  overflow-x: hidden; overflow-y: auto;
   animation: wf-pop-in .12s ease-out;
 }
 @keyframes wf-pop-in {
@@ -530,22 +559,38 @@ async function copyOutputJson() {
   cursor: text; user-select: text;
 }
 .wf-pop-kv {
-  display: flex; align-items: flex-start; gap: 8px;
+  display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 8px;
   font-size: 10.5px; font-family: ui-monospace, monospace;
 }
 .wf-pop-k { flex-shrink: 0; color: var(--c-accent); font-weight: 700; }
-.wf-pop-v { color: var(--c-fg); word-break: break-all; }
+.wf-pop-v {
+  display: flex; align-items: flex-start; gap: 4px;
+  flex: 1 1 auto; min-width: 0;
+  color: var(--c-fg); overflow-wrap: anywhere;
+}
+.wf-pop-v-text { flex: 1 1 auto; min-width: 0; }
+.wf-pop-v-collapsed .wf-pop-v-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
 .wf-pop-v-expanded {
   display: block;
-  max-height: 200px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  user-select: text;
-  cursor: text;
   background: rgba(255,255,255,0.04);
   border-radius: 4px;
   padding: 4px 6px;
+}
+.wf-pop-v-expanded .wf-pop-v-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
+}
+.wf-pop-fold-ico {
+  flex-shrink: 0; color: var(--c-secondary); font-size: 9px;
+  font-style: normal; user-select: none; cursor: pointer;
 }
 .wf-pop-reasoning {
   margin: 0; padding: 10px; max-height: 260px; overflow-y: auto;
