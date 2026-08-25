@@ -87,6 +87,7 @@ const customOuts = computed(() => {
   return Object.entries(out)
     .filter(([k]) => !FIXED_KEYS.includes(k) && !k.startsWith('_') && (hasReasoning.value || k !== 'reasoning'))
     .map(([k, v]) => ({ k, v: fmtVal(v) }))
+    .filter(({ v }) => v != null && v !== '')
     .slice(0, 6)
 })
 
@@ -332,7 +333,6 @@ async function copyOutputJson() {
                 @dblclick.stop="o.multiLine && togglePopKey('custom:' + o.k)"
               >
                 <span class="wf-pop-v-text">{{ expandedPopKey === 'custom:' + o.k ? o.full : o.v }}</span>
-                <i v-if="o.multiLine" class="wf-pop-fold-ico">{{ expandedPopKey === 'custom:' + o.k ? '▲' : '▼' }}</i>
               </span>
             </div>
           </div>
@@ -354,7 +354,6 @@ async function copyOutputJson() {
                 @dblclick.stop="o.multiLine && togglePopKey('fixed:' + o.k)"
               >
                 <span class="wf-pop-v-text">{{ expandedPopKey === 'fixed:' + o.k ? o.full : o.v }}</span>
-                <i v-if="o.multiLine" class="wf-pop-fold-ico">{{ expandedPopKey === 'fixed:' + o.k ? '▲' : '▼' }}</i>
               </span>
             </div>
           </div>
@@ -587,10 +586,6 @@ async function copyOutputJson() {
   overflow-wrap: anywhere;
   user-select: text;
   cursor: text;
-}
-.wf-pop-fold-ico {
-  flex-shrink: 0; color: var(--c-secondary); font-size: 9px;
-  font-style: normal; user-select: none; cursor: pointer;
 }
 .wf-pop-reasoning {
   margin: 0; padding: 10px; max-height: 260px; overflow-y: auto;
