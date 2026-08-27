@@ -128,9 +128,9 @@ def render(value, context: dict):
     return value
 
 
-# ══════════════════════ 条件求值（沿用原实现） ══════════════════════
+# ══════════════════════ 条件求值 / 规则引擎 ══════════════════════
 
-def _eval_condition(op: str, left, right) -> bool:
+def _eval_leaf_legacy(op: str, left, right) -> bool:
     if op == "empty":
         return not left
     if op == "not_empty":
@@ -152,6 +152,196 @@ def _eval_condition(op: str, left, right) -> bool:
     if op == "!=":
         return str(left) != str(right)
     return str(left) == str(right)  # 默认 ==
+
+
+# —— 规则树辅助函数 ——
+
+def _to_str(v) -> str:
+    return "" if v is None else str(v)
+
+
+def _cmp(left, right):
+    """优先按数字比较，失败退化为字符串比较。返回负数/0/正数，无法比较返回 None。"""
+    try:
+        return float(left) - float(right)
+    except (TypeError, ValueError):
+        l, r = _to_str(left), _to_str(right)
+        return (l > r) - (l < r)
+
+
+def _is_empty(v) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, str):
+        return v.strip() == ""
+    if isinstance(v, (list, dict)):
+        return len(v) == 0
+    return False
+
+
+def _is_missing(v) -> bool:
+    """变量缺失（_MISSING）或渲染失败的兜底标记，视为不存在。"""
+    return v is _MISSING
+
+
+def _to_list(v):
+    if isinstance(v, list):
+        return [str(x) for x in v]
+    if isinstance(v, str):
+        try:
+            parsed = json.loads(v)
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        except Exception:
+            pass
+        return [x.strip() for x in v.split(",") if x.strip()]
+    return [str(v)]
+
+
+def _type_of(v) -> str:
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "bool"
+    if isinstance(v, (int, float)):
+        return "number"
+    if isinstance(v, str):
+        return "string"
+    if isinstance(v, list):
+        return "array"
+    if isinstance(v, dict):
+        return "object"
+    return type(v).__name__.lower()
+
+
+def _parse_range(right):
+    try:
+        seq = right if isinstance(right, list) else json.loads(right)
+        if isinstance(seq, (list, tuple)) and len(seq) == 2:
+            return float(seq[0]), float(seq[1])
+    except Exception:
+        pass
+    parts = _to_str(right).split(",")
+    if len(parts) == 2:
+        try:
+            return float(parts[0]), float(parts[1])
+        except ValueError:
+            return None, None
+    return None, None
+
+
+def _between(left, right) -> bool:
+    """right 形如 [a, b] 或 "a,b"，判断 left 是否在区间内（含边界）。"""
+    lo, hi = _parse_range(right)
+    if lo is None or hi is None:
+        return False
+    c = _cmp(left, lo)
+    if c is None:
+        return False
+    return c >= 0 and _cmp(left, hi) <= 0
+
+
+def _eval_leaf(left, op: str, right) -> bool:
+    if op == "==":
+        return _cmp(left, right) == 0
+    if op == "!=":
+        return _cmp(left, right) != 0
+    if op == ">":
+        return _cmp(left, right) > 0
+    if op == ">=":
+        return _cmp(left, right) >= 0
+    if op == "<":
+        return _cmp(left, right) < 0
+    if op == "<=":
+        return _cmp(left, right) <= 0
+
+    if op == "contains":
+        return _to_str(right) in _to_str(left)
+    if op == "not_contains":
+        return _to_str(right) not in _to_str(left)
+    if op == "startsWith":
+        return _to_str(left).startswith(_to_str(right))
+    if op == "endsWith":
+        return _to_str(left).endswith(_to_str(right))
+
+    if op == "in":
+        return _to_str(left) in _to_list(right)
+    if op == "not_in":
+        return _to_str(left) not in _to_list(right)
+
+    if op == "regex":
+        try:
+            return bool(re.search(_to_str(right), _to_str(left)))
+        except re.error:
+            return False
+    if op == "not_regex":
+        try:
+            return not bool(re.search(_to_str(right), _to_str(left)))
+        except re.error:
+            return True
+
+    if op == "empty":
+        return _is_empty(left)
+    if op == "not_empty":
+        return not _is_empty(left)
+
+    if op == "between":
+        return _between(left, right)
+    if op == "not_between":
+        return not _between(left, right)
+
+    if op == "exists":
+        return not _is_missing(left)
+    if op == "not_exists":
+        return _is_missing(left)
+
+    if op == "type":
+        return _type_of(left) == _to_str(right).lower()
+
+    return False
+
+
+def _rule_preview(rule: dict) -> str:
+    """把规则树渲染成可读文本，如 chechang > 10000 AND (height > 1500 OR zhouju > 3000)。"""
+    if not isinstance(rule, dict):
+        return ""
+    if rule.get("combinator") in ("and", "or"):
+        parts = [_rule_preview(r) for r in (rule.get("rules") or [])]
+        parts = [p for p in parts if p]
+        join = " AND " if rule["combinator"] == "and" else " OR "
+        text = join.join(parts)
+        if len(parts) > 1:
+            text = f"({text})"
+        if rule.get("negate"):
+            text = f"NOT {text}"
+        return text
+    # 叶子条件
+    neg = "NOT " if rule.get("negate") else ""
+    field = rule.get("field", "")
+    val = rule.get("value", "")
+    return f"{neg}{field} {rule.get('operator', '==')} {val}"
+
+
+def _eval_rule_tree(rule: dict, context: dict) -> bool:
+    """递归求值规则树。根为一个条件组（combinator + rules）。"""
+    if not isinstance(rule, dict):
+        return True
+    # 1) 组合节点
+    if rule.get("combinator") in ("and", "or"):
+        rules = rule.get("rules") or []
+        if not rules:
+            return True  # 空组默认 true
+        results = [_eval_rule_tree(r, context) for r in rules]
+        result = all(results) if rule["combinator"] == "and" else any(results)
+        return not result if rule.get("negate") else result
+    # 2) 叶子条件
+    field_raw = rule.get("field", "")
+    value_raw = rule.get("value")
+    op = rule.get("operator", "==")
+    left = render(field_raw, context)
+    right = render(value_raw, context)
+    result = _eval_leaf(left, op, right)
+    return not result if rule.get("negate") else result
 
 
 # ══════════════════════ 节点执行器（沿用原实现） ══════════════════════
@@ -686,9 +876,15 @@ async def _execute_node(node: dict, context: dict, db) -> dict:
     if t == "llm":
         return await _exec_llm(cfg, context)
     if t == "condition":
-        left = render(cfg.get("left"), context)
-        right = render(cfg.get("right"), context)
-        return {"result": _eval_condition(cfg.get("operator", "=="), left, right)}
+        cfg = cfg or {}
+        mode = cfg.get("mode", "simple")
+        if mode == "advanced" and cfg.get("rule"):
+            result = _eval_rule_tree(cfg["rule"], context)
+        else:
+            left = render(cfg.get("left"), context)
+            right = render(cfg.get("right"), context)
+            result = _eval_leaf_legacy(cfg.get("operator", "=="), left, right)
+        return {"result": result}
     if t == "code":
         return await _exec_code(cfg, context)
     raise ValueError(f"未知节点类型：{t}")
@@ -858,7 +1054,15 @@ def _node_input_view(node: dict, context: dict):
     if t == "llm":
         return {"prompt": render(cfg.get("prompt_template", ""), context)}
     if t == "condition":
+        cfg = cfg or {}
+        if cfg.get("mode") == "advanced" and cfg.get("rule"):
+            return {
+                "mode": "advanced",
+                "rule": cfg["rule"],
+                "preview": _rule_preview(cfg["rule"]),
+            }
         return {
+            "mode": cfg.get("mode", "simple"),
             "left": render(cfg.get("left"), context),
             "op": cfg.get("operator", "=="),
             "right": render(cfg.get("right"), context),

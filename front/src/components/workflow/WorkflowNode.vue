@@ -17,6 +17,23 @@ const meta = computed(() => TYPE_META[type.value] || TYPE_META.start)
 const hasReasoning = computed(() => type.value === 'agent' || type.value === 'llm')
 const title = computed(() => props.data?.title || meta.value.name)
 const isCondition = computed(() => type.value === 'condition')
+
+// 条件节点卡片规则预览
+function rulePreviewText(node) {
+  if (!node || node.combinator !== 'and' && node.combinator !== 'or') return ''
+  const parts = (node.rules || []).map(rulePreviewText).filter(Boolean)
+  if (!parts.length) return ''
+  const join = node.combinator === 'and' ? ' AND ' : ' OR '
+  let text = parts.join(join)
+  if (parts.length > 1) text = `(${text})`
+  return node.negate ? `NOT ${text}` : text
+}
+const conditionPreview = computed(() => {
+  const cfg = props.data?.config || {}
+  if (cfg.mode === 'advanced' && cfg.rule) return rulePreviewText(cfg.rule)
+  if (cfg.mode !== 'advanced') return `${cfg.operator || '=='} ${cfg.left || '...'}`
+  return ''
+})
 const status = computed(() => props.data?.status || '')
 const elapsedText = computed(() => props.data?.elapsedText || '')
 const currentStep = computed(() => props.data?.step || '')
@@ -47,7 +64,10 @@ function bodyText(t, cfg = {}) {
   if (t === 'agent') return cfg.agent_id ? '引用已配置智能体' : (cfg.kb_id ? '内联 · KB + 技能' : '未配置知识库')
   if (t === 'service') return cfg.entity_id ? '实体服务' : (cfg.service_id ? '本体服务' : '未配置服务')
   if (t === 'llm') return cfg.prompt_template ? '自定义提示词' : '通用补全'
-  if (t === 'condition') return `${cfg.operator || '=='} ${cfg.left || '...'}`
+  if (t === 'condition') {
+    if (cfg.mode === 'advanced' && cfg.rule) return conditionPreview.value || '规则未配置'
+    return `${cfg.operator || '=='} ${cfg.left || '...'}`
+  }
   if (t === 'code') return '沙箱 Python'
   if (t === 'end') return '汇总输出'
   return '运行入口'

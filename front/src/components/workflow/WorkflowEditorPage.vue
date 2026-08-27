@@ -14,6 +14,7 @@ import {
 } from '../../api'
 import { useToast } from '../../composables/useToast'
 import PythonEditor from './PythonEditor.vue'
+import ConditionRuleBuilder from './ConditionRuleBuilder.vue'
 import { TYPE_META } from './nodeMeta.js'
 
 const route = useRoute()
@@ -31,7 +32,7 @@ const DEFAULT_CONFIG = {
   agent: { agent_id: '', kb_id: '', skill_ids: [], query_template: '{{start.input}}' },
   service: { kb_id: '', entity_id: '', service_id: '', params: {} },
   llm: { system_prompt: '', prompt_template: '', structured_outputs: [] },
-  condition: { operator: '==', left: '', right: '' },
+  condition: { mode: 'simple', operator: '==', left: '', right: '', rule: { combinator: 'and', rules: [] } },
   code: {
     code_text: 'def run(params, entity, context):\n    # params：本节点「参数(JSON)」中定义的数据（已渲染变量）\n    # var(节点id, 字段)：左侧变量拖拽后自动插入的安全读取函数\n    return {"summary": var("llm1", "text"), "params": params}',
     params: {},
@@ -196,6 +197,38 @@ let edgeSeq = 0
 const selectedNode = computed(() => nodes.value.find(n => n.id === selectedNodeId.value) || null)
 const selectedType = computed(() => selectedNode.value?.type || '')
 const selectedConfig = computed(() => selectedNode.value?.data?.config || {})
+
+// 条件节点高级模式规则预览文本
+function rulePreview(node) {
+  if (!node || node.combinator !== 'and' && node.combinator !== 'or') return ''
+  const parts = (node.rules || []).map(rulePreview).filter(Boolean)
+  if (!parts.length) return ''
+  const join = node.combinator === 'and' ? ' AND ' : ' OR '
+  let text = parts.join(join)
+  if (parts.length > 1) text = `(${text})`
+  return node.negate ? `NOT ${text}` : text
+}
+const rulePreviewText = computed(() => {
+  const cfg = selectedConfig.value
+  if (cfg?.mode === 'advanced' && cfg?.rule) return rulePreview(cfg.rule)
+  return ''
+})
+
+// 高级条件规则弹窗
+const conditionModalOpen = ref(false)
+const conditionDraft = ref(null)
+function openConditionModal() {
+  conditionDraft.value = JSON.parse(JSON.stringify(selectedConfig.value?.rule || { combinator: 'and', rules: [] }))
+  conditionModalOpen.value = true
+}
+function saveConditionDraft() {
+  if (!selectedNode.value?.data?.config) return
+  selectedNode.value.data.config.rule = conditionDraft.value
+  conditionModalOpen.value = false
+}
+function closeConditionModal() {
+  conditionModalOpen.value = false
+}
 // 沿连线反向收集「真正能流到当前节点」的祖先节点（含开始；不含自己）
 const upstreamNodes = computed(() => {
   if (!selectedNodeId.value) return []
@@ -1303,26 +1336,48 @@ watch(nowTick, () => {
             <!-- 条件分支 -->
             <template v-else-if="selectedType === 'condition'">
               <div class="field">
-                <label>判断方式</label>
-                <select v-model="selectedConfig.operator">
-                  <option value="==">==</option>
-                  <option value="!=">!=</option>
-                  <option value="contains">包含</option>
-                  <option value="not_contains">不包含</option>
-                  <option value="empty">为空</option>
-                  <option value="not_empty">非空</option>
-                  <option value="gt">&gt;</option>
-                  <option value="lt">&lt;</option>
+                <label>模式</label>
+                <select v-model="selectedConfig.mode">
+                  <option value="simple">简单（单条件）</option>
+                  <option value="advanced">高级（规则组合）</option>
                 </select>
               </div>
-              <div class="field">
-                <label>左值</label>
-                <input type="text" v-model="selectedConfig.left" placeholder="{{service_1.success}}">
-              </div>
-              <div class="field" v-if="!['empty', 'not_empty'].includes(selectedConfig.operator)">
-                <label>右值</label>
-                <input type="text" v-model="selectedConfig.right" placeholder="true">
-              </div>
+
+              <!-- 简单模式 -->
+              <template v-if="selectedConfig.mode !== 'advanced'">
+                <div class="field">
+                  <label>判断方式</label>
+                  <select v-model="selectedConfig.operator">
+                    <option value="==">==</option>
+                    <option value="!=">!=</option>
+                    <option value="contains">包含</option>
+                    <option value="not_contains">不包含</option>
+                    <option value="empty">为空</option>
+                    <option value="not_empty">非空</option>
+                    <option value="gt">&gt;</option>
+                    <option value="lt">&lt;</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>左值</label>
+                  <input type="text" v-model="selectedConfig.left" placeholder="{{service_1.success}}">
+                </div>
+                <div class="field" v-if="!['empty', 'not_empty'].includes(selectedConfig.operator)">
+                  <label>右值</label>
+                  <input type="text" v-model="selectedConfig.right" placeholder="true">
+                </div>
+              </template>
+
+              <!-- 高级模式 -->
+              <template v-else>
+                <div class="rule-preview-box" v-if="rulePreviewText">
+                  <div class="rule-preview-title">规则预览</div>
+                  <code>{{ rulePreviewText }}</code>
+                </div>
+                <div v-else class="rule-preview-empty">尚未配置规则（空组将判定为 true）</div>
+                <button type="button" class="btn primary" style="margin-top: 8px;" @click="openConditionModal">打开规则编辑器</button>
+              </template>
+
               <div class="hint">两个出口：<b style="color:var(--c-success)">true</b> / <b style="color:var(--c-danger)">false</b>（拖拽连线时从对应圆点拉出）</div>
             </template>
 
@@ -1602,6 +1657,21 @@ watch(nowTick, () => {
         <div class="m-actions">
           <button class="btn" @click="runModal = false">取消</button>
           <button class="btn primary" @click="startRun">开始运行</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 高级条件规则编辑弹窗 -->
+    <div class="modal-mask" v-if="conditionModalOpen" @click.self="closeConditionModal">
+      <div class="modal modal-condition">
+        <h3>编辑条件规则</h3>
+        <div class="m-sub">通过 AND / OR 组合条件，最多支持 5 层嵌套。</div>
+        <div class="rule-modal-body">
+          <ConditionRuleBuilder v-if="conditionDraft" v-model="conditionDraft" :max-depth="5" />
+        </div>
+        <div class="m-actions">
+          <button class="btn" @click="closeConditionModal">取消</button>
+          <button class="btn primary" @click="saveConditionDraft">确定</button>
         </div>
       </div>
     </div>
@@ -1935,4 +2005,12 @@ watch(nowTick, () => {
 .modal h3 { font-size: 14px; font-weight: 700; }
 .m-sub { font-size: 12px; color: var(--c-secondary); }
 .m-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* 高级条件规则弹窗 */
+.modal-condition { width: 760px; max-width: 92vw; max-height: 85vh; overflow: hidden; }
+.rule-modal-body { flex: 1; overflow-y: auto; padding-right: 6px; min-height: 180px; max-height: calc(85vh - 140px); }
+.rule-preview-box { background: var(--c-bg-soft, rgba(0,0,0,.08)); border: 1px dashed var(--c-border); border-radius: 8px; padding: 10px 12px; font-size: 12px; }
+.rule-preview-box code { display: block; margin-top: 6px; word-break: break-all; }
+.rule-preview-title { color: var(--c-secondary); margin-bottom: 4px; }
+.rule-preview-empty { color: var(--c-secondary); font-size: 12px; padding: 10px 0; }
 </style>
