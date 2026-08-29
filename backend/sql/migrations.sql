@@ -177,3 +177,39 @@ CREATE TABLE IF NOT EXISTS schedules (
 CREATE INDEX IF NOT EXISTS idx_schedules_wf ON schedules(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_schedule ON workflow_runs(schedule_id);
+
+-- migration_015: 工作流「人工节点」模块
+-- 1) workflow_runs 增加挂起/续跑支持列
+ALTER TABLE workflow_runs ADD COLUMN context_snapshot TEXT DEFAULT '{}';
+ALTER TABLE workflow_runs ADD COLUMN pending_node_id VARCHAR DEFAULT NULL;
+ALTER TABLE workflow_runs ADD COLUMN definition_snapshot TEXT DEFAULT NULL;
+ALTER TABLE workflow_runs ADD COLUMN waiting_at VARCHAR DEFAULT NULL;
+-- 2) 人工任务表
+CREATE TABLE IF NOT EXISTS workflow_human_tasks (
+    id VARCHAR PRIMARY KEY,
+    run_id VARCHAR NOT NULL,
+    workflow_id VARCHAR NOT NULL,
+    workflow_name VARCHAR DEFAULT '',
+    node_id VARCHAR NOT NULL,
+    node_title VARCHAR DEFAULT '',
+    status VARCHAR NOT NULL DEFAULT 'pending',
+    mode VARCHAR DEFAULT 'approve',
+    description TEXT DEFAULT '',
+    form_schema TEXT DEFAULT '{}',
+    form_data TEXT DEFAULT '{}',
+    filled_data TEXT DEFAULT '{}',
+    comment_required INTEGER NOT NULL DEFAULT 0,
+    decision VARCHAR DEFAULT NULL,
+    comment TEXT DEFAULT '',
+    operator VARCHAR DEFAULT '',
+    assignee VARCHAR DEFAULT '',
+    due_at VARCHAR DEFAULT NULL,
+    timeout_action VARCHAR DEFAULT 'keep_pending',
+    trigger_source VARCHAR DEFAULT NULL,
+    created_at VARCHAR,
+    decided_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_human_tasks_status ON workflow_human_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_human_tasks_run ON workflow_human_tasks(run_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_human_tasks_node ON workflow_human_tasks(run_id, node_id);

@@ -3,7 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models import File, OntologySuggestion, Schedule
+from models import File, OntologySuggestion, Schedule, WorkflowHumanTask
 
 router = APIRouter()
 
@@ -37,7 +37,16 @@ async def notification_summary(db: AsyncSession = Depends(get_db)):
         )).scalar() or 0
     )
 
+    # 人工节点待办：等待人工处理的任务数
+    human_tasks = int(
+        (await db.execute(
+            select(func.count()).where(WorkflowHumanTask.status == "pending")
+        )).scalar() or 0
+    )
+
     items = []
+    if human_tasks:
+        items.append({"key": "human_tasks", "label": "待处理人工任务", "count": human_tasks, "to": "/human-tasks"})
     if suggestions:
         items.append({"key": "suggestions", "label": "待审核本体建议", "count": suggestions, "to": "/ontology/suggestions"})
     if processing:
@@ -52,6 +61,7 @@ async def notification_summary(db: AsyncSession = Depends(get_db)):
         "files_processing": processing,
         "files_failed": failed,
         "schedule_alerts": schedule_alerts,
-        "total": suggestions + processing + failed + schedule_alerts,
+        "human_tasks": human_tasks,
+        "total": suggestions + processing + failed + schedule_alerts + human_tasks,
         "items": items,
     }

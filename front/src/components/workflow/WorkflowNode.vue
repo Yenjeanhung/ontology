@@ -4,7 +4,9 @@ import { Handle, Position } from '@vue-flow/core'
 import { TYPE_META } from './nodeMeta.js'
 import { marked } from 'marked'
 
-const FIXED_KEYS = ['answer', 'chunks', 'entities', 'subgraph', 'success', 'data', 'error', 'stdout', 'duration_ms', 'text', 'result']
+const FIXED_KEYS = ['answer', 'chunks', 'entities', 'subgraph', 'success', 'data', 'error', 'stdout', 'duration_ms', 'text', 'result',
+  // 人工节点固定输出
+  'approved', 'decision', 'comment', 'operator', 'decided_at', 'task_id', 'timed_out']
 
 const props = defineProps({
   id: { type: String, required: true },
@@ -17,6 +19,28 @@ const meta = computed(() => TYPE_META[type.value] || TYPE_META.start)
 const hasReasoning = computed(() => type.value === 'agent' || type.value === 'llm')
 const title = computed(() => props.data?.title || meta.value.name)
 const isCondition = computed(() => type.value === 'condition')
+const isHuman = computed(() => type.value === 'human')
+// 人工节点：审批模式提供 true/false 双出口；表单模式仅单出口
+const humanMode = computed(() => props.data?.config?.mode || 'approve')
+const isBranch = computed(() => isCondition.value || (isHuman.value && humanMode.value === 'approve'))
+
+// 人工节点挂起时挂在节点上的待办任务 id（由 node_waiting 事件写入）
+const pendingTaskId = computed(() => props.data?.taskId || props.data?.task_id || '')
+
+// 人工节点处理结果：卡片上直接展示「通过 / 驳回 / 已提交 + 处理人 + 意见」
+const humanResult = computed(() => {
+  const out = props.data?.output
+  if (!out || typeof out !== 'object') return null
+  const decision = out.decision
+  if (!decision) return null
+  const map = { approved: '通过', rejected: '驳回', submitted: '已提交' }
+  return {
+    decision,
+    label: map[decision] || decision,
+    operator: out.operator || '',
+    comment: out.comment || '',
+  }
+})
 
 // 条件节点卡片规则预览
 function rulePreviewText(node) {
@@ -39,7 +63,7 @@ const elapsedText = computed(() => props.data?.elapsedText || '')
 const currentStep = computed(() => props.data?.step || '')
 const runningSteps = computed(() => props.data?.steps || [])
 
-const STATUS_LABEL = { running: '运行中', succeeded: '完成', failed: '失败', skipped: '跳过' }
+const STATUS_LABEL = { running: '运行中', succeeded: '完成', failed: '失败', skipped: '跳过', waiting: '待处理' }
 
 function stripMd(s) {
   if (typeof s !== 'string') return String(s ?? '')
@@ -69,6 +93,14 @@ function bodyText(t, cfg = {}) {
     return `${cfg.operator || '=='} ${cfg.left || '...'}`
   }
   if (t === 'code') return '沙箱 Python'
+  if (t === 'human') {
+    const mode = cfg.mode || 'approve'
+    if (mode === 'form') {
+      const n = (cfg.form_fields || []).length
+      return n ? `人工填写 · ${n} 个字段` : '人工填写（未配置字段）'
+    }
+    return `人工审批 · ${(cfg.display_fields || []).length} 项待审`
+  }
   if (t === 'end') return '汇总输出'
   return '运行入口'
 }
@@ -265,9 +297,9 @@ async function copyOutputJson() {
 </script>
 
 <template>
-  <div ref="nodeRef" class="wf-node" :class="[status, { selected, condition: isCondition }]" :style="{ '--nc': meta.color }">
+  <div ref="nodeRef" class="wf-node" :class="[status, { selected, condition: isCondition, human: isHuman }]" :style="{ '--nc': meta.color }">
     <Handle type="target" :position="Position.Left" class="wf-handle" />
-    <template v-if="isCondition">
+    <template v-if="isBranch">
       <Handle id="true" type="source" :position="Position.Right" class="wf-handle wf-handle-true" style="top: 34%" />
       <Handle id="false" type="source" :position="Position.Right" class="wf-handle wf-handle-false" style="top: 66%" />
     </template>
@@ -286,6 +318,20 @@ async function copyOutputJson() {
       </div>
     </div>
     <div class="wf-body">{{ bodyText(type, props.data?.config) }}</div>
+
+    <!-- 人工节点：等待人工处理时的提示条 -->
+    <div class="wf-waiting" v-if="status === 'waiting'">
+      <span class="wf-pulse"></span>
+      {{ humanMode === 'form' ? '等待填写并提交' : '等待人工审批' }}
+      <span v-if="pendingTaskId" class="wf-waiting-task">#{{ pendingTaskId }}</span>
+    </div>
+
+    <!-- 人工节点处理结果：通过 / 驳回 / 已提交 + 处理人 + 意见 -->
+    <div class="wf-human-result" v-if="status === 'succeeded' && humanResult">
+      <span class="wf-hr-badge" :class="'wf-hr-' + humanResult.decision">✓ {{ humanResult.label }}</span>
+      <span v-if="humanResult.operator" class="wf-hr-op">{{ humanResult.operator }}</span>
+      <span v-if="humanResult.comment" class="wf-hr-cm" :title="humanResult.comment">{{ humanResult.comment }}</span>
+    </div>
 
     <!-- 运行时显示全部步骤 + 流式输出预览；运行后：卡片只展示自定义输出；固定输出进弹窗查看 -->
     <div class="wf-out" v-if="status === 'succeeded' || status === 'failed' || status === 'running'">
@@ -429,6 +475,7 @@ async function copyOutputJson() {
 .wf-status-chip.sc-succeeded { color: var(--c-success); background: color-mix(in srgb, var(--c-success) 16%, var(--c-panel)); border: 1px solid var(--c-success); }
 .wf-status-chip.sc-failed { color: var(--c-danger); background: color-mix(in srgb, var(--c-danger) 16%, var(--c-panel)); border: 1px solid var(--c-danger); }
 .wf-status-chip.sc-skipped { color: var(--c-secondary); background: var(--c-panel); border: 1px solid var(--c-border); }
+.wf-status-chip.sc-waiting { color: #b45309; background: color-mix(in srgb, #d97706 16%, var(--c-panel)); border: 1px solid #d97706; }
 .wf-pulse {
   width: 7px; height: 7px; border-radius: 50%; background: currentColor;
   animation: wf-dot 1s ease-in-out infinite;
@@ -654,6 +701,36 @@ async function copyOutputJson() {
 .wf-out-kv i { font-style: normal; color: var(--c-accent); font-weight: 700; }
 .wf-out-kv b { font-weight: 600; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px; }
 .wf-out-raw { font-size: 10px; color: var(--c-secondary); }
+
+/* 人工节点：等待人工处理态（琥珀色 + 呼吸） */
+.wf-node.waiting { border-color: #d97706; border-width: 1.5px; }
+.wf-node.waiting .wf-head { background: rgba(217,119,6,.10); }
+.wf-waiting {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 10px 8px; padding: 4px 8px; border-radius: 6px;
+  font-size: 10.5px; font-weight: 600; color: #b45309;
+  background: rgba(217,119,6,.10); border: 1px dashed #d97706;
+}
+.wf-waiting .wf-pulse { color: #d97706; }
+.wf-waiting-task { margin-left: auto; font-family: ui-monospace, monospace; font-weight: 500; opacity: .8; }
+
+/* 人工节点处理结果 */
+.wf-human-result {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 6px 10px; border-top: 1px dashed var(--c-border);
+  font-size: 10.5px;
+}
+.wf-hr-badge {
+  padding: 1px 7px; border-radius: 999px; font-weight: 700; font-size: 10px;
+}
+.wf-hr-approved { color: var(--c-success); background: color-mix(in srgb, var(--c-success) 15%, transparent); border: 1px solid var(--c-success); }
+.wf-hr-rejected { color: var(--c-danger); background: color-mix(in srgb, var(--c-danger) 15%, transparent); border: 1px solid var(--c-danger); }
+.wf-hr-submitted { color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 15%, transparent); border: 1px solid var(--c-accent); }
+.wf-hr-op { color: var(--c-secondary); }
+.wf-hr-cm {
+  flex: 1 1 100%; color: var(--c-secondary); line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
 
 .wf-handle { width: 14px; height: 14px; border: 2px solid var(--c-border-strong, #d8cdbb); background: var(--c-panel); }
 .wf-node:hover .wf-handle { border-color: var(--c-accent); }

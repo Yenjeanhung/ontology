@@ -9,12 +9,14 @@ import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
 import WorkflowNode from './WorkflowNode.vue'
 import {
-  getWorkflow, updateWorkflow, fetchWorkflowPalette, runWorkflowStream,
+  getWorkflow, updateWorkflow, fetchWorkflowPalette, runWorkflowStream, resumeWorkflowStream,
   fetchEntities, fetchEntityServices, fetchWorkflowRuns, getWorkflowRun, deleteWorkflowRun,
+  submitHumanDecision as submitHumanDecisionApi, cancelWorkflowRun as cancelWorkflowRunApi,
 } from '../../api'
 import { useToast } from '../../composables/useToast'
 import PythonEditor from './PythonEditor.vue'
 import ConditionRuleBuilder from './ConditionRuleBuilder.vue'
+import HumanTaskForm from './HumanTaskForm.vue'
 import { TYPE_META } from './nodeMeta.js'
 
 const route = useRoute()
@@ -38,6 +40,17 @@ const DEFAULT_CONFIG = {
     params: {},
     structured_outputs: [],
   },
+  human: {
+    mode: 'approve',            // approve = 审批（通过/驳回）| form = 表单填写
+    description: '',            // 给处理人的说明，支持 {{变量}}
+    display_fields: [],         // 只读待审内容：{ label, value, type }
+    form_fields: [],            // 表单模式：人工填写字段
+    decisions: [],              // 审批选项（空 = 默认 通过/驳回）
+    submit_text: '提交',
+    comment: { label: '处理意见', placeholder: '', required: false, required_on: ['rejected'] },
+    assignee: '',
+    timeout: { hours: null, action: 'keep_pending' },
+  },
 }
 
 // 各节点类型的默认输出字段（新节点预填，之后可手动增删）
@@ -49,6 +62,7 @@ const OUTPUT_FIELDS_DEFAULT = {
   llm: ['text'],
   condition: ['result'],
   code: ['success', 'data', 'error'],
+  human: ['approved', 'decision', 'data', 'comment', 'operator', 'decided_at'],
 }
 // 各类型固定输出（与后端 FIXED_OUTPUTS 对齐）：锁定显示、不可删除
 const FIXED_OUTPUTS = {
@@ -57,6 +71,7 @@ const FIXED_OUTPUTS = {
   llm: ['text'],
   condition: ['result'],
   code: ['success', 'data', 'error', 'stdout', 'duration_ms'],
+  human: ['approved', 'decision', 'data', 'comment', 'operator', 'decided_at'],
 }
 function isFixedField(type, f) { return (FIXED_OUTPUTS[type] || []).includes(f) }
 
@@ -346,11 +361,14 @@ async function restoreLastRun() {
 }
 
 function toFlowNode(n) {
+  const config = n.config || {}
+  // 人工节点：把 options 数组回填为可编辑文本，补齐缺省结构
+  if (n.type === 'human') normalizeHumanConfig(config)
   return {
     id: n.id,
     type: n.type,
     position: n.position || { x: 0, y: 0 },
-    data: { nodeType: n.type, title: n.title, config: n.config || {}, status: '' },
+    data: { nodeType: n.type, title: n.title, config, status: '' },
   }
 }
 function toFlowEdge(e) {
@@ -425,6 +443,84 @@ function addNodeAt(type, position) {
   selectNode(id)
 }
 function addNode(type) { addNodeAt(type, null) }
+
+// ───── 人工节点配置辅助 ─────
+// 变量示例文本（避免在模板里直接写 {{ }} 被当作插值解析）
+const VAR_EXAMPLE = '{{agent_1.answer}}'
+
+function addDisplayField() {
+  const cfg = selectedConfig.value
+  if (!Array.isArray(cfg.display_fields)) cfg.display_fields = []
+  cfg.display_fields.push({ label: '', value: '', type: 'text' })
+}
+function removeDisplayField(i) { selectedConfig.value.display_fields?.splice(i, 1) }
+
+function addFormField() {
+  const cfg = selectedConfig.value
+  if (!Array.isArray(cfg.form_fields)) cfg.form_fields = []
+  cfg.form_fields.push({ key: '', label: '', type: 'text', required: false, options: [], optionsText: '' })
+}
+function removeFormField(i) { selectedConfig.value.form_fields?.splice(i, 1) }
+function moveFormField(i, dir) {
+  const arr = selectedConfig.value.form_fields
+  if (!arr) return
+  const j = i + dir
+  if (j < 0 || j >= arr.length) return
+  const tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp
+}
+
+// 审批按钮文案：decisions 为空时按默认值回显，编辑后落库
+const decisionPassLabel = computed({
+  get() { return (selectedConfig.value?.decisions || []).find(d => d.key === 'approved')?.label || '通过' },
+  set(v) { setDecisionLabel('approved', v || '通过') },
+})
+const decisionRejectLabel = computed({
+  get() { return (selectedConfig.value?.decisions || []).find(d => d.key === 'rejected')?.label || '驳回' },
+  set(v) { setDecisionLabel('rejected', v || '驳回') },
+})
+function setDecisionLabel(key, label) {
+  const cfg = selectedConfig.value
+  if (!Array.isArray(cfg.decisions) || !cfg.decisions.length) {
+    cfg.decisions = [
+      { key: 'approved', label: '通过', style: 'primary' },
+      { key: 'rejected', label: '驳回', style: 'danger' },
+    ]
+  }
+  const d = cfg.decisions.find(x => x.key === key)
+  if (d) d.label = label
+  else cfg.decisions.push({ key, label, style: key === 'approved' ? 'primary' : 'danger' })
+}
+function toggleRejectRequired(e) {
+  const cfg = selectedConfig.value
+  if (!cfg.comment) cfg.comment = { label: '处理意见', placeholder: '', required: false, required_on: [] }
+  const arr = Array.isArray(cfg.comment.required_on) ? [...cfg.comment.required_on] : []
+  const has = arr.includes('rejected')
+  if (e.target.checked && !has) arr.push('rejected')
+  if (!e.target.checked && has) arr.splice(arr.indexOf('rejected'), 1)
+  cfg.comment.required_on = arr
+}
+
+/** 保存前规范化人工节点配置：optionsText ↔ options、缺省补齐、表单模式清空 decisions */
+function normalizeHumanConfig(cfg) {
+  const c = cfg || {}
+  c.mode = c.mode === 'form' ? 'form' : 'approve'
+  if (!c.comment) c.comment = { label: '处理意见', placeholder: '', required: false, required_on: ['rejected'] }
+  if (!Array.isArray(c.comment.required_on)) c.comment.required_on = ['rejected']
+  if (!Array.isArray(c.display_fields)) c.display_fields = []
+  if (!Array.isArray(c.form_fields)) c.form_fields = []
+  for (const f of c.form_fields) {
+    if (typeof f.optionsText === 'string') {
+      f.options = f.optionsText.split(',').map(s => s.trim()).filter(Boolean)
+    } else if (Array.isArray(f.options)) {
+      f.optionsText = f.options.join(',')
+    }
+  }
+  if (c.mode === 'form') c.decisions = []
+  const hours = c.timeout?.hours
+  c.timeout = { hours: (hours === '' || hours == null || isNaN(Number(hours))) ? null : Number(hours),
+                action: c.timeout?.action || 'keep_pending' }
+  return c
+}
 function onDragStart(event, type) {
   if (event.dataTransfer) {
     event.dataTransfer.setData('application/vueflow', type)
@@ -838,7 +934,12 @@ async function save() {
   if (!validateVarRefs()) return
   saving.value = true
   const definition = {
-    nodes: nodes.value.map(fromFlowNode),
+    nodes: nodes.value.map(n => {
+      const node = fromFlowNode(n)
+      // 人工节点：选项文本 ↔ 数组互转、缺省补齐后再落库
+      if (node.type === 'human') node.config = normalizeHumanConfig(node.config)
+      return node
+    }),
     edges: edges.value.map(fromFlowEdge),
   }
   try {
@@ -854,6 +955,12 @@ async function save() {
 
 // ───── 运行 ─────
 const running = ref(false)
+// 人工节点挂起：工作流未结束，停在等待人工处理
+const awaitingHuman = ref(false)
+const currentRunId = ref('')
+// 待处理人工任务：node_id -> { task_id, mode, description, form_data, form_fields, decisions, ... }
+const pendingTasks = reactive({})
+const submittingTask = reactive({})   // node_id -> bool（提交中）
 const logs = ref([])          // {kind, text, node_id, title, status, summary, error, output, duration_ms}
 const expandedLog = ref(-1)
 const runModal = ref(false)
@@ -908,20 +1015,20 @@ function setStatus(nodeId, status, durationMs = null) {
   else delete runningSince[nodeId]
 }
 function clearStatus() {
-  nodes.value.forEach(n => { n.data.status = ''; n.data.output = null; n.data.step = ''; n.data.steps = [] })
+  nodes.value.forEach(n => { n.data.status = ''; n.data.output = null; n.data.step = ''; n.data.steps = []; n.data.taskId = '' })
   Object.keys(runningSince).forEach(k => delete runningSince[k])
+  Object.keys(pendingTasks).forEach(k => delete pendingTasks[k])
   logs.value = []
 }
 
-async function startRun() {
-  runModal.value = false
-  clearStatus()
-  running.value = true
-  expandedLog.value = -1
-  consoleCollapsed.value = false
-  try {
-    await runWorkflowStream(wfId, { ...runInputs }, {
-      onStarted(d) { logs.value.push({ kind: 'meta', text: `工作流开始 · run ${d.run_id}` }) },
+// run / resume 共用的事件回调
+function streamCallbacks() {
+  return {
+      onStarted(d) {
+        currentRunId.value = d.run_id
+        logs.value.push({ kind: 'meta', text: `工作流开始 · run ${d.run_id}` })
+      },
+      onResumed(d) { logs.value.push({ kind: 'meta', text: `已提交，工作流继续执行…` }) },
       onNodeStarted(d) {
         setStatus(d.node_id, 'running')
         logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'running', input: d.input })
@@ -975,16 +1082,109 @@ async function startRun() {
           logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'skipped' })
         }
       },
+      // ── 人工节点挂起 ──
+      onNodeWaiting(d) {
+        setStatus(d.node_id, 'waiting')
+        pendingTasks[d.node_id] = {
+          task_id: d.task_id,
+          mode: d.mode || 'approve',
+          description: d.description || '',
+          form_data: d.form_data || {},
+          form_fields: d.form_fields || [],
+          decisions: d.decisions || [],
+          submit_text: d.submit_text || '提交',
+          comment_label: d.comment?.label || '处理意见',
+          comment_placeholder: d.comment?.placeholder || '',
+          comment_required: !!d.comment_required,
+          assignee: d.assignee || '',
+          due_at: d.due_at || '',
+        }
+        const n = nodes.value.find(x => x.id === d.node_id)
+        if (n) n.data.taskId = d.task_id
+        const line = [...logs.value].reverse().find(l => l.kind === 'node' && l.node_id === d.node_id && l.status === 'running')
+        if (line) Object.assign(line, { status: 'waiting', summary: '等待人工处理' })
+        else logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'waiting', summary: '等待人工处理' })
+        // 自动选中该节点，右侧抽屉直接呈现处理卡
+        selectNode(d.node_id)
+      },
+      // ── 续跑：重放的已完成节点 / 人工节点结果注入 ──
+      onNodeReplayed(d) { setStatus(d.node_id, 'succeeded', 0) },
+      onNodeResumed(d) {
+        setStatus(d.node_id, 'succeeded', 0)
+        const line = [...logs.value].reverse().find(l => l.kind === 'node' && l.node_id === d.node_id)
+        if (line) Object.assign(line, { status: 'succeeded', summary: d.summary, output: d.output })
+        else logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'succeeded', summary: d.summary, output: d.output })
+      },
+      onError(d) { toast.error(d.message || '工作流执行出错') },
       onFinished(d) {
+        if (d.status === 'waiting') {
+          awaitingHuman.value = true
+          logs.value.push({ kind: 'meta', text: '工作流已挂起 · 等待人工处理' })
+          refreshHistory()
+          return
+        }
+        awaitingHuman.value = false
         logs.value.push({ kind: 'meta', text: `工作流${d.status === 'failed' ? '失败' : '完成'} · 耗时 ${d.duration_ms}ms` })
         // 运行结束后刷新历史列表（不阻塞 UI）
         refreshHistory()
       },
-    })
+  }
+}
+
+// 处理人工任务：提交决策（auto_resume=false）后立刻开 resume 流续播
+async function handleHumanSubmit(nodeId, payload) {
+  const task = pendingTasks[nodeId]
+  if (!task) return
+  submittingTask[nodeId] = true
+  try {
+    await submitHumanDecisionApi(task.task_id, { ...payload, auto_resume: false })
+    delete pendingTasks[nodeId]
+    const n = nodes.value.find(x => x.id === nodeId)
+    if (n) n.data.taskId = ''
+    running.value = true
+    awaitingHuman.value = false
+    await resumeWorkflowStream(wfId, currentRunId.value, task.task_id, streamCallbacks())
+  } catch (err) {
+    if (err.fieldErrors) {
+      const msg = Object.entries(err.fieldErrors).map(([k, v]) => `${k}: ${v}`).join('；')
+      toast.error(`表单校验未通过：${msg}`)
+    } else {
+      toast.error(`提交失败：${err.message}`)
+    }
+  } finally {
+    delete submittingTask[nodeId]
+    if (!awaitingHuman.value) running.value = false
+  }
+}
+
+async function startRun() {
+  runModal.value = false
+  clearStatus()
+  running.value = true
+  awaitingHuman.value = false
+  expandedLog.value = -1
+  consoleCollapsed.value = false
+  try {
+    await runWorkflowStream(wfId, { ...runInputs }, streamCallbacks())
   } catch (err) {
     toast.error(`运行失败: ${err.message}`)
   }
-  running.value = false
+  // 挂起等待人工时保持「运行中」，由续跑结束时收尾
+  if (!awaitingHuman.value) running.value = false
+}
+
+async function cancelRun() {
+  if (!currentRunId.value) return
+  try {
+    await cancelWorkflowRunApi(wfId, currentRunId.value)
+    toast.success('已取消运行')
+    awaitingHuman.value = false
+    running.value = false
+    Object.keys(pendingTasks).forEach(k => delete pendingTasks[k])
+    refreshHistory()
+  } catch (err) {
+    toast.error(`取消失败：${err.message}`)
+  }
 }
 
 function statusIcon(s) {
@@ -992,6 +1192,7 @@ function statusIcon(s) {
   if (s === 'succeeded') return '✓'
   if (s === 'failed') return '✗'
   if (s === 'skipped') return '⤼'
+  if (s === 'waiting') return '👤'
   return '·'
 }
 function nodeTypeOf(log) {
@@ -1151,6 +1352,8 @@ watch(nowTick, () => {
       <button class="btn" @click="consoleCollapsed = !consoleCollapsed">日志</button>
       <button class="btn" @click="save" :disabled="saving">{{ saving ? '保存中...' : '保存' }}</button>
       <button class="btn primary" @click="openRunModal" :disabled="running">▶ 运行</button>
+      <button class="btn" v-if="running" @click="cancelRun">■ 取消运行</button>
+      <span v-if="awaitingHuman" class="awaiting-tip">👤 等待人工处理</span>
     </div>
 
     <div class="wf-body">
@@ -1390,6 +1593,132 @@ watch(nowTick, () => {
               </div>
             </template>
 
+            <!-- 人工 -->
+            <template v-else-if="selectedType === 'human'">
+              <!-- 运行中挂起：直接在抽屉里处理 -->
+              <div class="human-pending" v-if="pendingTasks[selectedNodeId]">
+                <div class="hp-title">👤 待处理</div>
+                <HumanTaskForm
+                  :mode="pendingTasks[selectedNodeId].mode"
+                  :description="pendingTasks[selectedNodeId].description"
+                  :form-data="pendingTasks[selectedNodeId].form_data"
+                  :form-fields="pendingTasks[selectedNodeId].form_fields"
+                  :decisions="pendingTasks[selectedNodeId].decisions"
+                  :submit-text="pendingTasks[selectedNodeId].submit_text"
+                  :comment-label="pendingTasks[selectedNodeId].comment_label"
+                  :comment-placeholder="pendingTasks[selectedNodeId].comment_placeholder"
+                  :comment-required="pendingTasks[selectedNodeId].comment_required"
+                  :task-id="pendingTasks[selectedNodeId].task_id"
+                  :assignee="pendingTasks[selectedNodeId].assignee"
+                  :due-at="pendingTasks[selectedNodeId].due_at"
+                  :submitting="!!submittingTask[selectedNodeId]"
+                  @submit="p => handleHumanSubmit(selectedNodeId, p)"
+                />
+              </div>
+
+              <div class="field">
+                <label>模式</label>
+                <select v-model="selectedConfig.mode">
+                  <option value="approve">审批（通过 / 驳回）</option>
+                  <option value="form">表单（人工填写字段）</option>
+                </select>
+                <p class="field-hint">
+                  审批模式支持 <b style="color:var(--c-success)">true</b> / <b style="color:var(--c-danger)">false</b> 双出口；
+                  表单模式仅单一出口（需要分支请在后面串审批或条件节点）。
+                </p>
+              </div>
+
+              <div class="field">
+                <label>处理说明</label>
+                <textarea v-model="selectedConfig.description" rows="2" placeholder="给处理人的说明，如：请核对结论与原文是否一致"></textarea>
+                <span class="var-btn" @click="insertVar('description')">⊕ 插入变量</span>
+              </div>
+
+              <!-- 待审内容（只读展示给处理人） -->
+              <div class="field">
+                <label>待审内容（只读）</label>
+                <p class="field-hint">运行到本节点时展示给处理人的内容，值支持变量引用（如 <code v-pre>{{agent_1.answer}}</code>）。</p>
+                <div v-for="(f, i) in (selectedConfig.display_fields || [])" :key="'df' + i" class="df-row">
+                  <input type="text" v-model="f.label" placeholder="名称，如：智能体结论" class="df-label" />
+                  <input type="text" v-model="f.value" :placeholder="VAR_EXAMPLE" class="df-value" />
+                  <button type="button" class="df-del" @click="removeDisplayField(i)" title="删除">×</button>
+                </div>
+                <button type="button" class="btn sm" @click="addDisplayField">+ 添加待审项</button>
+              </div>
+
+              <!-- 表单模式：填写字段 -->
+              <template v-if="selectedConfig.mode === 'form'">
+                <div class="field">
+                  <label>填写字段</label>
+                  <p class="field-hint">
+                    字段名（key）只允许<b>小写英文 + 数字 + 下划线</b>（不支持中文），下游用
+                    <code v-pre>{{节点id.data.key}}</code> 引用。
+                  </p>
+                  <div v-for="(f, i) in (selectedConfig.form_fields || [])" :key="'ff' + i" class="ff-row">
+                    <div class="ff-line">
+                      <input type="text" v-model="f.key" placeholder="key（如 customer_name）" class="ff-key" />
+                      <input type="text" v-model="f.label" placeholder="显示名（可中文）" class="ff-label" />
+                      <select v-model="f.type" class="ff-type">
+                        <option value="text">文本</option>
+                        <option value="textarea">多行文本</option>
+                        <option value="number">数字</option>
+                        <option value="select">下拉单选</option>
+                        <option value="date">日期</option>
+                        <option value="boolean">是/否</option>
+                      </select>
+                    </div>
+                    <div class="ff-line ff-line2">
+                      <label class="ff-req"><input type="checkbox" v-model="f.required" /> 必填</label>
+                      <input v-if="f.type === 'select'" type="text" v-model="f.optionsText"
+                             placeholder="选项，英文逗号分隔：A,B,C" class="ff-options" />
+                      <span class="ff-spacer"></span>
+                      <button type="button" class="ff-mv" @click="moveFormField(i, -1)" :disabled="i === 0">↑</button>
+                      <button type="button" class="ff-mv" @click="moveFormField(i, 1)" :disabled="i === (selectedConfig.form_fields || []).length - 1">↓</button>
+                      <button type="button" class="df-del" @click="removeFormField(i)">×</button>
+                    </div>
+                  </div>
+                  <button type="button" class="btn sm" @click="addFormField">+ 添加字段</button>
+                </div>
+              </template>
+
+              <!-- 审批模式：按钮文案 -->
+              <template v-else>
+                <div class="field">
+                  <label>按钮文案</label>
+                  <div class="df-row">
+                    <input type="text" v-model="decisionPassLabel" placeholder="通过" class="df-label" />
+                    <input type="text" v-model="decisionRejectLabel" placeholder="驳回" class="df-label" />
+                  </div>
+                </div>
+              </template>
+
+              <div class="field">
+                <label>意见配置</label>
+                <div class="df-row">
+                  <input type="text" v-model="selectedConfig.comment.label" placeholder="处理意见" class="df-label" />
+                  <input type="text" v-model="selectedConfig.comment.placeholder" placeholder="占位提示（选填）" class="df-value" />
+                </div>
+                <label class="ff-req">
+                  <input type="checkbox" v-model="selectedConfig.comment.required" /> 所有结果都必须填写意见
+                </label>
+                <label class="ff-req" v-if="selectedConfig.mode !== 'form'">
+                  <input type="checkbox" :checked="(selectedConfig.comment.required_on || []).includes('rejected')"
+                         @change="toggleRejectRequired" /> 驳回时必填理由
+                </label>
+              </div>
+
+              <div class="field">
+                <label>指定处理人（选填）</label>
+                <input type="text" v-model="selectedConfig.assignee" placeholder="仅作展示与归档，不做权限校验" />
+              </div>
+
+              <div class="field">
+                <label>超时时长（小时，留空 = 不设超时）</label>
+                <input type="number" min="0" v-model="selectedConfig.timeout.hours" placeholder="如 24" />
+                <p class="field-hint">超过时长后在待办中心标红提醒，不会自动处理，仍等待人工。</p>
+              </div>
+            </template>
+
             <!-- ═══ 分区二：变量配置（输入引用 / 参数插值 / 输出声明） ═══ -->
             <template v-if="selectedType !== 'start' && selectedType !== 'end'">
               <div class="section-title">变量配置</div>
@@ -1622,6 +1951,16 @@ watch(nowTick, () => {
               <span class="log-dur" v-if="st.duration_ms != null">{{ st.duration_ms }}ms</span>
             </div>
             <div class="log-card-detail-open">
+              <!-- 人工节点：回看当时的待审内容快照 -->
+              <div class="log-pane" v-if="st.form_data && Object.keys(st.form_data).length">
+                <div class="log-pane-title">当时的待审内容</div>
+                <div class="ht-snapshot">
+                  <div v-for="(v, k) in st.form_data" :key="k" class="ht-snap-row">
+                    <span class="ht-snap-k">{{ k }}</span>
+                    <pre class="ht-snap-v">{{ typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v) }}</pre>
+                  </div>
+                </div>
+              </div>
               <div class="log-pane">
                 <div class="log-pane-title">输入</div>
                 <pre class="log-pre">{{ st.input ? JSON.stringify(st.input, null, 2) : '（无）' }}</pre>
@@ -1717,6 +2056,59 @@ watch(nowTick, () => {
 .wf-name:focus { border-color: var(--c-accent); }
 .wf-saved { font-size: 12px; color: var(--c-success); font-weight: 600; }
 .spacer { flex: 1; }
+
+/* 等待人工处理提示 */
+.awaiting-tip {
+  font-size: 11.5px; font-weight: 700; color: #b45309;
+  padding: 2px 9px; border-radius: 999px;
+  background: rgba(217,119,6,.12); border: 1px solid #d97706;
+}
+
+/* 抽屉内的人工任务处理卡 */
+.human-pending {
+  margin-bottom: 12px; padding: 10px; border-radius: 8px;
+  border: 1px dashed #d97706; background: rgba(217,119,6,.07);
+}
+.hp-title { font-size: 11.5px; font-weight: 700; color: #b45309; margin-bottom: 8px; }
+
+/* 人工节点配置：待审项 / 表单字段编辑器 */
+.df-row, .ff-line { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.df-label { flex: 0 0 118px; }
+.df-value { flex: 1; font-family: ui-monospace, monospace; }
+.df-del, .ff-mv {
+  flex-shrink: 0; width: 24px; height: 24px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--c-border-strong, #d8cdbb); background: var(--c-panel); color: var(--c-secondary);
+  font-size: 13px; line-height: 1;
+}
+.df-del:hover { color: var(--c-danger); border-color: var(--c-danger); }
+.ff-mv:hover:not(:disabled) { color: var(--c-accent); border-color: var(--c-accent); }
+.ff-mv:disabled { opacity: .4; cursor: not-allowed; }
+.ff-row {
+  padding: 7px; margin-bottom: 6px; border-radius: 6px;
+  border: 1px solid var(--c-border); background: var(--c-bg-soft, rgba(255,255,255,.03));
+}
+.ff-line2 { margin-bottom: 0; }
+.ff-key { flex: 1 1 130px; font-family: ui-monospace, monospace; }
+.ff-label { flex: 1 1 110px; }
+.ff-type { flex: 0 0 96px; }
+.ff-options { flex: 1; }
+.ff-spacer { flex: 1; }
+.ff-req { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--c-fg); }
+.df-row input, .ff-line input, .ff-line select {
+  padding: 4px 7px; border-radius: 5px; font-size: 11.5px; font-family: inherit;
+  border: 1px solid var(--c-border-strong, #d8cdbb); background: var(--c-panel); color: var(--c-fg);
+  min-width: 0;
+}
+.btn.sm { padding: 3px 10px; font-size: 11px; }
+
+/* 运行详情：人工节点待审内容快照 */
+.ht-snapshot { display: flex; flex-direction: column; gap: 5px; }
+.ht-snap-row { display: grid; grid-template-columns: 92px 1fr; gap: 8px; align-items: start; }
+.ht-snap-k { font-size: 11px; font-weight: 700; color: var(--c-accent); word-break: break-all; }
+.ht-snap-v {
+  margin: 0; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, monospace; max-height: 180px; overflow-y: auto;
+}
 
 .wf-body { display: flex; gap: 12px; flex: 1; min-height: 0; }
 

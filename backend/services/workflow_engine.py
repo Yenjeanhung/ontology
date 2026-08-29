@@ -27,10 +27,11 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from config import settings
 from database import async_session
-from models import WorkflowRun
+from models import WorkflowHumanTask, WorkflowRun
 from providers.llm import chunk_text, create_llm, extract_reasoning
 from schemas import TestOntologyServiceRequest
 from services.agent_service import AgentService
+from services.human_task_service import HumanTaskService
 from services.kb_service import KBService
 from services.oag_service import OAGService
 from services.ontology_action_service import ServiceRuntimeService
@@ -903,6 +904,7 @@ FIXED_OUTPUTS = {
     "llm": {"text"},
     "condition": {"result"},
     "code": {"success", "data", "error", "stdout", "duration_ms"},
+    "human": {"approved", "decision", "data", "comment", "operator", "decided_at"},
 }
 
 
@@ -1001,6 +1003,14 @@ def _summarize(node: dict, result) -> str:
         struct_count = len([k for k in r if k not in FIXED_OUTPUTS.get("code", set())])
         extra = f"，{struct_count} 个自定义输出" if struct_count else ""
         return f"代码执行完成{extra}"
+    if t == "human":
+        r = result or {}
+        decision = r.get("decision") or "approved"
+        label = {"approved": "通过", "rejected": "驳回", "submitted": "已提交"}.get(decision, decision)
+        operator = r.get("operator") or "未填写"
+        comment = (r.get("comment") or "").strip()
+        extra = f" · {_short(comment, 40)}" if comment else ""
+        return f"{label}（处理人：{operator}{extra}）"
     return _short(result)
 
 
@@ -1017,15 +1027,49 @@ class GraphState(TypedDict):
     outputs: Annotated[dict, _merge_outputs]
 
 
+class _NodeSuspended(Exception):
+    """内部信号：人工节点已挂起（不是失败），整图停止但 run 进入 waiting 而非 failed。"""
+
+
+def _is_suspend_error(e: BaseException) -> bool:
+    """判断异常是否源自人工节点挂起。
+
+    LangGraph 可能把节点异常包装进 ExceptionGroup（它不是 Exception 的子类，
+    `except Exception` 接不到），这里递归解包，避免挂起被误判为运行失败。
+    """
+    if isinstance(e, _NodeSuspended):
+        return True
+    inner = getattr(e, "exceptions", None)
+    if inner:
+        return any(_is_suspend_error(x) for x in inner)
+    return False
+
+
 class _Runtime:
     """一次工作流运行的上下文：SSE 事件队列、节点状态表、DB 会话。
 
     每个 LangGraph 节点闭包持有同一个 _Runtime 实例，执行时经队列发事件，
     主循环（run_stream）负责把队列转成 SSE 流。
+
+    续跑支持：
+    - replay：已完成节点的输出快照，命中后节点函数直接返回（零成本重放）；
+    - inject ：人工节点的处理结果，命中后直接作为该节点输出；
+    - suspend：人工节点挂起时记录 {node_id, state}，供落库与 workflow_finished(waiting)。
     """
 
-    def __init__(self, run_id: str, nodes: list, edges: list):
+    def __init__(self, run_id: str, nodes: list, edges: list,
+                 replay: dict | None = None, inject: dict | None = None,
+                 workflow_id: str = "", workflow_name: str = "",
+                 trigger_source: str | None = None):
         self.run_id = run_id
+        # 续跑上下文（首次运行为 None）
+        self.replay = replay or {}
+        self.inject = inject or {}
+        self.suspend: dict | None = None
+        # 人工节点建单需要的元信息
+        self.workflow_id = workflow_id
+        self.workflow_name = workflow_name
+        self.trigger_source = trigger_source
         # 前端保存时配置放在 node.data.config；统一提升到 node.config，避免各执行函数取空配置
         self.node_by_id = {}
         for n in nodes:
@@ -1067,7 +1111,136 @@ def _node_input_view(node: dict, context: dict):
             "op": cfg.get("operator", "=="),
             "right": render(cfg.get("right"), context),
         }
+    if t == "human":
+        fields = {}
+        for item in cfg.get("display_fields") or []:
+            if isinstance(item, dict):
+                fields[item.get("label") or item.get("value") or "字段"] = render(item.get("value"), context)
+        return {"mode": cfg.get("mode", "approve"), "display_fields": fields}
     return {}
+
+
+DEFAULT_DECISIONS = [
+    {"key": "approved", "label": "通过", "style": "primary"},
+    {"key": "rejected", "label": "驳回", "style": "danger"},
+]
+
+
+async def _suspend_at_human_node(rt: _Runtime, node: dict, context: dict, input_view: dict,
+                                 state: dict):
+    """人工节点：渲染待审内容 → 落库任务 → 发 node_waiting → 挂起整图（raise _NodeSuspended）。
+
+    state 为 LangGraph 当前状态：快照必须直接取 state['outputs']，
+    不能用 context 反推 —— context 里 'start' 是工作流入参，会覆盖同名节点（默认 id 就叫 start）的输出。
+    """
+    nid = node["id"]
+    cfg = node.get("config") or {}
+    title = node.get("title") or "人工处理"
+    mode = cfg.get("mode") or "approve"
+
+    description = render(cfg.get("description") or "", context)
+    form_data: dict = {}
+    for item in cfg.get("display_fields") or []:
+        if not isinstance(item, dict):
+            continue
+        label = item.get("label") or item.get("value") or "字段"
+        form_data[label] = render(item.get("value"), context)
+
+    if rt.db is None:
+        raise RuntimeError("人工节点无法创建待办任务：数据库会话不可用")
+
+    task = await HumanTaskService.create(
+        db=rt.db,
+        run_id=rt.run_id,
+        workflow_id=rt.workflow_id,
+        workflow_name=rt.workflow_name,
+        node_id=nid,
+        node_title=title,
+        config=cfg,
+        description=description,
+        form_data=form_data,
+        trigger_source=rt.trigger_source,
+    )
+
+    comment_cfg = cfg.get("comment") or {}
+    decisions = cfg.get("decisions") or ([] if mode == "form" else DEFAULT_DECISIONS)
+    rt.emit({
+        "type": "node_waiting", "node_id": nid, "title": title, "task_id": task["id"],
+        "mode": mode,
+        "description": description,
+        "form_data": _truncate_output(form_data),
+        "form_fields": (cfg.get("form_fields") or []) if mode == "form" else [],
+        "decisions": decisions,
+        "submit_text": cfg.get("submit_text") or "提交",
+        "comment": {
+            "label": comment_cfg.get("label") or "处理意见",
+            "placeholder": comment_cfg.get("placeholder") or "",
+        },
+        "comment_required": bool(comment_cfg.get("required")) or bool(task.get("comment_required")),
+        "assignee": cfg.get("assignee") or "",
+        "due_at": task.get("due_at"),
+        "input": input_view,
+    })
+    rt.node_states[nid] = {
+        "status": "waiting", "input": input_view, "title": title, "mode": mode,
+        "task_id": task["id"], "started_at": datetime.now().isoformat(),
+        # 待审内容快照：保证运行详情可回看「处理人当时看到的是什么」
+        "form_data": _truncate_output(form_data),
+    }
+
+    rt.suspend = {
+        "node_id": nid,
+        "task_id": task["id"],
+        "state": {
+            "start": (state or {}).get("start") or {},
+            "outputs": dict((state or {}).get("outputs") or {}),
+        },
+    }
+    logger.info("[run %s] 人工节点挂起 %s (%s) task=%s", rt.run_id, nid, title, task["id"])
+
+    # 通知埋点（v1 无外发渠道时仅落日志，异常不影响挂起流程）
+    try:
+        from services.notification_channel import NotificationChannel
+        await NotificationChannel.dispatch(NotificationChannel.TASK_CREATED, {
+            "task_id": task["id"], "run_id": rt.run_id, "workflow_id": rt.workflow_id,
+            "workflow_name": rt.workflow_name, "node_id": nid, "node_title": title,
+            "mode": mode, "assignee": task.get("assignee") or "",
+            "created_at": task.get("created_at"), "due_at": task.get("due_at"),
+            "trigger_source": rt.trigger_source,
+            "detail_url": f"/human-tasks?task={task['id']}",
+        })
+    except Exception:
+        logger.exception("[run %s] 人工任务创建通知失败（已忽略）", rt.run_id)
+
+    raise _NodeSuspended(nid)
+
+
+def _make_human_router(rt: _Runtime, node: dict):
+    """人工节点路由：approve 模式按 approved 走 true/false 分支；form 模式恒走唯一出口。"""
+    nid = node["id"]
+    mode = (node.get("config") or {}).get("mode") or "approve"
+    succ: dict[str, list[str]] = {"true": [], "false": [], "default": []}
+    for e in rt.edges:
+        if e["source"] == nid:
+            handle = e.get("handle") or "default"
+            succ["true" if handle == "true" else "false" if handle == "false" else "default"].append(e["target"])
+
+    def router(state: GraphState) -> list[str]:
+        out = (state.get("outputs") or {}).get(nid) or {}
+        if mode == "form":
+            targets = succ["default"] or succ["true"] or succ["false"]
+            logger.info("[run %s] 人工节点(表单) %s → %s", rt.run_id, nid, targets)
+            return targets
+        approved = out.get("approved")
+        if approved is None:  # 未拿到结果（异常兜底）→ 视为通过
+            approved = (out.get("decision") or "approved") != "rejected"
+        targets = succ["true"] if approved else succ["false"]
+        if not targets:  # 只连了一条出边 → 无论通过驳回都继续
+            targets = succ["default"]
+        logger.info("[run %s] 人工节点(审批) %s → %s (approved=%s)", rt.run_id, nid, targets, approved)
+        return targets
+
+    return router
 
 
 def _make_node_fn(rt: _Runtime, node: dict):
@@ -1077,6 +1250,33 @@ def _make_node_fn(rt: _Runtime, node: dict):
     async def fn(state: GraphState) -> dict:
         title = node.get("title") or node["type"]
         context = {**state.get("outputs", {}), "start": state.get("start", {})}
+
+        # ── 续跑：人工节点的处理结果注入（不重跑，直接产出输出）──
+        if nid in rt.inject:
+            out = _project_output(node, rt.inject[nid])
+            rt.node_states[nid] = {
+                "status": "succeeded", "output": out, "duration_ms": 0,
+                "summary": _summarize(node, out), "title": title,
+            }
+            logger.info("[run %s] 人工节点结果注入 %s (%s) → %s",
+                        rt.run_id, nid, title, (out or {}).get("decision"))
+            rt.emit({
+                "type": "node_resumed", "node_id": nid, "title": title,
+                "decision": (out or {}).get("decision"), "output": _truncate_output(out),
+                "summary": _summarize(node, out),
+            })
+            return {"outputs": {nid: out}}
+
+        # ── 续跑：已完成节点重放（O(1) 返回快照，保持条件路由所需的上游输出）──
+        if nid in rt.replay:
+            out = rt.replay[nid]
+            rt.node_states[nid] = {
+                "status": "succeeded", "output": out, "duration_ms": 0,
+                "summary": _summarize(node, out), "title": title,
+            }
+            rt.emit({"type": "node_replayed", "node_id": nid, "title": title})
+            return {"outputs": {nid: out}}
+
         logger.info("[run %s] 节点开始 %s (%s)", rt.run_id, nid, title)
         input_view = _truncate_output(_node_input_view(node, context))
         rt.emit({
@@ -1085,6 +1285,11 @@ def _make_node_fn(rt: _Runtime, node: dict):
         })
         rt.node_states[nid] = {"status": "running", "input": input_view, "title": title, "started_at": datetime.now().isoformat()}
         t0 = time.monotonic()
+
+        # ── 人工节点：挂起等待人工处理（不进入常规执行分支）──
+        if node.get("type") == "human":
+            await _suspend_at_human_node(rt, node, context, input_view, state)
+            # 正常不会返回：内部抛 _NodeSuspended 终止整图
 
         # 智能体节点流式执行：token / reasoning 实时下发，同时保持最终 result 一致
         accumulated: list[str] = []
@@ -1228,6 +1433,8 @@ def _build_graph(rt: _Runtime):
         node = rt.node_by_id[nid]
         if node["type"] == "condition":
             g.add_conditional_edges(nid, _make_condition_router(rt, node))
+        elif node["type"] == "human":
+            g.add_conditional_edges(nid, _make_human_router(rt, node))
         else:
             for e in outs:
                 g.add_edge(nid, e["target"])
@@ -1270,7 +1477,32 @@ async def run_stream(workflow_id: str, definition: dict, inputs: dict,
                  run_id, workflow_id, len(nodes), len(edges), list((inputs or {}).keys()))
     yield _sse({"type": "workflow_started", "run_id": run_id, "nodes": len(nodes)})
 
-    rt = _Runtime(run_id, nodes, edges)
+    # 人工节点建单需要工作流名
+    workflow_name = ""
+    try:
+        from services.workflow_service import WorkflowService
+        async with async_session() as db:
+            wf = await WorkflowService.get(db, workflow_id)
+            workflow_name = (wf or {}).get("name") or ""
+    except Exception:
+        pass
+
+    rt = _Runtime(run_id, nodes, edges, workflow_id=workflow_id,
+                  workflow_name=workflow_name, trigger_source=trigger_source)
+
+    async for chunk in _execute_graph(rt, definition, {"start": inputs or {}, "outputs": {}}, started):
+        yield chunk
+
+
+async def _execute_graph(rt: _Runtime, definition: dict, initial_state: dict,
+                         started: float, extra_duration_ms: int = 0):
+    """建图 + 驱动 + 转发事件 + 收尾，yield SSE 字符串。
+
+    人工节点挂起时：落库快照并把 run 置为 waiting，yield workflow_finished(status=waiting)。
+    extra_duration_ms：续跑时累加挂起前已耗时长（等待时长不计入）。
+    """
+    run_id = rt.run_id
+    nodes = definition.get("nodes") or []
     status = "succeeded"
     failed = None
     outputs: dict = {}
@@ -1295,14 +1527,23 @@ async def run_stream(workflow_id: str, definition: dict, inputs: dict,
                 rt.db = db
                 config = {"configurable": {"thread_id": f"wf-{run_id}"}}  # 预留 checkpoint 恢复
                 async for _ in graph.astream(
-                    {"start": inputs or {}, "outputs": {}},
+                    initial_state,
                     config=config,
                     stream_mode="updates",
                 ):
                     pass  # 事件已由节点闭包经队列发出，这里只推进执行
-        except Exception as e:
-            failed = f"{e}"
-            status = "failed"
+        except _NodeSuspended:
+            # 人工节点挂起：不是失败，status 由下方按 rt.suspend 判定
+            logger.info("[run %s] 图执行挂起（人工节点）", run_id)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as e:  # noqa: BLE001 —— 需接住 ExceptionGroup 等非 Exception 异常
+            if _is_suspend_error(e) or rt.suspend is not None:
+                logger.info("[run %s] 图执行挂起（人工节点，异常被包装为 %s）",
+                            run_id, type(e).__name__)
+            else:
+                failed = f"{e}"
+                status = "failed"
         finally:
             rt.finished = True
 
@@ -1317,7 +1558,34 @@ async def run_stream(workflow_id: str, definition: dict, inputs: dict,
             yield _sse(payload)
         except asyncio.TimeoutError:
             continue
-    await runner
+
+    # 收口：runner 异常不能中断 SSE 流（挂起信号可能被框架包装后在此抛出）
+    try:
+        await runner
+    except _NodeSuspended:
+        pass
+    except asyncio.CancelledError:
+        raise
+    except BaseException as e:  # noqa: BLE001
+        if _is_suspend_error(e) or rt.suspend is not None:
+            logger.info("[run %s] 图执行挂起（runner 层捕获：%s）", run_id, type(e).__name__)
+        else:
+            failed = f"{e}"
+            status = "failed"
+
+    duration_ms = int((time.monotonic() - started) * 1000) + extra_duration_ms
+
+    # ── 人工节点挂起：落库快照 → run 置 waiting → 结束本段 SSE ──
+    if rt.suspend:
+        status = "waiting"
+        await _suspend_run(run_id, rt, definition, duration_ms)
+        yield _sse({
+            "type": "workflow_finished", "status": "waiting", "outputs": {},
+            "duration_ms": duration_ms, "error": None,
+            "pending": {"task_id": rt.suspend.get("task_id"), "node_id": rt.suspend.get("node_id")},
+        })
+        yield "data: [DONE]\n\n"
+        return
 
     # 补发未触达节点（条件分支未走的部分）的 node_skipped 事件
     for nid, n in rt.node_by_id.items():
@@ -1333,7 +1601,6 @@ async def run_stream(workflow_id: str, definition: dict, inputs: dict,
                 for k, v in (st.get("output") or {}).items():
                     outputs[k] = v
 
-    duration_ms = int((time.monotonic() - started) * 1000)
     await _finalize_run(run_id, status, outputs, rt.node_states, failed, started, duration_ms)
 
     yield _sse({
@@ -1341,6 +1608,143 @@ async def run_stream(workflow_id: str, definition: dict, inputs: dict,
         "outputs": outputs, "duration_ms": duration_ms, "error": failed,
     })
     yield "data: [DONE]\n\n"
+
+
+async def _suspend_run(run_id: str, rt: _Runtime, definition: dict, duration_ms: int):
+    """人工节点挂起落库：保存图状态快照 + 定义快照，run 置 waiting。"""
+    try:
+        async with async_session() as db:
+            row = await db.get(WorkflowRun, run_id)
+            if row:
+                row.status = "waiting"
+                row.node_states = json.dumps(rt.node_states, ensure_ascii=False, default=str)
+                row.context_snapshot = json.dumps(rt.suspend.get("state") or {}, ensure_ascii=False, default=str)
+                row.pending_node_id = rt.suspend.get("node_id")
+                row.definition_snapshot = json.dumps(definition, ensure_ascii=False)
+                row.waiting_at = datetime.now().isoformat()
+                row.duration_ms = duration_ms
+                await db.commit()
+                logger.info("[run %s] 已挂起等待人工处理 node=%s task=%s",
+                            run_id, rt.suspend.get("node_id"), rt.suspend.get("task_id"))
+    except Exception:
+        logger.exception("[run %s] 挂起落库失败", run_id)
+
+
+async def resume_run_stream(run_id: str, task_id: str):
+    """人工任务处理完成后续跑：从挂起点继续，事件协议与 run_stream 一致。
+
+    与首次运行的差异：
+    - 已完成节点用快照 replay（O(1) 重放，不重跑）；
+    - 人工节点用决策结果 inject；
+    - 首帧发 workflow_resumed 而非 workflow_started。
+    """
+    started = time.monotonic()
+
+    async with async_session() as db:
+        row = await db.get(WorkflowRun, run_id)
+        if not row:
+            yield _sse({"type": "error", "message": "运行记录不存在"})
+            yield "data: [DONE]\n\n"
+            return
+        if row.status != "waiting":
+            yield _sse({"type": "error", "message": f"该运行当前不在等待人工处理状态（{row.status}）"})
+            yield "data: [DONE]\n\n"
+            return
+
+        task = await db.get(WorkflowHumanTask, task_id)
+        if not task or task.run_id != run_id:
+            yield _sse({"type": "error", "message": "人工任务不存在或不属于该运行"})
+            yield "data: [DONE]\n\n"
+            return
+        if task.status not in ("approved", "rejected", "submitted"):
+            yield _sse({"type": "error", "message": "该人工任务尚未处理"})
+            yield "data: [DONE]\n\n"
+            return
+
+        # 先取出续跑所需全部数据，再执行状态抢占（避免依赖 ORM 对象更新后的残留值）
+        workflow_id = row.workflow_id
+        trigger_source = row.trigger_source
+        pending_node_id = row.pending_node_id
+        decision_output = HumanTaskService.decision_output(task)
+        definition = json.loads(row.definition_snapshot) if row.definition_snapshot else None
+        snapshot = json.loads(row.context_snapshot or "{}") or {}
+        prev_states = json.loads(row.node_states or "{}") or {}
+        extra_duration_ms = row.duration_ms or 0
+
+        # 抢占：waiting → running，并发重复续跑时只有一次成功
+        from sqlalchemy import update as sa_update
+        result = await db.execute(
+            sa_update(WorkflowRun)
+            .where(WorkflowRun.id == run_id, WorkflowRun.status == "waiting")
+            .values(status="running", waiting_at=None, pending_node_id=None)
+        )
+        if result.rowcount == 0:
+            await db.rollback()
+            yield _sse({"type": "error", "message": "该运行已被恢复或已结束"})
+            yield "data: [DONE]\n\n"
+            return
+        await db.commit()
+
+    if not definition:
+        try:
+            from services.workflow_service import WorkflowService
+            async with async_session() as db:
+                wf = await WorkflowService.get(db, workflow_id)
+                definition = (wf or {}).get("definition") or {"nodes": [], "edges": []}
+        except Exception:
+            definition = {"nodes": [], "edges": []}
+
+    nodes = definition.get("nodes") or []
+    edges = definition.get("edges") or []
+    replay = snapshot.get("outputs") or {}
+    inject = {pending_node_id: decision_output} if pending_node_id else {}
+
+    logger.info("[run %s] 续跑开始 node=%s decision=%s",
+                run_id, pending_node_id, decision_output.get("decision"))
+    yield _sse({
+        "type": "workflow_resumed", "run_id": run_id,
+        "node_id": pending_node_id, "decision": decision_output.get("decision"),
+        "nodes": len(nodes),
+    })
+
+    rt = _Runtime(run_id, nodes, edges, replay=replay, inject=inject,
+                  workflow_id=workflow_id, trigger_source=trigger_source)
+    # 继承首次运行的节点状态，避免已完成节点被误判为 skipped
+    rt.node_states.update(prev_states or {})
+
+    async for chunk in _execute_graph(
+        rt, definition,
+        {"start": snapshot.get("start") or {}, "outputs": dict(replay)},
+        started, extra_duration_ms=extra_duration_ms,
+    ):
+        yield chunk
+
+
+async def resume_run_background(run_id: str, task_id: str) -> tuple[str, str]:
+    """后台续跑（无前端消费 SSE，如待办中心提交）：消费完事件流并落库。
+
+    返回 (status, error)。
+    """
+    status, error = "succeeded", ""
+    try:
+        async for payload in resume_run_stream(run_id, task_id):
+            text = payload[6:].strip() if payload.startswith("data: ") else ""
+            if not text:
+                continue
+            try:
+                evt = json.loads(text)
+            except (ValueError, TypeError):
+                continue
+            if evt.get("type") == "workflow_finished":
+                status = evt.get("status") or "succeeded"
+                error = evt.get("error") or ""
+            elif evt.get("type") == "error":
+                status, error = "failed", evt.get("message") or ""
+    except Exception as e:
+        logger.exception("[run %s] 后台续跑异常", run_id)
+        status, error = "failed", str(e)
+    logger.info("[run %s] 后台续跑结束 status=%s", run_id, status)
+    return status, error
 
 
 async def _finalize_run(run_id, status: str, outputs: dict, node_states: dict, failed, started, duration_ms=None):

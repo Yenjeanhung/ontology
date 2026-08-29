@@ -211,6 +211,9 @@ async def _record_result(schedule_id: str, status: str, error: str = None):
         s.last_status = status
         if status == "succeeded":
             s.consecutive_failures = 0
+        elif status == "waiting":
+            # 挂在人工节点等待处理：属正常挂起，不计入连续失败（否则会误报告警）
+            pass
         else:
             s.consecutive_failures += 1
         s.updated_at = datetime.now().isoformat()

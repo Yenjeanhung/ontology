@@ -58,6 +58,33 @@ class RunWorkflowRequest(BaseModel):
     inputs: dict = {}
 
 
+class HumanDecisionRequest(BaseModel):
+    """人工任务处理：决策 + 意见 + 表单填写值。
+
+    auto_resume=true（默认）：后端后台续跑（待办中心场景）；
+    auto_resume=false：前端自行开 resume SSE 续播（编辑器场景）。
+    """
+    decision: str
+    comment: str = ""
+    data: dict = {}
+    operator: str = ""
+    auto_resume: bool = True
+
+
+class HumanBatchDecisionRequest(BaseModel):
+    """批量处理人工任务（仅审批模式任务）。"""
+    task_ids: list[str]
+    decision: str
+    comment: str = ""
+    operator: str = ""
+    auto_resume: bool = True
+
+
+class ResumeRunRequest(BaseModel):
+    """人工任务处理后续跑。"""
+    task_id: str
+
+
 class AgentSkillCreate(BaseModel):
     name: str
     code: str

@@ -26,6 +26,7 @@ import WorkflowEditorPage from '../components/workflow/WorkflowEditorPage.vue'
 import ServiceEditorPage from '../components/ontology/ServiceEditorPage.vue'
 import ScheduleListPage from '../components/scheduler/ScheduleListPage.vue'
 import ScheduleEditorPage from '../components/scheduler/ScheduleEditorPage.vue'
+import HumanTaskCenterPage from '../components/workflow/HumanTaskCenter.vue'
 
 const routes = [
   { path: '/', name: 'home', component: HomeView },
@@ -55,6 +56,8 @@ const routes = [
   // 工作流
   { path: '/workflows', name: 'workflows', component: WorkflowListPage, meta: { keepAlive: true } },
   { path: '/workflows/:workflowId', name: 'workflow-editor', component: WorkflowEditorPage, props: true },
+  // 人工节点待办中心
+  { path: '/human-tasks', name: 'human-tasks', component: HumanTaskCenterPage, meta: { keepAlive: true } },
   // 定时管理
   { path: '/schedules', name: 'schedules', component: ScheduleListPage, meta: { keepAlive: true } },
   { path: '/schedules/:scheduleId', name: 'schedule-editor', component: ScheduleEditorPage, props: true, meta: { keepAlive: false } },

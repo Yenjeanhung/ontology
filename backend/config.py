@@ -35,6 +35,10 @@ class Settings(BaseSettings):
 
     # 工作流
     WORKFLOW_KEEP_RUNS: int = 10  # 每个工作流保留的最近运行记录数（超出自动裁剪）
+    # 工作流人工节点
+    WORKFLOW_HUMAN_BATCH_LIMIT: int = 100  # 单次批量处理人工任务条数上限
+    # 外发通知渠道（逗号分隔，如 webhook / email / wecom / dingtalk）；留空 = 仅站内待办
+    NOTIFY_CHANNELS: str = ""
 
     # 图存储
     GRAPH_STORE_PROVIDER: Literal["kuzu", "neo4j"] = "kuzu"

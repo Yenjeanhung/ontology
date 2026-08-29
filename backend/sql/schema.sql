@@ -321,9 +321,44 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     finished_at VARCHAR,
     duration_ms INTEGER DEFAULT 0,
     trigger_source VARCHAR DEFAULT NULL,
-    schedule_id VARCHAR DEFAULT NULL
+    schedule_id VARCHAR DEFAULT NULL,
+    -- 人工节点挂起/续跑支持（人工节点模块）
+    context_snapshot TEXT DEFAULT '{}',      -- 挂起点 LangGraph state 全量 {start, outputs}
+    pending_node_id VARCHAR DEFAULT NULL,    -- 挂起在哪个节点
+    definition_snapshot TEXT DEFAULT NULL,   -- 挂起时的定义快照（续跑优先使用）
+    waiting_at VARCHAR DEFAULT NULL          -- 进入等待的时间
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_wf ON workflow_runs(workflow_id);
+
+-- 人工节点任务：一条运行 + 一个人工节点 = 一条任务
+CREATE TABLE IF NOT EXISTS workflow_human_tasks (
+    id VARCHAR PRIMARY KEY,
+    run_id VARCHAR NOT NULL,
+    workflow_id VARCHAR NOT NULL,
+    workflow_name VARCHAR DEFAULT '',
+    node_id VARCHAR NOT NULL,
+    node_title VARCHAR DEFAULT '',
+    status VARCHAR NOT NULL DEFAULT 'pending',   -- pending | approved | rejected | submitted | cancelled | expired
+    mode VARCHAR DEFAULT 'approve',              -- approve | form
+    description TEXT DEFAULT '',                 -- 渲染后的说明文本
+    form_schema TEXT DEFAULT '{}',               -- JSON: {display_fields, form_fields, decisions, comment, submit_text}
+    form_data TEXT DEFAULT '{}',                 -- JSON: 渲染后的只读待审内容快照
+    filled_data TEXT DEFAULT '{}',               -- JSON: 人工填写结果（form 模式；approve 模式为 {}）
+    comment_required INTEGER NOT NULL DEFAULT 0, -- 本次是否必填意见
+    decision VARCHAR DEFAULT NULL,               -- approved | rejected | submitted
+    comment TEXT DEFAULT '',
+    operator VARCHAR DEFAULT '',
+    assignee VARCHAR DEFAULT '',
+    due_at VARCHAR DEFAULT NULL,                 -- 超时时间点；NULL = 不设超时
+    timeout_action VARCHAR DEFAULT 'keep_pending',
+    trigger_source VARCHAR DEFAULT NULL,         -- 冗余：manual | schedule
+    created_at VARCHAR,
+    decided_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_human_tasks_status ON workflow_human_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_human_tasks_run ON workflow_human_tasks(run_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_human_tasks_node ON workflow_human_tasks(run_id, node_id);
 
 CREATE TABLE IF NOT EXISTS schedules (
     id VARCHAR PRIMARY KEY,

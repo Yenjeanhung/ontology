@@ -37,6 +37,7 @@ function badgeByKey(key) {
   if (key === 'suggestions') return notifications.value.suggestions || 0
   if (key === 'files') return (notifications.value.files_failed || 0) + (notifications.value.files_processing || 0)
   if (key === 'schedule_alerts') return notifications.value.schedule_alerts || 0
+  if (key === 'human_tasks') return notifications.value.human_tasks || 0
   return 0
 }
 
@@ -79,6 +80,7 @@ const menuIcons = {
   config: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82 2 2 0 1 1-2.83 2.83 1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0 1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33 2 2 0 1 1-2.83-2.83A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82 2 2 0 1 1 2.83-2.83A1.65 1.65 0 0 0 9 4.6 1.65 1.65 0 0 0 10 3.09V3a2 2 0 0 1 4 0 1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33 2 2 0 1 1 2.83 2.83A1.65 1.65 0 0 0 19.4 9c.14.35.4.64.74.83"/></svg>',
   workflow: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h6a3 3 0 0 1 3 3v6"/><path d="M6 9v9"/></svg>',
   schedule: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/><path d="M9.5 3.2h5M9.5 20.8h5"/></svg>',
+  human: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><polyline points="16 11 17.5 12.5 21 9"/></svg>',
 }
 
 // 分组标题图标（侧栏分区：定义 / 生产 / 应用）
@@ -128,6 +130,7 @@ const menuItems = [
     ],
   },
   { key: 'workflow', label: '工作流', icon: 'workflow', to: '/workflows' },
+  { key: 'human-tasks', label: '待办', icon: 'human', to: '/human-tasks', badgeKey: 'human_tasks' },
   { key: 'schedule', label: '定时管理', icon: 'schedule', to: '/schedules', badgeKey: 'schedule_alerts' },
   {
     key: 'config', label: '系统配置', icon: 'config',

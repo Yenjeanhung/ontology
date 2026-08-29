@@ -26,7 +26,8 @@ class WorkflowRunService:
                 .order_by(WorkflowRun.started_at.desc())
             )
         ).scalars().all()
-        to_delete = rows[keep:]
+        # 处于 waiting（等人工处理）的运行不裁剪：其待办任务还要靠它续跑
+        to_delete = [r for r in rows[keep:] if r.status != "waiting"]
         if not to_delete:
             return
         for old in to_delete:

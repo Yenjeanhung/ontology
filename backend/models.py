@@ -413,6 +413,42 @@ class WorkflowRun(Base):
     # 触发来源标记（定时调度模块写入）：schedule=定时触发 / manual=手动运行；NULL 为旧记录
     trigger_source = Column(String, nullable=True)
     schedule_id = Column(String, nullable=True)
+    # ---- 人工节点：挂起 / 续跑支持 ----
+    context_snapshot = Column(Text, default="{}")      # 挂起点 LangGraph state 全量 {start, outputs}
+    pending_node_id = Column(String, nullable=True)    # 挂起在哪个节点
+    definition_snapshot = Column(Text, nullable=True)  # 挂起时的定义快照（续跑优先使用）
+    waiting_at = Column(String, nullable=True)         # 进入等待的时间
+
+
+class WorkflowHumanTask(Base):
+    """人工节点任务：运行到人工节点时挂起，产出一条待处理任务，处理后工作流续跑。"""
+
+    __tablename__ = "workflow_human_tasks"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    run_id = Column(String, nullable=False)
+    workflow_id = Column(String, nullable=False)
+    workflow_name = Column(String, default="")
+    node_id = Column(String, nullable=False)
+    node_title = Column(String, default="")
+    # pending | approved | rejected | submitted | cancelled | expired
+    status = Column(String, nullable=False, default="pending")
+    mode = Column(String, default="approve")           # approve | form
+    description = Column(Text, default="")             # 渲染后的说明文本
+    form_schema = Column(Text, default="{}")           # JSON: {display_fields, form_fields, decisions, comment, submit_text}
+    form_data = Column(Text, default="{}")             # JSON: 渲染后的只读待审内容快照
+    filled_data = Column(Text, default="{}")           # JSON: 人工填写结果（form 模式）
+    comment_required = Column(Integer, nullable=False, default=0)
+    decision = Column(String, nullable=True)           # approved | rejected | submitted
+    comment = Column(Text, default="")
+    operator = Column(String, default="")
+    assignee = Column(String, default="")
+    due_at = Column(String, nullable=True)             # NULL = 不设超时
+    timeout_action = Column(String, default="keep_pending")
+    trigger_source = Column(String, nullable=True)     # manual | schedule
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    decided_at = Column(String, nullable=True)
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
 class Schedule(Base):

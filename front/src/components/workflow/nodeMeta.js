@@ -38,4 +38,9 @@ export const TYPE_META = {
     color: '#059669',
     icon: svg('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><line x1="10" y1="21" x2="14" y2="3"/>'),
   },
+  human: {
+    name: '人工',
+    color: '#d97706',
+    icon: svg('<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><polyline points="16 11 17.5 12.5 21 9"/>'),
+  },
 }

@@ -1354,13 +1354,8 @@ export async function deleteWorkflowRun(workflowId, runId) {
   return res.json()
 }
 
-export async function runWorkflowStream(workflowId, inputs, { onStarted, onNodeStarted, onNodeProgress, onNodeFinished, onNodeFailed, onNodeSkipped, onFinished } = {}) {
-
-  const res = await fetch(`${API}/api/workflows/${workflowId}/run`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ inputs }),
-  })
+/** 消费一条 SSE 工作流流，按事件类型分发到回调。run/resume 共用。 */
+async function consumeWorkflowStream(res, cb) {
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
     throw new Error(e.detail || `HTTP ${res.status}`)
@@ -1381,16 +1376,93 @@ export async function runWorkflowStream(workflowId, inputs, { onStarted, onNodeS
       try {
         const data = JSON.parse(payload)
         const t = data.type
-        if (t === 'workflow_started') onStarted?.(data)
-        else if (t === 'node_started') onNodeStarted?.(data)
-        else if (t === 'node_progress') onNodeProgress?.(data)
-        else if (t === 'node_finished') onNodeFinished?.(data)
-        else if (t === 'node_failed') onNodeFailed?.(data)
-        else if (t === 'node_skipped') onNodeSkipped?.(data)
-        else if (t === 'workflow_finished') onFinished?.(data)
+        if (t === 'workflow_started') cb.onStarted?.(data)
+        else if (t === 'workflow_resumed') cb.onResumed?.(data)
+        else if (t === 'node_started') cb.onNodeStarted?.(data)
+        else if (t === 'node_progress') cb.onNodeProgress?.(data)
+        else if (t === 'node_finished') cb.onNodeFinished?.(data)
+        else if (t === 'node_failed') cb.onNodeFailed?.(data)
+        else if (t === 'node_skipped') cb.onNodeSkipped?.(data)
+        else if (t === 'node_waiting') cb.onNodeWaiting?.(data)
+        else if (t === 'node_resumed') cb.onNodeResumed?.(data)
+        else if (t === 'node_replayed') cb.onNodeReplayed?.(data)
+        else if (t === 'workflow_finished') cb.onFinished?.(data)
+        else if (t === 'error') cb.onError?.(data)
       } catch { /* skip malformed */ }
     }
   }
+}
+
+export async function runWorkflowStream(workflowId, inputs, cb = {}) {
+  const res = await fetch(`${API}/api/workflows/${workflowId}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inputs }),
+  })
+  return consumeWorkflowStream(res, cb)
+}
+
+/** 人工任务处理完成后续跑（SSE），事件协议与 run 一致。 */
+export async function resumeWorkflowStream(workflowId, runId, taskId, cb = {}) {
+  const res = await fetch(`${API}/api/workflows/${workflowId}/runs/${runId}/resume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_id: taskId }),
+  })
+  return consumeWorkflowStream(res, cb)
+}
+
+// ───────────────────── 人工节点任务（Human Tasks） ─────────────────────
+
+export async function fetchHumanTasks({ status = '', workflowId = '', limit = 50 } = {}) {
+  const qs = new URLSearchParams()
+  if (status) qs.set('status', status)
+  if (workflowId) qs.set('workflow_id', workflowId)
+  qs.set('limit', String(limit))
+  const res = await fetch(`${API}/api/workflow/human-tasks?${qs}`)
+  if (!res.ok) throw new Error('获取人工任务失败')
+  return res.json()
+}
+
+export async function getHumanTask(taskId) {
+  const res = await fetch(`${API}/api/workflow/human-tasks/${taskId}`)
+  if (!res.ok) throw new Error('获取人工任务详情失败')
+  return res.json()
+}
+
+export async function submitHumanDecision(taskId, payload) {
+  const res = await fetch(`${API}/api/workflow/human-tasks/${taskId}/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const detail = data?.detail
+    const msg = typeof detail === 'string' ? detail : (detail?.message || '提交失败')
+    const err = new Error(msg)
+    err.fieldErrors = typeof detail === 'object' ? detail.field_errors : null
+    throw err
+  }
+  return data
+}
+
+export async function batchDecideHumanTasks(payload) {
+  const res = await fetch(`${API}/api/workflow/human-tasks/batch-decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data?.detail || '批量处理失败')
+  return data
+}
+
+export async function cancelWorkflowRun(workflowId, runId) {
+  const res = await fetch(`${API}/api/workflows/${workflowId}/runs/${runId}/cancel`, { method: 'POST' })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data?.detail || '取消失败')
+  return data
 }
 
 // ───────────────────── 定时调度（Scheduler） ─────────────────────

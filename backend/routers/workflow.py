@@ -8,14 +8,20 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import asyncio
+from datetime import datetime
+
 from database import get_db
 from config import settings
 from models import WorkflowRun
-from schemas import RunWorkflowRequest, WorkflowSaveRequest
+from schemas import (HumanBatchDecisionRequest, HumanDecisionRequest,
+                     ResumeRunRequest, RunWorkflowRequest, WorkflowSaveRequest)
 from services.agent_service import AgentService
+from services.human_task_service import HumanTaskService
 from services.kb_service import KBService
+from services.notification_channel import NotificationChannel
 from services.skill_service import SkillService
-from services.workflow_engine import run_stream
+from services.workflow_engine import resume_run_background, resume_run_stream, run_stream
 from services.workflow_service import WorkflowService, validate_definition
 
 router = APIRouter()
@@ -28,6 +34,7 @@ NODE_TYPES = [
     {"type": "llm", "name": "大模型", "icon": "✨", "desc": "通用 LLM 补全"},
     {"type": "condition", "name": "条件分支", "icon": "⇄", "desc": "true / false 路由"},
     {"type": "code", "name": "代码", "icon": "</>", "desc": "沙箱 Python"},
+    {"type": "human", "name": "人工", "icon": "👤", "desc": "人工处理 · 审批/填表"},
 ]
 
 
@@ -177,9 +184,119 @@ async def delete_workflow_run(workflow_id: str, run_id: str, db: AsyncSession = 
     row = await db.get(WorkflowRun, run_id)
     if not row or row.workflow_id != workflow_id:
         raise HTTPException(404, "运行记录不存在")
+    # 连带清理该运行的人工任务（含待办）
+    await HumanTaskService.delete_of_run(db, run_id)
     await db.delete(row)
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/workflows/{workflow_id}/runs/{run_id}/cancel")
+async def cancel_workflow_run(workflow_id: str, run_id: str, db: AsyncSession = Depends(get_db)):
+    """取消运行：正在执行/等待人工处理的运行都可取消，等待中的任务一并作废。"""
+    row = await db.get(WorkflowRun, run_id)
+    if not row or row.workflow_id != workflow_id:
+        raise HTTPException(404, "运行记录不存在")
+    if row.status in ("succeeded", "failed", "cancelled"):
+        return {"ok": True, "status": row.status, "cancelled_tasks": 0}
+    row.status = "cancelled"
+    row.finished_at = datetime.now().isoformat()
+    cancelled = await HumanTaskService.cancel_pending_of_run(db, run_id)
+    await db.commit()
+    return {"ok": True, "status": "cancelled", "cancelled_tasks": cancelled}
+
+
+@router.post("/workflows/{workflow_id}/runs/{run_id}/resume")
+async def resume_workflow_run(workflow_id: str, run_id: str, req: ResumeRunRequest,
+                              db: AsyncSession = Depends(get_db)):
+    """人工任务处理完成后续跑（SSE）。仅在 run 处于 waiting 时可用。"""
+    row = await db.get(WorkflowRun, run_id)
+    if not row or row.workflow_id != workflow_id:
+        raise HTTPException(404, "运行记录不存在")
+    return StreamingResponse(
+        resume_run_stream(run_id, req.task_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ─────────────────────── 人工节点任务 ───────────────────────
+
+
+@router.get("/workflow/human-tasks")
+async def list_human_tasks(status: str | None = None, workflow_id: str | None = None,
+                           limit: int = 50, db: AsyncSession = Depends(get_db)):
+    """待办列表：默认全部，status=pending 只看待处理。"""
+    return await HumanTaskService.list_tasks(
+        db, status=status, workflow_id=workflow_id, limit=limit)
+
+
+@router.get("/workflow/human-tasks/{task_id}")
+async def get_human_task(task_id: str, db: AsyncSession = Depends(get_db)):
+    task = await HumanTaskService.get(db, task_id)
+    if not task:
+        raise HTTPException(404, "人工任务不存在")
+    return task
+
+
+@router.post("/workflow/human-tasks/{task_id}/decision")
+async def decide_human_task(task_id: str, req: HumanDecisionRequest,
+                            db: AsyncSession = Depends(get_db)):
+    """处理单条人工任务。
+
+    auto_resume=false 时前端需自行调用 resume SSE 续播（编辑器场景，已确认的主路径）。
+    """
+    try:
+        updated = await HumanTaskService.decide(
+            db, task_id, decision=req.decision, comment=req.comment,
+            data=req.data or {}, operator=req.operator)
+    except ValueError as e:
+        # 表单字段级错误以 JSON 串抛出，转为结构化响应
+        raw = str(e)
+        if raw.startswith("{"):
+            try:
+                raise HTTPException(400, {"message": "表单校验未通过", "field_errors": json.loads(raw)})
+            except ValueError:
+                pass
+        raise HTTPException(400, raw)
+    if updated is None:
+        raise HTTPException(409, "该任务已处理或不存在")
+
+    await NotificationChannel.dispatch(NotificationChannel.TASK_DECIDED, {
+        "task_id": task_id, "run_id": updated["run_id"],
+        "workflow_name": updated["workflow_name"], "decision": updated["decision"],
+        "operator": updated["operator"], "comment": updated["comment"],
+        "decided_at": updated["decided_at"],
+    })
+
+    if req.auto_resume:
+        # 后台续跑：消费完事件流并落库，不占用当前请求
+        asyncio.create_task(resume_run_background(updated["run_id"], task_id))
+    return {"ok": True, "task": updated, "resumed": req.auto_resume}
+
+
+@router.post("/workflow/human-tasks/batch-decision")
+async def batch_decide_human_tasks(req: HumanBatchDecisionRequest,
+                                   db: AsyncSession = Depends(get_db)):
+    """批量处理（仅审批模式任务；表单任务需逐条填写）。"""
+    if not req.task_ids:
+        raise HTTPException(400, "请选择要处理的任务")
+    try:
+        result = await HumanTaskService.batch_decide(
+            db, req.task_ids, decision=req.decision,
+            comment=req.comment, operator=req.operator)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    resumed = []
+    if req.auto_resume:
+        # 逐条查询 run_id 后后台续跑（部分成功语义：失败条目不触发）
+        for tid in result["succeeded"]:
+            task = await HumanTaskService.get(db, tid)
+            if task:
+                asyncio.create_task(resume_run_background(task["run_id"], tid))
+                resumed.append(tid)
+    return {**result, "resumed": resumed}
 
 
 # ─────────────────────── 节点面板数据源 ───────────────────────
