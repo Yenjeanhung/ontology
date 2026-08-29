@@ -1,8 +1,9 @@
-<script setup>
-import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
-import { fetchPipelineStatus } from '../api'
+﻿<script setup>
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
+import { fetchPipelineStatus, fetchWorkflows } from '../api'
 
-// 蛇形流水线：上排 00→01→02（左→右），下排 03→04→05→06（右→左）
+
+// 蛇形流水线：上排 00→01→02→03（左→右），下排 04→05→06（右→左）
 const flowSteps = [
   {
     key: 'ontology',
@@ -32,22 +33,22 @@ const flowSteps = [
     action: '进入知识库',
   },
   {
-    key: 'graph',
-    number: '03',
-    to: '/graph',
-    label: '图谱',
-    role: '关系支线',
-    line: '抽取实体与关系构建知识图谱，沉淀结构化事实。',
-    action: '查看图谱',
-  },
-  {
     key: 'vectors',
-    number: '04',
+    number: '03',
     to: '/vectors',
     label: '向量',
     role: '召回支线',
     line: '分片向量化入索引，支撑语义相似召回。',
     action: '查看向量',
+  },
+  {
+    key: 'graph',
+    number: '04',
+    to: '/graph',
+    label: '图谱',
+    role: '关系支线',
+    line: '抽取实体与关系构建知识图谱，沉淀结构化事实。',
+    action: '查看图谱',
   },
   {
     key: 'rag',
@@ -69,19 +70,59 @@ const flowSteps = [
   },
 ]
 
-// 流水线连线（viewBox 0 0 1180 520，与卡片栅格对齐）
+// 流水线连线（viewBox 0 0 1180 360，与 4×2 卡片栅格对齐）
 const flowEdges = [
-  { id: 'e1', from: 'ontology', to: 'files', d: 'M378 119 L400 119', dur: '1.4s', half: '0.7s' },
-  { id: 'e2', from: 'files', to: 'kb', d: 'M779 119 L801 119', dur: '1.4s', half: '0.7s' },
-  { id: 'e3', from: 'kb', to: 'graph', d: 'M991 240 C991 258 1041 244 1041 261', dur: '1.8s', half: '0.9s' },
-  { id: 'e4', from: 'graph', to: 'vectors', d: 'M902 381 L880 381', dur: '1.4s', half: '0.7s' },
-  { id: 'e5', from: 'vectors', to: 'rag', d: 'M601 381 L579 381', dur: '1.4s', half: '0.7s' },
-  { id: 'e6', from: 'rag', to: 'agent', d: 'M300 381 L278 381', dur: '1.4s', half: '0.7s' },
+  { id: 'e1', from: 'ontology', to: 'files', d: 'M283 98 L305 98', dur: '1.4s', half: '0.7s' },
+  { id: 'e2', from: 'files', to: 'kb', d: 'M568 98 L590 98', dur: '1.4s', half: '0.7s' },
+  { id: 'e3', from: 'kb', to: 'vectors', d: 'M853 98 L875 98', dur: '1.4s', half: '0.7s' },
+  { id: 'e4', from: 'vectors', to: 'graph', d: 'M1063 198 C1063 215 1063 215 1063 218', dur: '1.8s', half: '0.9s' },
+  { id: 'e5', from: 'graph', to: 'rag', d: 'M853 318 L831 318', dur: '1.4s', half: '0.7s' },
+  { id: 'e6', from: 'rag', to: 'agent', d: 'M568 318 L546 318', dur: '1.4s', half: '0.7s' },
 ]
 
 // ---------- 流水线实时状态（数字孪生大屏） ----------
 const live = reactive({})
 const pipelineActive = ref(0)
+
+// ---------- 工作流摘要（最重要功能：总数、运行中、节点数等） ----------
+const workflowSummary = reactive({
+  total: 0,
+  running: 0,
+  enabled: 0,
+  recent: [],          // 最近 3 个工作流（最新创建）
+  loading: false,
+})
+
+const workflowActive = computed(
+  () => workflowSummary.running > 0,
+)
+const pipelineTotal = computed(
+  () => pipelineActive.value + workflowSummary.running,
+)
+
+async function loadWorkflowSummary() {
+  workflowSummary.loading = true
+  try {
+    const list = await fetchWorkflows()
+    const items = Array.isArray(list) ? list : []
+    // 后端可能返回的状态字段（兼容 enabled / status / running_count）
+    workflowSummary.total = items.length
+    workflowSummary.enabled = items.filter(w => w?.enabled !== false && w?.status !== 'disabled').length
+    workflowSummary.running =
+      items.reduce((sum, w) => sum + (Number(w?.running_count) || 0), 0) +
+      items.filter(w => w?.status === 'running').length
+    workflowSummary.recent = [...items]
+      .sort((a, b) => {
+        const ta = new Date(a?.updated_at || a?.created_at || 0).getTime()
+        const tb = new Date(b?.updated_at || b?.created_at || 0).getTime()
+        return tb - ta
+      })
+      .slice(0, 3)
+  } catch {
+    // 静默失败：首页不应阻塞其他数据
+  }
+  workflowSummary.loading = false
+}
 
 const STAGE_GROUPS = {
   kb: ['preparing', 'parsing', 'chunking'],
@@ -119,21 +160,45 @@ function isEdgeActive(e) {
   return !!live[e.to]
 }
 
+function stateLabel(wf) {
+  if (wf?.status === 'running' || wf?.running_count) return '运行中'
+  if (wf?.enabled === false || wf?.status === 'disabled') return '已停用'
+  if (wf?.status === 'error' || wf?.status === 'failed') return '异常'
+  return '已启用'
+}
+function stateClass(wf) {
+  if (wf?.status === 'running' || wf?.running_count) return 'state-running'
+  if (wf?.enabled === false || wf?.status === 'disabled') return 'state-off'
+  if (wf?.status === 'error' || wf?.status === 'failed') return 'state-error'
+  return 'state-on'
+}
+
 let pollTimer = null
+let workflowTimer = null
 async function pollStatus() {
   try { applyStatus(await fetchPipelineStatus()) } catch {}
 }
+async function pollWorkflow() {
+  await loadWorkflowSummary()
+}
 function onVisibility() {
-  if (!document.hidden) pollStatus()
+  if (!document.hidden) {
+    pollStatus()
+    pollWorkflow()
+  }
 }
 
 onMounted(() => {
   pollStatus()
+  pollWorkflow()
   pollTimer = setInterval(pollStatus, 5000)
+  // 工作流更新较慢，15s 轮询一次即可
+  workflowTimer = setInterval(pollWorkflow, 15000)
   document.addEventListener('visibilitychange', onVisibility)
 })
 onBeforeUnmount(() => {
   clearInterval(pollTimer)
+  clearInterval(workflowTimer)
   document.removeEventListener('visibilitychange', onVisibility)
 })
 </script>
@@ -145,15 +210,23 @@ onBeforeUnmount(() => {
         <h1>KnowSource 知源知识中枢</h1>
         <p>从文件和数据采集开始，进入知识库加工，经图谱与向量索引，最终汇入知识库检索与智能体问答。</p>
       </div>
-      <div v-if="pipelineActive" class="pipeline-pill" role="status">
+      <div v-if="pipelineTotal" class="pipeline-pill" role="status">
         <i aria-hidden="true"></i>
-        流水线运行中 · {{ pipelineActive }} 个任务
+        <template v-if="pipelineActive && workflowActive">
+          流水线 + 工作流运行中 · 共 {{ pipelineTotal }} 个任务
+        </template>
+        <template v-else-if="workflowActive">
+          工作流运行中 · {{ workflowSummary.running }} 个任务
+        </template>
+        <template v-else>
+          流水线运行中 · {{ pipelineActive }} 个任务
+        </template>
       </div>
     </header>
 
     <section class="flow-band" aria-label="系统菜单流程">
       <div class="flow-map">
-        <svg class="flow-links" viewBox="0 0 1180 520" preserveAspectRatio="none" aria-hidden="true">
+        <svg class="flow-links" viewBox="0 0 1180 360" preserveAspectRatio="none" aria-hidden="true">
           <defs>
             <marker id="flow-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
               <path d="M1 1 9 5 1 9Z" />
@@ -320,7 +393,7 @@ onBeforeUnmount(() => {
                 <circle class="token yellow" cx="291" cy="69" r="13" />
               </g>
 
-              <g v-else class="art-scene graph-art">
+              <g v-else-if="step.key === 'graph'" class="art-scene graph-art">
                 <ellipse class="art-shadow" cx="180" cy="198" rx="118" ry="18" />
                 <path class="iso-base" d="M57 160 164 101 306 162 201 219Z" />
                 <path class="cloud-wall" d="M111 92 C119 64 150 49 183 60 C200 42 233 41 255 59 C282 58 304 77 306 105 C329 122 321 156 293 168 L141 194 C103 194 73 172 73 142 C52 123 65 92 111 92Z" />
@@ -340,6 +413,41 @@ onBeforeUnmount(() => {
                 <path class="tube-line" d="M103 139 C126 145 141 150 164 144" />
                 <circle class="token yellow" cx="163" cy="144" r="7" />
               </g>
+
+              <g v-else class="art-scene workflow-art">
+                <ellipse class="art-shadow" cx="180" cy="198" rx="118" ry="18" />
+                <path class="iso-base" d="M57 160 164 101 306 162 201 219Z" />
+                <!-- 节点连线：从左到右 3 个节点 -->
+                <rect class="wf-node wf-node-a" x="62" y="76" width="56" height="42" rx="8" />
+                <circle class="wf-port port-in" cx="62" cy="97" r="3.5" />
+                <circle class="wf-port port-out" cx="118" cy="97" r="3.5" />
+                <path class="wf-icon icon-input" d="M78 96 L86 88 94 96 92 96 92 104 80 104 80 96Z" />
+
+                <rect class="wf-node wf-node-b" x="152" y="106" width="70" height="48" rx="9" />
+                <circle class="wf-port port-in" cx="152" cy="130" r="3.5" />
+                <circle class="wf-port port-out" cx="222" cy="130" r="3.5" />
+                <path class="wf-icon icon-kb" d="M168 122 L194 116 220 122 220 140 194 146 168 140Z" />
+                <path class="wf-icon icon-kb-line" d="M181 130 207 130" />
+
+                <rect class="wf-node wf-node-c" x="252" y="76" width="56" height="42" rx="8" />
+                <circle class="wf-port port-in" cx="252" cy="97" r="3.5" />
+                <circle class="wf-port port-out" cx="308" cy="97" r="3.5" />
+                <path class="wf-icon icon-agent" d="M276 92 L290 84 304 92 304 104 290 112 276 104Z" />
+                <circle class="wf-icon icon-agent-eye" cx="284" cy="98" r="2" />
+                <circle class="wf-icon icon-agent-eye" cx="296" cy="98" r="2" />
+
+                <!-- 连线 -->
+                <path class="wf-edge" d="M118 97 L152 130" />
+                <path class="wf-edge" d="M222 130 L252 97" />
+
+                <!-- 角标气泡：闪电 -->
+                <path class="wf-bubble" d="M236 50 L268 50 268 66 256 66 252 72 252 66 236 66Z" />
+                <path class="wf-bolt" d="M252 54 L246 62 250 62 247 66 256 58 252 58Z" />
+
+                <!-- token -->
+                <circle class="token yellow" cx="50" cy="62" r="7" />
+                <circle class="token green small" cx="318" cy="172" r="6" />
+              </g>
             </svg>
           </div>
 
@@ -349,6 +457,7 @@ onBeforeUnmount(() => {
               <span v-if="step.key === 'ontology'" class="define-chip">定义层</span>
               <span v-else-if="step.key === 'files'" class="start-chip">START</span>
               <span v-else-if="step.key === 'agent'" class="agent-chip">AGENT</span>
+              <span v-else-if="step.key === 'workflow'" class="flow-chip">FLOW</span>
               <span v-else-if="step.key === 'vectors' || step.key === 'graph'" class="branch-chip">知识库支线</span>
             </div>
             <span class="flow-role">{{ step.role }}</span>
@@ -377,21 +486,103 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <!-- 工作流：最重要功能，整行大卡片，强调展示 -->
+    <section class="workflow-hero-band" aria-label="工作流">
+      <RouterLink to="/workflows" class="workflow-hero" aria-label="进入工作流">
+        <div class="hero-art" aria-hidden="true">
+          <svg viewBox="0 0 360 230" class="menu-art">
+            <g class="art-grid">
+              <path d="M25 168 142 104 325 182" />
+              <path d="M66 194 183 130 324 194" />
+              <path d="M80 84 292 201" />
+              <path d="M150 47 338 151" />
+              <path d="M35 151 197 61" />
+              <path d="M95 204 308 84" />
+            </g>
+
+            <ellipse class="art-shadow" cx="180" cy="198" rx="118" ry="18" />
+            <path class="iso-base" d="M57 160 164 101 306 162 201 219Z" />
+
+            <!-- 节点 -->
+            <rect class="wf-node wf-node-a" x="62" y="68" width="56" height="42" rx="8" />
+            <circle class="wf-port port-in" cx="62" cy="89" r="4" />
+            <circle class="wf-port port-out" cx="118" cy="89" r="4" />
+            <path class="wf-icon icon-input" d="M78 88 L86 80 94 88 92 88 92 96 80 96 80 88Z" />
+
+            <rect class="wf-node wf-node-b" x="152" y="100" width="70" height="48" rx="9" />
+            <circle class="wf-port port-in" cx="152" cy="124" r="4" />
+            <circle class="wf-port port-out" cx="222" cy="124" r="4" />
+            <path class="wf-icon icon-kb" d="M168 116 L194 110 220 116 220 134 194 140 168 134Z" />
+            <path class="wf-icon icon-kb-line" d="M181 124 207 124" />
+
+            <rect class="wf-node wf-node-c" x="252" y="68" width="62" height="42" rx="8" />
+            <circle class="wf-port port-in" cx="252" cy="89" r="4" />
+            <circle class="wf-port port-out" cx="314" cy="89" r="4" />
+            <path class="wf-icon icon-agent" d="M276 84 L290 76 304 84 304 96 290 104 276 96Z" />
+            <circle class="wf-icon icon-agent-eye" cx="284" cy="90" r="2" />
+            <circle class="wf-icon icon-agent-eye" cx="296" cy="90" r="2" />
+
+            <!-- 连线 -->
+            <path class="wf-edge" d="M118 89 L152 124" />
+            <path class="wf-edge" d="M222 124 L252 89" />
+
+            <!-- 标签气泡 -->
+            <path class="wf-label-bubble" d="M85 50 L155 50 155 66 122 66 116 72 116 66 85 66Z" />
+            <path class="wf-label-line" d="M98 58 142 58" />
+
+            <!-- 装饰 token -->
+            <circle class="token yellow" cx="48" cy="60" r="7" />
+            <circle class="token green small" cx="320" cy="170" r="7" />
+          </svg>
+        </div>
+
+        <div class="hero-copy">
+          <span class="hero-flag">可视化编排</span>
+          <h2>把以上能力串成一条流水线</h2>
+          <p>节点 + 连线，单步调试、参数预览、失败重试，把人工流程沉淀为可复用的自动化工作流。</p>
+          <div class="hero-stats" v-if="workflowSummary.total">
+            <span><b>{{ workflowSummary.total }}</b> 个工作流</span>
+            <span v-if="workflowSummary.running"><b>{{ workflowSummary.running }}</b> 运行中</span>
+            <span v-else><b>{{ workflowSummary.enabled }}</b> 已启用</span>
+          </div>
+          <span class="hero-cta">
+            打开工作流
+            <svg viewBox="0 0 18 18" aria-hidden="true">
+              <path d="M6.5 3.75 11.75 9 6.5 14.25" />
+            </svg>
+          </span>
+        </div>
+
+        <div class="hero-recent" v-if="workflowSummary.recent.length">
+          <div class="recent-head">
+            <strong>最近工作流</strong>
+            <RouterLink to="/workflows" class="recent-more">全部</RouterLink>
+          </div>
+          <ul class="recent-list">
+            <li v-for="wf in workflowSummary.recent" :key="wf?.id || wf?.name">
+              <span class="recent-name">{{ wf?.name || '未命名工作流' }}</span>
+              <span :class="['recent-state', stateClass(wf)]">{{ stateLabel(wf) }}</span>
+            </li>
+          </ul>
+        </div>
+      </RouterLink>
+    </section>
+
     <section class="workflow-text" aria-label="流程说明">
       <div class="workflow-item">
         <span>01</span>
         <strong>资料先进入文件/数据采集</strong>
-        <p>原始文件和采集内容先统一归档，后续知识库从这里选择可处理资料。</p>
+        <p>原始文件和采集内容统一归档，知识库从这里选择可处理资料。</p>
       </div>
       <div class="workflow-item">
         <span>02</span>
-        <strong>知识库承担加工和组织</strong>
-        <p>知识库把资料变成可检索的分片，同时派生向量索引和实体关系图谱。</p>
+        <strong>知识库承担加工与组织</strong>
+        <p>把资料变为可检索分片，并派生向量索引与实体关系图谱。</p>
       </div>
       <div class="workflow-item">
         <span>03</span>
-        <strong>检索与智能体是面向使用者的主出口</strong>
-        <p>知识库检索基于向量召回生成可追溯回答；智能体在其上融合图谱事实与技能。</p>
+        <strong>检索 / 智能体 / 工作流是主出口</strong>
+        <p>检索基于向量召回；智能体融合图谱事实与技能；工作流编排以上所有能力。</p>
       </div>
     </section>
   </div>
@@ -456,23 +647,23 @@ onBeforeUnmount(() => {
 
 .home-title-block h1 {
   margin: 0;
-  font-size: 32px;
-  line-height: 1.18;
+  font-size: 26px;
+  line-height: 1.2;
   letter-spacing: 0;
 }
 
 .home-title-block p {
-  margin-top: 10px;
+  margin-top: 6px;
   color: var(--c-secondary);
-  font-size: 15px;
-  line-height: 1.8;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .flow-band {
   position: relative;
-  margin: 24px -32px 0;
-  padding: 30px 32px;
-  min-height: clamp(650px, calc(100dvh - 230px), 1040px);
+  margin: 16px -32px 0;
+  padding: 18px 28px;
+  min-height: 0;
   display: flex;
   align-items: center;
   overflow: hidden;
@@ -486,9 +677,9 @@ onBeforeUnmount(() => {
   z-index: 1;
   width: 100%;
   display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  grid-template-rows: minmax(238px, auto) minmax(238px, auto);
-  gap: 24px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: minmax(196px, auto) minmax(196px, auto);
+  gap: 16px;
   max-width: 1180px;
   margin: 0 auto;
 }
@@ -569,8 +760,8 @@ onBeforeUnmount(() => {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  min-height: 206px;
-  padding: 12px;
+  min-height: 168px;
+  padding: 10px;
   border: 1px solid var(--c-border);
   border-radius: 8px;
   background: var(--c-panel-elevated);
@@ -695,18 +886,18 @@ onBeforeUnmount(() => {
   background: linear-gradient(90deg, #10270f, #1b431b);
 }
 
-.step-ontology { grid-column: 1 / span 4; grid-row: 1; }
-.step-files { grid-column: 5 / span 4; grid-row: 1; }
-.step-kb { grid-column: 9 / span 4; grid-row: 1; }
-/* 下排蛇形：03 图谱在最右，向左流经 04 向量 → 05 检索 → 06 智能体 */
-.step-graph { grid-column: 10 / span 3; grid-row: 2; }
-.step-vectors { grid-column: 7 / span 3; grid-row: 2; }
-.step-rag { grid-column: 4 / span 3; grid-row: 2; }
-.step-agent { grid-column: 1 / span 3; grid-row: 2; }
+.step-ontology { grid-column: 1; grid-row: 1; }
+.step-files { grid-column: 2; grid-row: 1; }
+.step-kb { grid-column: 3; grid-row: 1; }
+.step-vectors { grid-column: 4; grid-row: 1; }
+/* 下排蛇形回流：图谱在最右，向左流经 检索 → 智能体 */
+.step-graph { grid-column: 4; grid-row: 2; }
+.step-rag { grid-column: 3; grid-row: 2; }
+.step-agent { grid-column: 2; grid-row: 2; }
 
 .art-panel {
-  height: 126px;
-  min-height: 126px;
+  height: 96px;
+  min-height: 96px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -802,16 +993,16 @@ onBeforeUnmount(() => {
 
 .flow-copy h2 {
   margin: 4px 0 0;
-  font-size: 18px;
-  line-height: 1.25;
+  font-size: 16px;
+  line-height: 1.2;
   letter-spacing: 0;
 }
 
 .flow-copy p {
-  margin: 7px 0 0;
+  margin: 5px 0 0;
   color: var(--c-secondary);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
 :root[data-theme='dark'] .flow-copy p {
@@ -844,34 +1035,227 @@ onBeforeUnmount(() => {
   color: var(--c-accent);
 }
 
+/* ===== 工作流整行大卡片 ===== */
+.workflow-hero-band {
+  max-width: 1180px;
+  margin: 16px auto 0;
+}
+
+.workflow-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr) minmax(0, 0.9fr);
+  align-items: center;
+  gap: 18px;
+  padding: 18px 20px;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(53, 198, 211, 0.08), rgba(124, 58, 237, 0.06));
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.08);
+  color: var(--c-fg);
+  text-decoration: none;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.workflow-hero:hover,
+.workflow-hero:focus-visible {
+  transform: translateY(-3px);
+  border-color: var(--c-accent);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+  outline: none;
+}
+
+.hero-art {
+  height: 150px;
+  min-height: 150px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hero-art .menu-art {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.hero-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.hero-flag {
+  align-self: flex-start;
+  margin-bottom: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+  color: #0e6b85;
+  background: rgba(53, 198, 211, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(14, 107, 133, 0.2);
+}
+
+.hero-copy h2 {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.hero-copy p {
+  margin: 7px 0 0;
+  color: var(--c-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.hero-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--c-secondary);
+}
+
+.hero-stats b {
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--c-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 12px;
+  color: var(--c-accent);
+  font-size: 13.5px;
+  font-weight: 800;
+}
+
+.hero-cta svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hero-recent {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-left: 18px;
+  border-left: 1px solid var(--c-border);
+}
+
+.recent-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.recent-head strong {
+  font-size: 13px;
+}
+
+.recent-more {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--c-accent);
+  text-decoration: none;
+}
+
+.recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.recent-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.recent-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-state {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.recent-state.state-on { color: #2f6b1c; background: rgba(134, 201, 87, 0.18); }
+.recent-state.state-off { color: #8a8a8a; background: rgba(0, 0, 0, 0.06); }
+.recent-state.state-running { color: #0b6d85; background: rgba(53, 198, 211, 0.18); }
+.recent-state.state-error { color: #c0392b; background: rgba(192, 57, 43, 0.14); }
+
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .recent-state.state-on { color: #b7ec86; }
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .recent-state.state-off { color: #9aa0a6; }
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .recent-state.state-running { color: #7ee3ec; }
+:root:is([data-theme='dark'], [data-theme='platform-dark']) .recent-state.state-error { color: #f1948a; }
+
+/* 工作流插画节点样式 */
+.wf-node { fill: #e8fcfc; stroke: #15313d; stroke-width: 2.2; stroke-linejoin: round; }
+.wf-node-a { fill: #f6bd4b; }
+.wf-node-b { fill: #83dce1; }
+.wf-node-c { fill: #9b7bf0; }
+.wf-port { fill: #15313d; }
+.wf-icon { fill: #15313d; }
+.wf-edge { fill: none; stroke: #0e6b85; stroke-width: 2.4; }
+.wf-label-bubble { fill: #f3feff; stroke: #15313d; stroke-width: 2; stroke-linejoin: round; }
+.wf-label-line { fill: none; stroke: #0f5c78; stroke-width: 2.2; stroke-linecap: round; }
+
 .workflow-text {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  gap: 12px;
   max-width: 1180px;
-  margin: 22px auto 0;
+  margin: 14px auto 0;
 }
 
 .workflow-item {
   display: grid;
   grid-template-columns: auto 1fr;
-  column-gap: 12px;
-  row-gap: 4px;
-  padding: 16px 0 0;
-  border-top: 1px solid var(--c-border);
+  column-gap: 10px;
+  row-gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+  background: var(--c-panel-elevated);
 }
 
 .workflow-item span {
   grid-row: span 2;
-  width: 34px;
-  height: 34px;
+  width: 26px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
   background: #e8faf9;
   color: #0f7893;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 900;
 }
 
@@ -881,14 +1265,15 @@ onBeforeUnmount(() => {
 }
 
 .workflow-item strong {
-  font-size: 14px;
-  line-height: 1.35;
+  font-size: 12.5px;
+  line-height: 1.3;
+  font-weight: 800;
 }
 
 .workflow-item p {
   color: var(--c-secondary);
-  font-size: 13px;
-  line-height: 1.65;
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
 .art-grid path {
@@ -1219,6 +1604,18 @@ onBeforeUnmount(() => {
   .step-vectors { order: 5; }
   .step-rag { order: 6; }
   .step-agent { order: 7; }
+
+  .workflow-hero {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .hero-recent {
+    grid-column: 1 / -1;
+    padding-left: 0;
+    padding-top: 14px;
+    border-left: none;
+    border-top: 1px solid var(--c-border);
+  }
 }
 
 @media (max-width: 640px) {
@@ -1253,6 +1650,23 @@ onBeforeUnmount(() => {
 
   .workflow-text {
     grid-template-columns: 1fr;
+  }
+
+  .workflow-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-art {
+    height: 130px;
+    min-height: 130px;
+  }
+
+  .hero-recent {
+    grid-column: auto;
+    padding-left: 0;
+    padding-top: 14px;
+    border-left: none;
+    border-top: 1px solid var(--c-border);
   }
 }
 </style>
