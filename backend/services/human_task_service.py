@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from models import WorkflowHumanTask
+from services.notification_hub import hub
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,7 @@ class HumanTaskService:
             await db.commit()
             await db.refresh(existing)
             logger.warning("[human] 任务已存在并重置 run=%s node=%s task=%s", run_id, node_id, existing.id)
+            hub.notify()
             return HumanTaskService._to_dict(existing)
 
         task = WorkflowHumanTask(
@@ -146,6 +148,7 @@ class HumanTaskService:
         await db.commit()
         await db.refresh(task)
         logger.info("[human] 任务已创建 %s (run=%s node=%s mode=%s)", task.id, run_id, node_id, mode)
+        hub.notify()   # 唤醒 SSE 推送：新待办生成
         return HumanTaskService._to_dict(task)
 
     # ─────────────────────── 查询 ───────────────────────
@@ -319,6 +322,7 @@ class HumanTaskService:
         await db.commit()
         await db.refresh(task)
         logger.info("[human] 任务已处理 %s → %s (operator=%s)", task_id, decision, operator)
+        hub.notify()   # 唤醒 SSE 推送：待办数减少
         return HumanTaskService._to_dict(task)
 
     @staticmethod
@@ -357,6 +361,8 @@ class HumanTaskService:
                     succeeded.append(tid)
             except ValueError as e:
                 failed.append({"id": tid, "reason": str(e)})
+        if succeeded:
+            hub.notify()
         return {"succeeded": succeeded, "failed": failed}
 
     # ─────────────────────── 其他状态流转 ───────────────────────
@@ -370,7 +376,10 @@ class HumanTaskService:
             .values(status="cancelled", updated_at=_now())
         )
         await db.commit()
-        return result.rowcount or 0
+        n = result.rowcount or 0
+        if n:
+            hub.notify()
+        return n
 
     @staticmethod
     async def delete_of_run(db: AsyncSession, run_id: str) -> int:
@@ -382,6 +391,7 @@ class HumanTaskService:
             await db.delete(r)
         if rows:
             await db.commit()
+            hub.notify()
         return len(rows)
 
     # ─────────────────────── 决策输出（注入引擎 context） ───────────────────────

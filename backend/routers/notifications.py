@@ -1,67 +1,48 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
+import asyncio
+import json
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models import File, OntologySuggestion, Schedule, WorkflowHumanTask
+from services.notification_hub import HEARTBEAT_SECONDS, compute_summary, hub
 
 router = APIRouter()
 
 
 @router.get("/notifications/summary")
 async def notification_summary(db: AsyncSession = Depends(get_db)):
-    """侧栏红点/顶栏消息总数聚合：待审核建议 + 处理中文件 + 失败文件 + 调度失败告警。"""
-    suggestions = int(
-        (await db.execute(
-            select(func.count()).where(OntologySuggestion.status == "ready")
-        )).scalar() or 0
-    )
-    processing = int(
-        (await db.execute(
-            select(func.count()).where(File.status.in_(["processing", "uploading"]))
-        )).scalar() or 0
-    )
-    failed = int(
-        (await db.execute(
-            select(func.count()).where(File.status == "failed")
-        )).scalar() or 0
-    )
-    # 定时调度：已达告警阈值且未静默的计划数（右上角消息中心提示）
-    schedule_alerts = int(
-        (await db.execute(
-            select(func.count()).where(
-                Schedule.alert_on_failure == 1,
-                Schedule.muted == 0,
-                Schedule.consecutive_failures >= Schedule.max_failures_alert,
-            )
-        )).scalar() or 0
-    )
+    """侧栏红点/顶栏消息总数聚合：待审核建议 + 处理中文件 + 失败文件 + 调度失败告警 + 人工待办。"""
+    return await compute_summary(db)
 
-    # 人工节点待办：等待人工处理的任务数
-    human_tasks = int(
-        (await db.execute(
-            select(func.count()).where(WorkflowHumanTask.status == "pending")
-        )).scalar() or 0
+
+@router.get("/notifications/stream")
+async def notification_stream(request: Request):
+    """通知计数推送（SSE）：仅在计数变化时下发，替代前端定时轮询。
+
+    事件体为 summary 对象；心跳为注释行 `: ping`（EventSource 忽略，仅用于保活）。
+    """
+    queue = await hub.subscribe()
+
+    async def gen():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                if payload is None:
+                    break
+                yield "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+        finally:
+            await hub.unsubscribe(queue)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-    items = []
-    if human_tasks:
-        items.append({"key": "human_tasks", "label": "待处理人工任务", "count": human_tasks, "to": "/human-tasks"})
-    if suggestions:
-        items.append({"key": "suggestions", "label": "待审核本体建议", "count": suggestions, "to": "/ontology/suggestions"})
-    if processing:
-        items.append({"key": "files_processing", "label": "文件处理中", "count": processing, "to": "/files"})
-    if failed:
-        items.append({"key": "files_failed", "label": "文件处理失败", "count": failed, "to": "/kb"})
-    if schedule_alerts:
-        items.append({"key": "schedule_alerts", "label": "定时任务连续失败", "count": schedule_alerts, "to": "/schedules"})
-
-    return {
-        "suggestions": suggestions,
-        "files_processing": processing,
-        "files_failed": failed,
-        "schedule_alerts": schedule_alerts,
-        "human_tasks": human_tasks,
-        "total": suggestions + processing + failed + schedule_alerts + human_tasks,
-        "items": items,
-    }

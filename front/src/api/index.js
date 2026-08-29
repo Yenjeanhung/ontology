@@ -2,6 +2,8 @@ const API = import.meta.env.DEV
   ? ''  // dev mode uses Vite proxy
   : 'http://localhost:8000'
 
+export { API }
+
 export async function fetchKbs() {
   return (await (await fetch(`${API}/api/kb`)).json()) || []
 }

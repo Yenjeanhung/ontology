@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from database import init_db
+from middleware.access_log import AccessLogMiddleware
 
 # 日志目录配置
 LOG_DIR = Path(__file__).parent.parent / "logs"
@@ -154,6 +155,14 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to sync skill files to disk")
 
+    # 服务层方法日志：AOP 式织入（放在调度启动前，使调度链路同样可追踪）
+    try:
+        from core.tracing import instrument_services
+
+        instrument_services()
+    except Exception:
+        logger.exception("Failed to instrument services")
+
     # 启动定时调度引擎（从历史计划恢复启用任务；失败不阻断主服务启动）
     logger.info("Starting scheduler engine...")
     try:
@@ -182,6 +191,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 访问日志：后加的更靠外，因此放在 CORS 之后以包住全部请求（含异常响应）
+app.add_middleware(AccessLogMiddleware)
 
 from routers import agent, config, entity, files, graph, kb, library, monitor, notifications, ontology, ontology_service, query, scheduler, vector_data, workflow
 

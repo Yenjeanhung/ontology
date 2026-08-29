@@ -2,7 +2,7 @@
 import { computed, onMounted, onBeforeUnmount, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchConfig } from './api'
-import { notifications, refreshNotifications } from './stores/notifications'
+import { bindVisibilityRefresh, notifications, refreshNotifications, startNotificationStream, stopNotificationStream } from './stores/notifications'
 import ToastContainer from './components/ToastContainer.vue'
 
 const router = useRouter()
@@ -223,7 +223,7 @@ function goHome() {
   router.push('/')
 }
 
-let pollTimer = null
+let unbindVisibility = null
 
 onMounted(() => {
   const saved = localStorage.getItem(SIDEBAR_STORAGE_KEY)
@@ -243,16 +243,18 @@ onMounted(() => {
     graphProvider.value = cfg.graph_provider || ''
   }).catch(() => {})
 
-  // 消息计数：首屏 + 每 30s 轮询（处理中/失败文件数会随任务推进变化）
+  // 消息计数：首屏拉一次；之后由 SSE 长连接推送变更，不再定时轮询
   refreshNotifications()
-  pollTimer = setInterval(refreshNotifications, 30000)
+  startNotificationStream()
+  unbindVisibility = bindVisibilityRefresh()
 
   window.addEventListener('pointerdown', onPointerDown)
   window.addEventListener('keydown', onKeydown)
 })
 
 onBeforeUnmount(() => {
-  clearInterval(pollTimer)
+  stopNotificationStream()
+  if (unbindVisibility) unbindVisibility()
   window.removeEventListener('pointerdown', onPointerDown)
   window.removeEventListener('keydown', onKeydown)
 })

@@ -165,5 +165,26 @@ class Settings(BaseSettings):
     # SSE 定时推送组件状态的间隔（秒）；打开监控页面时生效
     MONITOR_PUSH_INTERVAL_SECONDS: int = 30
 
+    # ───────────────────────── 服务层方法日志（AOP 式自动织入）─────────────────────────
+    # 启动时扫描 services 包，为类的公共方法统一织入「入参 + 返回值 + 耗时」日志
+    SERVICE_TRACE_ENABLED: bool = True
+    # 正常调用的日志级别（DEBUG=只进 debug.log，不干扰控制台；INFO=控制台可见）
+    SERVICE_TRACE_LEVEL: str = "DEBUG"
+    # 超过该耗时（毫秒）按 WARNING 输出，用于发现慢方法
+    SERVICE_TRACE_SLOW_MS: int = 1000
+    # 是否记录入参（自动脱敏 password/token/api_key 等，并按长度截断）
+    SERVICE_TRACE_LOG_ARGS: bool = True
+    SERVICE_TRACE_MAX_ARG_LEN: int = 300
+    # 不织入的类名（逗号分隔，支持 fnmatch 通配），如 NotificationChannel
+    SERVICE_TRACE_EXCLUDE: str = "NotificationChannel"
+
+    # ───────────────────────── HTTP 访问日志 ──────────────────────────
+    # 由中间件统一记录：IP 方法 路径 -> 状态码 耗时（等价于 AOP 的请求切面）
+    ACCESS_LOG_ENABLED: bool = True
+    # 耗时超过该值（毫秒）按 WARNING 输出，便于发现慢接口
+    ACCESS_LOG_SLOW_MS: int = 3000
+    # 不记录日志的路径（逗号分隔）：前端高频轮询等，避免刷屏
+    ACCESS_LOG_SKIP_PATHS: str = "/api/notifications/summary"
+
 
 settings = Settings()

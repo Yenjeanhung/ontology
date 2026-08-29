@@ -1,10 +1,10 @@
 <script setup>
 /** 人工节点待办中心：待处理列表 + 批量处理 + 详情抽屉 + 已处理回看。 */
-import { ref, computed, onMounted } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchHumanTasks, submitHumanDecision, batchDecideHumanTasks } from '../../api'
 import { useToast } from '../../composables/useToast'
-import { refreshNotifications } from '../../stores/notifications'
+import { notifications } from '../../stores/notifications'
 import HumanTaskForm from './HumanTaskForm.vue'
 
 const router = useRouter()
@@ -37,11 +37,12 @@ const selectedIds = computed(() => [...selected.value])
 const allBatchableSelected = computed(
   () => batchableTasks.value.length > 0 && batchableTasks.value.every(t => selected.value.has(t.id)))
 
-async function load() {
+async function load(preserveSelection = false) {
+  if (loading.value) return   // 轮询与手动刷新重叠时跳过，避免竞态
   loading.value = true
   try {
     tasks.value = await fetchHumanTasks({ status: status.value, limit: 100 })
-    selected.value = new Set()
+    if (!preserveSelection) selected.value = new Set()
   } catch (e) {
     toast.error(e.message || '加载失败')
   } finally {
@@ -86,7 +87,6 @@ async function handleSubmit(payload) {
     toast.success('已提交，工作流继续执行')
     detail.value = null
     await load()
-    refreshNotifications()
   } catch (e) {
     if (e.fieldErrors) {
       toast.error(`表单校验未通过：${Object.entries(e.fieldErrors).map(([k, v]) => `${k}: ${v}`).join('；')}`)
@@ -124,7 +124,6 @@ async function runBatch(decision) {
     batchComment.value = ''
     if (batchOperator.value.trim()) localStorage.setItem('ks_human_operator', batchOperator.value.trim())
     await load()
-    refreshNotifications()
   } catch (e) {
     toast.error(e.message || '批量处理失败')
   } finally {
@@ -137,6 +136,12 @@ function gotoRun(t) {
 }
 
 onMounted(load)
+
+// 待办数由 SSE 推送变化时自动刷新列表（事件驱动，无轮询）
+watch(
+  () => notifications.value?.human_tasks ?? 0,
+  (n, old) => { if (n !== old) load(true) },
+)
 </script>
 
 <template>
