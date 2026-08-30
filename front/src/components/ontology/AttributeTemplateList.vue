@@ -10,6 +10,7 @@ import {
 } from '../../api'
 import ModalDialog from '../common/ModalDialog.vue'
 import AttributeEditor from '../common/AttributeEditor.vue'
+import ExcelImportExport from './ExcelImportExport.vue'
 
 const search = ref('')
 const templates = ref([])
@@ -169,6 +170,7 @@ onMounted(load)
       <button class="icon-btn refresh-btn" @click="load" title="刷新">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
       </button>
+      <ExcelImportExport scope="templates" @success="load" />
       <button class="btn primary" @click="openCreate">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         新建

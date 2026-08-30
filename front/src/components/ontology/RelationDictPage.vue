@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { fetchOntologyCategories, getOntologyCategoryDetail } from '../../api'
 import RelationDictEditor from './RelationDictEditor.vue'
 import SearchableSelect from '../common/SearchableSelect.vue'
+import ExcelImportExport from './ExcelImportExport.vue'
 
 const categories = ref([])
 const selectedCategoryId = ref('')
@@ -74,6 +75,7 @@ onMounted(loadCategories)
       <button class="icon-btn" @click="loadDetail" title="刷新">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
       </button>
+      <ExcelImportExport scope="relations" :category-id="selectedCategoryId" @success="loadDetail" />
     </div>
 
     <div v-if="loading" class="loading-state"><span class="spinner"></span> 加载中...</div>

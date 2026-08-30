@@ -1,7 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
+from models import OntologyCategory
 from schemas import (
     ApproveSuggestionRequest,
     BatchCreateConstraintsRequest,
@@ -461,3 +464,85 @@ async def delete_suggestion(suggestion_id: str, db: AsyncSession = Depends(get_d
     if not await OntologySuggestionService.delete_suggestion(db, suggestion_id):
         raise _nf("Suggestion not found")
     return {"status": "deleted"}
+
+
+# ===== 模块八：本体 Excel 导入 / 导出 =====
+
+@router.get("/ontology/import/template")
+async def download_ontology_template(
+    scope: str = "full",
+    with_example: bool = True,
+):
+    """下载本体导入模板（xlsx）。
+
+    scope 可选：full / ontologies / relations / constraints / templates
+    """
+    from fastapi.responses import StreamingResponse
+    from services.ontology_import_service import build_template_workbook
+
+    buf = build_template_workbook(scope=scope, with_example=with_example)
+    scope_label = {
+        "full": "完整", "ontologies": "本体管理", "relations": "关系字典",
+        "constraints": "本体关系", "templates": "本体模板",
+    }.get(scope, scope)
+    filename = f"本体导入模板-{scope_label}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@router.get("/ontology/export/excel")
+async def export_ontology_excel(
+    scope: str = "full",
+    category_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """导出本体为 Excel。不传 category_id 则导出全部类别；scope 控制导出范围。"""
+    from fastapi.responses import StreamingResponse
+    from services.ontology_import_service import export_workbook
+
+    buf = await export_workbook(db, category_id, scope=scope)
+    scope_label = {
+        "full": "完整", "ontologies": "本体管理", "relations": "关系字典",
+        "constraints": "本体关系", "templates": "本体模板",
+    }.get(scope, scope)
+    if category_id:
+        cat = await db.get(OntologyCategory, category_id)
+        filename = f"本体导出-{scope_label}-{(cat.name if cat else category_id)}.xlsx"
+    else:
+        filename = f"本体导出-{scope_label}-全部类别.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@router.post("/ontology/import/excel")
+async def import_ontology_excel(
+    file: UploadFile = File(...),
+    scope: str = "full",
+    dry_run: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """导入本体 Excel。
+
+    规则：
+    - scope 控制只导入哪些 sheet（full / ontologies / relations / constraints / templates）
+    - 逐行校验，非法行跳过并记录失败原因；
+    - 已存在（按业务唯一键）则覆盖更新，不存在则新建；
+    - 不做删除：文件中缺少的既有数据不会被移除。
+
+    dry_run=true 时只校验不写入。
+    """
+    raw = await file.read()
+    if not raw:
+        raise _bad_request("上传文件为空")
+    if not (file.filename or "").lower().endswith((".xlsx", ".xlsm")):
+        raise _bad_request("仅支持 .xlsx / .xlsm 格式")
+
+    from services.ontology_import_service import import_workbook
+
+    return await import_workbook(db, raw, dry_run=dry_run, scope=scope)

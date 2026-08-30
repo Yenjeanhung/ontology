@@ -1236,11 +1236,15 @@ function streamCallbacks() {
       },
       onNodeFailed(d) {
         setStatus(d.node_id, 'failed', d.duration_ms)
+        // 失败也带出入参/出参快照（后端在 node_failed 里回传），详情面板可完整看到请求与响应
+        const patch = { status: 'failed', error: d.error, duration_ms: d.duration_ms }
+        if (d.input != null) patch.input = d.input
+        if (d.output != null) patch.output = d.output
         const line = [...logs.value].reverse().find(l => l.kind === 'node' && l.node_id === d.node_id && l.status === 'running')
         if (line) {
-          Object.assign(line, { status: 'failed', error: d.error, duration_ms: d.duration_ms })
+          Object.assign(line, patch)
         } else {
-          logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'failed', error: d.error, duration_ms: d.duration_ms })
+          logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, ...patch })
         }
       },
       onNodeSkipped(d) {

@@ -664,6 +664,59 @@ export async function deleteOntologyCategory(categoryId) {
   return res.json()
 }
 
+// 模块八：本体 Excel 导入 / 导出
+
+// 下载导入模板（返回 Blob）。scope: full / ontologies / relations / constraints / templates
+export async function downloadOntologyTemplate({ scope = 'full', withExample = true } = {}) {
+  const params = new URLSearchParams()
+  params.set('scope', scope)
+  params.set('with_example', String(withExample))
+  const res = await fetch(`${API}/api/ontology/import/template?${params.toString()}`)
+  if (!res.ok) throw new Error('Download ontology template failed')
+  return res.blob()
+}
+
+// 导出本体为 Excel。scope 控制导出范围；categoryId 为空则导出全部
+export async function exportOntologyExcel({ scope = 'full', categoryId = null } = {}) {
+  const params = new URLSearchParams()
+  params.set('scope', scope)
+  if (categoryId) params.set('category_id', categoryId)
+  const res = await fetch(`${API}/api/ontology/export/excel?${params.toString()}`)
+  if (!res.ok) throw new Error('Export ontology excel failed')
+  return res.blob()
+}
+
+// 导入本体 Excel。scope 控制导入范围；dryRun=true 时只校验不写入
+export async function importOntologyExcel(file, { scope = 'full', dryRun = false } = {}) {
+  const form = new FormData()
+  form.append('file', file)
+  const params = new URLSearchParams()
+  params.set('scope', scope)
+  params.set('dry_run', String(dryRun))
+  const res = await fetch(`${API}/api/ontology/import/excel?${params.toString()}`, {
+    method: 'POST',
+    body: form,
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    const msg = data?.detail || 'Import ontology excel failed'
+    throw new Error(Array.isArray(msg) ? msg.map(m => m.msg || m).join('; ') : msg)
+  }
+  return data
+}
+
+// 触发浏览器下载
+export function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 // 模块二：本体 + 属性
 export async function fetchOntologies(categoryId) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies`)

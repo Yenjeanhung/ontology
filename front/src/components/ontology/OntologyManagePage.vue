@@ -6,6 +6,10 @@ import {
   createOntologyCategory,
   updateOntologyCategory,
   deleteOntologyCategory,
+  downloadOntologyTemplate,
+  exportOntologyExcel,
+  importOntologyExcel,
+  triggerDownload,
 } from '../../api'
 import OntologyEditor from './OntologyEditor.vue'
 import ModalDialog from '../common/ModalDialog.vue'
@@ -42,6 +46,82 @@ const saving = ref(false)
 const showDelete = ref(false)
 const deleteTarget = ref(null)
 const deleting = ref(false)
+
+// ===== Excel 导入 / 导出 =====
+const fileInput = ref(null)
+const importing = ref(false)
+const exporting = ref(false)
+const importReport = ref(null)
+const showImportResult = ref(false)
+const importError = ref('')
+
+async function onImportFileChange(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  importing.value = true
+  importError.value = ''
+  try {
+    // 本体管理页只导入 ontologies 范围（类别/本体/属性/模板绑定）
+    const dry = await importOntologyExcel(file, { scope: 'ontologies', dryRun: true })
+    if (dry.failed > 0 || dry.total === 0) {
+      importReport.value = { ...dry, _dry: true, _file: file }
+      showImportResult.value = true
+      return
+    }
+    const real = await importOntologyExcel(file, { scope: 'ontologies', dryRun: false })
+    importReport.value = { ...real, _dry: false, _file: file }
+    showImportResult.value = true
+    await loadCategories()
+  } catch (e) {
+    importError.value = e.message || '导入失败'
+  } finally {
+    importing.value = false
+    if (fileInput.value) fileInput.value.value = ''
+  }
+}
+
+// 干跑通过后，用户点「确认导入」执行真实写入
+async function confirmImport() {
+  const file = importReport.value?._file
+  if (!file) return
+  importing.value = true
+  try {
+    const real = await importOntologyExcel(file, { scope: 'ontologies', dryRun: false })
+    importReport.value = { ...real, _dry: false, _file: file }
+    await loadCategories()
+  } catch (e) {
+    importError.value = e.message || '导入失败'
+  } finally {
+    importing.value = false
+  }
+}
+
+async function onDownloadTemplate() {
+  try {
+    const blob = await downloadOntologyTemplate({ scope: 'ontologies', withExample: true })
+    triggerDownload(blob, '本体导入模板-本体管理.xlsx')
+  } catch (e) {
+    importError.value = e.message || '下载模板失败'
+  }
+}
+
+async function onExportCategory(cat) {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const blob = await exportOntologyExcel({ scope: 'ontologies', categoryId: cat?.id || null })
+    triggerDownload(blob, `本体导出-本体管理-${cat?.name || '全部类别'}.xlsx`)
+  } catch (e) {
+    importError.value = e.message || '导出失败'
+  } finally {
+    exporting.value = false
+  }
+}
+
+function closeImportResult() {
+  showImportResult.value = false
+  importReport.value = null
+}
 
 const filtered = computed(() => {
   const q = search.value.toLowerCase().trim()
@@ -216,6 +296,35 @@ onMounted(loadCategories)
         <h2 class="page-title">本体管理</h2>
         <span class="page-subtitle">管理本体类别与本体定义，支持本体分类</span>
       </div>
+      <div class="head-actions">
+        <input
+          ref="fileInput"
+          type="file"
+          accept=".xlsx,.xlsm"
+          style="display: none"
+          @change="onImportFileChange"
+        >
+        <button class="btn" @click="onDownloadTemplate" title="下载 Excel 导入模板">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          模板
+        </button>
+        <button class="btn" @click="fileInput?.click()" :disabled="importing" title="导入 Excel">
+          <span v-if="importing" class="spinner xs"></span>
+          <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          {{ importing ? '导入中...' : '导入' }}
+        </button>
+        <button class="btn" @click="onExportCategory(null)" :disabled="exporting" title="导出全部">
+          <span v-if="exporting" class="spinner xs"></span>
+          <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          {{ exporting ? '导出中...' : '导出' }}
+        </button>
+      </div>
+    </div>
+
+    <div v-if="importError" class="import-error-bar">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      <span>{{ importError }}</span>
+      <button class="rm-btn xs" @click="importError = ''">关闭</button>
     </div>
 
     <div class="split-layout">
@@ -252,6 +361,9 @@ onMounted(loadCategories)
               <div class="cat-item-meta">{{ cat.ontology_count }} 个本体</div>
             </div>
             <div class="cat-item-actions" @click.stop>
+              <button class="rm-btn xs" @click="onExportCategory(cat)" :disabled="exporting" title="导出该类别">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </button>
               <button class="rm-btn xs" @click="openEdit(cat)" title="编辑">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
               </button>
@@ -378,6 +490,113 @@ onMounted(loadCategories)
       </p>
       <p class="confirm-warn">该操作将级联删除其下所有本体、属性、关系、三元组约束及知识库绑定，且不可恢复。</p>
     </ModalDialog>
+
+    <!-- Excel 导入结果 -->
+    <ModalDialog
+      v-model="showImportResult"
+      :title="importReport?._dry ? '导入校验结果（未写入）' : '导入结果'"
+      size="lg"
+      :confirm-text="importReport?._dry ? '确认导入' : '完成'"
+      :confirm-loading="importing"
+      :confirm-disabled="importReport?._dry ? (importReport?.failed || 0) > 0 || (importReport?.total || 0) === 0 : false"
+      @confirm="importReport?._dry ? confirmImport() : closeImportResult()"
+      @close="closeImportResult"
+    >
+      <div v-if="importReport" class="import-report">
+        <!-- 汇总卡片 -->
+        <div class="report-cards">
+          <div class="report-card">
+            <div class="report-card-num">{{ importReport.total }}</div>
+            <div class="report-card-label">总行数</div>
+          </div>
+          <div class="report-card ok">
+            <div class="report-card-num">{{ importReport.success }}</div>
+            <div class="report-card-label">成功</div>
+          </div>
+          <div class="report-card" :class="{ bad: importReport.failed > 0 }">
+            <div class="report-card-num">{{ importReport.failed }}</div>
+            <div class="report-card-label">失败</div>
+          </div>
+          <div class="report-card">
+            <div class="report-card-num">{{ importReport.created }}</div>
+            <div class="report-card-label">新建</div>
+          </div>
+          <div class="report-card">
+            <div class="report-card-num">{{ importReport.updated }}</div>
+            <div class="report-card-label">覆盖更新</div>
+          </div>
+          <div class="report-card">
+            <div class="report-card-num">{{ importReport.skipped }}</div>
+            <div class="report-card-label">已存在跳过</div>
+          </div>
+        </div>
+
+        <p v-if="importReport._dry && importReport.failed === 0 && importReport.total > 0" class="report-tip">
+          校验通过，共 {{ importReport.total }} 行（新建 {{ importReport.created }} / 覆盖 {{ importReport.updated }}）。点「确认导入」写入数据库。
+        </p>
+        <p v-else-if="importReport._dry && importReport.failed > 0" class="report-tip bad">
+          存在 {{ importReport.failed }} 行非法数据，未写入任何内容。请修正后重新导入（合法行会在修正后一并写入）。
+        </p>
+        <p v-else-if="importReport.total === 0" class="report-tip bad">
+          未从文件中读取到任何有效数据行，请检查 sheet 名称与表头是否与模板一致。
+        </p>
+
+        <!-- 分表统计 -->
+        <div v-if="Object.keys(importReport.sheets || {}).length" class="report-sheets">
+          <table class="report-table">
+            <thead>
+              <tr><th>Sheet</th><th>总行</th><th>成功</th><th>失败</th><th>新建</th><th>覆盖</th><th>跳过</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(st, name) in importReport.sheets" :key="name">
+                <td>{{ name }}</td>
+                <td>{{ st.total }}</td>
+                <td class="ok">{{ st.success }}</td>
+                <td :class="{ bad: st.failed > 0 }">{{ st.failed }}</td>
+                <td>{{ st.created }}</td>
+                <td>{{ st.updated }}</td>
+                <td>{{ st.skipped }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 失败明细 -->
+        <div v-if="importReport.errors?.length" class="report-errors">
+          <div class="report-subtitle">失败明细（{{ importReport.errors.length }} 条）</div>
+          <div class="err-scroll">
+            <table class="report-table">
+              <thead><tr><th style="width:88px">Sheet</th><th style="width:52px">行号</th><th style="width:180px">数据</th><th>失败原因</th></tr></thead>
+              <tbody>
+                <tr v-for="(e, i) in importReport.errors" :key="i">
+                  <td>{{ e.sheet }}</td>
+                  <td>{{ e.row }}</td>
+                  <td class="err-key">{{ e.key || '—' }}</td>
+                  <td class="err-reason">{{ e.reason }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 警告 -->
+        <div v-if="importReport.warnings?.length" class="report-errors">
+          <div class="report-subtitle warn">提示（{{ importReport.warnings.length }} 条）</div>
+          <div class="err-scroll">
+            <table class="report-table">
+              <thead><tr><th style="width:88px">Sheet</th><th style="width:52px">行号</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr v-for="(w, i) in importReport.warnings" :key="i">
+                  <td>{{ w.sheet }}</td>
+                  <td>{{ w.row }}</td>
+                  <td class="err-reason">{{ w.message }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </ModalDialog>
   </div>
 </template>
 
@@ -387,6 +606,9 @@ onMounted(loadCategories)
 .page-title-row { display: flex; flex-direction: column; gap: 2px; }
 .page-title { font-size: 20px; font-weight: 700; color: var(--c-fg); }
 .page-subtitle { font-size: 12px; color: var(--c-secondary); }
+.head-actions { display: flex; align-items: center; gap: 8px; }
+.head-actions .btn { padding: 5px 12px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+.head-actions .btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .split-layout { display: flex; gap: 16px; flex: 1; min-height: 0; }
 
@@ -450,4 +672,51 @@ onMounted(loadCategories)
 .field input:focus, .field textarea:focus { border-color: var(--c-fg); }
 .confirm-text { font-size: 14px; color: var(--c-fg); margin-bottom: 8px; }
 .confirm-warn { font-size: 12px; color: var(--c-danger); }
+
+/* ===== Excel 导入 / 导出 ===== */
+.import-error-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-radius: 8px;
+  background: rgba(220, 38, 38, .08);
+  border: 1px solid rgba(220, 38, 38, .28);
+  color: var(--c-danger); font-size: 12px;
+}
+.import-error-bar span { flex: 1; }
+.spinner.xs { width: 12px; height: 12px; border-width: 2px; }
+
+.import-report { display: flex; flex-direction: column; gap: 14px; }
+.report-cards { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.report-card {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 10px 6px; border-radius: 8px;
+  background: var(--c-panel); border: 1px solid var(--c-border);
+}
+.report-card.ok { border-color: rgba(34, 197, 94, .45); }
+.report-card.bad { border-color: rgba(220, 38, 38, .45); }
+.report-card-num { font-size: 18px; font-weight: 700; color: var(--c-fg); }
+.report-card.ok .report-card-num { color: #16a34a; }
+.report-card.bad .report-card-num { color: var(--c-danger); }
+.report-card-label { font-size: 11px; color: var(--c-secondary); }
+
+.report-tip { font-size: 12px; color: var(--c-secondary); line-height: 1.6; }
+.report-tip.bad { color: var(--c-danger); }
+
+.report-subtitle { font-size: 12px; font-weight: 600; color: var(--c-fg); margin-bottom: 6px; }
+.report-subtitle.warn { color: #b45309; }
+
+.report-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.report-table th {
+  text-align: left; padding: 6px 8px; font-weight: 600;
+  color: var(--c-secondary); border-bottom: 1px solid var(--c-border);
+  background: var(--c-panel); position: sticky; top: 0;
+}
+.report-table td {
+  padding: 6px 8px; border-bottom: 1px solid var(--c-border);
+  color: var(--c-fg); vertical-align: top;
+}
+.report-table td.ok { color: #16a34a; }
+.report-table td.bad { color: var(--c-danger); }
+.err-key { color: var(--c-secondary); word-break: break-all; }
+.err-reason { color: var(--c-danger); }
+.err-scroll { max-height: 240px; overflow-y: auto; border: 1px solid var(--c-border); border-radius: 8px; }
 </style>

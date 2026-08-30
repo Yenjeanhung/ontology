@@ -14,12 +14,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import ipaddress
 import json
 import logging
 import re
 import time
 from datetime import datetime
 from typing import Annotated, TypedDict, Optional
+from urllib.parse import urlparse
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -858,6 +863,291 @@ async def _exec_code(cfg: dict, context: dict) -> dict:
     )
 
 
+# ══════════════════════ HTTP 请求节点（设计文档：doc/工作流/HTTP节点_功能设计.md） ══════════════════════
+
+_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+# 敏感头/字段关键词（小写匹配）：运行归档与测试回显时打码
+_SECRET_KEYWORDS = ("authorization", "token", "key", "secret", "password", "cookie")
+
+
+def mask_secret(value) -> str:
+    """密钥脱敏：保留前 3 字符 + ***（可辨识配置来源，不泄露主体）。"""
+    s = str(value or "")
+    return (s[:3] + "***") if len(s) > 3 else "***"
+
+
+def mask_sensitive(mapping: dict) -> dict:
+    """对 dict 中命中敏感关键词的键值脱敏（用于请求头回显 / 运行归档）。"""
+    out = {}
+    for k, v in (mapping or {}).items():
+        out[k] = mask_secret(v) if any(w in str(k).lower() for w in _SECRET_KEYWORDS) else v
+    return out
+
+
+def _check_private_ip(ip_str: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(str(ip_str).split("%")[0])
+        return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_unspecified
+    except ValueError:
+        return False
+
+
+async def _is_private_target(url: str) -> bool:
+    """目标是否为内网/回环地址（host 字面量或 DNS 解析结果）。"""
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return True
+    if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
+        return True
+    if _check_private_ip(host):  # host 本身就是 IP 字面量
+        return True
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, None)
+    except OSError:
+        return False  # 解析失败交给 httpx 报连接错误，不在此拦截
+    return any(_check_private_ip(info[4][0]) for info in infos)
+
+
+def _http_build_request(cfg: dict, context: dict) -> tuple[str, str, dict, dict, dict]:
+    """渲染变量并组装 HTTP 请求要素，返回 (method, url, headers, params, body_kwargs)。
+
+    _exec_http 与测试接口（请求回显）共用，保证「实际发出的请求」与「预览」完全一致。
+    """
+    method = str(cfg.get("method") or "GET").upper()
+    if method not in _HTTP_METHODS:
+        raise ValueError(f"不支持的 HTTP 方法：{method}")
+    url = str(render(cfg.get("url") or "", context) or "").strip()
+    if not re.match(r"^https?://", url, re.I):
+        raise ValueError(f"URL 必须以 http:// 或 https:// 开头：{_short(url, 120)}")
+
+    params = {str(k): v for k, v in (render(cfg.get("params") or {}, context) or {}).items() if v is not None}
+    headers = {str(k): str(v) for k, v in (render(cfg.get("headers") or {}, context) or {}).items()}
+
+    # ── 鉴权：auth 产生的头在自定义 headers 之后写入（优先级更高，见设计 §3.2）──
+    auth = cfg.get("auth") or {}
+    auth_type = str(auth.get("type") or "none").lower()
+    if auth_type == "bearer":
+        headers["Authorization"] = f"Bearer {render(auth.get('token') or '', context)}"
+    elif auth_type == "basic":
+        raw = f"{render(auth.get('username') or '', context)}:{render(auth.get('password') or '', context)}"
+        headers["Authorization"] = "Basic " + base64.b64encode(raw.encode("utf-8")).decode()
+    elif auth_type == "api_key":
+        k = str(render(auth.get("key") or "", context))
+        v = render(auth.get("value") or "", context)
+        if not k:
+            raise ValueError("api_key 鉴权缺少 key")
+        if str(auth.get("in") or "header").lower() == "query":
+            params[k] = v
+        else:
+            headers[k] = str(v)
+    elif auth_type != "none":
+        raise ValueError(f"不支持的鉴权类型：{auth_type}")
+
+    # ── 请求体 ──
+    body = cfg.get("body") or {}
+    body_type = str(body.get("type") or "none").lower()
+    body_kwargs: dict = {}
+    if body_type == "json":
+        body_kwargs["json"] = render(body.get("data"), context)
+    elif body_type == "form":
+        data = render(body.get("data") or {}, context) or {}
+        if not isinstance(data, dict):
+            raise ValueError("form 请求体 data 必须是键值对对象")
+        body_kwargs["data"] = {str(k): ("" if v is None else str(v)) for k, v in data.items()}
+    elif body_type in ("text", "xml"):
+        text = render(body.get("data"), context)
+        if not isinstance(text, str):
+            text = json.dumps(text, ensure_ascii=False, default=str)
+        body_kwargs["content"] = text.encode("utf-8")
+        headers.setdefault(
+            "Content-Type",
+            str(body.get("content_type") or ("application/xml" if body_type == "xml" else "text/plain")),
+        )
+    elif body_type != "none":
+        raise ValueError(f"不支持的请求体类型：{body_type}")
+
+    return method, url, headers, params, body_kwargs
+
+
+class _HttpNodeFailure(ValueError):
+    """fail_on_error=True 时的节点失败：携带结构化输出（状态/响应体/attempts），
+
+    运行引擎据此把完整出参写入 node_failed 事件与运行归档，前端可直接看到「返回了什么」。
+    """
+
+    def __init__(self, message: str, output: dict):
+        super().__init__(message)
+        self.output = output
+
+
+def _http_body_preview(body_kwargs: dict):
+    """从 body_kwargs 提取可读的请求体预览（json/form 打码敏感键，text 截断）。"""
+    if "json" in body_kwargs:
+        v = body_kwargs["json"]
+        return mask_sensitive(v) if isinstance(v, dict) else v
+    if "data" in body_kwargs:
+        return mask_sensitive(body_kwargs["data"])
+    if "content" in body_kwargs:
+        return _short(body_kwargs["content"].decode("utf-8", errors="replace"), 2000)
+    return None
+
+
+async def _exec_http(cfg: dict, context: dict) -> dict:
+    """执行 HTTP 请求节点（输出契约见设计文档 §3.3，失败语义见 §3.4）。"""
+    cfg = cfg or {}
+    method, url, headers, params, body_kwargs = _http_build_request(cfg, context)
+
+    if not settings.WORKFLOW_HTTP_ALLOW_PRIVATE_NET and await _is_private_target(url):
+        raise ValueError("目标为内网/回环地址，已被 WORKFLOW_HTTP_ALLOW_PRIVATE_NET 策略拦截")
+
+    # 入参落服务日志（敏感头/请求体敏感键已脱敏），排查「实际发出了什么」看这里
+    logger.info("[http] → %s %s params=%s body=%s",
+                method, url, params, _short(_http_body_preview(body_kwargs), 300))
+
+    timeout = httpx.Timeout(float(cfg.get("timeout_seconds") or settings.WORKFLOW_HTTP_TIMEOUT_SECONDS))
+    try:
+        max_retries = max(0, min(int(cfg.get("max_retries") if cfg.get("max_retries") is not None else 1), 5))
+    except (TypeError, ValueError):
+        max_retries = 1
+    fail_on_error = bool(cfg.get("fail_on_error", False))
+    max_bytes = settings.WORKFLOW_HTTP_MAX_RESPONSE_MB * 1024 * 1024
+
+    t0 = time.monotonic()
+    attempts = 0
+    last_error = ""
+    resp: Optional[httpx.Response] = None
+    body_bytes = b""
+    too_large = False
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        verify=bool(cfg.get("verify_ssl", True)),
+        follow_redirects=bool(cfg.get("follow_redirects", True)),
+    ) as client:
+        for attempt in range(max_retries + 1):
+            attempts = attempt + 1
+            resp = None  # 每次尝试独立持有，失败不留上次已关闭的响应
+            try:
+                req = client.build_request(method, url, params=params, headers=headers, **body_kwargs)
+                resp = await client.send(req, stream=True)
+                # 仅 429/5xx 重试（指数退避 0.5s * 2^n，上限 8s）；4xx 不重试
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    last_error = f"HTTP {resp.status_code}"
+                    if attempt < max_retries:
+                        await resp.aclose()
+                        resp = None
+                        await asyncio.sleep(min(0.5 * (2 ** attempt), 8.0))
+                        continue
+                else:
+                    last_error = ""
+                # 流式读取响应体：必须在 client 生命周期内完成（连接池关闭后再读流会 ReadError）。
+                # 超过大小上限立即中断（防止大响应打爆内存）；读流中途断开按传输错误走重试。
+                chunks: list[bytes] = []
+                total = 0
+                too_large = False
+                async for chunk in resp.aiter_bytes():
+                    total += len(chunk)
+                    if total > max_bytes:
+                        too_large = True
+                        break
+                    chunks.append(chunk)
+                body_bytes = b"".join(chunks)
+                break  # 拿到完整响应（含超限：重试无意义）
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                last_error = f"{type(e).__name__}: {_short(e, 160)}"
+                body_bytes = b""
+                too_large = False
+                if resp is not None:
+                    await resp.aclose()
+                    resp = None
+                if attempt < max_retries:
+                    await asyncio.sleep(min(0.5 * (2 ** attempt), 8.0))
+                    continue
+                break  # 重试耗尽且无可用响应 → 下方按「请求失败」语义返回
+            finally:
+                if resp is not None:
+                    await resp.aclose()
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+
+    def _fail(err: str) -> dict:
+        if fail_on_error:
+            raise _HttpNodeFailure(err, {
+                "success": False, "status_code": None, "reason": "", "headers": {}, "data": None,
+                "text": "", "duration_ms": duration_ms, "attempts": attempts, "error": err})
+        return {"success": False, "status_code": None, "reason": "", "headers": {}, "data": None,
+                "text": "", "duration_ms": duration_ms, "attempts": attempts, "error": err}
+
+    if resp is None:
+        logger.warning("[http] ← %s %s 请求失败（尝试 %d 次）：%s", method, url, attempts, last_error)
+        return _fail(f"HTTP 请求失败（尝试 {attempts} 次）：{last_error}")
+
+    if too_large:
+        return _fail(f"响应体超过 {settings.WORKFLOW_HTTP_MAX_RESPONSE_MB}MB 上限")
+
+    encoding = resp.charset_encoding or "utf-8"
+    text = body_bytes.decode(encoding, errors="replace")
+
+    # 按 Content-Type 自动解析 JSON → data；非 JSON 落 text 兜底（评审结论 §0-5）
+    data = None
+    content_type = (resp.headers.get("content-type") or "").lower()
+    if "json" in content_type or (text[:1] in ("{", "[")):
+        try:
+            data = json.loads(text)
+        except (ValueError, TypeError):
+            data = None
+
+    ok = 200 <= resp.status_code < 300
+    if not ok and not last_error:
+        last_error = f"HTTP {resp.status_code}"
+    out = {
+        "success": ok,
+        "status_code": resp.status_code,
+        "reason": resp.reason_phrase or "",
+        "headers": dict(resp.headers),
+        "data": data,
+        "text": text,
+        "duration_ms": duration_ms,
+        "attempts": attempts,
+        "error": None if ok else (last_error or f"HTTP {resp.status_code}"),
+    }
+    if fail_on_error and not ok:
+        logger.warning("[http] ← %s %s HTTP %s（fail_on_error，节点失败）resp=%s",
+                       method, url, resp.status_code, _short(text, 300))
+        raise _HttpNodeFailure(f"HTTP {resp.status_code} {_short(text, 160)}".strip(), out)
+    logger.info("[http] ← %s %s HTTP %s %dms 尝试%d %dB resp=%s",
+                method, url, resp.status_code, duration_ms, attempts, len(body_bytes), _short(text, 300))
+    return out
+
+
+async def exec_http_node_test(config: dict, context: dict) -> dict:
+    """测试请求（POST /workflow/http-node/test）：执行一次并返回输出 + 脱敏请求回显，不落库。
+
+    测试模式强制 fail_on_error=False：请求失败 / 策略拦截也返回结构化输出（含 error），
+    而不是抛 400，前端可在结果面板完整展示「发出了什么、返回了什么、错在哪」。
+    仅当请求要素本身无法构建（URL/方法/配置非法）时才抛 ValueError → 400。
+    """
+    cfg = dict(config or {})
+    cfg["fail_on_error"] = False
+    method, url, headers, params, body_kwargs = _http_build_request(cfg, context)
+    body_preview = _http_body_preview(body_kwargs)
+    try:
+        output = await _exec_http(cfg, context)
+    except ValueError as e:  # 内网拦截 / 超时配置非法等：以失败输出返回，前端直接展示
+        output = {"success": False, "status_code": None, "reason": "", "headers": {}, "data": None,
+                  "text": "", "duration_ms": 0, "attempts": 0, "error": str(e)}
+    return {
+        "output": output,
+        "request_preview": {
+            "method": method,
+            "url": url,
+            "params": params,
+            "headers": mask_sensitive(headers),
+            "body": body_preview,
+        },
+    }
+
+
 async def _execute_node(node: dict, context: dict, db) -> dict:
     t = node["type"]
     cfg = node.get("config") or {}
@@ -888,6 +1178,8 @@ async def _execute_node(node: dict, context: dict, db) -> dict:
         return {"result": result}
     if t == "code":
         return await _exec_code(cfg, context)
+    if t == "http":
+        return await _exec_http(cfg, context)
     raise ValueError(f"未知节点类型：{t}")
 
 
@@ -905,6 +1197,7 @@ FIXED_OUTPUTS = {
     "condition": {"result"},
     "code": {"success", "data", "error", "stdout", "duration_ms"},
     "human": {"approved", "decision", "data", "comment", "operator", "decided_at"},
+    "http": {"success", "status_code", "reason", "headers", "data", "text", "duration_ms", "error", "attempts"},
 }
 
 
@@ -1011,6 +1304,16 @@ def _summarize(node: dict, result) -> str:
         comment = (r.get("comment") or "").strip()
         extra = f" · {_short(comment, 40)}" if comment else ""
         return f"{label}（处理人：{operator}{extra}）"
+    if t == "http":
+        r = result or {}
+        if r.get("success"):
+            size = len(r.get("text") or "")
+            size_h = f"{size / 1024:.1f}KB" if size >= 1024 else f"{size}B"
+            return f"HTTP {r.get('status_code')} · {r.get('duration_ms')}ms · {size_h}"
+        err = r.get("error") or f"HTTP {r.get('status_code')}"
+        retries = max((r.get("attempts") or 1) - 1, 0)
+        extra = f"（重试 {retries} 次）" if retries else ""
+        return f"HTTP 请求失败：{_short(err, 100)}{extra}"
     return _short(result)
 
 
@@ -1117,6 +1420,20 @@ def _node_input_view(node: dict, context: dict):
             if isinstance(item, dict):
                 fields[item.get("label") or item.get("value") or "字段"] = render(item.get("value"), context)
         return {"mode": cfg.get("mode", "approve"), "display_fields": fields}
+    if t == "http":
+        try:
+            method, url, headers, params, body_kwargs = _http_build_request(cfg, context)
+            return {
+                "request": f"{method} {url}",
+                "params": params,
+                # 敏感请求头/请求体脱敏后再进 SSE / 运行归档（设计 §5.2）
+                "headers": mask_sensitive(headers),
+                "body_type": str((cfg.get("body") or {}).get("type") or "none"),
+                "body": _http_body_preview(body_kwargs),
+            }
+        except ValueError as e:
+            # 配置非法时先给个占位视图，真正的失败由 _exec_http 在执行阶段正常走 node_failed 路径
+            return {"request": f"{str(cfg.get('method') or 'GET').upper()} {cfg.get('url') or ''}", "error": str(e)}
     return {}
 
 
@@ -1377,9 +1694,18 @@ def _make_node_fn(rt: _Runtime, node: dict):
             return {"outputs": {nid: projected}}
         except Exception as e:
             dur = int((time.monotonic() - t0) * 1000)
-            rt.node_states[nid] = {"status": "failed", "error": str(e), "duration_ms": dur, "title": title}
+            # 失败也保留入参快照 + 结构化出参（如 HTTP 的状态/响应体），排查「发出了什么、返回了什么」
+            failure_output = getattr(e, "output", None)
+            rt.node_states[nid] = {
+                "status": "failed", "error": str(e), "input": input_view, "duration_ms": dur, "title": title,
+                **({"output": _truncate_output(failure_output)} if failure_output is not None else {}),
+            }
             logger.error("[run %s] 节点失败 %s (%s) %dms: %s", rt.run_id, nid, title, dur, e, exc_info=True)
-            rt.emit({"type": "node_failed", "node_id": nid, "title": title, "error": str(e), "duration_ms": dur})
+            rt.emit({
+                "type": "node_failed", "node_id": nid, "title": title, "error": str(e), "duration_ms": dur,
+                "input": input_view,
+                **({"output": _truncate_output(failure_output)} if failure_output is not None else {}),
+            })
             raise  # 上抛 → LangGraph 终止整图，fail-fast 与旧引擎一致
 
     return fn
