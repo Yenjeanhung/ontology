@@ -676,11 +676,17 @@ export async function downloadOntologyTemplate({ scope = 'full', withExample = t
   return res.blob()
 }
 
-// 导出本体为 Excel。scope 控制导出范围；categoryId 为空则导出全部
-export async function exportOntologyExcel({ scope = 'full', categoryId = null } = {}) {
+// 导出本体为 Excel。scope 控制导出范围；categoryId/categoryIds/templateIds 为空则导出全部
+export async function exportOntologyExcel({ scope = 'full', categoryId = null, categoryIds = null, templateIds = null } = {}) {
   const params = new URLSearchParams()
   params.set('scope', scope)
   if (categoryId) params.set('category_id', categoryId)
+  if (categoryIds && categoryIds.length) {
+    categoryIds.forEach(id => params.append('category_ids', id))
+  }
+  if (templateIds && templateIds.length) {
+    templateIds.forEach(id => params.append('template_ids', id))
+  }
   const res = await fetch(`${API}/api/ontology/export/excel?${params.toString()}`)
   if (!res.ok) throw new Error('Export ontology excel failed')
   return res.blob()

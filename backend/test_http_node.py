@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -290,6 +291,71 @@ async def test_execution():
     return checks
 
 
+# ─────────────────── 3.5 真实 socket 回归（响应体读取必须在 client 生命周期内） ───────────────────
+#
+# MockTransport 的响应流是内存对象，client 关闭后仍可读。曾经的 bug：读流写在
+# async with AsyncClient 之外，真实网络下连接池关闭后再读流必抛 httpx.ReadError
+# （2026-08 修复）。只有真实传输层能复现，故用 127.0.0.1 回环 socket 验证，不出外网。
+
+def _start_socket_server(mode: str, accept_n: int) -> int:
+    """mode=full 完整 JSON 响应；mode=cut 声明 Content-Length 后提前断开。返回监听端口。"""
+    import threading
+
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    port = srv.getsockname()[1]
+    srv.listen(5)
+
+    def run():
+        try:
+            for _ in range(accept_n):
+                conn, _ = srv.accept()
+                try:
+                    conn.recv(65536)
+                    if mode == "full":
+                        body = b'{"ok": true}'
+                        conn.sendall(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                            b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(body) + body)
+                    else:
+                        conn.sendall(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                            b"Content-Length: 10000\r\n\r\npartial")
+                finally:
+                    conn.close()
+        finally:
+            srv.close()
+
+    threading.Thread(target=run, daemon=True).start()
+    return port
+
+
+async def test_real_socket():
+    from config import settings
+
+    old_allow = settings.WORKFLOW_HTTP_ALLOW_PRIVATE_NET
+    settings.WORKFLOW_HTTP_ALLOW_PRIVATE_NET = True
+    try:
+        port = _start_socket_server("full", 1)
+        out = await workflow_engine._exec_http(
+            {"method": "GET", "url": f"http://127.0.0.1:{port}/x", "max_retries": 0}, {})
+        ok_full = out.get("success") is True and out.get("status_code") == 200 and out.get("data") == {"ok": True}
+
+        port = _start_socket_server("cut", 2)
+        out = await workflow_engine._exec_http(
+            {"method": "GET", "url": f"http://127.0.0.1:{port}/x", "max_retries": 1}, {})
+        ok_cut = (out.get("success") is False and out.get("attempts") == 2
+                  and "ProtocolError" in (out.get("error") or ""))
+    finally:
+        settings.WORKFLOW_HTTP_ALLOW_PRIVATE_NET = old_allow
+
+    return [
+        ("真实流式响应完整读取（回归：读流不得在 client 生命周期外）", ok_full),
+        ("响应体中途断开 → 重试后结构化失败", ok_cut),
+    ]
+
+
 # ─────────────────────────── 4. 安全脱敏 ───────────────────────────
 
 async def test_masking():
@@ -475,6 +541,9 @@ async def main(e2e: bool = False):
 
     print("\n=== HTTP 节点 · 执行语义（MockTransport）===")
     failed += await _run_checks(await test_execution())
+
+    print("\n=== HTTP 节点 · 真实 socket 回归（读流生命周期）===")
+    failed += await _run_checks(await test_real_socket())
 
     print("\n=== HTTP 节点 · 安全脱敏 ===")
     failed += await _run_checks(await test_masking())

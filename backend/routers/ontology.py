@@ -1,6 +1,6 @@
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -497,20 +497,28 @@ async def download_ontology_template(
 async def export_ontology_excel(
     scope: str = "full",
     category_id: str | None = None,
+    category_ids: list[str] | None = Query(None),
+    template_ids: list[str] | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    """导出本体为 Excel。不传 category_id 则导出全部类别；scope 控制导出范围。"""
+    """导出本体为 Excel。不传 category_id/category_ids 则导出全部类别；template_ids 用于模板范围；scope 控制导出范围。"""
     from fastapi.responses import StreamingResponse
     from services.ontology_import_service import export_workbook
 
-    buf = await export_workbook(db, category_id, scope=scope)
+    cat_ids = category_ids or ([category_id] if category_id else None)
+    buf = await export_workbook(db, category_ids=cat_ids, template_ids=template_ids, scope=scope)
     scope_label = {
         "full": "完整", "ontologies": "本体管理", "relations": "关系字典",
         "constraints": "本体关系", "templates": "本体模板",
     }.get(scope, scope)
-    if category_id:
-        cat = await db.get(OntologyCategory, category_id)
-        filename = f"本体导出-{scope_label}-{(cat.name if cat else category_id)}.xlsx"
+    if template_ids and scope == "templates":
+        filename = f"本体导出-{scope_label}-{len(template_ids)}个模板.xlsx"
+    elif cat_ids:
+        if len(cat_ids) == 1:
+            cat = await db.get(OntologyCategory, cat_ids[0])
+            filename = f"本体导出-{scope_label}-{(cat.name if cat else cat_ids[0])}.xlsx"
+        else:
+            filename = f"本体导出-{scope_label}-{len(cat_ids)}个类别.xlsx"
     else:
         filename = f"本体导出-{scope_label}-全部类别.xlsx"
     return StreamingResponse(

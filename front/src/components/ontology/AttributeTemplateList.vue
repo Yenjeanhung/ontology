@@ -7,6 +7,8 @@ import {
   updateAttributeTemplate,
   deleteAttributeTemplate,
   replaceTemplateAttributes,
+  exportOntologyExcel,
+  triggerDownload,
 } from '../../api'
 import ModalDialog from '../common/ModalDialog.vue'
 import AttributeEditor from '../common/AttributeEditor.vue'
@@ -44,6 +46,42 @@ const filtered = computed(() => {
     t.name.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q)
   )
 })
+
+// ===== 模板多选导出 =====
+const selectedTemplateIds = ref(new Set())
+const exportingSelected = ref(false)
+const allFilteredSelected = computed(() => filtered.value.length > 0 && filtered.value.every(t => selectedTemplateIds.value.has(t.id)))
+const someFilteredSelected = computed(() => filtered.value.some(t => selectedTemplateIds.value.has(t.id)) && !allFilteredSelected.value)
+
+function toggleSelectTemplate(id) {
+  const set = selectedTemplateIds.value
+  if (set.has(id)) set.delete(id)
+  else set.add(id)
+  selectedTemplateIds.value = new Set(set)
+}
+
+function toggleSelectAllFiltered() {
+  if (allFilteredSelected.value) {
+    filtered.value.forEach(t => selectedTemplateIds.value.delete(t.id))
+  } else {
+    filtered.value.forEach(t => selectedTemplateIds.value.add(t.id))
+  }
+  selectedTemplateIds.value = new Set(selectedTemplateIds.value)
+}
+
+async function onExportSelected() {
+  const ids = Array.from(selectedTemplateIds.value)
+  if (!ids.length) return
+  exportingSelected.value = true
+  try {
+    const blob = await exportOntologyExcel({ scope: 'templates', templateIds: ids })
+    triggerDownload(blob, `本体导出-本体模板-${ids.length}个模板.xlsx`)
+  } catch (e) {
+    alert('导出失败：' + (e.message || '未知错误'))
+  } finally {
+    exportingSelected.value = false
+  }
+}
 
 async function load() {
   loading.value = true
@@ -163,6 +201,9 @@ onMounted(load)
     </div>
 
     <div class="toolbar">
+      <label class="tpl-checkbox" title="全选当前列表">
+        <input type="checkbox" :checked="allFilteredSelected" :indeterminate.prop="someFilteredSelected" @change="toggleSelectAllFiltered">
+      </label>
       <div class="search-wrap">
         <svg class="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input type="text" v-model="search" placeholder="搜索属性模板...">
@@ -171,6 +212,11 @@ onMounted(load)
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
       </button>
       <ExcelImportExport scope="templates" @success="load" />
+      <button class="btn" @click="onExportSelected" :disabled="exportingSelected || !selectedTemplateIds.size" title="导出选中模板">
+        <span v-if="exportingSelected" class="spinner xs"></span>
+        <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        {{ exportingSelected ? '导出中...' : `导出选中 (${selectedTemplateIds.size})` }}
+      </button>
       <button class="btn primary" @click="openCreate">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         新建
@@ -185,6 +231,9 @@ onMounted(load)
         :class="{ expanded: expandedId === t.id }"
       >
         <div class="tpl-card-head" @click="toggleExpand(t)">
+          <label class="tpl-checkbox" @click.stop>
+            <input type="checkbox" :checked="selectedTemplateIds.has(t.id)" @change="toggleSelectTemplate(t.id)">
+          </label>
           <svg class="tpl-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.25" y="3.25" width="17.5" height="17.5" rx="2.25"/><path d="M3.25 9.25h17.5"/><path d="M9.25 9.25v11.5"/><path d="M15.25 9.25v11.5"/></svg>
           <span class="tpl-name">{{ t.name }}</span>
           <span v-if="t.is_system" class="tag system">系统</span>
@@ -297,6 +346,9 @@ onMounted(load)
 .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-secondary); cursor: pointer; transition: background 150ms, color 150ms; }
 .icon-btn:hover { background: var(--c-muted); color: var(--c-fg); }
 .icon-btn.sm { width: 28px; height: 28px; border: 0; background: transparent; }
+.tpl-checkbox { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 20px; height: 20px; cursor: pointer; }
+.tpl-checkbox input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--c-accent); cursor: pointer; }
+.toolbar .tpl-checkbox { margin-right: -4px; }
 
 .tpl-list { display: flex; flex-direction: column; gap: 8px; }
 .tpl-card { border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); overflow: hidden; transition: border-color 150ms; }

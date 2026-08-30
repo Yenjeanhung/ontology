@@ -364,16 +364,25 @@ def build_template_workbook(scope: str = "full", with_example: bool = True) -> i
     return buf
 
 
-async def export_workbook(db: AsyncSession, category_id: str | None = None, scope: str = "full") -> io.BytesIO:
-    """把库中已有本体数据按 scope 导出为 Excel，便于修改后重新导入。"""
+async def export_workbook(
+    db: AsyncSession,
+    category_ids: list[str] | None = None,
+    template_ids: list[str] | None = None,
+    scope: str = "full",
+) -> io.BytesIO:
+    """把库中已有本体数据按 scope 导出为 Excel，便于修改后重新导入。
+
+    category_ids: 为空时导出全部类别；传入多个则只导出指定类别。
+    template_ids: scope 含 templates 时，只导出指定模板。
+    """
     if scope not in VALID_SCOPES:
         raise ValueError(f"scope 必须是 {VALID_SCOPES} 之一")
 
     sheets = set(SCOPE_SHEETS[scope])
 
     cat_q = select(OntologyCategory)
-    if category_id:
-        cat_q = cat_q.where(OntologyCategory.id == category_id)
+    if category_ids:
+        cat_q = cat_q.where(OntologyCategory.id.in_(category_ids))
     categories = (await db.execute(cat_q)).scalars().all()
 
     cat_rows, ont_rows, attr_rows = [], [], []
@@ -462,10 +471,11 @@ async def export_workbook(db: AsyncSession, category_id: str | None = None, scop
                     ])
 
     if scope in ("full", "templates"):
-        # 模板全局，不受类别过滤
-        templates = (await db.execute(
-            select(OntologyAttributeTemplate)
-        )).scalars().all()
+        # 模板全局，不受类别过滤；可按 template_ids 筛选
+        tpl_q = select(OntologyAttributeTemplate)
+        if template_ids:
+            tpl_q = tpl_q.where(OntologyAttributeTemplate.id.in_(template_ids))
+        templates = (await db.execute(tpl_q)).scalars().all()
         for t in templates:
             tpl_rows.append([t.name, t.description or ""])
             tas = (await db.execute(

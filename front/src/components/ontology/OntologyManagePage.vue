@@ -105,12 +105,12 @@ async function onDownloadTemplate() {
   }
 }
 
-async function onExportCategory(cat) {
+async function onExportAll() {
   if (exporting.value) return
   exporting.value = true
   try {
-    const blob = await exportOntologyExcel({ scope: 'ontologies', categoryId: cat?.id || null })
-    triggerDownload(blob, `本体导出-本体管理-${cat?.name || '全部类别'}.xlsx`)
+    const blob = await exportOntologyExcel({ scope: 'ontologies' })
+    triggerDownload(blob, '本体导出-本体管理-全部类别.xlsx')
   } catch (e) {
     importError.value = e.message || '导出失败'
   } finally {
@@ -130,6 +130,41 @@ const filtered = computed(() => {
     c.name.toLowerCase().includes(q) || (c.description || '').toLowerCase().includes(q)
   )
 })
+
+// ===== 类别多选导出 =====
+const selectedCategoryIds = ref(new Set())
+const allFilteredSelected = computed(() => filtered.value.length > 0 && filtered.value.every(cat => selectedCategoryIds.value.has(cat.id)))
+const someFilteredSelected = computed(() => filtered.value.some(cat => selectedCategoryIds.value.has(cat.id)) && !allFilteredSelected.value)
+
+function toggleSelectCategory(catId) {
+  const set = selectedCategoryIds.value
+  if (set.has(catId)) set.delete(catId)
+  else set.add(catId)
+  selectedCategoryIds.value = new Set(set)
+}
+
+function toggleSelectAllFiltered() {
+  if (allFilteredSelected.value) {
+    filtered.value.forEach(cat => selectedCategoryIds.value.delete(cat.id))
+  } else {
+    filtered.value.forEach(cat => selectedCategoryIds.value.add(cat.id))
+  }
+  selectedCategoryIds.value = new Set(selectedCategoryIds.value)
+}
+
+async function onExportSelectedCategories() {
+  const ids = Array.from(selectedCategoryIds.value)
+  if (!ids.length) return
+  exporting.value = true
+  try {
+    const blob = await exportOntologyExcel({ scope: 'ontologies', categoryIds: ids })
+    triggerDownload(blob, `本体导出-本体管理-${ids.length}个类别.xlsx`)
+  } catch (e) {
+    importError.value = e.message || '导出失败'
+  } finally {
+    exporting.value = false
+  }
+}
 
 async function loadCategories() {
   loadingList.value = true
@@ -313,10 +348,15 @@ onMounted(loadCategories)
           <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           {{ importing ? '导入中...' : '导入' }}
         </button>
-        <button class="btn" @click="onExportCategory(null)" :disabled="exporting" title="导出全部">
+        <button class="btn" @click="onExportAll" :disabled="exporting" title="导出全部">
           <span v-if="exporting" class="spinner xs"></span>
           <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          {{ exporting ? '导出中...' : '导出' }}
+          {{ exporting ? '导出中...' : '导出全部' }}
+        </button>
+        <button class="btn" @click="onExportSelectedCategories" :disabled="exporting || !selectedCategoryIds.size" title="导出选中类别">
+          <span v-if="exporting" class="spinner xs"></span>
+          <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          {{ exporting ? '导出中...' : `导出选中 (${selectedCategoryIds.size})` }}
         </button>
       </div>
     </div>
@@ -331,6 +371,9 @@ onMounted(loadCategories)
       <!-- 左侧：本体类别列表 -->
       <div class="cat-panel">
         <div class="cat-panel-toolbar">
+          <label class="cat-checkbox" title="全选当前列表">
+            <input type="checkbox" :checked="allFilteredSelected" :indeterminate.prop="someFilteredSelected" @change="toggleSelectAllFiltered">
+          </label>
           <div class="search-wrap">
             <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             <input type="text" v-model="search" placeholder="搜索类别...">
@@ -350,6 +393,9 @@ onMounted(loadCategories)
             :class="{ active: cat.id === selectedId }"
             @click="selectCategory(cat.id)"
           >
+            <label class="cat-checkbox" @click.stop>
+              <input type="checkbox" :checked="selectedCategoryIds.has(cat.id)" @change="toggleSelectCategory(cat.id)">
+            </label>
             <div class="cat-item-icon">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.25" y="3.25" width="6" height="6" rx="1.5"/><rect x="14.75" y="3.25" width="6" height="6" rx="1.5"/><rect x="9" y="14.75" width="6" height="6" rx="1.5"/></svg>
             </div>
@@ -361,9 +407,6 @@ onMounted(loadCategories)
               <div class="cat-item-meta">{{ cat.ontology_count }} 个本体</div>
             </div>
             <div class="cat-item-actions" @click.stop>
-              <button class="rm-btn xs" @click="onExportCategory(cat)" :disabled="exporting" title="导出该类别">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              </button>
               <button class="rm-btn xs" @click="openEdit(cat)" title="编辑">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
               </button>
@@ -632,8 +675,9 @@ onMounted(loadCategories)
 .cat-item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .cat-item-title { font-size: 13px; font-weight: 600; color: var(--c-fg); display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cat-item-meta { font-size: 11px; color: var(--c-secondary); }
-.cat-item-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 150ms; }
-.cat-item:hover .cat-item-actions { opacity: 1; }
+.cat-item-actions { display: flex; gap: 2px; opacity: 1; }
+.cat-checkbox { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 18px; height: 18px; cursor: pointer; }
+.cat-checkbox input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--c-accent); cursor: pointer; }
 .rm-btn.xs { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: var(--c-secondary); cursor: pointer; }
 .rm-btn.xs:hover { background: var(--c-muted-hover); color: var(--c-fg); }
 .rm-btn.xs:disabled { opacity: 0.3; cursor: not-allowed; }
