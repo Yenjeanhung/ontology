@@ -6,7 +6,9 @@ import { marked } from 'marked'
 
 const FIXED_KEYS = ['answer', 'chunks', 'entities', 'subgraph', 'success', 'data', 'error', 'stdout', 'duration_ms', 'text', 'result',
   // 人工节点固定输出
-  'approved', 'decision', 'comment', 'operator', 'decided_at', 'task_id', 'timed_out']
+  'approved', 'decision', 'comment', 'operator', 'decided_at', 'task_id', 'timed_out',
+  // HTTP 节点固定输出
+  'status_code', 'reason', 'headers', 'attempts']
 
 const props = defineProps({
   id: { type: String, required: true },
@@ -93,6 +95,12 @@ function bodyText(t, cfg = {}) {
     return `${cfg.operator || '=='} ${cfg.left || '...'}`
   }
   if (t === 'code') return '沙箱 Python'
+  if (t === 'http') {
+    const method = (cfg.method || 'GET').toUpperCase()
+    let host = ''
+    try { host = new URL((cfg.url || '').replace(/\{\{[^{}]*\}\}/g, 'x')).host } catch { host = cfg.url || '' }
+    return `${method} ${host}`
+  }
   if (t === 'human') {
     const mode = cfg.mode || 'approve'
     if (mode === 'form') {

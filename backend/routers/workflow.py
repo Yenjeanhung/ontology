@@ -15,13 +15,15 @@ from database import get_db
 from config import settings
 from models import WorkflowRun
 from schemas import (HumanBatchDecisionRequest, HumanDecisionRequest,
-                     ResumeRunRequest, RunWorkflowRequest, WorkflowSaveRequest)
+                     HttpNodeTestRequest, ResumeRunRequest, RunWorkflowRequest,
+                     WorkflowSaveRequest)
 from services.agent_service import AgentService
 from services.human_task_service import HumanTaskService
 from services.kb_service import KBService
 from services.notification_channel import NotificationChannel
 from services.skill_service import SkillService
-from services.workflow_engine import resume_run_background, resume_run_stream, run_stream
+from services.workflow_engine import (exec_http_node_test, resume_run_background,
+                                      resume_run_stream, run_stream)
 from services.workflow_service import WorkflowService, validate_definition
 
 router = APIRouter()
@@ -35,6 +37,7 @@ NODE_TYPES = [
     {"type": "condition", "name": "条件分支", "icon": "⇄", "desc": "true / false 路由"},
     {"type": "code", "name": "代码", "icon": "</>", "desc": "沙箱 Python"},
     {"type": "human", "name": "人工", "icon": "👤", "desc": "人工处理 · 审批/填表"},
+    {"type": "http", "name": "HTTP 请求", "icon": "🌐", "desc": "调用任意 RESTful 接口"},
 ]
 
 
@@ -317,3 +320,15 @@ async def workflow_palette(db: AsyncSession = Depends(get_db)):
             for a in agents
         ],
     }
+
+
+# ─────────────────────── HTTP 节点测试请求 ───────────────────────
+
+
+@router.post("/workflow/http-node/test")
+async def test_http_node(req: HttpNodeTestRequest):
+    """编辑器「发送测试」：执行一次 HTTP 请求并返回输出 + 脱敏请求回显（不落库）。"""
+    try:
+        return await exec_http_node_test(req.config or {}, req.context or {})
+    except ValueError as e:
+        raise HTTPException(400, str(e))

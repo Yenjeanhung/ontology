@@ -85,6 +85,12 @@ class ResumeRunRequest(BaseModel):
     task_id: str
 
 
+class HttpNodeTestRequest(BaseModel):
+    """HTTP 节点测试请求：完整节点配置 + 样例变量上下文（渲染 {{变量}} 用，可空）。"""
+    config: dict = {}
+    context: dict = {}
+
+
 class AgentSkillCreate(BaseModel):
     name: str
     code: str

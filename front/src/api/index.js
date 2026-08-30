@@ -1467,6 +1467,20 @@ export async function cancelWorkflowRun(workflowId, runId) {
   return data
 }
 
+// ───────────────────── HTTP 节点 · 测试请求 ─────────────────────
+
+/** HTTP 节点「发送测试」：执行一次请求并返回输出 + 脱敏请求回显（不落库）。 */
+export async function testHttpNode(config, context = {}) {
+  const res = await fetch(`${API}/api/workflow/http-node/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config, context }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data?.detail || '测试请求失败')
+  return data
+}
+
 // ───────────────────── 定时调度（Scheduler） ─────────────────────
 
 export async function fetchSchedules() {

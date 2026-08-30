@@ -104,6 +104,10 @@ class Settings(BaseSettings):
     WORKFLOW_MAX_STEPS: int = 200          # 单次运行最多执行节点数
     WORKFLOW_RUN_TIMEOUT_SECONDS: int = 300  # 单次运行总超时（秒）
     WORKFLOW_NODE_OUTPUT_LIMIT: int = 8192   # 节点输出 SSE 回传截断上限（字符）
+    # 工作流 HTTP 节点
+    WORKFLOW_HTTP_TIMEOUT_SECONDS: int = 30      # 节点未配置超时的兜底值（秒）
+    WORKFLOW_HTTP_MAX_RESPONSE_MB: int = 10      # 响应体大小上限（MB），超限节点失败
+    WORKFLOW_HTTP_ALLOW_PRIVATE_NET: bool = True # 是否允许调用内网/localhost（企业内部工具默认放行）
 
     # 技能 ZIP 包导入（安全上限，均可在 .env 覆盖）
     SKILL_ZIP_MAX_UPLOAD_BYTES: int = 20 * 1024 * 1024        # 上传/下载 zip 原始体积上限

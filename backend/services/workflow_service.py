@@ -10,7 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Workflow
 
-NODE_TYPES = {"start", "end", "agent", "service", "llm", "condition", "code", "human"}
+NODE_TYPES = {"start", "end", "agent", "service", "llm", "condition", "code", "human", "http"}
+
+# ── HTTP 节点（http）配置约束（设计文档：doc/工作流/HTTP节点_功能设计.md §3.5）──
+HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+HTTP_AUTH_TYPES = {"none", "bearer", "basic", "api_key"}
+HTTP_BODY_TYPES = {"none", "json", "form", "text", "xml"}
+# URL 剥掉 {{变量}} 占位后必须以 http(s):// 开头（允许 https://api.x.com/users/{{start.id}}）
+HTTP_URL_TEMPLATE_RE = re.compile(r"^\s*https?://", re.I)
+# 整串单变量引用 {{start.payload}} 视为合法的 json body（执行时保留原类型）
+WHOLE_VAR_RE = re.compile(r"^\{\{\s*[\w.\[\]-]+\s*\}\}$")
 
 # ── 人工节点（human）配置约束 ──
 HUMAN_MODES = {"approve", "form"}
@@ -91,11 +100,14 @@ def validate_definition(definition: dict) -> str | None:
     # 人工节点专项校验（依赖无环图计算前驱，故放在环检测之后）
     preds = _predecessors(nodes, edges)
     for n in nodes:
-        if n.get("type") != "human":
-            continue
-        err = _validate_human_node(n, out_edges.get(n["id"], []), preds.get(n["id"], set()))
-        if err:
-            return err
+        if n.get("type") == "human":
+            err = _validate_human_node(n, out_edges.get(n["id"], []), preds.get(n["id"], set()))
+            if err:
+                return err
+        elif n.get("type") == "http":
+            err = _validate_http_node(n, preds.get(n["id"], set()))
+            if err:
+                return err
     return None
 
 
@@ -189,6 +201,89 @@ def _validate_human_node(node: dict, out_edges: list[dict], preds: set[str]) -> 
             return f"人工节点「{title}」不能引用自己的输出：{rid}"
         if rid not in preds:
             return (f"人工节点「{title}」引用了不存在或不在其上游的节点：{rid}"
+                    f"（变量只能引用拓扑上更早的节点输出）")
+    return None
+
+
+def _validate_http_node(node: dict, preds: set[str]) -> str | None:
+    """HTTP 请求节点配置校验，返回错误信息；None 表示通过。"""
+    title = node.get("title") or node["id"]
+    cfg = node.get("config") or {}
+
+    # --- URL：必填，剥掉 {{变量}} 后必须以 http(s):// 开头 ---
+    url = str(cfg.get("url") or "").strip()
+    if not url:
+        return f"HTTP 节点「{title}」缺少 URL"
+    stripped = re.sub(r"\{\{[^{}]*\}\}", "", url)
+    if not HTTP_URL_TEMPLATE_RE.match(stripped):
+        return f"HTTP 节点「{title}」的 URL 必须以 http:// 或 https:// 开头"
+
+    # --- 方法 ---
+    method = str(cfg.get("method") or "GET").upper()
+    if method not in HTTP_METHODS:
+        return f"HTTP 节点「{title}」的方法非法：{method}"
+
+    # --- 鉴权 ---
+    auth = cfg.get("auth") or {}
+    auth_type = str(auth.get("type") or "none").lower()
+    if auth_type not in HTTP_AUTH_TYPES:
+        return f"HTTP 节点「{title}」的鉴权类型非法：{auth_type}"
+    if auth_type == "bearer" and not (auth.get("token") or "").strip():
+        return f"HTTP 节点「{title}」bearer 鉴权缺少 token"
+    if auth_type == "basic" and not str(auth.get("username") or "").strip():
+        return f"HTTP 节点「{title}」basic 鉴权缺少 username"
+    if auth_type == "api_key":
+        if not str(auth.get("key") or "").strip():
+            return f"HTTP 节点「{title}」api_key 鉴权缺少 key"
+        if str(auth.get("in") or "header").lower() not in ("header", "query"):
+            return f"HTTP 节点「{title}」api_key 鉴权的 in 非法：{auth.get('in')}（仅支持 header / query）"
+
+    # --- 请求体 ---
+    body = cfg.get("body") or {}
+    body_type = str(body.get("type") or "none").lower()
+    if body_type not in HTTP_BODY_TYPES:
+        return f"HTTP 节点「{title}」的请求体类型非法：{body_type}"
+    data = body.get("data")
+    if body_type in ("json", "form"):
+        if isinstance(data, str):
+            if not WHOLE_VAR_RE.match(data.strip()):
+                return f"HTTP 节点「{title}」{body_type} 请求体为字符串时必须是完整的 {{{{变量}}}} 引用"
+        elif not isinstance(data, dict):
+            return f"HTTP 节点「{title}」{body_type} 请求体必须是键值对对象"
+    elif body_type in ("text", "xml"):
+        if not isinstance(data, str) or not data.strip():
+            return f"HTTP 节点「{title}」{body_type} 请求体不能为空"
+
+    # --- 可靠性参数 ---
+    try:
+        retries = int(cfg.get("max_retries") if cfg.get("max_retries") is not None else 1)
+    except (TypeError, ValueError):
+        return f"HTTP 节点「{title}」的重试次数必须是整数"
+    if not 0 <= retries <= 5:
+        return f"HTTP 节点「{title}」的重试次数必须在 0~5 之间"
+    try:
+        timeout = float(cfg.get("timeout_seconds") or 30)
+    except (TypeError, ValueError):
+        return f"HTTP 节点「{title}」的超时必须是数字"
+    if not 0 < timeout <= 300:
+        return f"HTTP 节点「{title}」的超时必须在 0~300 秒之间"
+
+    # --- 变量引用校验：URL / params / headers / body 中的引用必须是拓扑上更早的节点 ---
+    refs: list[str] = []
+    refs.extend(VAR_REF_RE.findall(url))
+    for mapping in (cfg.get("params") or {}, cfg.get("headers") or {}):
+        for v in (mapping or {}).values():
+            refs.extend(VAR_REF_RE.findall(str(v)))
+    if isinstance(data, str):
+        refs.extend(VAR_REF_RE.findall(data))
+    elif isinstance(data, dict):
+        for v in data.values():
+            refs.extend(VAR_REF_RE.findall(str(v)))
+    for rid in refs:
+        if rid == node["id"]:
+            return f"HTTP 节点「{title}」不能引用自己的输出：{rid}"
+        if rid not in preds:
+            return (f"HTTP 节点「{title}」引用了不存在或不在其上游的节点：{rid}"
                     f"（变量只能引用拓扑上更早的节点输出）")
     return None
 

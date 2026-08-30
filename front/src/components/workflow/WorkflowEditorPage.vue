@@ -12,6 +12,7 @@ import {
   getWorkflow, updateWorkflow, fetchWorkflowPalette, runWorkflowStream, resumeWorkflowStream,
   fetchEntities, fetchEntityServices, fetchWorkflowRuns, getWorkflowRun, deleteWorkflowRun,
   submitHumanDecision as submitHumanDecisionApi, cancelWorkflowRun as cancelWorkflowRunApi,
+  testHttpNode,
 } from '../../api'
 import { useToast } from '../../composables/useToast'
 import PythonEditor from './PythonEditor.vue'
@@ -51,6 +52,19 @@ const DEFAULT_CONFIG = {
     assignee: '',
     timeout: { hours: null, action: 'keep_pending' },
   },
+  http: {
+    method: 'GET',                          // GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS
+    url: '',                                // 支持 {{变量}}
+    params: {},                             // Query 参数
+    headers: {},                            // 自定义请求头
+    auth: { type: 'none' },                 // none | bearer | basic | api_key
+    body: { type: 'none', data: null, content_type: '' },   // none|json|form|text|xml
+    timeout_seconds: 30,
+    max_retries: 1,                         // 0~5，仅连接失败/超时/429/5xx 重试
+    verify_ssl: true,
+    follow_redirects: true,
+    fail_on_error: false,                   // 非2xx：false=success=false 继续（默认宽松）
+  },
 }
 
 // 各节点类型的默认输出字段（新节点预填，之后可手动增删）
@@ -63,6 +77,7 @@ const OUTPUT_FIELDS_DEFAULT = {
   condition: ['result'],
   code: ['success', 'data', 'error'],
   human: ['approved', 'decision', 'data', 'comment', 'operator', 'decided_at'],
+  http: ['success', 'status_code', 'data'],
 }
 // 各类型固定输出（与后端 FIXED_OUTPUTS 对齐）：锁定显示、不可删除
 const FIXED_OUTPUTS = {
@@ -72,6 +87,7 @@ const FIXED_OUTPUTS = {
   condition: ['result'],
   code: ['success', 'data', 'error', 'stdout', 'duration_ms'],
   human: ['approved', 'decision', 'data', 'comment', 'operator', 'decided_at'],
+  http: ['success', 'status_code', 'reason', 'headers', 'data', 'text', 'duration_ms', 'error', 'attempts'],
 }
 function isFixedField(type, f) { return (FIXED_OUTPUTS[type] || []).includes(f) }
 
@@ -112,6 +128,10 @@ const FIELD_DESC = {
   duration_ms: '耗时（毫秒）',
   text: '模型生成文本',
   result: '判断结果',
+  status_code: 'HTTP 状态码',
+  reason: '状态码原因短语',
+  headers: '响应头',
+  attempts: '实际请求次数（含重试）',
 }
 // 节点声明输出变量 = 固定输出 ∪ output_fields ∪ 结构化输出自定义字段
 // 配置了结构化输出的节点：非固定字段以 structured_outputs 为准（output_fields 里的历史残留会被剔除）
@@ -364,6 +384,16 @@ function toFlowNode(n) {
   const config = n.config || {}
   // 人工节点：把 options 数组回填为可编辑文本，补齐缺省结构
   if (n.type === 'human') normalizeHumanConfig(config)
+  // HTTP 节点：补齐嵌套结构（旧定义/手工编辑兜底）
+  if (n.type === 'http') {
+    config.method = HTTP_METHODS.includes((config.method || '').toUpperCase()) ? config.method.toUpperCase() : 'GET'
+    if (!config.params || typeof config.params !== 'object') config.params = {}
+    if (!config.headers || typeof config.headers !== 'object') config.headers = {}
+    if (!config.auth || typeof config.auth !== 'object') config.auth = { type: 'none' }
+    if (!config.body || typeof config.body !== 'object') config.body = { type: 'none', data: null, content_type: '' }
+    if (config.max_retries == null) config.max_retries = 1
+    if (config.timeout_seconds == null) config.timeout_seconds = 30
+  }
   return {
     id: n.id,
     type: n.type,
@@ -520,6 +550,128 @@ function normalizeHumanConfig(cfg) {
   c.timeout = { hours: (hours === '' || hours == null || isNaN(Number(hours))) ? null : Number(hours),
                 action: c.timeout?.action || 'keep_pending' }
   return c
+}
+
+// ───── HTTP 节点配置辅助 ─────
+const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
+const HTTP_METHOD_COLORS = { GET: '#059669', POST: '#2563eb', PUT: '#b45309', PATCH: '#7c3aed', DELETE: '#dc2626', HEAD: '#475569', OPTIONS: '#475569' }
+
+function _cfgGet(path) {
+  let cur = selectedConfig.value
+  for (const p of path) cur = cur?.[p]
+  return cur
+}
+function _cfgSet(path, value) {
+  const cfg = selectedConfig.value
+  if (!cfg) return
+  let cur = cfg
+  for (let i = 0; i < path.length - 1; i++) cur = cur[path[i]]
+  cur[path[path.length - 1]] = value
+}
+
+// 键值对行本地状态：配置对象存不下"空键"草稿行，行数据放本地、变更时回写配置
+const httpKvRows = reactive({})   // 'headers' / 'params' / 'body.data' → [{_id,k,v}]
+let _kvSeq = 0
+function resetHttpKvRows() { Object.keys(httpKvRows).forEach(k => delete httpKvRows[k]) }
+function _kvSync(path) {
+  const key = path.join('.')
+  if (httpKvRows[key]) return httpKvRows[key]
+  const obj = _cfgGet(path)
+  httpKvRows[key] = (obj && typeof obj === 'object' && !Array.isArray(obj))
+    ? Object.entries(obj).map(([k, v]) => ({ _id: ++_kvSeq, k, v: String(v ?? '') }))
+    : []
+  return httpKvRows[key]
+}
+function _kvFlush(path) {
+  const obj = {}
+  for (const r of _kvSync(path)) if (r.k.trim()) obj[r.k.trim()] = r.v
+  _cfgSet(path, obj)
+}
+function httpKvGetDeep(path) { return _kvSync(path) }
+function httpKvAddDeep(path) { _kvSync(path).push({ _id: ++_kvSeq, k: '', v: '' }) }
+function httpKvDelDeep(path, i) { _kvSync(path).splice(i, 1); _kvFlush(path) }
+function httpKvUpdateDeep(path, i, part, val) {
+  const rows = _kvSync(path)
+  if (!rows[i]) return
+  rows[i][part] = val
+  _kvFlush(path)
+}
+// 顶层 params/headers 便捷封装
+const httpKvGet = (f) => httpKvGetDeep([f])
+const httpKvAdd = (f) => httpKvAddDeep([f])
+const httpKvDel = (f, i) => httpKvDelDeep([f], i)
+const httpKvUpdate = (f, i, part, val) => httpKvUpdateDeep([f], i, part, val)
+
+// 嵌套路径 JSON 文本编辑（body.data 用）
+function jsonTextDeep(path) {
+  const v = _cfgGet(path)
+  return JSON.stringify(v ?? {}, null, 2)
+}
+function setJsonDeep(path, text) {
+  if (!selectedNode.value) return
+  try { _cfgSet(path, JSON.parse(text)) } catch {}
+}
+
+function onHttpAuthTypeChange() {
+  const auth = selectedConfig.value.auth
+  const t = auth.type
+  const keep = { token: auth.token, username: auth.username, password: auth.password, key: auth.key, value: auth.value, in: auth.in }
+  Object.keys(auth).forEach(k => delete auth[k])
+  auth.type = t
+  if (t === 'bearer') auth.token = keep.token || ''
+  else if (t === 'basic') { auth.username = keep.username || ''; auth.password = keep.password || '' }
+  else if (t === 'api_key') { auth.key = keep.key || 'X-API-Key'; auth.value = keep.value || ''; auth.in = keep.in || 'header' }
+}
+
+function onHttpBodyTypeChange() {
+  const body = selectedConfig.value.body
+  const t = body.type
+  const old = body.data
+  if (t === 'json' || t === 'form') body.data = (old && typeof old === 'object' && !Array.isArray(old)) ? old : {}
+  else if (t === 'text' || t === 'xml') body.data = typeof old === 'string' ? old : ''
+  else body.data = null
+  resetHttpKvRows()  // 表单行缓存随类型切换失效，重新从配置同步
+}
+
+// ── HTTP 测试请求 ──
+const httpTesting = ref(false)
+const httpTestResult = ref(null)   // { output, request_preview }
+const httpTestCtxText = ref('{}')  // 样例变量 JSON
+async function runHttpTest() {
+  if (httpTesting.value) return
+  let context = {}
+  try { context = JSON.parse(httpTestCtxText.value || '{}') } catch { toast.error('样例变量 JSON 格式错误'); return }
+  httpTesting.value = true
+  httpTestResult.value = null
+  try {
+    httpTestResult.value = await testHttpNode(JSON.parse(JSON.stringify(selectedConfig.value)), context)
+  } catch (e) {
+    // 请求要素构建失败（URL/方法非法等 400）：也渲染到结果面板，便于看到错在哪
+    httpTestResult.value = { output: { success: false, status_code: null, error: e.message || '测试请求失败' }, request_preview: null }
+  } finally {
+    httpTesting.value = false
+  }
+}
+function httpTestPretty(v) {
+  if (v == null) return ''
+  if (typeof v === 'string') return v
+  try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+}
+// 请求行：方法 + 含查询串的完整 URL
+function httpFullUrl(pv) {
+  if (!pv) return ''
+  const qs = Object.entries(pv.params || {})
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join('&')
+  if (!qs) return pv.url
+  return pv.url + (pv.url.includes('?') ? '&' : '?') + qs
+}
+// 响应体展示：优先解析后的 data，退 text 原文，都没有给占位提示
+function httpResponseBody() {
+  const o = httpTestResult.value?.output || {}
+  if (o.data != null) return httpTestPretty(o.data)
+  if (o.text) return o.text
+  return o.error ? '（无响应体）' : '（空响应体）'
 }
 function onDragStart(event, type) {
   if (event.dataTransfer) {
@@ -915,6 +1067,24 @@ function validateVarRefs() {
     if (cfg.params && typeof cfg.params === 'object') {
       for (const [k, v] of Object.entries(cfg.params)) scan(`参数 ${k}`, String(v))
     }
+    // HTTP 节点：URL / 请求头 / 鉴权值 / 请求体中的 {{变量}}
+    if (n.type === 'http') {
+      scan('URL', cfg.url)
+      if (cfg.headers && typeof cfg.headers === 'object') {
+        for (const [k, v] of Object.entries(cfg.headers)) scan(`请求头 ${k}`, String(v))
+      }
+      const auth = cfg.auth || {}
+      scan('鉴权 token', auth.token)
+      scan('鉴权 username', auth.username)
+      scan('鉴权 password', auth.password)
+      scan('鉴权 key 值', auth.value)
+      const body = cfg.body || {}
+      if (typeof body.data === 'string') {
+        scan('请求体', body.data)
+      } else if (body.data && typeof body.data === 'object') {
+        for (const [k, v] of Object.entries(body.data)) scan(`请求体字段 ${k}`, String(v))
+      }
+    }
   }
   if (errors.length) {
     toast.error(errors[0] + (errors.length > 1 ? `（共 ${errors.length} 处引用问题）` : ''))
@@ -1210,8 +1380,9 @@ function toggleLog(i) {
   expandedLog.value = expandedLog.value === i ? -1 : i
 }
 
-// 切换节点时同步实体服务下拉 / 结束节点 key-value 行 / 智能体自定义输出行
+// 切换节点时同步实体服务下拉 / 结束节点 key-value 行 / 智能体自定义输出行 / HTTP 键值对行
 watch(selectedNodeId, (id) => {
+  resetHttpKvRows()   // HTTP 键值对行缓存随节点切换失效，重新从配置同步
   if (id) {
     const n = nodes.value.find(x => x.id === id)
     if (n?.type === 'service') loadSvc(n.data.config)
@@ -1719,6 +1890,180 @@ watch(nowTick, () => {
               </div>
             </template>
 
+            <!-- HTTP 请求 -->
+            <template v-else-if="selectedType === 'http'">
+              <!-- 请求行 -->
+              <div class="field">
+                <label>请求 <span class="req">*</span></label>
+                <div class="http-req-line">
+                  <select v-model="selectedConfig.method" class="http-method" :style="{ color: HTTP_METHOD_COLORS[selectedConfig.method] }">
+                    <option v-for="m in HTTP_METHODS" :key="m" :value="m">{{ m }}</option>
+                  </select>
+                  <input type="text" v-model="selectedConfig.url" placeholder="https://api.example.com/users/{{start.user_id}}" />
+                </div>
+                <p class="field-hint">URL 支持 <code v-pre>{{变量}}</code>（路径 / 查询串均可）。仅允许 http(s)。</p>
+              </div>
+
+              <!-- Query 参数 -->
+              <div class="field">
+                <label>Query 参数</label>
+                <div v-for="(row, i) in httpKvGet('params')" :key="row._id" class="df-row">
+                  <input type="text" :value="row.k" @input="httpKvUpdate('params', i, 'k', $event.target.value)" placeholder="参数名，如 page" class="df-label" />
+                  <input type="text" :value="row.v" @input="httpKvUpdate('params', i, 'v', $event.target.value)" placeholder="值，支持 {{变量}}" class="df-value" />
+                  <button type="button" class="df-del" @click="httpKvDel('params', i)" title="删除">×</button>
+                </div>
+                <button type="button" class="btn sm" @click="httpKvAdd('params')">+ 添加参数</button>
+              </div>
+
+              <!-- 请求头 -->
+              <div class="field">
+                <label>请求头</label>
+                <div v-for="(row, i) in httpKvGet('headers')" :key="row._id" class="df-row">
+                  <input type="text" :value="row.k" @input="httpKvUpdate('headers', i, 'k', $event.target.value)" placeholder="Header，如 X-Request-Id" class="df-label" />
+                  <input type="text" :value="row.v" @input="httpKvUpdate('headers', i, 'v', $event.target.value)" placeholder="值，支持 {{变量}}" class="df-value" />
+                  <button type="button" class="df-del" @click="httpKvDel('headers', i)" title="删除">×</button>
+                </div>
+                <button type="button" class="btn sm" @click="httpKvAdd('headers')">+ 添加请求头</button>
+              </div>
+
+              <!-- 鉴权 -->
+              <div class="field">
+                <label>鉴权</label>
+                <select v-model="selectedConfig.auth.type" @change="onHttpAuthTypeChange">
+                  <option value="none">无</option>
+                  <option value="bearer">Bearer Token</option>
+                  <option value="basic">Basic 用户名/密码</option>
+                  <option value="api_key">API Key</option>
+                </select>
+              </div>
+              <template v-if="selectedConfig.auth.type === 'bearer'">
+                <div class="field">
+                  <label>Token <span class="req">*</span></label>
+                  <input type="text" v-model="selectedConfig.auth.token" placeholder="eyJhbGciOi... 或 {{变量}}" />
+                </div>
+              </template>
+              <template v-else-if="selectedConfig.auth.type === 'basic'">
+                <div class="field">
+                  <label>用户名 <span class="req">*</span></label>
+                  <input type="text" v-model="selectedConfig.auth.username" />
+                </div>
+                <div class="field">
+                  <label>密码</label>
+                  <input type="password" v-model="selectedConfig.auth.password" autocomplete="new-password" />
+                </div>
+              </template>
+              <template v-else-if="selectedConfig.auth.type === 'api_key'">
+                <div class="field">
+                  <label>Key 名称 <span class="req">*</span></label>
+                  <input type="text" v-model="selectedConfig.auth.key" placeholder="X-API-Key" />
+                </div>
+                <div class="field">
+                  <label>Key 值</label>
+                  <input type="text" v-model="selectedConfig.auth.value" placeholder="支持 {{变量}}" />
+                </div>
+                <div class="field">
+                  <label>携带位置</label>
+                  <select v-model="selectedConfig.auth.in">
+                    <option value="header">请求头（默认）</option>
+                    <option value="query">Query 参数</option>
+                  </select>
+                </div>
+              </template>
+
+              <!-- 请求体 -->
+              <div class="field">
+                <label>请求体</label>
+                <select v-model="selectedConfig.body.type" @change="onHttpBodyTypeChange">
+                  <option value="none">无</option>
+                  <option value="json">JSON</option>
+                  <option value="form">表单（x-www-form-urlencoded）</option>
+                  <option value="text">纯文本</option>
+                  <option value="xml">XML</option>
+                </select>
+              </div>
+              <template v-if="selectedConfig.body.type === 'json'">
+                <div class="field">
+                  <label>JSON 内容 <span class="req">*</span></label>
+                  <p class="field-hint">值支持 <code v-pre>{{变量}}</code>；整串 <code v-pre>{{start.payload}}</code> 会保留原对象类型发送。</p>
+                  <textarea :value="jsonTextDeep(['body', 'data'])" @input="setJsonDeep(['body', 'data'], $event.target.value)" rows="6" placeholder='{"question": "{{agent_1.answer}}", "top_k": 5}'></textarea>
+                </div>
+              </template>
+              <template v-else-if="selectedConfig.body.type === 'form'">
+                <div class="field">
+                  <label>表单字段 <span class="req">*</span></label>
+                  <div v-for="(row, i) in httpKvGetDeep(['body', 'data'])" :key="row._id" class="df-row">
+                    <input type="text" :value="row.k" @input="httpKvUpdateDeep(['body', 'data'], i, 'k', $event.target.value)" placeholder="字段名" class="df-label" />
+                    <input type="text" :value="row.v" @input="httpKvUpdateDeep(['body', 'data'], i, 'v', $event.target.value)" placeholder="值，支持 {{变量}}" class="df-value" />
+                    <button type="button" class="df-del" @click="httpKvDelDeep(['body', 'data'], i)" title="删除">×</button>
+                  </div>
+                  <button type="button" class="btn sm" @click="httpKvAddDeep(['body', 'data'])">+ 添加字段</button>
+                </div>
+              </template>
+              <template v-else-if="selectedConfig.body.type === 'text' || selectedConfig.body.type === 'xml'">
+                <div class="field">
+                  <label>内容 <span class="req">*</span></label>
+                  <textarea v-model="selectedConfig.body.data" rows="5" placeholder="请求体原文，支持 {{变量}}"></textarea>
+                </div>
+                <div class="field">
+                  <label>Content-Type</label>
+                  <input type="text" v-model="selectedConfig.body.content_type" :placeholder="selectedConfig.body.type === 'xml' ? 'application/xml' : 'text/plain'" />
+                </div>
+              </template>
+
+              <!-- 高级选项 -->
+              <div class="field">
+                <label>高级选项</label>
+                <div class="http-adv-grid">
+                  <div class="http-adv-item">
+                    <span>超时（秒）</span>
+                    <input type="number" min="1" max="300" v-model.number="selectedConfig.timeout_seconds" />
+                  </div>
+                  <div class="http-adv-item">
+                    <span>重试次数（0~5）</span>
+                    <input type="number" min="0" max="5" v-model.number="selectedConfig.max_retries" />
+                  </div>
+                </div>
+                <p class="field-hint">仅连接失败 / 超时 / 429 / 5xx 重试（指数退避）；4xx 不重试。</p>
+                <label class="ff-req"><input type="checkbox" v-model="selectedConfig.verify_ssl" /> 校验 SSL 证书（内网自签证书可关闭）</label>
+                <label class="ff-req"><input type="checkbox" v-model="selectedConfig.follow_redirects" /> 跟随 3xx 重定向</label>
+                <label class="ff-req"><input type="checkbox" v-model="selectedConfig.fail_on_error" /> 非 2xx 视为节点失败（默认关闭：失败时 success=false 继续执行）</label>
+              </div>
+
+              <!-- 发送测试 -->
+              <div class="field">
+                <label>发送测试</label>
+                <p class="field-hint">按当前配置实际发一次请求（不落库）。URL 中的 <code v-pre>{{变量}}</code> 用下面样例值渲染。</p>
+                <textarea v-model="httpTestCtxText" rows="3" class="http-test-ctx" placeholder='{"start": {"user_id": "u_1001"}}'></textarea>
+                <button type="button" class="btn primary" :disabled="httpTesting" @click="runHttpTest" style="margin-top:8px;">
+                  {{ httpTesting ? '请求中…' : '🚀 发送测试请求' }}
+                </button>
+                <div v-if="httpTestResult" class="http-test-result">
+                  <div class="htr-head" :class="{ ok: httpTestResult.output?.success }">
+                    <b>HTTP {{ httpTestResult.output?.status_code ?? '—' }}</b>
+                    <span v-if="httpTestResult.output?.reason">{{ httpTestResult.output.reason }}</span>
+                    <span v-if="httpTestResult.output?.duration_ms != null">{{ httpTestResult.output.duration_ms }}ms</span>
+                    <span v-if="(httpTestResult.output?.attempts || 1) > 1">重试 {{ (httpTestResult.output.attempts - 1) }} 次</span>
+                  </div>
+                  <div v-if="httpTestResult.output?.error" class="htr-err">{{ httpTestResult.output.error }}</div>
+                  <div v-if="httpTestResult.request_preview" class="htr-req-line">
+                    <code>{{ httpTestResult.request_preview.method }} {{ httpFullUrl(httpTestResult.request_preview) }}</code>
+                  </div>
+                  <details v-if="httpTestResult.request_preview" open>
+                    <summary>请求回显（敏感值已脱敏）</summary>
+                    <pre>{{ httpTestPretty(httpTestResult.request_preview) }}</pre>
+                  </details>
+                  <details open>
+                    <summary>响应体（JSON 已自动解析，否则显示原文）</summary>
+                    <pre class="htr-body">{{ httpResponseBody() }}</pre>
+                  </details>
+                  <details v-if="httpTestResult.output?.headers && Object.keys(httpTestResult.output.headers).length">
+                    <summary>响应头</summary>
+                    <pre>{{ httpTestPretty(httpTestResult.output.headers) }}</pre>
+                  </details>
+                </div>
+              </div>
+            </template>
+
             <!-- ═══ 分区二：变量配置（输入引用 / 参数插值 / 输出声明） ═══ -->
             <template v-if="selectedType !== 'start' && selectedType !== 'end'">
               <div class="section-title">变量配置</div>
@@ -2100,6 +2445,41 @@ watch(nowTick, () => {
   min-width: 0;
 }
 .btn.sm { padding: 3px 10px; font-size: 11px; }
+
+/* HTTP 节点配置 */
+.http-req-line { display: flex; gap: 6px; }
+.http-method {
+  flex: 0 0 96px; font-weight: 700; font-size: 11.5px; font-family: ui-monospace, monospace;
+  padding: 5px 4px; border-radius: 5px;
+  border: 1px solid var(--c-border-strong, #d8cdbb); background: var(--c-panel);
+}
+.http-req-line input { flex: 1; font-family: ui-monospace, monospace; min-width: 0; }
+.http-adv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 6px; }
+.http-adv-item { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--c-secondary); }
+.http-adv-item input {
+  padding: 4px 7px; border-radius: 5px; font-size: 11.5px;
+  border: 1px solid var(--c-border-strong, #d8cdbb); background: var(--c-panel); color: var(--c-fg);
+}
+.http-test-ctx { font-family: ui-monospace, monospace; font-size: 11px; }
+.http-test-result {
+  margin-top: 10px; padding: 9px; border-radius: 7px; font-size: 11px;
+  border: 1px solid var(--c-border); background: var(--c-bg-soft, rgba(255,255,255,.03));
+}
+.htr-head { display: flex; align-items: center; gap: 10px; color: var(--c-danger); font-size: 12px; margin-bottom: 4px; }
+.htr-head.ok { color: var(--c-success); }
+.htr-err { color: var(--c-danger); margin-bottom: 6px; word-break: break-all; }
+.htr-req-line { margin: 2px 0 6px; }
+.htr-req-line code {
+  font-size: 10.5px; word-break: break-all; padding: 3px 6px; border-radius: 4px;
+  background: rgba(0,0,0,.25); color: var(--c-accent, #d9a353);
+}
+.http-test-result details { margin-top: 5px; }
+.http-test-result summary { cursor: pointer; color: var(--c-secondary); user-select: none; }
+.http-test-result pre {
+  margin: 6px 0 0; padding: 8px; border-radius: 5px; max-height: 260px; overflow: auto;
+  font-size: 10.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+  background: rgba(0,0,0,.28); color: var(--c-fg);
+}
 
 /* 运行详情：人工节点待审内容快照 */
 .ht-snapshot { display: flex; flex-direction: column; gap: 5px; }
