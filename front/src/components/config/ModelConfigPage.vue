@@ -1,9 +1,10 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   fetchLLMPlans, createLLMPlan, updateLLMPlan,
   deleteLLMPlan, applyLLMPlan, testLLMConfig,
 } from '../../api'
+import Pagination from '../common/Pagination.vue'
 
 // 国内常用模型 + 自定义格式预设（OpenAI 兼容协议）
 const OPENAI_PRESETS = [
@@ -23,6 +24,12 @@ const status = ref(null) // { type: 'success'|'error'|'info', text, preview? }
 
 const plans = ref([])
 const editingPlan = ref(null)     // 正在编辑的方案对象；null = 新建
+const page = ref(1)
+const pageSize = ref(10)
+const pagedPlans = computed(() =>
+  plans.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
+watch(plans, () => { page.value = 1 }, { deep: true })
 
 // 表单字段
 const formName = ref('')
@@ -202,9 +209,9 @@ onMounted(async () => {
     <template v-else>
       <!-- 列表视图 -->
       <section v-if="view === 'list'" class="mcfg-card">
-        <div v-if="plans.length" class="plan-list">
+        <div v-if="pagedPlans.length" class="plan-list">
           <div
-            v-for="p in plans"
+            v-for="p in pagedPlans"
             :key="p.id"
             class="plan-row"
             :class="{ 'is-active': p.id === activePlanId }"
@@ -222,6 +229,7 @@ onMounted(async () => {
               <button class="btn mini danger" :disabled="busy" @click="removePlan(p)">删除</button>
             </div>
           </div>
+          <Pagination v-if="plans.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="plans.length" />
         </div>
         <div v-else class="plan-empty">还没有配置，点击右上角「新建配置」创建第一套。</div>
       </section>

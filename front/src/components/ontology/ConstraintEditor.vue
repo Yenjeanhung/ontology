@@ -9,6 +9,7 @@ import { ref, computed, watch } from 'vue'
 import { createConstraint, deleteConstraint } from '../../api'
 import SearchableSelect from '../common/SearchableSelect.vue'
 import RelationGraph from './RelationGraph.vue'
+import Pagination from '../common/Pagination.vue'
 
 const props = defineProps({
   categoryId: { type: String, required: true },
@@ -39,6 +40,14 @@ const filteredConstraints = computed(() => {
     (c.relation_name || '').toLowerCase().includes(q)
   )
 })
+
+const page = ref(1)
+const pageSize = ref(10)
+const pagedConstraints = computed(() =>
+  filteredConstraints.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
+watch(searchQuery, () => { page.value = 1 })
+watch(() => props.constraints, () => { page.value = 1 }, { deep: true })
 
 const ontologyOptions = computed(() =>
   props.ontologies.map(o => ({ value: o.id, label: o.name, meta: o.description || '' }))
@@ -185,8 +194,8 @@ function resetForm() {
       </div>
 
       <!-- 现有约束列表 -->
-      <div class="ce-list" v-if="filteredConstraints.length">
-        <div v-for="c in filteredConstraints" :key="c.id" class="ce-item">
+      <div class="ce-list" v-if="pagedConstraints.length">
+        <div v-for="c in pagedConstraints" :key="c.id" class="ce-item">
           <div class="ce-tri-display">
             <span class="ce-node">{{ c.source_ontology_name }}</span>
             <span class="ce-rel">—{{ c.relation_name }}→</span>
@@ -196,6 +205,7 @@ function resetForm() {
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           </button>
         </div>
+        <Pagination v-if="filteredConstraints.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="filteredConstraints.length" />
       </div>
 
       <div v-else class="ce-empty">

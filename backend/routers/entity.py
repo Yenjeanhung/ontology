@@ -209,18 +209,32 @@ async def delete_relation(relation_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/graph-cleanup/suggestions")
-async def graph_cleanup_suggestions(kb_id: str = Query(...), db: AsyncSession = Depends(get_db)):
-    """对指定知识库给出清洗建议（合并组 / 待删实体 / 待删通用关系），纯只读。"""
-    return await GraphCleanupService.suggest_cleanup(db, kb_id)
+async def graph_cleanup_suggestions(
+    kb_id: str | None = Query(default=None),
+    category_id: str | None = Query(default=None),
+    ontology_id: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """对指定知识库或本体类别给出清洗建议（合并组 / 待删实体 / 待删通用关系），纯只读。"""
+    if not kb_id and not category_id and not ontology_id:
+        raise HTTPException(status_code=400, detail="kb_id / category_id / ontology_id 至少提供一个")
+    return await GraphCleanupService.suggest_cleanup(
+        db,
+        kb_id=kb_id,
+        category_id=category_id,
+        ontology_id=ontology_id,
+    )
 
 
 @router.post("/graph-cleanup/apply")
 async def graph_cleanup_apply(req: ApplyCleanupRequest, db: AsyncSession = Depends(get_db)):
-    """执行清洗：逐组合并 + 批量删除关系/实体。"""
+    """执行清洗：逐组合并 + 批量删除关系/实体。支持知识库或本体类别范围。"""
     try:
         return await GraphCleanupService.apply_cleanup(
             db,
             kb_id=req.kb_id,
+            category_id=req.category_id,
+            ontology_id=req.ontology_id,
             merges=[m.model_dump() for m in req.merges],
             delete_entity_ids=req.delete_entity_ids,
             delete_relation_ids=req.delete_relation_ids,

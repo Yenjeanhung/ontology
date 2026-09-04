@@ -64,6 +64,8 @@ logger = logging.getLogger(__name__)
 _LOW_VALUE_ENTITY_PATTERNS = [
     re.compile(r"^\d{4}\s*年(\s*$|\s*\d)"),                     # 2024年 / 2024年7月
     re.compile(r"^\d{1,2}\s*月(\s*\d{1,2}\s*日?)?\s*$"),          # 7月 / 7月15日
+    re.compile(r"^\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}"),            # ISO 日期 2026-08-06 / 2026.08.06
+    re.compile(r"^\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日?$"),   # 2024年7月15日
     re.compile(r"^[\d.,]+\s*(辆|个|人|万|亿|%|元|台|次|岁|分|秒|美元|公里|千米|米)?\s*$"),  # 45,046辆 / 26.7万 / 45%
     re.compile(r"^https?://", re.IGNORECASE),                    # URL
     re.compile(r"^v?\d+(\.\d+)+$", re.IGNORECASE),               # v1.2 / 1.2.3

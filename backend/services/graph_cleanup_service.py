@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from models import Entity, Relation
+from models import Entity, Ontology, Relation
 from services.entity_service import EntityService
 from services.graph_extraction_service import (
     _generic_relation_blocklist,
@@ -72,11 +72,37 @@ class GraphCleanupService:
     """图谱清洗：建议（只读）+ 执行（写入，复用 EntityService）。"""
 
     @staticmethod
-    async def suggest_cleanup(db: AsyncSession, kb_id: str) -> dict:
-        """对指定知识库的实体/关系给出清洗建议，纯查询、不写库。"""
-        ent_row = await db.execute(select(Entity).where(Entity.kb_id == kb_id))
+    async def suggest_cleanup(
+        db: AsyncSession,
+        kb_id: str | None = None,
+        category_id: str | None = None,
+        ontology_id: str | None = None,
+    ) -> dict:
+        """对指定知识库或本体类别的实体/关系给出清洗建议，纯查询、不写库。"""
+        # 收集目标本体 ID
+        ontology_ids = []
+        if ontology_id:
+            ontology_ids = [ontology_id]
+        elif category_id:
+            rows = await db.execute(
+                select(Ontology.id).where(Ontology.category_id == category_id)
+            )
+            ontology_ids = rows.scalars().all()
+
+        ent_q = select(Entity)
+        rel_q = select(Relation)
+        if kb_id:
+            ent_q = ent_q.where(Entity.kb_id == kb_id)
+            rel_q = rel_q.where(Relation.kb_id == kb_id)
+        if ontology_ids:
+            ent_q = ent_q.where(Entity.ontology_id.in_(ontology_ids))
+            rel_q = rel_q.where(Relation.source_entity_id.in_(
+                select(Entity.id).where(Entity.ontology_id.in_(ontology_ids))
+            ))
+
+        ent_row = await db.execute(ent_q)
         ents = ent_row.scalars().all()
-        rel_row = await db.execute(select(Relation).where(Relation.kb_id == kb_id))
+        rel_row = await db.execute(rel_q)
         rels = rel_row.scalars().all()
 
         # 度数（关系数）
@@ -161,7 +187,9 @@ class GraphCleanupService:
                 })
 
         return {
-            "kb_id": kb_id,
+            "kb_id": kb_id or "",
+            "category_id": category_id or "",
+            "ontology_id": ontology_id or "",
             "merge_groups": merge_groups,
             "delete_entities": delete_entities,
             "delete_relations": delete_relations,
@@ -178,7 +206,9 @@ class GraphCleanupService:
     async def apply_cleanup(
         db: AsyncSession,
         *,
-        kb_id: str,
+        kb_id: str = "",
+        category_id: str = "",
+        ontology_id: str = "",
         merges: list[dict] | None = None,
         delete_entity_ids: list[str] | None = None,
         delete_relation_ids: list[str] | None = None,

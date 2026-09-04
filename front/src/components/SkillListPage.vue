@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   fetchAgentSkills, createAgentSkill, updateAgentSkill, deleteAgentSkill,
   exportAgentSkills, exportAgentSkillsZip,
@@ -9,6 +9,7 @@ import {
 import { useToast } from '../composables/useToast'
 import ModalDialog from './common/ModalDialog.vue'
 import SkillGroupTree from './SkillGroupTree.vue'
+import Pagination from './common/Pagination.vue'
 
 const toast = useToast()
 
@@ -103,6 +104,13 @@ const visibleSkills = computed(() => {
   if (!st) return skills.value.filter((s) => !s.group_id) // 分组刚被删除 → 退回未分组
   return skills.value.filter((s) => st.ids.has(s.group_id))
 })
+
+const page = ref(1)
+const pageSize = ref(10)
+const pagedVisibleSkills = computed(() =>
+  visibleSkills.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
+watch(selectedGroupKey, () => { page.value = 1 })
 
 const listTitle = computed(() => {
   if (selectedGroupKey.value === 'all') return `全部技能 (${skills.value.length})`
@@ -588,7 +596,7 @@ function fmtSize(n) {
         <div class="skill-list-title" :title="listTitle">{{ listTitle }}</div>
         <div class="skill-list-items">
           <div
-            v-for="s in visibleSkills" :key="s.id"
+            v-for="s in pagedVisibleSkills" :key="s.id"
             class="skill-card" :class="{
               active: selectedId === s.id,
               off: !s.is_enabled,
@@ -615,6 +623,7 @@ function fmtSize(n) {
 
           <div class="skill-list-empty" v-if="!loading && !visibleSkills.length">当前分组暂无技能</div>
           <div class="skill-list-empty" v-if="loading">加载中...</div>
+          <Pagination v-if="visibleSkills.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="visibleSkills.length" />
         </div>
       </div>
 

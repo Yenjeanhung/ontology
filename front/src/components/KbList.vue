@@ -1,9 +1,10 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchKbs, updateKb, deleteKb as apiDeleteKb, getKb } from '../api'
 import CreateKbModal from './CreateKbModal.vue'
 import SearchableSelect from './common/SearchableSelect.vue'
+import Pagination from './common/Pagination.vue'
 
 const router = useRouter()
 const kbSearch = ref('')
@@ -105,6 +106,13 @@ const filteredKbs = computed(() => {
     return true
   })
 })
+
+const page = ref(1)
+const pageSize = ref(10)
+const pagedKbs = computed(() =>
+  filteredKbs.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
+watch([kbSearch, statusFilter], () => { page.value = 1 })
 
 const stats = computed(() => {
   const sum = fn => kbs.value.reduce((a, kb) => a + (fmtNum(fn(kb)) || 0), 0)
@@ -234,8 +242,8 @@ onMounted(loadKbs)
             <th style="width:170px">操作</th>
           </tr>
         </thead>
-        <tbody v-if="filteredKbs.length">
-          <tr v-for="kb in filteredKbs" :key="kb.id" @click="goDetail(kb.id)">
+        <tbody v-if="pagedKbs.length">
+          <tr v-for="kb in pagedKbs" :key="kb.id" @click="goDetail(kb.id)">
             <td>
               <div class="kb-name">
                 <span class="kb-icon">{{ (kb.name || 'K').charAt(0) }}</span>
@@ -257,6 +265,7 @@ onMounted(loadKbs)
           </tr>
         </tbody>
       </table>
+      <Pagination v-if="filteredKbs.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="filteredKbs.length" />
       <div v-if="!filteredKbs.length" class="table-empty">
         <div class="empty-icon">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>

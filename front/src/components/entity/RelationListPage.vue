@@ -1,14 +1,13 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { fetchRelationInstances, deleteRelationInstance, fetchKbs } from '../../api'
 import SearchableSelect from '../common/SearchableSelect.vue'
+import Pagination from '../common/Pagination.vue'
 
 const relations = ref([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-const hasPrev = ref(false)
-const hasNext = ref(false)
 const loading = ref(false)
 
 const search = ref('')
@@ -22,8 +21,6 @@ const kbOptions = computed(() => [
   ...kbs.value.map(k => ({ value: k.id, label: k.name, meta: `${k.file_count || 0} 文件` })),
 ])
 
-const totalPages = computed(() => Math.ceil(total.value / pageSize.value) || 1)
-
 async function load() {
   loading.value = true
   try {
@@ -35,8 +32,6 @@ async function load() {
     })
     relations.value = res.items || []
     total.value = res.total || 0
-    hasPrev.value = !!res.has_prev
-    hasNext.value = !!res.has_next
   } catch {
     relations.value = []
     total.value = 0
@@ -55,12 +50,6 @@ function onSearch() {
 
 function onKbChange() {
   page.value = 1
-  load()
-}
-
-function goPage(p) {
-  if (p < 1 || p > totalPages.value) return
-  page.value = p
   load()
 }
 
@@ -132,13 +121,7 @@ onMounted(async () => {
       <div class="empty-desc" v-if="!search && !kbId">处理文件并完成知识抽取后，关系将出现在这里</div>
     </div>
 
-    <div v-if="total > 0" class="pager">
-      <span class="pager-info">共 {{ total }} 条 · 第 {{ page }}/{{ totalPages }} 页</span>
-      <div class="pager-btns">
-        <button class="btn sm" :disabled="!hasPrev" @click="goPage(page - 1)">上一页</button>
-        <button class="btn sm" :disabled="!hasNext" @click="goPage(page + 1)">下一页</button>
-      </div>
-    </div>
+    <Pagination v-if="total > 0" v-model:page="page" v-model:page-size="pageSize" :total="total" @change="load" />
   </div>
 </template>
 

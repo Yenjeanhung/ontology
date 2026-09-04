@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { marked } from 'marked'
 import { useToast } from '../composables/useToast'
 import FolderTreeNode from './FolderTreeNode.vue'
+import Pagination from './common/Pagination.vue'
 import {
   attachAssetsToKb,
   createCrawlJob,
@@ -42,6 +43,13 @@ const dragOverNodeId = ref(null)
 const uploading = ref({})
 const selectedAssets = ref(new Set())
 const selectedKbId = ref('')
+
+const page = ref(1)
+const pageSize = ref(10)
+const pagedAssets = computed(() =>
+  assets.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
+watch([assets, search, selectedDirectoryId], () => { page.value = 1 })
 
 // 文件夹编辑相关状态
 const showFolderModal = ref(false)
@@ -868,8 +876,8 @@ onUnmounted(() => {
             <div>知识库</div>
             <div>操作</div>
           </div>
-          <div v-if="assets.length > 0">
-            <div v-for="asset in assets" :key="asset.id" :class="['asset-row', { selected: selectedAssets.has(asset.id), highlighted: highlightedAssetId === asset.id, dragging: draggingAsset?.id === asset.id }]" :data-asset-id="asset.id" draggable="true" @dragstart="handleAssetDragStart($event, asset)" @dragend="handleAssetDragEnd">
+          <div v-if="pagedAssets.length > 0">
+            <div v-for="asset in pagedAssets" :key="asset.id" :class="['asset-row', { selected: selectedAssets.has(asset.id), highlighted: highlightedAssetId === asset.id, dragging: draggingAsset?.id === asset.id }]" :data-asset-id="asset.id" draggable="true" @dragstart="handleAssetDragStart($event, asset)" @dragend="handleAssetDragEnd">
               <button class="check-btn" @click.stop="toggleAssetSelection(asset.id)" :disabled="asset.status !== 'ready'">
                 {{ selectedAssets.has(asset.id) ? '✓' : '' }}
               </button>
@@ -902,6 +910,7 @@ onUnmounted(() => {
                 </button>
               </div>
             </div>
+            <Pagination v-if="assets.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="assets.length" />
           </div>
           <div v-else class="empty-state">
             <div class="empty-title">暂无文件</div>

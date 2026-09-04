@@ -5,6 +5,7 @@ import { refreshNotifications } from '../../stores/notifications'
 import { useToast } from '../../composables/useToast'
 import SuggestionReviewEditor from './SuggestionReviewEditor.vue'
 import SearchableSelect from '../common/SearchableSelect.vue'
+import Pagination from '../common/Pagination.vue'
 
 const STATUS_MAP = { ready: '待审核', approved: '已通过', rejected: '已拒绝', generating: '生成中' }
 const STATUS_COLORS = { ready: 'var(--c-accent)', approved: '#4caf50', rejected: '#ef5350', generating: '#ff9800' }
@@ -31,6 +32,12 @@ const kbOptions = computed(() => [
 const reviewingId = ref(null)
 const toast = useToast()
 
+const page = ref(1)
+const pageSize = ref(10)
+const pagedSuggestions = computed(() =>
+  suggestions.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
+
 const emit = defineEmits(['changed'])
 
 async function load() {
@@ -49,6 +56,7 @@ async function load() {
 }
 
 watch([statusFilter, kbIdFilter], () => {
+  page.value = 1
   load()
 })
 
@@ -155,8 +163,8 @@ onActivated(async () => {
       <span class="spinner"></span> 加载中...
     </div>
 
-    <div v-else-if="suggestions.length" class="sl-list">
-      <div v-for="item in suggestions" :key="item.id" class="sl-card">
+    <div v-else-if="pagedSuggestions.length" class="sl-list">
+      <div v-for="item in pagedSuggestions" :key="item.id" class="sl-card">
         <div class="sl-card-body">
           <div class="sl-card-top">
             <div class="sl-card-info">
@@ -188,6 +196,7 @@ onActivated(async () => {
           >删除</button>
         </div>
       </div>
+      <Pagination v-if="suggestions.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="suggestions.length" />
     </div>
 
     <div v-else class="sl-empty">

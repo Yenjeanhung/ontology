@@ -1,6 +1,7 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { createRelation, updateRelation, deleteRelation } from '../../api'
+import Pagination from '../common/Pagination.vue'
 
 const props = defineProps({
   categoryId: { type: String, required: true },
@@ -19,6 +20,12 @@ const editName = ref('')
 const editCode = ref('')
 const editDesc = ref('')
 const savingId = ref('')
+const page = ref(1)
+const pageSize = ref(10)
+const pagedRelations = computed(() =>
+  props.relations.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
+watch(() => props.relations, () => { page.value = 1 }, { deep: true })
 
 function startAdd() {
   newName.value = ''
@@ -107,7 +114,7 @@ async function remove(rel) {
 
     <!-- 列表 -->
     <div v-if="relations.length" class="rde-list">
-      <div v-for="rel in relations" :key="rel.id" class="rde-row">
+      <div v-for="rel in pagedRelations" :key="rel.id" class="rde-row">
         <template v-if="editingId === rel.id">
           <div class="rde-form">
             <input type="text" v-model="editName" class="rde-name-input" @keydown.enter="submitEdit(rel)">
@@ -137,6 +144,7 @@ async function remove(rel) {
           </div>
         </template>
       </div>
+      <Pagination v-if="relations.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="relations.length" />
     </div>
 
     <div v-else-if="!adding" class="rde-empty">

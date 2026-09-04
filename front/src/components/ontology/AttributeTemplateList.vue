@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import {
   fetchAttributeTemplates,
   getAttributeTemplate,
@@ -13,11 +13,14 @@ import {
 import ModalDialog from '../common/ModalDialog.vue'
 import AttributeEditor from '../common/AttributeEditor.vue'
 import ExcelImportExport from './ExcelImportExport.vue'
+import Pagination from '../common/Pagination.vue'
 
 const search = ref('')
 const templates = ref([])
 const loading = ref(false)
 const expandedId = ref(null)
+const page = ref(1)
+const pageSize = ref(10)
 // 展开时加载的详情缓存 { id: { attributes, ... } }
 const details = ref({})
 
@@ -46,6 +49,10 @@ const filtered = computed(() => {
     t.name.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q)
   )
 })
+const pagedTemplates = computed(() =>
+  filtered.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
+watch(search, () => { page.value = 1 })
 
 // ===== 模板多选导出 =====
 const selectedTemplateIds = ref(new Set())
@@ -223,9 +230,9 @@ onMounted(load)
       </button>
     </div>
 
-    <div v-if="filtered.length" class="tpl-list">
+    <div v-if="pagedTemplates.length" class="tpl-list">
       <div
-        v-for="t in filtered"
+        v-for="t in pagedTemplates"
         :key="t.id"
         class="tpl-card"
         :class="{ expanded: expandedId === t.id }"
@@ -264,6 +271,7 @@ onMounted(load)
           <div v-else class="tpl-loading"><span class="spinner"></span> 加载中...</div>
         </div>
       </div>
+      <Pagination v-if="filtered.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="filtered.length" />
     </div>
 
     <div class="empty-state" v-else-if="!loading">

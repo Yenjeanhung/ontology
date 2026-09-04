@@ -1,14 +1,23 @@
 <script setup>
-import { ref, computed, onMounted, onActivated } from 'vue'
-import { fetchKbs, fetchCleanupSuggestions, applyCleanup } from '../../api'
+import { ref, computed, onMounted, onActivated, watch } from 'vue'
+import {
+  fetchKbs, fetchCleanupSuggestions, applyCleanup,
+  fetchOntologies, fetchOntologyCategories,
+} from '../../api'
 import { useToast } from '../../composables/useToast'
 import SearchableSelect from '../common/SearchableSelect.vue'
 import ModalDialog from '../common/ModalDialog.vue'
+import Pagination from '../common/Pagination.vue'
 
 const toast = useToast()
 
 const kbs = ref([])
+const ontologyCategories = ref([])
+const ontologies = ref([])
+
 const selectedKbId = ref('')
+const selectedCategoryId = ref('')
+const selectedOntologyId = ref('')
 
 const loading = ref(false)
 const applying = ref(false)
@@ -23,6 +32,14 @@ const summary = ref({})
 const kbOptions = computed(() => [
   { value: '', label: '请选择知识库', meta: '' },
   ...kbs.value.map(k => ({ value: k.id, label: k.name, meta: `${k.file_count || 0} 文件` })),
+])
+const ontologyCategoryOptions = computed(() => [
+  { value: '', label: '请选择本体领域', meta: '' },
+  ...ontologyCategories.value.map(c => ({ value: c.id, label: c.name, meta: '' })),
+])
+const ontologyOptions = computed(() => [
+  { value: '', label: '请选择本体类别', meta: '' },
+  ...ontologies.value.map(o => ({ value: o.id, label: o.name, meta: '' })),
 ])
 
 const selectedCounts = computed(() => {
@@ -46,6 +63,12 @@ const tabs = computed(() => [
   { key: 'entities', label: '噪声实体', count: delEntities.value.length },
   { key: 'relations', label: '无语义关系', count: delRelations.value.length },
 ])
+const page = ref(1)
+const pageSize = ref(10)
+const pagedGroups = computed(() => groups.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
+const pagedDelEntities = computed(() => delEntities.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
+const pagedDelRelations = computed(() => delRelations.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
+watch(activeTab, () => { page.value = 1 })
 
 function initFromSuggestions(data) {
   groups.value = (data.merge_groups || []).map(g => ({
@@ -65,14 +88,19 @@ function initFromSuggestions(data) {
 }
 
 async function loadSuggestions() {
-  if (!selectedKbId.value) {
-    toast.info('请先选择知识库')
+  const hasScope = selectedKbId.value || selectedCategoryId.value || selectedOntologyId.value
+  if (!hasScope) {
+    toast.info('请先选择知识库或本体类别')
     return
   }
   loading.value = true
   hasLoaded.value = true
   try {
-    const data = await fetchCleanupSuggestions(selectedKbId.value)
+    const data = await fetchCleanupSuggestions({
+      kbId: selectedKbId.value,
+      categoryId: selectedCategoryId.value,
+      ontologyId: selectedOntologyId.value,
+    })
     initFromSuggestions(data)
   } catch (e) {
     toast.error('生成清洗建议失败：' + e.message)
@@ -97,10 +125,12 @@ function payloadFor(scope) {
   const deleteEntityIds = delEntities.value.filter(e => e.checked).map(e => e.id)
   const deleteRelationIds = delRelations.value.filter(r => r.checked).map(r => r.id)
   const kbId = selectedKbId.value
-  if (scope === 'merge') return { kbId, merges, deleteEntityIds: [], deleteRelationIds: [] }
-  if (scope === 'entities') return { kbId, merges: [], deleteEntityIds, deleteRelationIds: [] }
-  if (scope === 'relations') return { kbId, merges: [], deleteEntityIds: [], deleteRelationIds }
-  return { kbId, merges, deleteEntityIds, deleteRelationIds }
+  const categoryId = selectedCategoryId.value
+  const ontologyId = selectedOntologyId.value
+  if (scope === 'merge') return { kbId, categoryId, ontologyId, merges, deleteEntityIds: [], deleteRelationIds: [] }
+  if (scope === 'entities') return { kbId, categoryId, ontologyId, merges: [], deleteEntityIds, deleteRelationIds: [] }
+  if (scope === 'relations') return { kbId, categoryId, ontologyId, merges: [], deleteEntityIds: [], deleteRelationIds }
+  return { kbId, categoryId, ontologyId, merges, deleteEntityIds, deleteRelationIds }
 }
 
 const SCOPE_LABEL = { all: '全部', merge: '合并重复实体', entities: '噪声实体', relations: '无语义关系' }
@@ -165,6 +195,8 @@ function mergeOneGroup(g) {
   if (!mergedIds.length) { toast.info('该组未勾选可合并成员'); return }
   return applyOne({
     kbId: selectedKbId.value,
+    categoryId: selectedCategoryId.value,
+    ontologyId: selectedOntologyId.value,
     merges: [{ canonical_id: g.canonicalId, merged_ids: mergedIds }],
     deleteEntityIds: [],
     deleteRelationIds: [],
@@ -174,6 +206,8 @@ function mergeOneGroup(g) {
 function deleteOneEntity(e) {
   return applyOne({
     kbId: selectedKbId.value,
+    categoryId: selectedCategoryId.value,
+    ontologyId: selectedOntologyId.value,
     merges: [],
     deleteEntityIds: [e.id],
     deleteRelationIds: [],
@@ -183,6 +217,8 @@ function deleteOneEntity(e) {
 function deleteOneRelation(r) {
   return applyOne({
     kbId: selectedKbId.value,
+    categoryId: selectedCategoryId.value,
+    ontologyId: selectedOntologyId.value,
     merges: [],
     deleteEntityIds: [],
     deleteRelationIds: [r.id],
@@ -190,7 +226,19 @@ function deleteOneRelation(r) {
 }
 
 function onKbChange() {
-  // 切换知识库即清空旧建议，等用户重新生成
+  selectedCategoryId.value = ''; selectedOntologyId.value = ''
+  clearSuggestions()
+}
+
+async function onCategoryChange() {
+  selectedKbId.value = ''; selectedOntologyId.value = ''; clearSuggestions(); await loadOntologies()
+}
+
+async function onOntologyChange() {
+  selectedKbId.value = ''; selectedCategoryId.value = ''; clearSuggestions()
+}
+
+function clearSuggestions() {
   groups.value = []
   delEntities.value = []
   delRelations.value = []
@@ -198,9 +246,19 @@ function onKbChange() {
   hasLoaded.value = false
 }
 
+async function loadCategories() {
+  try { ontologyCategories.value = await fetchOntologyCategories() } catch { ontologyCategories.value = [] }
+}
+
+async function loadOntologies() {
+  if (!selectedCategoryId.value) { ontologies.value = []; return }
+  try { ontologies.value = await fetchOntologies(selectedCategoryId.value) } catch { ontologies.value = [] }
+}
+
 let firstActivate = true
 onMounted(async () => {
   try { kbs.value = await fetchKbs() } catch { kbs.value = [] }
+  await loadCategories()
 })
 
 // keep-alive 重新激活时刷新知识库列表
@@ -219,7 +277,7 @@ onActivated(async () => {
       </div>
     </div>
 
-    <!-- 工具条：知识库选择 + 生成建议 -->
+    <!-- 工具条：知识库/本体选择 + 生成建议 -->
     <div class="toolbar">
       <div class="kb-filter">
         <SearchableSelect
@@ -230,7 +288,27 @@ onActivated(async () => {
           @change="onKbChange"
         />
       </div>
-      <button class="btn primary" :disabled="!selectedKbId || loading || applying" @click="loadSuggestions">
+      <span class="filter-or">或</span>
+      <div class="kb-filter">
+        <SearchableSelect
+          v-model="selectedCategoryId"
+          :options="ontologyCategoryOptions"
+          :searchable="true"
+          placeholder="选择本体领域"
+          @change="onCategoryChange"
+        />
+      </div>
+      <div class="kb-filter">
+        <SearchableSelect
+          v-model="selectedOntologyId"
+          :options="ontologyOptions"
+          :searchable="true"
+          placeholder="选择本体类别"
+          :disabled="!selectedCategoryId"
+          @change="onOntologyChange"
+        />
+      </div>
+      <button class="btn primary" :disabled="(!selectedKbId && !selectedCategoryId && !selectedOntologyId) || loading || applying" @click="loadSuggestions">
         <span v-if="loading" class="spinner sm"></span>
         {{ loading ? '分析中...' : '生成清洗建议' }}
       </button>
@@ -274,7 +352,7 @@ onActivated(async () => {
               </button>
             </div>
             <div class="group-list">
-              <div v-for="(g, gi) in groups" :key="gi" class="group-card">
+              <div v-for="(g, gi) in pagedGroups" :key="gi" class="group-card">
                 <div class="group-card-head">
                   <span class="type-tag">{{ g.entity_type }}</span>
                   <span class="group-reason">{{ g.reason }}</span>
@@ -300,6 +378,7 @@ onActivated(async () => {
                   </label>
                 </div>
               </div>
+              <Pagination v-if="groups.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="groups.length" />
             </div>
           </template>
         </section>
@@ -315,7 +394,7 @@ onActivated(async () => {
               </button>
             </div>
             <div class="check-table">
-              <div v-for="e in delEntities" :key="e.id" class="check-row">
+              <div v-for="e in pagedDelEntities" :key="e.id" class="check-row">
                 <label class="check-main">
                   <input type="checkbox" v-model="e.checked">
                   <span class="check-name">{{ e.name }}</span>
@@ -324,6 +403,7 @@ onActivated(async () => {
                 </label>
                 <button class="btn danger sm row-action" :disabled="applying" @click="deleteOneEntity(e)">删除</button>
               </div>
+              <Pagination v-if="delEntities.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="delEntities.length" />
             </div>
           </template>
         </section>
@@ -339,7 +419,7 @@ onActivated(async () => {
               </button>
             </div>
             <div class="check-table">
-              <div v-for="r in delRelations" :key="r.id" class="check-row">
+              <div v-for="r in pagedDelRelations" :key="r.id" class="check-row">
                 <label class="check-main">
                   <input type="checkbox" v-model="r.checked">
                   <span class="rel-tag">{{ r.relation_type }}</span>
@@ -347,6 +427,7 @@ onActivated(async () => {
                 </label>
                 <button class="btn danger sm row-action" :disabled="applying" @click="deleteOneRelation(r)">删除</button>
               </div>
+              <Pagination v-if="delRelations.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="delRelations.length" />
             </div>
           </template>
         </section>
@@ -382,7 +463,7 @@ onActivated(async () => {
       <div class="empty-icon">
         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       </div>
-      <div class="empty-title">选择知识库并生成清洗建议</div>
+      <div class="empty-title">选择知识库或本体类别并生成清洗建议</div>
       <div class="empty-desc">系统会自动识别可合并的重复实体、噪声节点与无语义关系</div>
     </div>
 

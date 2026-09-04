@@ -5,7 +5,8 @@ python-multipart>=0.0.6
 
 # 数据库
 sqlalchemy>=2.0.0
-aiosqlite>=0.19.0
+aiosqlite>=0.19.0            # SQLite 驱动（测试/兜底）
+asyncpg>=0.29.0              # PostgreSQL 异步驱动（生产推荐）
 
 # 配置
 pydantic-settings>=2.0.0
@@ -35,7 +36,8 @@ langchain-huggingface>=0.1.0    # EMBEDDING_PROVIDER=local
 
 # LangChain 向量存储（按需启用）
 langchain-chroma>=0.1.0         # VECTOR_STORE_PROVIDER=chroma
-# langchain-milvus>=0.1.0       # VECTOR_STORE_PROVIDER=milvus 时取消注释
+langchain-milvus>=0.1.0         # VECTOR_STORE_PROVIDER=milvus
+pymilvus>=2.4.0                 # VECTOR_STORE_PROVIDER=milvus（原生客户端，用于元数据/全量导出）
 
 # LangChain LLM
 langchain-openai>=0.2.0         # LLM_PROVIDER=openai（含 DeepSeek/Qwen/智谱等 OpenAI 兼容格式）
@@ -43,7 +45,7 @@ langchain-anthropic>=0.1.0      # LLM_PROVIDER=anthropic
 
 # 图数据库
 kuzu>=0.8.0                     # GRAPH_STORE_PROVIDER=kuzu
-neo4j>=5.0.0                    # GRAPH_STORE_PROVIDER=neo4j
+neo4j>=5.28,<6.0                # GRAPH_STORE_PROVIDER=neo4j（与 docker-compose 的 neo4j:5.26 服务端匹配）
 
 # 本地嵌入模型依赖（EMBEDDING_PROVIDER=local 时需要）
 sentence-transformers>=2.2.0

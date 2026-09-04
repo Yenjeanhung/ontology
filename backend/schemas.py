@@ -433,7 +433,9 @@ class CleanupMergeItem(BaseModel):
 
 
 class ApplyCleanupRequest(BaseModel):
-    kb_id: str
+    kb_id: str = ""
+    category_id: str = ""
+    ontology_id: str = ""
     merges: list[CleanupMergeItem] = []
     delete_entity_ids: list[str] = []
     delete_relation_ids: list[str] = []

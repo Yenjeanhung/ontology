@@ -1360,7 +1360,7 @@ class OntologySuggestionService:
                         ontology_id=ont_id, name=a_name, code=a_code,
                         data_type=(at.get("data_type") or "string").strip() or "string",
                         description=(at.get("description") or "").strip(),
-                        is_required=bool(at.get("is_required", False)),
+                        is_required=int(bool(at.get("is_required", False))),
                         sort_order=len(existing_attr_names) + i,
                     )
                     db.add(a)
@@ -1395,7 +1395,7 @@ class OntologySuggestionService:
                         ontology_id=o.id, name=a_name, code=a_code,
                         data_type=(at.get("data_type") or "string").strip() or "string",
                         description=(at.get("description") or "").strip(),
-                        is_required=bool(at.get("is_required", False)),
+                        is_required=int(bool(at.get("is_required", False))),
                         sort_order=i,
                     )
                     db.add(a)

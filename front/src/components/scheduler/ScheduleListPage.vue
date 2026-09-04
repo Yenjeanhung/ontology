@@ -1,11 +1,12 @@
 <script setup>
-import { onMounted, onActivated, ref, computed } from 'vue'
+import { onMounted, onActivated, ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   fetchSchedules, toggleSchedule, runScheduleNow, deleteSchedule, fetchScheduleRuns, getWorkflowRun,
 } from '../../api'
 import { useToast } from '../../composables/useToast'
 import ModalDialog from '../common/ModalDialog.vue'
+import Pagination from '../common/Pagination.vue'
 
 const router = useRouter()
 const toast = useToast()
@@ -23,6 +24,14 @@ const filteredSchedules = computed(() => {
     (!w || (s.workflow_name || '').toLowerCase().includes(w))
   )
 })
+const page = ref(1)
+const pageSize = ref(10)
+const pagedFilteredSchedules = computed(() =>
+  filteredSchedules.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
+watch([nameKw, wfKw], () => { page.value = 1 })
+watch(schedules, () => { page.value = 1 }, { deep: true })
+
 const runsDialog = ref({ visible: false, id: null, name: '', runs: [], loading: false })
 const runDialog = ref({ visible: false, id: null, name: '', loading: false })
 const runningIds = ref(new Set())
@@ -185,7 +194,7 @@ function enabledLabel(s) {
         <span class="c-run-status">状态</span>
         <span class="c-actions">操作</span>
       </div>
-      <div class="sc-row" v-for="s in filteredSchedules" :key="s.id">
+      <div class="sc-row" v-for="s in pagedFilteredSchedules" :key="s.id">
         <span class="c-name" @click="router.push(`/schedules/${s.id}`)">{{ s.name }}</span>
         <span class="c-wf">{{ s.workflow_name }}</span>
         <span class="c-trig">{{ s.trigger_summary }}</span>
@@ -211,6 +220,7 @@ function enabledLabel(s) {
           <button class="btn sm ghost danger" @click="askDelete(s)">删除</button>
         </span>
       </div>
+      <Pagination v-if="filteredSchedules.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="filteredSchedules.length" />
     </div>
 
     <div class="sc-empty" v-if="!loading && !schedules.length">

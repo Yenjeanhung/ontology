@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import KnowledgeBase
+from models import Entity, KnowledgeBase, Ontology, Relation
 from providers.graph_store import (
     fetch_graph_view,
     get_graph_store_provider_name,
@@ -194,3 +194,163 @@ class GraphDataService:
                 result.append(edge)
 
         return result
+
+    @staticmethod
+    async def get_ontology_view(
+        db: AsyncSession,
+        category_id: str | None = None,
+        ontology_id: str | None = None,
+        entity_query: str | None = None,
+        relation_type: str | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> dict:
+        """按本体类别/域从 SQLite 直接构建图谱视图，适用于非文件抽取实体。"""
+        # 先收集符合 ontology_id / category_id 的本体 ID
+        ontology_ids = []
+        if ontology_id:
+            ontology_ids = [ontology_id]
+        elif category_id:
+            rows = await db.execute(
+                select(Ontology.id).where(Ontology.category_id == category_id)
+            )
+            ontology_ids = rows.scalars().all()
+
+        # 实体过滤
+        ent_q = select(Entity)
+        if ontology_ids:
+            ent_q = ent_q.where(Entity.ontology_id.in_(ontology_ids))
+        if entity_query:
+            pattern = f"%{entity_query}%"
+            ent_q = ent_q.where(
+                or_(
+                    Entity.name.ilike(pattern),
+                    Entity.description.ilike(pattern),
+                )
+            )
+
+        # 总数
+        total_q = select(func.count(Entity.id))
+        if ontology_ids:
+            total_q = total_q.where(Entity.ontology_id.in_(ontology_ids))
+        if entity_query:
+            total_q = total_q.where(
+                or_(
+                    Entity.name.ilike(pattern),
+                    Entity.description.ilike(pattern),
+                )
+            )
+        total = (await db.scalar(total_q)) or 0
+
+        # 分页实体
+        ent_rows = (await db.execute(ent_q.order_by(Entity.name).limit(limit).offset(offset))).scalars().all()
+        entity_ids = {e.id for e in ent_rows}
+
+        # 关系过滤：包含与当前实体相关的一跳关系，确保图谱不是孤立点
+        rel_q = select(Relation).where(
+            (Relation.source_entity_id.in_(entity_ids)) |
+            (Relation.target_entity_id.in_(entity_ids))
+        )
+        if relation_type:
+            rel_q = rel_q.where(Relation.relation_type == relation_type)
+        rel_rows = (await db.execute(rel_q)).scalars().all()
+
+        # 收集关联节点 ID
+        related_ids = set()
+        for r in rel_rows:
+            related_ids.add(r.source_entity_id)
+            related_ids.add(r.target_entity_id)
+        extra_ids = related_ids - entity_ids
+        extra_entities = {}
+        if extra_ids:
+            extra_rows = (await db.execute(select(Entity).where(Entity.id.in_(extra_ids)))).scalars().all()
+            extra_entities = {e.id: e for e in extra_rows}
+
+        node_map = {e.id: e for e in ent_rows}
+        node_map.update(extra_entities)
+
+        nodes = [
+            {
+                "id": f"entity:{e.id}",
+                "kind": "entity",
+                "label": e.name,
+                "meta": {
+                    "entity_id": e.id,
+                    "entity_type": e.entity_type,
+                    "ontology_id": e.ontology_id,
+                    "kb_id": e.kb_id,
+                    "name": e.name,
+                    "description": e.description or "",
+                },
+            }
+            for e in node_map.values()
+        ]
+
+        edges = [
+            {
+                "id": f"relation:{r.id}",
+                "source": f"entity:{r.source_entity_id}",
+                "target": f"entity:{r.target_entity_id}",
+                "label": r.relation_type,
+                "meta": {
+                    "relation_id": r.id,
+                    "relation_type": r.relation_type,
+                    "description": r.description or "",
+                },
+            }
+            for r in rel_rows
+        ]
+
+        records = [
+            {
+                "chunk_id": "",
+                "file_id": "",
+                "entities": [
+                    {
+                        "entity_id": e.id,
+                        "name": e.name,
+                        "entity_type": e.entity_type,
+                        "description": e.description or "",
+                    }
+                    for e in node_map.values()
+                ],
+                "relations": [
+                    {
+                        "relation_id": r.id,
+                        "source_entity_id": r.source_entity_id,
+                        "source_name": node_map[r.source_entity_id].name,
+                        "source_type": node_map[r.source_entity_id].entity_type,
+                        "target_entity_id": r.target_entity_id,
+                        "target_name": node_map[r.target_entity_id].name,
+                        "target_type": node_map[r.target_entity_id].entity_type,
+                        "relation_type": r.relation_type,
+                        "description": r.description or "",
+                    }
+                    for r in rel_rows
+                ],
+                "entity_count": len(node_map),
+                "relation_count": len(rel_rows),
+            }
+        ]
+
+        return {
+            "provider": get_graph_store_provider_name(),
+            "kb": {"id": "", "name": "按本体类别", "description": ""},
+            "nodes": nodes,
+            "edges": edges,
+            "records": records,
+            "summary": {
+                "entity_total": total,
+                "entity_shown": len(ent_rows),
+                "relation_total": len(rel_rows),
+                "has_more": offset + limit < total,
+                "limit": limit,
+                "offset": offset,
+            },
+            "filters": {
+                "category_id": category_id or "",
+                "ontology_id": ontology_id or "",
+                "entity_query": entity_query or "",
+                "relation_type": relation_type or "",
+            },
+        }

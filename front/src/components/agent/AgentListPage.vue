@@ -1,11 +1,12 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   fetchAgents, createAgent, updateAgent, deleteAgent,
   fetchKbs, fetchAgentSkills,
 } from '../../api'
 import { useToast } from '../../composables/useToast'
 import ModalDialog from '../common/ModalDialog.vue'
+import Pagination from '../common/Pagination.vue'
 
 const toast = useToast()
 
@@ -29,6 +30,16 @@ const editForm = ref({
 const enabledSkills = computed(() => skills.value.filter(s => s.is_enabled))
 const presetAgents = computed(() => agents.value.filter(a => a.is_preset))
 const customAgents = computed(() => agents.value.filter(a => !a.is_preset))
+
+const page = ref(1)
+const pageSize = ref(10)
+const orderedAgents = computed(() => [...presetAgents.value, ...customAgents.value])
+const pagedAgents = computed(() =>
+  orderedAgents.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
+const pagedPresetAgents = computed(() => pagedAgents.value.filter(a => a.is_preset))
+const pagedCustomAgents = computed(() => pagedAgents.value.filter(a => !a.is_preset))
+watch(agents, () => { page.value = 1 }, { deep: true })
 const selectedIsPreset = () => !!selectedAgent()?.is_preset
 
 onMounted(async () => {
@@ -168,10 +179,10 @@ async function doRemove() {
       <!-- 左：智能体列表（内置 / 自定义 分组） -->
       <div class="list-col">
         <div class="list-items">
-          <template v-if="presetAgents.length">
+          <template v-if="pagedPresetAgents.length">
             <div class="group-title">内置</div>
             <div
-              v-for="a in presetAgents" :key="a.id"
+              v-for="a in pagedPresetAgents" :key="a.id"
               class="agent-card" :class="{ active: selectedId === a.id, off: !a.is_enabled }"
               @click="selectAgent(a.id)"
             >
@@ -188,10 +199,10 @@ async function doRemove() {
             </div>
           </template>
 
-          <div class="group-title" v-if="!presetAgents.length">全部智能体 ({{ customAgents.length }})</div>
+          <div class="group-title" v-if="!pagedPresetAgents.length">全部智能体 ({{ customAgents.length }})</div>
           <div class="group-title" v-else>自定义 ({{ customAgents.length }})</div>
           <div
-            v-for="a in customAgents" :key="a.id"
+            v-for="a in pagedCustomAgents" :key="a.id"
             class="agent-card" :class="{ active: selectedId === a.id, off: !a.is_enabled }"
             @click="selectAgent(a.id)"
           >
@@ -211,6 +222,7 @@ async function doRemove() {
           </div>
           <div class="list-empty" v-if="!loading && !customAgents.length">暂无自定义智能体，点击右上角新建</div>
           <div class="list-empty" v-if="loading">加载中...</div>
+          <Pagination v-if="agents.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="agents.length" />
         </div>
       </div>
 

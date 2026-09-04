@@ -150,6 +150,19 @@ export async function fetchGraphView({ kbId, fileId = '', entityQuery = '', rela
   return res.json()
 }
 
+export async function fetchGraphViewByOntology({ categoryId = '', ontologyId = '', entityQuery = '', relationType = '', limit = 500, offset = 0 }) {
+  const params = new URLSearchParams()
+  if (categoryId) params.set('category_id', categoryId)
+  if (ontologyId) params.set('ontology_id', ontologyId)
+  if (entityQuery) params.set('entity_query', entityQuery)
+  if (relationType) params.set('relation_type', relationType)
+  params.set('limit', String(limit))
+  params.set('offset', String(offset))
+  const res = await fetch(`${API}/api/graph/ontology-view?${params.toString()}`)
+  if (!res.ok) throw new Error('Fetch ontology graph view failed')
+  return res.json()
+}
+
 /**
  * 流式问答。通过回调逐 token 输出。
  * @param {string} kbId
@@ -1153,6 +1166,25 @@ export async function deleteEntity(entityId) {
   return res.json()
 }
 
+export async function createEntity(data) {
+  const res = await fetch(`${API}/api/entities`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Create entity failed')
+  }
+  return res.json()
+}
+
+export async function getOntologiesByCategory(categoryId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies`)
+  if (!res.ok) throw new Error('Fetch ontologies failed')
+  return res.json()
+}
+
 // 模块七：关系实例管理
 export async function fetchRelationInstances({ kb_id = '', relation_type = '', q = '', page = 1, page_size = 20 } = {}) {
   const params = new URLSearchParams()
@@ -1230,8 +1262,12 @@ export async function deleteOntologySuggestion(suggestionId) {
 }
 
 // ===== 图谱清洗（合并 / 精简实体关系）=====
-export async function fetchCleanupSuggestions(kbId) {
-  const res = await fetch(`${API}/api/graph-cleanup/suggestions?kb_id=${encodeURIComponent(kbId)}`)
+export async function fetchCleanupSuggestions({ kbId = '', categoryId = '', ontologyId = '' } = {}) {
+  const params = new URLSearchParams()
+  if (kbId) params.set('kb_id', kbId)
+  if (categoryId) params.set('category_id', categoryId)
+  if (ontologyId) params.set('ontology_id', ontologyId)
+  const res = await fetch(`${API}/api/graph-cleanup/suggestions?${params.toString()}`)
   if (!res.ok) throw new Error('Fetch cleanup suggestions failed')
   return res.json()
 }

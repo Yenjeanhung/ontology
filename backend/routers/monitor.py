@@ -158,7 +158,7 @@ def _is_readonly_sql(sql: str) -> bool:
     s = sql.strip().lower()
     if not s:
         return False
-    if s.startswith(("select", "pragma", "with", "explain")):
+    if s.startswith(("select", "pragma", "with", "explain", "show")):
         return True
     return False
 
@@ -174,29 +174,78 @@ async def db_schemas():
     result = {"schemas": [], "error": None}
     try:
         async with async_session() as db:
-            # sqlite_master 中 type in (table,view) 即库内所有对象
-            rows = await db.execute(text(
-                "SELECT name, type FROM sqlite_master "
-                "WHERE type IN ('table','view') ORDER BY type, name"
-            ))
-            objects = [{"name": r[0], "type": r[1]} for r in rows]
+            # 方言兼容：SQLite 用 sqlite_master + PRAGMA；
+            # PostgreSQL 用 information_schema（public schema 下的表 + 视图）
+            from database import engine
+
             schemas = []
-            for obj in objects:
-                cols = await db.execute(text(f"PRAGMA table_info('{obj['name']}')"))
-                columns = [
+            if engine.dialect.name == "sqlite":
+                rows = await db.execute(text(
+                    "SELECT name, type FROM sqlite_master "
+                    "WHERE type IN ('table','view') ORDER BY type, name"
+                ))
+                objects = [{"name": r[0], "type": r[1]} for r in rows]
+                for obj in objects:
+                    cols = await db.execute(text(f"PRAGMA table_info('{obj['name']}')"))
+                    columns = [
+                        {
+                            "name": c[1],
+                            "type": c[2],
+                            "notnull": bool(c[3]),
+                            "pk": bool(c[5]),
+                        }
+                        for c in cols
+                    ]
+                    schemas.append({
+                        "name": obj["name"],
+                        "type": obj["type"],
+                        "columns": columns,
+                    })
+            else:
+                rows = await db.execute(text(
+                    "SELECT table_name, table_type FROM information_schema.tables "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_type IN ('BASE TABLE','VIEW') ORDER BY table_type, table_name"
+                ))
+                objects = [
                     {
-                        "name": c[1],
-                        "type": c[2],
-                        "notnull": bool(c[3]),
-                        "pk": bool(c[5]),
+                        "name": r[0],
+                        "type": "table" if r[1] == "BASE TABLE" else "view",
                     }
-                    for c in cols
+                    for r in rows
                 ]
-                schemas.append({
-                    "name": obj["name"],
-                    "type": obj["type"],
-                    "columns": columns,
-                })
+                for obj in objects:
+                    cols = await db.execute(text(
+                        "SELECT column_name, data_type, is_nullable "
+                        "FROM information_schema.columns "
+                        "WHERE table_schema = current_schema() AND table_name = :t "
+                        "ORDER BY ordinal_position"
+                    ), {"t": obj["name"]})
+                    pk_names = set()
+                    pk = await db.execute(text(
+                        "SELECT kcu.column_name "
+                        "FROM information_schema.table_constraints tc "
+                        "JOIN information_schema.key_column_usage kcu "
+                        "ON tc.constraint_name = kcu.constraint_name "
+                        "AND tc.table_schema = kcu.table_schema "
+                        "WHERE tc.table_schema = current_schema() AND tc.table_name = :t "
+                        "AND tc.constraint_type = 'PRIMARY KEY'"
+                    ), {"t": obj["name"]})
+                    pk_names = {r[0] for r in pk}
+                    columns = [
+                        {
+                            "name": c[0],
+                            "type": c[1],
+                            "notnull": c[2] == "NO",
+                            "pk": c[0] in pk_names,
+                        }
+                        for c in cols
+                    ]
+                    schemas.append({
+                        "name": obj["name"],
+                        "type": obj["type"],
+                        "columns": columns,
+                    })
             result["schemas"] = schemas
     except Exception as e:
         logger.warning("monitor db schemas failed: %s", e)

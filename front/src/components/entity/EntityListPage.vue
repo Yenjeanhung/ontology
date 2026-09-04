@@ -1,16 +1,15 @@
 <script setup>
 import { ref, computed, watch, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchEntities, deleteEntity, fetchKbs, fetchOntologyCategories, getOntologyCategoryDetail } from '../../api'
+import { fetchEntities, deleteEntity, createEntity, fetchKbs, fetchOntologyCategories, getOntologyCategoryDetail } from '../../api'
 import SearchableSelect from '../common/SearchableSelect.vue'
+import Pagination from '../common/Pagination.vue'
 
 const router = useRouter()
 const entities = ref([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-const hasPrev = ref(false)
-const hasNext = ref(false)
 const loading = ref(false)
 
 const search = ref('')
@@ -27,12 +26,73 @@ const loadingTree = ref(false)
 
 let searchTimer = null
 
+// 新增实体弹窗
+const showCreate = ref(false)
+const createForm = ref({
+  kb_id: '',
+  ontology_id: '',
+  entity_type: '',
+  name: '',
+  description: '',
+  properties: '{}',
+})
+const createError = ref('')
+const createLoading = ref(false)
+const ontologyOptions = ref([])
+
+async function openCreate() {
+  createError.value = ''
+  createForm.value = {
+    kb_id: '',
+    ontology_id: selectedOntologyId.value || '',
+    entity_type: '',
+    name: '',
+    description: '',
+    properties: '{}'
+  }
+  // 从左侧已加载的本体树中聚合所有本体作为选项，
+  // 避免仅选中「本体」节点时分类 ID 为空导致下拉为空。
+  ontologyOptions.value = ontologyTree.value.flatMap(g => g.ontologies || [])
+  showCreate.value = true
+}
+
+async function submitCreate() {
+  createError.value = ''
+  if (!createForm.value.ontology_id || !createForm.value.name || !createForm.value.entity_type) {
+    createError.value = '请选择本体、填写实体类型和名称'
+    return
+  }
+  let props = {}
+  try {
+    props = JSON.parse(createForm.value.properties || '{}')
+  } catch {
+    createError.value = '属性 JSON 格式不正确'
+    return
+  }
+  createLoading.value = true
+  try {
+    await createEntity({
+      kb_id: createForm.value.kb_id || '',
+      ontology_id: createForm.value.ontology_id,
+      entity_type: createForm.value.entity_type,
+      name: createForm.value.name,
+      description: createForm.value.description,
+      properties: props,
+    })
+    showCreate.value = false
+    page.value = 1
+    await load()
+  } catch (e) {
+    createError.value = e.message || '创建失败'
+  } finally {
+    createLoading.value = false
+  }
+}
+
 const kbOptions = computed(() => [
   { value: '', label: '全部知识库', meta: '' },
   ...kbs.value.map(k => ({ value: k.id, label: k.name, meta: `${k.file_count || 0} 文件` })),
 ])
-
-const totalPages = computed(() => Math.ceil(total.value / pageSize.value) || 1)
 
 // 当前筛选上下文面包屑
 const filterLabel = computed(() => {
@@ -67,11 +127,18 @@ async function loadTree() {
     const tree = []
     for (const cat of cats) {
       const detail = await getOntologyCategoryDetail(cat.id)
-      tree.push({ category: { ...cat, entity_count: detail?.entity_count ?? 0 }, ontologies: detail?.ontologies || [] })
+      tree.push({
+        category: { ...cat, entity_count: detail?.entity_count ?? 0 },
+        ontologies: detail?.ontologies || []
+      })
     }
     ontologyTree.value = tree
-  } catch {
+    // 默认展开所有分类，让左侧树直接可见
+    expandedCats.value = new Set(tree.map(g => g.category.id))
+  } catch (e) {
+    console.error('load ontology tree failed', e)
     ontologyTree.value = []
+    expandedCats.value = new Set()
   } finally {
     loadingTree.value = false
   }
@@ -127,8 +194,6 @@ async function load() {
     })
     entities.value = res.items || []
     total.value = res.total || 0
-    hasPrev.value = !!res.has_prev
-    hasNext.value = !!res.has_next
   } catch (e) {
     entities.value = []
     total.value = 0
@@ -147,12 +212,6 @@ function onSearch() {
 
 function onKbChange() {
   page.value = 1
-  load()
-}
-
-function goPage(p) {
-  if (p < 1 || p > totalPages.value) return
-  page.value = p
   load()
 }
 
@@ -197,7 +256,10 @@ onActivated(() => {
         <h2 class="page-title">实体管理</h2>
         <span class="page-subtitle">知识抽取生成的实体实例</span>
       </div>
-      <router-link to="/entities/relations" class="link-btn">关系实例 →</router-link>
+      <div class="page-actions">
+        <button class="primary-btn" @click="openCreate">+ 新增实体</button>
+        <router-link to="/entities/relations" class="link-btn">关系实例 →</router-link>
+      </div>
     </div>
 
     <div class="split-layout">
@@ -326,16 +388,51 @@ onActivated(() => {
           </div>
           <div class="empty-title">{{ search || kbId || selectedOntologyId || selectedCategoryId ? '没有匹配的实体' : '暂无实体' }}</div>
           <div class="empty-desc" v-if="!search && !kbId && !selectedOntologyId && !selectedCategoryId">处理文件并完成知识抽取后，实体将出现在这里</div>
+          <button class="primary-btn mt" @click="openCreate">+ 新增实体</button>
         </div>
 
-        <!-- 分页 -->
-        <div v-if="total > 0" class="pager">
-          <span class="pager-info">共 {{ total }} 条 · 第 {{ page }}/{{ totalPages }} 页</span>
-          <div class="pager-btns">
-            <button class="btn sm" :disabled="!hasPrev" @click="goPage(page - 1)">上一页</button>
-            <button class="btn sm" :disabled="!hasNext" @click="goPage(page + 1)">下一页</button>
-          </div>
+    <!-- 新增实体弹窗 -->
+    <div v-if="showCreate" class="modal-overlay" @click.self="showCreate = false">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3>新增实体</h3>
+          <button class="close-btn" @click="showCreate = false">✕</button>
         </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <label>所属本体</label>
+            <select v-model="createForm.ontology_id">
+              <option value="">请选择本体</option>
+              <option v-for="o in ontologyOptions" :key="o.id" :value="o.id">{{ o.name }}</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>实体类型</label>
+            <input type="text" v-model="createForm.entity_type" placeholder="如 AircraftModel">
+          </div>
+          <div class="form-row">
+            <label>实体名称</label>
+            <input type="text" v-model="createForm.name" placeholder="唯一标识名称">
+          </div>
+          <div class="form-row">
+            <label>描述</label>
+            <input type="text" v-model="createForm.description" placeholder="可选">
+          </div>
+          <div class="form-row">
+            <label>属性 JSON</label>
+            <textarea v-model="createForm.properties" rows="4" placeholder='{"key":"value"}'></textarea>
+          </div>
+          <div v-if="createError" class="form-error">{{ createError }}</div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" @click="showCreate = false">取消</button>
+          <button class="primary-btn" :disabled="createLoading" @click="submitCreate">{{ createLoading ? '创建中...' : '创建' }}</button>
+        </div>
+      </div>
+    </div>
+
+        <!-- 分页 -->
+        <Pagination v-if="total > 0" v-model:page="page" v-model:page-size="pageSize" :total="total" @change="load" />
       </div>
     </div>
   </div>
@@ -437,4 +534,24 @@ onActivated(() => {
 .pager-btns { display: flex; gap: 8px; }
 .btn.sm { padding: 5px 12px; font-size: 12px; }
 .btn.sm:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.page-actions { display: flex; align-items: center; gap: 12px; }
+.primary-btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: 0; border-radius: var(--radius-sm); background: var(--c-accent); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: filter 150ms; }
+.primary-btn:hover { filter: brightness(1.1); }
+.primary-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.primary-btn.mt { margin-top: 16px; }
+
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modal-card { width: 520px; max-width: 92vw; max-height: 88vh; overflow-y: auto; background: var(--c-panel); border: 1px solid var(--c-border); border-radius: var(--radius); box-shadow: 0 20px 60px rgba(0,0,0,0.35); display: flex; flex-direction: column; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--c-border); }
+.modal-head h3 { margin: 0; font-size: 15px; font-weight: 700; color: var(--c-fg); }
+.close-btn { border: 0; background: transparent; color: var(--c-secondary); font-size: 18px; cursor: pointer; }
+.modal-body { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--c-border); }
+.form-row { display: flex; flex-direction: column; gap: 5px; }
+.form-row label { font-size: 12px; font-weight: 600; color: var(--c-secondary); }
+.form-row input, .form-row select, .form-row textarea { padding: 8px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-fg); font-size: 13px; font-family: var(--font); outline: none; }
+.form-row input:focus, .form-row select:focus, .form-row textarea:focus { border-color: var(--c-accent); }
+.form-row textarea { resize: vertical; }
+.form-error { color: var(--c-danger); font-size: 12px; padding: 4px 0; }
 </style>

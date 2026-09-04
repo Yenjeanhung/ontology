@@ -261,7 +261,7 @@ class EntityService:
         if q:
             like = f"%{q.strip()}%"
             filters.append(
-                or_(Entity.name.like(like), Entity.description.like(like))
+                or_(Entity.name.ilike(like), Entity.description.ilike(like))
             )
 
         total_stmt = select(func.count()).select_from(Entity)
@@ -721,7 +721,7 @@ class EntityService:
         if q:
             like = f"%{q.strip()}%"
             filters.append(
-                or_(Relation.relation_type.like(like), Relation.description.like(like))
+                or_(Relation.relation_type.ilike(like), Relation.description.ilike(like))
             )
 
         total_stmt = select(func.count()).select_from(Relation)

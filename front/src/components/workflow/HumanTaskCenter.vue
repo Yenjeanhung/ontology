@@ -6,6 +6,7 @@ import { fetchHumanTasks, submitHumanDecision, batchDecideHumanTasks } from '../
 import { useToast } from '../../composables/useToast'
 import { notifications } from '../../stores/notifications'
 import HumanTaskForm from './HumanTaskForm.vue'
+import Pagination from '../common/Pagination.vue'
 
 const router = useRouter()
 const toast = useToast()
@@ -36,6 +37,14 @@ const batchableTasks = computed(() => tasks.value.filter(t => t.mode !== 'form')
 const selectedIds = computed(() => [...selected.value])
 const allBatchableSelected = computed(
   () => batchableTasks.value.length > 0 && batchableTasks.value.every(t => selected.value.has(t.id)))
+
+const page = ref(1)
+const pageSize = ref(10)
+const pagedTasks = computed(() =>
+  tasks.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
+watch(status, () => { page.value = 1 })
+watch(tasks, () => { page.value = 1 }, { deep: true })
 
 async function load(preserveSelection = false) {
   if (loading.value) return   // 轮询与手动刷新重叠时跳过，避免竞态
@@ -178,7 +187,7 @@ watch(
           </tr>
         </thead>
         <tbody>
-          <tr v-for="t in tasks" :key="t.id" :class="{ overdue: isOverdue(t) }">
+          <tr v-for="t in pagedTasks" :key="t.id" :class="{ overdue: isOverdue(t) }">
             <td v-if="isPendingTab" class="c-chk">
               <input v-if="t.mode !== 'form'" type="checkbox" :checked="selected.has(t.id)" @change="toggleSelect(t.id)" />
               <span v-else class="no-batch" title="表单任务需逐条填写，不支持批量">—</span>
@@ -209,6 +218,7 @@ watch(
           </tr>
         </tbody>
       </table>
+      <Pagination v-if="tasks.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="tasks.length" />
 
       <!-- 批量操作条 -->
       <div v-if="isPendingTab" class="batch-bar">

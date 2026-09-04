@@ -1,6 +1,9 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
-import { fetchGraphRelationTypes, fetchGraphView, fetchKbs, getKb } from '../api'
+import {
+  fetchGraphRelationTypes, fetchGraphView, fetchGraphViewByOntology,
+  fetchKbs, fetchOntologies, fetchOntologyCategories, getKb,
+} from '../api'
 
 const graphProvider = inject('graphProvider', ref(''))
 
@@ -26,9 +29,13 @@ function entityTypeLabel(etype) {
 const kbs = ref([])
 const kbFiles = ref([])
 const relationTypes = ref([])
+const ontologyCategories = ref([])
+const ontologies = ref([])
 
 const selectedKbId = ref('')
 const selectedFileId = ref('')
+const selectedCategoryId = ref('')
+const selectedOntologyId = ref('')
 const entityQuery = ref('')
 const relationType = ref('')
 const viewMode = ref('graph')
@@ -215,7 +222,10 @@ const selectedNodeEdges = computed(() => {
 function assignColors() {
   const types = new Set()
   for (const r of records.value) {
-    for (const e of (r.entities || [])) types.add(e.entity_type || 'UNKNOWN')
+    for (const e of (r.entities || [])) {
+      const t = e.entity_type || 'UNKNOWN'
+      if (!isNoiseType(t)) types.add(t)
+    }
   }
   const map = {}
   let i = 0
@@ -224,61 +234,101 @@ function assignColors() {
 }
 
 function buildGraph() {
-  const entityMap = new Map()
-  const edgeList = []
+  const rawNodes = graphData.value?.nodes || []
+  const rawEdges = graphData.value?.edges || []
+  let nodeList = []
+  let edgeList = []
 
-  for (const record of records.value) {
-    for (const entity of (record.entities || [])) {
-      const key = (entity.name || '').toLowerCase()
-      if (!entityMap.has(key)) {
-        entityMap.set(key, {
-          id: key, name: entity.name,
-          entityType: entity.entity_type || 'UNKNOWN',
-          description: entity.description || '',
-          chunkIds: [], degree: 0,
-        })
-      }
-      const e = entityMap.get(key)
-      if (!e.chunkIds.includes(record.chunk_id)) e.chunkIds.push(record.chunk_id)
+  if (rawNodes.length) {
+    const degreeMap = {}
+    for (const edge of rawEdges) {
+      degreeMap[edge.source] = (degreeMap[edge.source] || 0) + 1
+      degreeMap[edge.target] = (degreeMap[edge.target] || 0) + 1
     }
+    for (const n of rawNodes) {
+      nodeList.push({
+        id: n.id,
+        name: n.label || n.name || n.id,
+        entityType: n.meta?.entity_type || n.entityType || 'UNKNOWN',
+        description: n.meta?.description || n.description || '',
+        chunkIds: [],
+        degree: degreeMap[n.id] || 0,
+        x: 0,
+        y: 0,
+        vx: 0,
+        vy: 0,
+      })
+    }
+    for (const e of rawEdges) {
+      edgeList.push({
+        key: e.id,
+        source: e.source,
+        target: e.target,
+        label: e.label || e.relation_type || '',
+      })
+    }
+  } else {
+    const entityMap = new Map()
+    for (const record of records.value) {
+      for (const entity of (record.entities || [])) {
+        const key = (entity.name || '').toLowerCase()
+        if (!entityMap.has(key)) {
+          entityMap.set(key, {
+            id: key, name: entity.name,
+            entityType: entity.entity_type || 'UNKNOWN',
+            description: entity.description || '',
+            chunkIds: [], degree: 0,
+          })
+        }
+        const e = entityMap.get(key)
+        if (!e.chunkIds.includes(record.chunk_id)) e.chunkIds.push(record.chunk_id)
+      }
+    }
+
+    for (const record of records.value) {
+      for (const relation of (record.relations || [])) {
+        const sKey = (relation.source_name || '').toLowerCase()
+        const tKey = (relation.target_name || '').toLowerCase()
+        if (!entityMap.has(sKey)) {
+          entityMap.set(sKey, { id: sKey, name: relation.source_name, entityType: relation.source_type || 'UNKNOWN', description: '', chunkIds: [], degree: 0 })
+        }
+        if (!entityMap.has(tKey)) {
+          entityMap.set(tKey, { id: tKey, name: relation.target_name, entityType: relation.target_type || 'UNKNOWN', description: '', chunkIds: [], degree: 0 })
+        }
+        const edgeKey = `${sKey}|||${relation.relation_type}|||${tKey}`
+        if (!edgeList.some(e => e.key === edgeKey)) {
+          edgeList.push({ key: edgeKey, source: sKey, target: tKey, label: relation.relation_type })
+          entityMap.get(sKey).degree++
+          entityMap.get(tKey).degree++
+        }
+      }
+    }
+    nodeList = Array.from(entityMap.values())
   }
 
-  for (const record of records.value) {
-    for (const relation of (record.relations || [])) {
-      const sKey = (relation.source_name || '').toLowerCase()
-      const tKey = (relation.target_name || '').toLowerCase()
-      if (!entityMap.has(sKey)) {
-        entityMap.set(sKey, { id: sKey, name: relation.source_name, entityType: relation.source_type || 'UNKNOWN', description: '', chunkIds: [], degree: 0 })
-      }
-      if (!entityMap.has(tKey)) {
-        entityMap.set(tKey, { id: tKey, name: relation.target_name, entityType: relation.target_type || 'UNKNOWN', description: '', chunkIds: [], degree: 0 })
-      }
-      const edgeKey = `${sKey}|||${relation.relation_type}|||${tKey}`
-      if (!edgeList.some(e => e.key === edgeKey)) {
-        edgeList.push({ key: edgeKey, source: sKey, target: tKey, label: relation.relation_type })
-        entityMap.get(sKey).degree++
-        entityMap.get(tKey).degree++
-      }
-    }
-  }
+  nodeList.sort((a, b) => b.degree - a.degree)
 
-  const entityList = Array.from(entityMap.values())
-  entityList.sort((a, b) => b.degree - a.degree)
+  // 日期/指标/文件等噪声类型一律不当作节点（它们应只是实体属性），从图里剔除
+  const removedIds = new Set(nodeList.filter(n => isNoiseType(n.entityType)).map(n => n.id))
+  if (removedIds.size) {
+    nodeList = nodeList.filter(n => !removedIds.has(n.id))
+    edgeList = edgeList.filter(e => !removedIds.has(e.source) && !removedIds.has(e.target))
+  }
 
   const cx = WORLD_W / 2
   const cy = WORLD_H / 2
   const radius = Math.min(WORLD_W, WORLD_H) * 0.38
 
-  const nodeList = entityList.map((e, index) => {
+  nodeList = nodeList.map((e, index) => {
     let x, y
-    if (entityList.length === 1) {
+    if (nodeList.length === 1) {
       x = cx; y = cy
     } else if (index < 5) {
       const angle = (index / 5) * Math.PI * 2
       x = cx + Math.cos(angle) * radius * 0.15
       y = cy + Math.sin(angle) * radius * 0.15
     } else {
-      const angle = ((index - 5) / (entityList.length - 5)) * Math.PI * 2
+      const angle = ((index - 5) / (nodeList.length - 5)) * Math.PI * 2
       const r = radius * (0.55 + Math.random() * 0.45)
       x = cx + Math.cos(angle) * r
       y = cy + Math.sin(angle) * r
@@ -616,6 +666,15 @@ async function loadKbs() {
   try { kbs.value = await fetchKbs() } catch { kbs.value = [] }
 }
 
+async function loadOntologyCategories() {
+  try { ontologyCategories.value = await fetchOntologyCategories() } catch { ontologyCategories.value = [] }
+}
+
+async function loadOntologies() {
+  if (!selectedCategoryId.value) { ontologies.value = []; return }
+  try { ontologies.value = await fetchOntologies(selectedCategoryId.value) } catch { ontologies.value = [] }
+}
+
 async function loadKbFiles() {
   if (!selectedKbId.value) { kbFiles.value = []; return }
   try { const kb = await getKb(selectedKbId.value); kbFiles.value = kb.files || [] } catch { kbFiles.value = [] }
@@ -630,25 +689,41 @@ async function loadRelationTypes() {
 }
 
 async function loadView({ append = false } = {}) {
-  if (!selectedKbId.value) { graphData.value = null; return }
+  const kbMode = !!selectedKbId.value
+  const ontologyMode = !!selectedCategoryId.value || !!selectedOntologyId.value
+  if (!kbMode && !ontologyMode) { graphData.value = null; return }
   const isLoading = append ? loadingMore : loading
   isLoading.value = true; error.value = ''
   try {
     const offset = append ? entityOffset.value : 0
-    const data = await fetchGraphView({
-      kbId: selectedKbId.value, fileId: selectedFileId.value,
-      entityQuery: entityQuery.value.trim(), relationType: relationType.value,
-      limit: ENTITY_PAGE_SIZE, offset,
-    })
+    let data = null
+    if (kbMode) {
+      data = await fetchGraphView({
+        kbId: selectedKbId.value, fileId: selectedFileId.value,
+        entityQuery: entityQuery.value.trim(), relationType: relationType.value,
+        limit: ENTITY_PAGE_SIZE, offset,
+      })
+    } else {
+      data = await fetchGraphViewByOntology({
+        categoryId: selectedCategoryId.value,
+        ontologyId: selectedOntologyId.value,
+        entityQuery: entityQuery.value.trim(),
+        relationType: relationType.value,
+        limit: ENTITY_PAGE_SIZE, offset,
+      })
+    }
     if (append && graphData.value) {
-      // Merge new records with existing, deduplicating by chunk_id
-      const existingIds = new Set(graphData.value.records.map(r => r.chunk_id))
-      const newRecords = (data.records || []).filter(r => !existingIds.has(r.chunk_id))
+      const existingNodeIds = new Set((graphData.value.nodes || []).map(n => n.id))
+      const existingEdgeIds = new Set((graphData.value.edges || []).map(e => e.id))
+      const newNodes = (data.nodes || []).filter(n => !existingNodeIds.has(n.id))
+      const newEdges = (data.edges || []).filter(e => !existingEdgeIds.has(e.id))
+      const existingChunkIds = new Set(graphData.value.records.map(r => r.chunk_id))
+      const newRecords = (data.records || []).filter(r => !existingChunkIds.has(r.chunk_id))
       graphData.value = {
         ...data,
         records: [...graphData.value.records, ...newRecords],
-        nodes: [...(graphData.value.nodes || []), ...(data.nodes || [])],
-        edges: [...(graphData.value.edges || []), ...(data.edges || [])],
+        nodes: [...(graphData.value.nodes || []), ...newNodes],
+        edges: [...(graphData.value.edges || []), ...newEdges],
       }
     } else {
       graphData.value = data
@@ -656,7 +731,6 @@ async function loadView({ append = false } = {}) {
     entityOffset.value = offset + ENTITY_PAGE_SIZE
     hasMore.value = data.summary?.has_more ?? false
     hasQueried.value = true
-    // buildGraph 内部会调用 applyViewFilters → startSimulation
     assignColors(); buildGraph()
     selectedNodeId.value = ''
     selectedChunkId.value = records.value[0]?.chunk_id || ''
@@ -668,11 +742,20 @@ async function loadView({ append = false } = {}) {
 }
 
 async function onKbChange() {
-  selectedFileId.value = ''; relationType.value = ''; entityQuery.value = ''
+  selectedCategoryId.value = ''; selectedOntologyId.value = ''; selectedFileId.value = ''; relationType.value = ''; entityQuery.value = ''
   graphData.value = null; entityOffset.value = 0; hasMore.value = false; hasQueried.value = false
   await loadKbFiles(); await loadRelationTypes()
 }
 async function onFileChange() { relationType.value = ''; await loadRelationTypes() }
+async function onCategoryChange() {
+  selectedOntologyId.value = ''; selectedKbId.value = ''; selectedFileId.value = ''; relationType.value = ''; entityQuery.value = ''
+  graphData.value = null; entityOffset.value = 0; hasMore.value = false; hasQueried.value = false
+  await loadOntologies()
+}
+async function onOntologyChange() {
+  selectedCategoryId.value = ''; selectedKbId.value = ''; selectedFileId.value = ''; relationType.value = ''; entityQuery.value = ''
+  graphData.value = null; entityOffset.value = 0; hasMore.value = false; hasQueried.value = false
+}
 async function submitFilters() {
   entityOffset.value = 0; hasMore.value = false
   stopSimulation(); graphData.value = null
@@ -696,7 +779,7 @@ function onRelationPageSizeChange() {
 }
 
 onMounted(async () => {
-  await loadKbs()
+  await Promise.all([loadKbs(), loadOntologyCategories()])
 })
 onUnmounted(() => stopSimulation())
 </script>
@@ -722,7 +805,7 @@ onUnmounted(() => stopSimulation())
     </div>
 
     <section class="graph-card filter-card">
-      <div class="graph-filters">
+      <div class="filter-row">
         <select v-model="selectedKbId" @change="onKbChange">
           <option value="">选择知识库</option>
           <option v-for="kb in kbs" :key="kb.id" :value="kb.id">{{ kb.name }}</option>
@@ -731,17 +814,27 @@ onUnmounted(() => stopSimulation())
           <option value="">全部文件</option>
           <option v-for="file in kbFiles" :key="file.id" :value="file.id">{{ file.name }}</option>
         </select>
-        <input v-model="entityQuery" type="text" placeholder="搜索实体关键词..." :disabled="!selectedKbId" @keydown.enter="submitFilters">
+      </div>
+      <div class="filter-row">
+        <select v-model="selectedCategoryId" @change="onCategoryChange">
+          <option value="">本体领域</option>
+          <option v-for="c in ontologyCategories" :key="c.id" :value="c.id">{{ c.name }}</option>
+        </select>
+        <select v-model="selectedOntologyId" :disabled="!selectedCategoryId && !selectedOntologyId" @change="onOntologyChange">
+          <option value="">本体类别</option>
+          <option v-for="o in ontologies" :key="o.id" :value="o.id">{{ o.name }}</option>
+        </select>
+        <input v-model="entityQuery" type="text" placeholder="搜索实体关键词..." :disabled="!selectedKbId && !selectedCategoryId && !selectedOntologyId" @keydown.enter="submitFilters">
         <select v-model="relationType" :disabled="!selectedKbId">
           <option value="">全部关系类型</option>
           <option v-for="item in relationTypes" :key="item" :value="item">{{ item }}</option>
         </select>
-        <button class="btn primary" :disabled="!selectedKbId || loading" @click="submitFilters">查询</button>
+        <button class="btn primary" :disabled="(!selectedKbId && !selectedCategoryId && !selectedOntologyId) || loading" @click="submitFilters">查询</button>
       </div>
     </section>
 
     <!-- ====== 视图精简（非破坏，仅作用于已加载的图）====== -->
-    <section v-if="selectedKbId && viewMode === 'graph'" class="graph-card filter-card simplify-card">
+    <section v-if="(selectedKbId || selectedCategoryId || selectedOntologyId) && viewMode === 'graph'" class="graph-card filter-card simplify-card">
       <div class="simplify-row">
         <span class="simplify-label">视图精简</span>
         <label class="simplify-field">
@@ -762,9 +855,9 @@ onUnmounted(() => stopSimulation())
 
     <!-- ====== GRAPH VIEW ====== -->
     <section v-if="viewMode === 'graph'" class="graph-card main-card graph-mode">
-      <div v-if="!selectedKbId" class="empty-state">
-        <div class="title">先选择一个知识库</div>
-        <div class="desc">图谱页会基于当前知识库和文件范围加载实体与关系。</div>
+      <div v-if="!selectedKbId && !selectedCategoryId && !selectedOntologyId" class="empty-state">
+        <div class="title">先选择知识库或本体类别</div>
+        <div class="desc">图谱页可基于知识库/文件加载，也可按本体领域/类别查看非文件抽取实体。</div>
       </div>
       <div v-else-if="loading" class="loading-row"><span class="spinner"></span>加载图谱中...</div>
       <div v-else-if="error" class="error-text">{{ error }}</div>
@@ -936,7 +1029,7 @@ onUnmounted(() => stopSimulation())
 
     <!-- ====== LIST VIEW ====== -->
     <section v-if="viewMode === 'list'" class="graph-card main-card list-mode">
-      <div v-if="!selectedKbId" class="empty-state"><div class="title">先选择一个知识库</div></div>
+      <div v-if="!selectedKbId && !selectedCategoryId && !selectedOntologyId" class="empty-state"><div class="title">先选择知识库或本体类别</div></div>
       <div v-else-if="loading" class="loading-row"><span class="spinner"></span> 加载中...</div>
       <div v-else-if="error" class="error-text">{{ error }}</div>
       <div v-else-if="!relationRows.length" class="empty-state">
@@ -1087,15 +1180,19 @@ onUnmounted(() => stopSimulation())
 .graph-card { background: var(--c-panel); border: 1px solid var(--c-border); border-radius: 18px; }
 .filter-card { padding: 16px; }
 
-.graph-filters {
-  display: grid;
-  grid-template-columns: 160px 180px minmax(160px, 1fr) 150px 70px;
-  gap: 10px; align-items: center;
+.graph-filters { display: grid; gap: 10px; }
+.filter-row {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
 }
-.graph-filters select, .graph-filters input {
+.filter-row + .filter-row { margin-top: 10px; }
+.filter-card { padding: 16px; }
+.filter-row select, .filter-row input {
   height: 40px; padding: 0 12px; border: 1px solid var(--c-border);
   border-radius: 10px; background: var(--c-panel); color: var(--c-fg); font-size: 13px; outline: none;
 }
+.filter-row input[type="text"] { flex: 1 1 220px; min-width: 180px; }
+.filter-row select { min-width: 150px; }
+
 
 /* Graph mode */
 .graph-mode { padding: 16px; }
@@ -1357,7 +1454,7 @@ onUnmounted(() => stopSimulation())
 .error-text { color: var(--c-danger); padding: 12px 0; }
 
 @media (max-width: 1100px) {
-  .graph-filters { grid-template-columns: 1fr 1fr; }
+  .filter-row { flex-wrap: wrap; }
   .graph-main { grid-template-columns: 1fr; }
   .graph-inspector { position: static; max-height: none; }
 }
@@ -1365,7 +1462,8 @@ onUnmounted(() => stopSimulation())
 @media (max-width: 720px) {
   .graph-toolbar { flex-direction: column; align-items: stretch; }
   .toolbar-right { justify-content: space-between; }
-  .graph-filters { grid-template-columns: 1fr; }
+  .filter-row { flex-direction: column; align-items: stretch; }
+  .filter-row select, .filter-row input { width: 100%; }
   .relation-list-head { align-items: stretch; }
   .relation-page-tools { justify-content: space-between; }
   .chunk-grid-compact { grid-template-columns: 1fr; }

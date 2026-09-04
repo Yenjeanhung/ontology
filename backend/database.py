@@ -89,10 +89,19 @@ async def init_db():
                         )
                         if m:
                             table, col = m.group(1), m.group(2)
-                            cols = await conn.execute(
-                                text(f"PRAGMA table_info('{table}')")
-                            )
-                            existing = {row[1] for row in cols}
+                            # 方言兼容：SQLite 用 PRAGMA，PostgreSQL 用 information_schema
+                            if engine.dialect.name == "sqlite":
+                                cols = await conn.execute(
+                                    text(f"PRAGMA table_info('{table}')")
+                                )
+                                existing = {row[1] for row in cols}
+                            else:
+                                cols = await conn.execute(
+                                    text("SELECT column_name FROM information_schema.columns "
+                                         "WHERE table_schema = current_schema() AND table_name = :t"),
+                                    {"t": table},
+                                )
+                                existing = {row[0] for row in cols}
                             if col in existing:
                                 continue
                         await conn.execute(text(stmt))

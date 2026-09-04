@@ -40,9 +40,9 @@ class VectorDataService:
             like = f"%{query.strip()}%"
             filters.append(
                 or_(
-                    File.name.like(like),
-                    Chunk.content.like(like),
-                    Chunk.embedding_id.like(like),
+                    File.name.ilike(like),
+                    Chunk.content.ilike(like),
+                    Chunk.embedding_id.ilike(like),
                 )
             )
         return filters
@@ -186,7 +186,7 @@ class VectorDataService:
         if kb_id:
             filters.append(File.kb_id == kb_id)
         if query:
-            filters.append(File.name.like(f"%{query.strip()}%"))
+            filters.append(File.name.ilike(f"%{query.strip()}%"))
 
         total = (await db.execute(
             select(func.count()).select_from(File).where(*filters)

@@ -15,6 +15,7 @@ import {
 } from '../../api'
 import AttributeEditor from '../common/AttributeEditor.vue'
 import SearchableSelect from '../common/SearchableSelect.vue'
+import Pagination from '../common/Pagination.vue'
 
 const props = defineProps({
   categoryId: { type: String, required: true },
@@ -38,6 +39,11 @@ const BUILTIN_ATTRS = [
 // ── 列表（轻量，仅计数） ──
 const list = ref([])
 const listLoading = ref(false)
+const page = ref(1)
+const pageSize = ref(10)
+const pagedList = computed(() =>
+  list.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
 
 // ── 详情抽屉（点击时按需加载） ──
 const currentId = ref(null)
@@ -156,6 +162,7 @@ async function refreshAfterChange() {
 watch(() => props.categoryId, () => {
   closeDetail()
   list.value = []
+  page.value = 1
   loadList()
 })
 
@@ -389,7 +396,7 @@ onActivated(() => { onSvcSaved() })
         </thead>
         <tbody>
           <tr
-            v-for="ont in list"
+            v-for="ont in pagedList"
             :key="ont.id"
             :class="{ active: ont.id === currentId }"
             @click="openDetail(ont)"
@@ -415,6 +422,7 @@ onActivated(() => { onSvcSaved() })
           </tr>
         </tbody>
       </table>
+      <Pagination v-if="list.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="list.length" />
     </div>
 
     <!-- 详情抽屉 -->

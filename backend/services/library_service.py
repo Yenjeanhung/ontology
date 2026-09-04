@@ -325,9 +325,9 @@ class LibraryService:
         if q:
             pattern = f"%{q.strip()}%"
             stmt = stmt.where(
-                (FileAsset.name.like(pattern))
-                | (FileAsset.summary.like(pattern))
-                | (FileAsset.source_keyword.like(pattern))
+                (FileAsset.name.ilike(pattern))
+                | (FileAsset.summary.ilike(pattern))
+                | (FileAsset.source_keyword.ilike(pattern))
             )
         result = await db.execute(stmt)
         return [_asset_to_dict(asset) for asset in result.scalars().all()]

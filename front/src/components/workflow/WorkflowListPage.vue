@@ -1,15 +1,22 @@
 <script setup>
-import { onMounted, onActivated, ref } from 'vue'
+import { onMounted, onActivated, ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchWorkflows, createWorkflow, deleteWorkflow } from '../../api'
 import { useToast } from '../../composables/useToast'
 import ModalDialog from '../common/ModalDialog.vue'
+import Pagination from '../common/Pagination.vue'
 
 const router = useRouter()
 const toast = useToast()
 
 const workflows = ref([])
 const loading = ref(true)
+const page = ref(1)
+const pageSize = ref(10)
+const pagedWorkflows = computed(() =>
+  workflows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+)
+watch(workflows, () => { page.value = 1 }, { deep: true })
 
 const createDialog = ref({ visible: false, name: '', loading: false })
 const deleteDialog = ref({ visible: false, id: null, name: '', loading: false })
@@ -75,7 +82,7 @@ async function doDelete() {
     </div>
 
     <div class="wf-grid">
-      <div v-for="w in workflows" :key="w.id" class="wf-card" @click="router.push(`/workflows/${w.id}`)">
+      <div v-for="w in pagedWorkflows" :key="w.id" class="wf-card" @click="router.push(`/workflows/${w.id}`)">
         <div class="wf-card-top">
           <span class="wf-card-name">{{ w.name }}</span>
           <button class="btn sm" @click.stop="askDelete(w)">删除</button>
@@ -93,6 +100,7 @@ async function doDelete() {
       </div>
       <div class="wf-empty" v-if="loading">加载中...</div>
     </div>
+    <Pagination v-if="workflows.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="workflows.length" />
 
     <ModalDialog
       v-model="createDialog.visible"
