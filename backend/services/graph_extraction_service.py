@@ -865,6 +865,12 @@ class GraphExtractionService:
         # 丢弃无语义的通用关系类型（涉及/提到/关联 等）
         if relation_type in _generic_relation_blocklist():
             return None
+        # 关系端点是低价值实体名（日期/数值/URL 等）时关系无意义，整个丢弃，
+        # 防止写图时经端点 MERGE 绕过 _to_entity 的过滤建成噪声节点
+        if settings.GRAPH_FILTER_LOW_VALUE_ENTITIES and (
+            _is_low_value_entity_name(source_name) or _is_low_value_entity_name(target_name)
+        ):
+            return None
 
         source_type = str(raw_relation.get("source_type", "")).strip()
         target_type = str(raw_relation.get("target_type", "")).strip()
@@ -898,6 +904,9 @@ class GraphExtractionService:
         entity_type: str,
         ontology_constraint: dict | None = None,
     ):
+        # 与 _to_entity 一致的低价值过滤：日期/数值等噪声不得经关系端点补建成实体
+        if settings.GRAPH_FILTER_LOW_VALUE_ENTITIES and _is_low_value_entity_name(entity_name):
+            return
         key = (entity_name.lower(), entity_type.lower())
         if key in entity_lookup:
             return

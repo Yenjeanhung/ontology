@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
-  fetchGraphRelationTypes, fetchGraphView, fetchGraphViewByOntology,
+  fetchGraphExpand, fetchGraphRelationTypes, fetchGraphView, fetchGraphViewByOntology,
   fetchKbs, fetchOntologies, fetchOntologyCategories, getKb,
 } from '../api'
 
@@ -53,7 +53,15 @@ const selectedChunkId = ref('')
 const entityOffset = ref(0)
 const hasMore = ref(false)
 const hasQueried = ref(false)
-const ENTITY_PAGE_SIZE = 200
+const ENTITY_PAGE_SIZE = 50
+
+// ===== 双击懒加载展开 =====
+const EXPAND_BATCH = 50
+const expandingNodeId = ref('')
+const expandNotice = ref('')
+let expandNoticeTimer = null
+// 当前图中每个实体已加载的关系数（relates 直连边 / relation 中转边）
+const loadedDegreeMap = ref({})
 
 // Canvas dimensions (fixed world space)
 const WORLD_W = 1600
@@ -220,12 +228,12 @@ const selectedNodeEdges = computed(() => {
 // ======================= Force simulation =======================
 
 function assignColors() {
+  // 从全量节点（含双击展开的新节点）收集类型，保证新增类型也能分配颜色
   const types = new Set()
-  for (const r of records.value) {
-    for (const e of (r.entities || [])) {
-      const t = e.entity_type || 'UNKNOWN'
-      if (!isNoiseType(t)) types.add(t)
-    }
+  const source = allNodes.value.length ? allNodes.value : nodes.value
+  for (const n of source) {
+    const t = n.entityType || 'UNKNOWN'
+    if (!isNoiseType(t)) types.add(t)
   }
   const map = {}
   let i = 0
@@ -246,13 +254,16 @@ function buildGraph() {
       degreeMap[edge.target] = (degreeMap[edge.target] || 0) + 1
     }
     for (const n of rawNodes) {
+      // 优先用后端提供的全量度数（当前筛选口径下的真实关系数）
+      const totalDegree = Number(n.meta?.degree ?? degreeMap[n.id] ?? 0)
       nodeList.push({
         id: n.id,
         name: n.label || n.name || n.id,
         entityType: n.meta?.entity_type || n.entityType || 'UNKNOWN',
         description: n.meta?.description || n.description || '',
         chunkIds: [],
-        degree: degreeMap[n.id] || 0,
+        degree: totalDegree,
+        totalDegree,
         x: 0,
         y: 0,
         vx: 0,
@@ -265,6 +276,7 @@ function buildGraph() {
         source: e.source,
         target: e.target,
         label: e.label || e.relation_type || '',
+        kind: e.kind || '',
       })
     }
   } else {
@@ -290,20 +302,21 @@ function buildGraph() {
         const sKey = (relation.source_name || '').toLowerCase()
         const tKey = (relation.target_name || '').toLowerCase()
         if (!entityMap.has(sKey)) {
-          entityMap.set(sKey, { id: sKey, name: relation.source_name, entityType: relation.source_type || 'UNKNOWN', description: '', chunkIds: [], degree: 0 })
+          entityMap.set(sKey, { id: sKey, name: relation.source_name, entityType: relation.source_type || 'UNKNOWN', description: '', chunkIds: [], degree: 0, totalDegree: 0 })
         }
         if (!entityMap.has(tKey)) {
-          entityMap.set(tKey, { id: tKey, name: relation.target_name, entityType: relation.target_type || 'UNKNOWN', description: '', chunkIds: [], degree: 0 })
+          entityMap.set(tKey, { id: tKey, name: relation.target_name, entityType: relation.target_type || 'UNKNOWN', description: '', chunkIds: [], degree: 0, totalDegree: 0 })
         }
         const edgeKey = `${sKey}|||${relation.relation_type}|||${tKey}`
         if (!edgeList.some(e => e.key === edgeKey)) {
-          edgeList.push({ key: edgeKey, source: sKey, target: tKey, label: relation.relation_type })
+          edgeList.push({ key: edgeKey, source: sKey, target: tKey, label: relation.relation_type, kind: 'relates' })
           entityMap.get(sKey).degree++
           entityMap.get(tKey).degree++
         }
       }
     }
     nodeList = Array.from(entityMap.values())
+    for (const n of nodeList) n.totalDegree = n.degree
   }
 
   nodeList.sort((a, b) => b.degree - a.degree)
@@ -341,6 +354,7 @@ function buildGraph() {
   // 全量缓存（同一对象引用，保留 x/y/vx/vy，便于过滤切换时位置连续）
   allNodes.value = nodeList
   allEdges.value = edgeList
+  assignColors()
   simSettled.value = false
   viewBox.value = { ...defaultViewBox }
   zoomLevel.value = 1
@@ -371,6 +385,20 @@ function applyViewFilters() {
   const vis = visibleNodeIds()
   nodes.value = allNodes.value.filter(n => vis.has(n.id))
   edges.value = allEdges.value.filter(e => vis.has(e.source) && vis.has(e.target))
+  // 统计每个实体已加载的关系数：
+  // - relates：本体/展开模式的实体直连边，两端各计 1
+  // - relation_source/target：KB 模式下 relation 中转边，只给实体端计数
+  const cnt = {}
+  for (const e of allEdges.value) {
+    const k = e.kind || 'relates'
+    if (k === 'relates') {
+      cnt[e.source] = (cnt[e.source] || 0) + 1
+      cnt[e.target] = (cnt[e.target] || 0) + 1
+    } else if (k === 'relation_source' || k === 'relation_target') {
+      cnt[e.target] = (cnt[e.target] || 0) + 1
+    }
+  }
+  loadedDegreeMap.value = cnt
   simSettled.value = false
   startSimulation()
 }
@@ -731,7 +759,7 @@ async function loadView({ append = false } = {}) {
     entityOffset.value = offset + ENTITY_PAGE_SIZE
     hasMore.value = data.summary?.has_more ?? false
     hasQueried.value = true
-    assignColors(); buildGraph()
+    buildGraph()
     selectedNodeId.value = ''
     selectedChunkId.value = records.value[0]?.chunk_id || ''
     relationPage.value = 1
@@ -766,6 +794,118 @@ async function loadMoreEntities() {
   await loadView({ append: true })
 }
 
+// ======================= 双击懒加载展开 =======================
+
+function isEntityNode(node) {
+  return String(node.id).startsWith('entity:')
+}
+
+// 该节点还有多少一跳关系未加载（>0 时显示 + 角标）
+function pendingExpandCount(node) {
+  if (!isEntityNode(node)) return 0
+  const total = Number(node.totalDegree ?? node.degree ?? 0)
+  return Math.max(0, total - (loadedDegreeMap.value[node.id] || 0))
+}
+
+function showExpandNotice(msg) {
+  expandNotice.value = msg
+  if (expandNoticeTimer) clearTimeout(expandNoticeTimer)
+  expandNoticeTimer = setTimeout(() => { expandNotice.value = '' }, 2400)
+}
+
+async function onNodeDblClick(node) {
+  if (!isEntityNode(node)) return
+  if (expandingNodeId.value) return
+  if (pendingExpandCount(node) <= 0) {
+    showExpandNotice('该节点的邻居已全部加载')
+    return
+  }
+  const eid = String(node.id).slice('entity:'.length)
+  expandingNodeId.value = node.id
+  error.value = ''
+  try {
+    // 滚动窗口：覆盖「已加载数 + 一批」，前端去重后保证每次双击净新增约 EXPAND_BATCH 条关系
+    const loaded = loadedDegreeMap.value[node.id] || 0
+    const limit = Math.max(
+      EXPAND_BATCH,
+      Math.min(Number(node.totalDegree) || EXPAND_BATCH, loaded + EXPAND_BATCH, 200),
+    )
+    const data = await fetchGraphExpand({
+      entityId: eid,
+      relationType: relationType.value,
+      limit,
+      offset: 0,
+    })
+    if (data.summary) node.totalDegree = data.summary.relation_total ?? node.totalDegree
+    mergeExpanded(node, data)
+  } catch (err) {
+    showExpandNotice(err.message || '展开失败')
+  } finally {
+    expandingNodeId.value = ''
+  }
+}
+
+function mergeExpanded(centerNode, data) {
+  const existing = new Map(allNodes.value.map(n => [n.id, n]))
+  const newNodes = []
+  for (const n of (data.nodes || [])) {
+    const deg = Number(n.meta?.degree ?? 0)
+    const exist = existing.get(n.id)
+    if (exist) {
+      // 中心/已存在节点：刷新其真实全量度数（节点大小更准确）
+      if (deg > (exist.degree || 0)) {
+        exist.degree = deg
+        exist.totalDegree = deg
+      }
+      continue
+    }
+    // 新节点落在中心节点周围，交由力导向自然展开
+    const angle = Math.random() * Math.PI * 2
+    const r = 130 + Math.random() * 170
+    newNodes.push({
+      id: n.id,
+      name: n.label || n.name || n.id,
+      entityType: n.meta?.entity_type || 'UNKNOWN',
+      description: n.meta?.description || '',
+      chunkIds: [],
+      degree: deg,
+      totalDegree: deg,
+      x: (centerNode.x || 0) + Math.cos(angle) * r,
+      y: (centerNode.y || 0) + Math.sin(angle) * r,
+      vx: 0,
+      vy: 0,
+    })
+  }
+
+  const existingKeys = new Set(allEdges.value.map(e => e.key))
+  const newEdges = []
+  for (const e of (data.edges || [])) {
+    if (existingKeys.has(e.id)) continue
+    newEdges.push({
+      key: e.id,
+      source: e.source,
+      target: e.target,
+      label: e.label || '',
+      kind: e.kind || 'relates',
+    })
+  }
+
+  if (!newNodes.length && !newEdges.length) {
+    showExpandNotice('该节点的邻居已全部加载')
+    return
+  }
+
+  allNodes.value = [...allNodes.value, ...newNodes]
+  allEdges.value = [...allEdges.value, ...newEdges]
+  if (graphData.value?.summary) {
+    graphData.value.summary.entity_shown =
+      (graphData.value.summary.entity_shown ?? 0) + newNodes.length
+  }
+  assignColors()
+  applyViewFilters()
+  showExpandNotice(`已展开 ${newNodes.length} 个新节点 / ${newEdges.length} 条新关系`)
+}
+
 function selectRelationRow(row) {
   selectedChunkId.value = row.chunk_id
 }
@@ -781,7 +921,10 @@ function onRelationPageSizeChange() {
 onMounted(async () => {
   await Promise.all([loadKbs(), loadOntologyCategories()])
 })
-onUnmounted(() => stopSimulation())
+onUnmounted(() => {
+  stopSimulation()
+  if (expandNoticeTimer) clearTimeout(expandNoticeTimer)
+})
 </script>
 
 <template>
@@ -789,7 +932,7 @@ onUnmounted(() => stopSimulation())
     <div class="graph-toolbar">
       <div>
         <div class="toolbar-title">图谱 <span class="provider-chip" v-if="graphProvider" :title="`图库类型: ${graphProvider}`">{{ graphProvider }}</span></div>
-        <div class="toolbar-subtitle">实体关系图谱 &mdash; 滚轮缩放，拖拽画布/节点，点击节点查看详情</div>
+        <div class="toolbar-subtitle">实体关系图谱 &mdash; 先载入高度数实体，双击节点展开其邻居，滚轮缩放，拖拽画布</div>
       </div>
       <div class="toolbar-right">
         <div class="view-toggle">
@@ -879,6 +1022,9 @@ onUnmounted(() => stopSimulation())
             </span>
           </div>
           <div class="graph-canvas" :class="{ panning: isPanning }">
+            <transition name="expand-fade">
+              <div v-if="expandNotice" class="expand-notice">{{ expandNotice }}</div>
+            </transition>
             <svg
               ref="svgRef"
               :viewBox="`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`"
@@ -942,10 +1088,11 @@ onUnmounted(() => stopSimulation())
                   v-for="node in nodes"
                   :key="node.id"
                   class="graph-node"
-                  :class="{ selected: node.id === selectedNodeId }"
+                  :class="{ selected: node.id === selectedNodeId, expanding: node.id === expandingNodeId }"
                   :transform="`translate(${node.x}, ${node.y})`"
                   @mousedown.prevent="onNodeMouseDown($event, node)"
                   @click="onNodeClick(node)"
+                  @dblclick.stop="onNodeDblClick(node)"
                 >
                   <circle
                     :r="getNodeRadius(node) + 8"
@@ -966,6 +1113,14 @@ onUnmounted(() => stopSimulation())
                     class="node-highlight"
                     pointer-events="none"
                   />
+                  <g
+                    v-if="isEntityNode(node) && (pendingExpandCount(node) > 0 || node.id === expandingNodeId)"
+                    class="node-expand-badge"
+                    :transform="`translate(${getNodeRadius(node) * 0.72}, ${-getNodeRadius(node) * 0.72})`"
+                  >
+                    <circle r="9" />
+                    <text y="3.2">{{ node.id === expandingNodeId ? '...' : '+' }}</text>
+                  </g>
                   <text
                     :y="getNodeRadius(node) + 18"
                     class="node-label"
@@ -1288,6 +1443,36 @@ onUnmounted(() => stopSimulation())
 }
 
 .graph-node { cursor: pointer; }
+
+/* 待展开角标与展开中状态 */
+.node-expand-badge circle {
+  fill: #1f2937;
+  stroke: rgba(255,255,255,0.55);
+  stroke-width: 1.2;
+}
+.node-expand-badge text {
+  fill: #e5e7eb; font-size: 11px; font-weight: 700;
+  text-anchor: middle; pointer-events: none;
+}
+.graph-node.expanding .node-circle {
+  animation: node-pulse 0.9s ease-in-out infinite;
+}
+@keyframes node-pulse {
+  0%, 100% { stroke: rgba(255,255,255,0.9); stroke-width: 0; }
+  50% { stroke: rgba(255,255,255,0.9); stroke-width: 3; }
+}
+
+/* 展开提示浮层 */
+.expand-notice {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  padding: 6px 14px; border-radius: 999px;
+  background: rgba(22,27,34,0.92); border: 1px solid rgba(255,255,255,0.14);
+  color: #d1d5db; font-size: 12px; font-weight: 600;
+  pointer-events: none; z-index: 5; white-space: nowrap;
+  backdrop-filter: blur(8px);
+}
+.expand-fade-enter-active, .expand-fade-leave-active { transition: opacity 220ms, transform 220ms; }
+.expand-fade-enter-from, .expand-fade-leave-to { opacity: 0; transform: translateX(-50%) translateY(-6px); }
 
 .node-glow-ring {
   stroke-width: 1.5; opacity: 0; transition: opacity 250ms;

@@ -32,10 +32,10 @@ from models import (
     Relation,
 )
 from providers.graph_store import (
-    delete_entity as kuzu_delete_entity,
-    delete_relation as kuzu_delete_relation,
-    upsert_entity as kuzu_upsert_entity,
-    upsert_relation as kuzu_upsert_relation,
+    delete_entity as graph_delete_entity,
+    delete_relation as graph_delete_relation,
+    upsert_entity as graph_upsert_entity,
+    upsert_relation as graph_upsert_relation,
 )
 
 logger = logging.getLogger(__name__)
@@ -173,7 +173,7 @@ def _serialize_relation(rel: Relation, extra: dict | None = None) -> dict:
 
 def _sync_upsert_entity(ent: Entity):
     try:
-        kuzu_upsert_entity(
+        graph_upsert_entity(
             entity_id=ent.id,
             kb_id=ent.kb_id,
             ontology_id=ent.ontology_id,
@@ -188,14 +188,14 @@ def _sync_upsert_entity(ent: Entity):
 
 def _sync_delete_entity(entity_id: str):
     try:
-        kuzu_delete_entity(entity_id)
+        graph_delete_entity(entity_id)
     except Exception:
-        logger.exception("Kùzu delete_entity failed: entity_id=%s", entity_id)
+        logger.exception("graph store delete_entity failed: entity_id=%s", entity_id)
 
 
 def _sync_upsert_relation(rel: Relation):
     try:
-        kuzu_upsert_relation(
+        graph_upsert_relation(
             relation_id=rel.id,
             kb_id=rel.kb_id,
             relation_type=rel.relation_type,
@@ -209,9 +209,9 @@ def _sync_upsert_relation(rel: Relation):
 
 def _sync_delete_relation(relation_id: str):
     try:
-        kuzu_delete_relation(relation_id)
+        graph_delete_relation(relation_id)
     except Exception:
-        logger.exception("Kùzu delete_relation failed: relation_id=%s", relation_id)
+        logger.exception("graph store delete_relation failed: relation_id=%s", relation_id)
 
 
 # ---------- 分页响应构造 ----------

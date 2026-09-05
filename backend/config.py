@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     # 外发通知渠道（逗号分隔，如 webhook / email / wecom / dingtalk）；留空 = 仅站内待办
     NOTIFY_CHANNELS: str = ""
 
-    # 图存储
-    GRAPH_STORE_PROVIDER: Literal["kuzu", "neo4j"] = "kuzu"
+    # 图存储（默认 Neo4j；kuzu 仅作为嵌入式备用后端保留）
+    GRAPH_STORE_PROVIDER: Literal["kuzu", "neo4j"] = "neo4j"
     KUZU_DB_PATH: str = "./data/graph/graph.kuzu"
     NEO4J_URI: str = "bolt://localhost:7687"
     NEO4J_USER: str = "neo4j"

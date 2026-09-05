@@ -1542,22 +1542,22 @@ class OntologySuggestionService:
             if not ont_id:
                 continue  # 该实体类型没有对应本体
 
-            entity_kuzu_id = row.get("entity_id") or ""
+            entity_graph_id = row.get("entity_id") or ""
             entity_name = (row.get("name") or "").strip()
             entity_desc = (row.get("description") or "").strip()
             entity_props = (row.get("properties") or "").strip()
 
-            # 3. 更新 Kùzu 中实体的 ontology_id
+            # 3. 更新图库中实体的 ontology_id
             try:
                 adapter._execute(
                     """
                     MATCH (e:Entity {id: $entity_id})
                     SET e.ontology_id = $ontology_id
                     """,
-                    {"entity_id": entity_kuzu_id, "ontology_id": ont_id},
+                    {"entity_id": entity_graph_id, "ontology_id": ont_id},
                 )
             except Exception:
-                logger.exception("更新 Kùuzu 实体 ontology_id 失败: %s", entity_kuzu_id)
+                logger.exception("更新图库实体 ontology_id 失败: %s", entity_graph_id)
 
             # 4. 写入 SQLite entities 表（upsert 语义）
             try:
@@ -1579,7 +1579,7 @@ class OntologySuggestionService:
                 ent = existing.scalar_one_or_none()
                 if ent is None:
                     ent = Entity(
-                        id=entity_kuzu_id if entity_kuzu_id else None,
+                        id=entity_graph_id if entity_graph_id else None,
                         kb_id=kb_id,
                         ontology_id=ont_id,
                         entity_type=et,

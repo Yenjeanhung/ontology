@@ -101,8 +101,10 @@ services:
     container_name: ontology-milvus-minio
     restart: unless-stopped
     environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      # MINIO_ACCESS_KEY / MINIO_SECRET_KEY 已废弃，必须用新的 ROOT_USER / ROOT_PASSWORD
+      # 注意：改动这里的值，必须同步改下面 milvus 的 MINIO_ACCESS_KEY_ID / MINIO_SECRET_ACCESS_KEY
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
     ports:
       - "9001:9001"   # MinIO 管理界面 http://localhost:9001
       - "9000:9000"
@@ -127,6 +129,10 @@ services:
       MINIO_REGION: us-east-1
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
+      # 显式声明 MinIO 凭据，不再依赖 Milvus 内置的隐式默认值
+      # 必须与上面 minio 服务的 MINIO_ROOT_USER / MINIO_ROOT_PASSWORD 保持一致
+      MINIO_ACCESS_KEY_ID: minioadmin
+      MINIO_SECRET_ACCESS_KEY: minioadmin
       # 日志级别（调试时改成 debug）
       MILVUS_LOG_LEVEL: info
     volumes:

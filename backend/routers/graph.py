@@ -39,6 +39,27 @@ async def graph_view(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/graph/expand")
+async def graph_expand(
+    entity_id: str = Query(..., min_length=1),
+    relation_type: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """双击展开实体的一跳邻居（懒加载），按关系 id 稳定分页。"""
+    try:
+        return await GraphDataService.expand_entity(
+            db,
+            entity_id=entity_id,
+            relation_type=relation_type,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/graph/ontology-view")
 async def graph_ontology_view(
     category_id: str | None = Query(default=None),

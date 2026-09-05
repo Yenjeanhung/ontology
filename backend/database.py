@@ -41,7 +41,9 @@ async def init_db():
     Path(settings.UPLOAD_DIR).mkdir(exist_ok=True)
     (Path(settings.UPLOAD_DIR) / "_assets").mkdir(parents=True, exist_ok=True)
     Path(settings.CHUNK_DIR).mkdir(exist_ok=True)
-    Path(settings.KUZU_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    # 仅在使用嵌入式 Kùzu 后端时才创建其数据目录（Neo4j 由 docker-compose 管理）
+    if settings.GRAPH_STORE_PROVIDER == "kuzu":
+        Path(settings.KUZU_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
     async with engine.begin() as conn:
         # 全量建表（IF NOT EXISTS，逐条执行）

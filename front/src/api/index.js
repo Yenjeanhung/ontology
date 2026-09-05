@@ -150,6 +150,17 @@ export async function fetchGraphView({ kbId, fileId = '', entityQuery = '', rela
   return res.json()
 }
 
+export async function fetchGraphExpand({ entityId, relationType = '', limit = 50, offset = 0 }) {
+  const params = new URLSearchParams()
+  params.set('entity_id', entityId)
+  if (relationType) params.set('relation_type', relationType)
+  params.set('limit', String(limit))
+  params.set('offset', String(offset))
+  const res = await fetch(`${API}/api/graph/expand?${params.toString()}`)
+  if (!res.ok) throw new Error('Expand graph node failed')
+  return res.json()
+}
+
 export async function fetchGraphViewByOntology({ categoryId = '', ontologyId = '', entityQuery = '', relationType = '', limit = 500, offset = 0 }) {
   const params = new URLSearchParams()
   if (categoryId) params.set('category_id', categoryId)
