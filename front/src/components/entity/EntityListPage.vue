@@ -16,8 +16,8 @@ const search = ref('')
 const kbId = ref('')
 const kbs = ref([])
 
-// 本体树
-const ontologyTree = ref([]) // [{ category: {...}, ontologies: [...] }]
+// 本体树（懒加载：初始只拉分类列表，展开某分类时才请求其明细与实体计数）
+const ontologyTree = ref([]) // [{ category: {...}, ontologies: [...], detailLoaded, detailLoading }]
 const selectedOntologyId = ref('')
 const selectedCategoryId = ref('')
 const treeSearch = ref('')
@@ -25,6 +25,7 @@ const expandedCats = ref(new Set())
 const loadingTree = ref(false)
 
 let searchTimer = null
+let treeSearchTimer = null
 
 // 新增实体弹窗
 const showCreate = ref(false)
@@ -50,6 +51,12 @@ async function openCreate() {
     description: '',
     properties: '{}'
   }
+  // 懒加载模式下未展开的分类还没有本体明细，并行补齐后再聚合为下拉选项
+  await Promise.all(
+    ontologyTree.value
+      .filter(g => !g.detailLoaded && !g.detailLoading)
+      .map(g => ensureCategoryDetail(g))
+  )
   // 从左侧已加载的本体树中聚合所有本体作为选项，
   // 避免仅选中「本体」节点时分类 ID 为空导致下拉为空。
   ontologyOptions.value = ontologyTree.value.flatMap(g => g.ontologies || [])
@@ -120,27 +127,55 @@ const filteredTree = computed(() => {
     .filter(g => g.ontologies.length > 0 || g.category.name.toLowerCase().includes(q))
 })
 
+// 搜索时懒加载名称匹配的分类明细，保证未展开分类下的本体名也能被搜到
+watch(treeSearch, (q) => {
+  const kw = q.toLowerCase().trim()
+  clearTimeout(treeSearchTimer)
+  if (!kw) return
+  treeSearchTimer = setTimeout(() => {
+    for (const g of ontologyTree.value) {
+      if (!g.detailLoaded && !g.detailLoading && g.category.name.toLowerCase().includes(kw)) {
+        ensureCategoryDetail(g)
+      }
+    }
+  }, 250)
+})
+
 async function loadTree() {
   loadingTree.value = true
   try {
     const cats = await fetchOntologyCategories()
-    const tree = []
-    for (const cat of cats) {
-      const detail = await getOntologyCategoryDetail(cat.id)
-      tree.push({
-        category: { ...cat, entity_count: detail?.entity_count ?? 0 },
-        ontologies: detail?.ontologies || []
-      })
-    }
-    ontologyTree.value = tree
-    // 默认展开所有分类，让左侧树直接可见
-    expandedCats.value = new Set(tree.map(g => g.category.id))
+    ontologyTree.value = cats.map(cat => ({
+      // 分类实体总数由列表接口聚合返回，直接显示；展开后再懒加载各本体明细
+      category: { ...cat, entity_count: cat.entity_count ?? null },
+      ontologies: [],
+      detailLoaded: false,
+      detailLoading: false,
+    }))
+    // 默认全部收起，点击/双击展开时再按需加载，避免初始 N 次 detail 请求拖慢页面
+    expandedCats.value = new Set()
   } catch (e) {
     console.error('load ontology tree failed', e)
     ontologyTree.value = []
     expandedCats.value = new Set()
   } finally {
     loadingTree.value = false
+  }
+}
+
+// 懒加载某分类的明细：实体总数 + 分类下各本体及其实体数（带缓存，只请求一次）
+async function ensureCategoryDetail(g) {
+  if (g.detailLoaded || g.detailLoading) return
+  g.detailLoading = true
+  try {
+    const detail = await getOntologyCategoryDetail(g.category.id)
+    g.category.entity_count = detail?.entity_count ?? 0
+    g.ontologies = detail?.ontologies || []
+    g.detailLoaded = true
+  } catch (e) {
+    console.error('load category detail failed', e)
+  } finally {
+    g.detailLoading = false
   }
 }
 
@@ -176,9 +211,12 @@ function clearFilter() {
 function toggleExpand(catId) {
   if (expandedCats.value.has(catId)) {
     expandedCats.value.delete(catId)
-  } else {
-    expandedCats.value.add(catId)
+    return
   }
+  expandedCats.value.add(catId)
+  // 展开时才计算/加载该分类下各本体的实体数量
+  const g = ontologyTree.value.find(x => x.category.id === catId)
+  if (g) ensureCategoryDetail(g)
 }
 
 async function load() {
@@ -289,24 +327,30 @@ onActivated(() => {
               class="tree-cat"
               :class="{ active: selectedCategoryId === g.category.id }"
               @click="selectCategory(g.category.id)"
+              @dblclick.stop="toggleExpand(g.category.id)"
+              title="双击展开/收起"
             >
               <button class="expand-btn" @click.stop="toggleExpand(g.category.id)">
                 <svg :class="{ rotated: expandedCats.has(g.category.id) }" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
               </button>
               <span class="tree-cat-name">{{ g.category.name }}</span>
-              <span class="tree-count">{{ g.category.entity_count || 0 }} 实体</span>
+              <span class="tree-count">{{ g.detailLoading ? '…' : (g.category.entity_count == null ? '' : g.category.entity_count + ' 实体') }}</span>
             </div>
             <div v-if="expandedCats.has(g.category.id)" class="tree-children">
-              <div
-                v-for="ont in g.ontologies"
-                :key="ont.id"
-                class="tree-ont"
-                :class="{ active: selectedOntologyId === ont.id }"
-                @click="selectOntology(ont.id)"
-              >
-                <span class="tree-ont-dot" :style="{ background: ont.color || 'var(--c-accent)' }"></span>
-                <span class="tree-ont-name">{{ ont.name }}<span v-if="ont.entity_count !== undefined">（{{ ont.entity_count }}）</span></span>
-              </div>
+              <div v-if="g.detailLoading" class="loading-sm"><span class="spinner"></span></div>
+              <div v-else-if="!g.ontologies.length" class="tree-empty">暂无本体</div>
+              <template v-else>
+                <div
+                  v-for="ont in g.ontologies"
+                  :key="ont.id"
+                  class="tree-ont"
+                  :class="{ active: selectedOntologyId === ont.id }"
+                  @click="selectOntology(ont.id)"
+                >
+                  <span class="tree-ont-dot" :style="{ background: ont.color || 'var(--c-accent)' }"></span>
+                  <span class="tree-ont-name">{{ ont.name }}<span v-if="ont.entity_count !== undefined">（{{ ont.entity_count }}）</span></span>
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -482,6 +526,7 @@ onActivated(() => {
 .tree-ont-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .tree-ont-name { font-size: 12px; color: var(--c-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-ont.active .tree-ont-name { color: var(--c-fg); font-weight: 600; }
+.tree-empty { padding: 6px 10px; font-size: 12px; color: var(--c-secondary); }
 
 .loading-sm { padding: 20px; text-align: center; }
 

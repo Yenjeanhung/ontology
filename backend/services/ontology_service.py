@@ -71,17 +71,36 @@ class OntologyService:
             stmt = stmt.where(OntologyCategory.name.contains(q))
         result = await db.execute(stmt)
         cats = result.scalars().all()
+
+        # 本体数与实体总数各用一条聚合 SQL 批量计算（避免逐分类 N+1），
+        # 让分类列表直接携带实体总数，前端无需展开即可显示
+        ont_counts: dict[str, int] = {}
+        ent_counts: dict[str, int] = {}
+        if cats:
+            cat_ids = [c.id for c in cats]
+            rows = await db.execute(
+                select(Ontology.category_id, func.count(Ontology.id))
+                .where(Ontology.category_id.in_(cat_ids))
+                .group_by(Ontology.category_id)
+            )
+            ont_counts = dict(rows.all())
+            ent_rows = await db.execute(
+                select(Ontology.category_id, func.count(Entity.id))
+                .join(Entity, Entity.ontology_id == Ontology.id)
+                .where(Ontology.category_id.in_(cat_ids))
+                .group_by(Ontology.category_id)
+            )
+            ent_counts = dict(ent_rows.all())
+
         out = []
         for cat in cats:
-            cnt = await db.execute(
-                select(Ontology).where(Ontology.category_id == cat.id)
-            )
             out.append({
                 "id": cat.id,
                 "name": cat.name,
                 "description": cat.description or "",
                 "is_system": bool(cat.is_system),
-                "ontology_count": len(cnt.scalars().all()),
+                "ontology_count": ont_counts.get(cat.id, 0),
+                "entity_count": ent_counts.get(cat.id, 0),
                 "created_at": cat.created_at,
             })
         return out

@@ -94,6 +94,9 @@ const hiddenTypes = ref(new Set())  // 被隐藏的实体类型（小写/原值�
 const degreeMin = ref(0)        // 仅显示度数 ≥ 此值的节点（0=不限）
 const degreeMax = ref('')       // 仅显示度数 ≤ 此值的节点（空=不限）
 const cleanMode = ref(false)
+// ===== 简约样式 & 悬停联动 =====
+const compactMode = ref(false)   // 简约样式：默认隐藏节点/关系文字，悬停或选中时显示
+const hoveredNodeId = ref('')    // 当前悬停节点，用于简约样式下显示相关文字
 // 清爽模式默认隐藏的「噪声」类型（中英文都覆盖）
 const NOISE_TYPE_NAMES = new Set([
   'date', 'indicator', 'file', 'unknown', 'number', 'metric', 'metrics',
@@ -475,6 +478,11 @@ function simulationStep() {
   const damping = 0.8
   const minDist = 50
 
+  // 圆形世界：以画布中心为圆心、内切圆为边界，整体轮廓保持圆形（避免被矩形边界压平）
+  const cx = WORLD_W / 2
+  const cy = WORLD_H / 2
+  const worldR = Math.min(WORLD_W, WORLD_H) / 2 - 60
+
   const neighbors = new Map()
   for (const n of nodeArr) neighbors.set(n.id, new Set())
   for (const e of edgeArr) {
@@ -509,16 +517,27 @@ function simulationStep() {
       fy += (b.y - a.y) * attraction
     }
 
-    fx += (WORLD_W / 2 - a.x) * gravity
-    fy += (WORLD_H / 2 - a.y) * gravity
+    // 径向向心：基础聚拢 + 超出圆形边界后按超出量增强拉回，使全局呈圆盘状
+    const dx = a.x - cx
+    const dy = a.y - cy
+    const d = Math.sqrt(dx * dx + dy * dy) || 0.001
+    const pull = gravity + (d > worldR ? (d - worldR) * 0.01 : 0)
+    fx -= dx * pull
+    fy -= dy * pull
 
     a.vx = (a.vx + fx) * damping
     a.vy = (a.vy + fy) * damping
     a.x += a.vx
     a.y += a.vy
 
-    a.x = Math.max(40, Math.min(WORLD_W - 40, a.x))
-    a.y = Math.max(40, Math.min(WORLD_H - 40, a.y))
+    // 圆形钳制：越界节点投影回圆周（替代矩形边界，杜绝上下被压平）
+    const ddx = a.x - cx
+    const ddy = a.y - cy
+    const dd = Math.sqrt(ddx * ddx + ddy * ddy)
+    if (dd > worldR) {
+      a.x = cx + (ddx / dd) * worldR
+      a.y = cy + (ddy / dd) * worldR
+    }
 
     const speed = Math.sqrt(a.vx * a.vx + a.vy * a.vy)
     if (speed > maxSpeed) maxSpeed = speed
@@ -922,6 +941,9 @@ function mergeExpanded(centerNode, data) {
 
   allNodes.value = [...allNodes.value, ...newNodes]
   allEdges.value = [...allEdges.value, ...newEdges]
+  // 记录这批新节点由 centerNode 展开引入（供「−」角标收起）
+  if (!centerNode.expandedChildren) centerNode.expandedChildren = new Set()
+  for (const nn of newNodes) centerNode.expandedChildren.add(nn.id)
   if (graphData.value?.summary) {
     graphData.value.summary.entity_shown =
       (graphData.value.summary.entity_shown ?? 0) + newNodes.length
@@ -929,6 +951,37 @@ function mergeExpanded(centerNode, data) {
   assignColors()
   applyViewFilters()
   showExpandNotice(`已展开 ${newNodes.length} 个新节点 / ${newEdges.length} 条新关系`)
+}
+
+// 收起：移除该节点通过展开引入的整个子树（保留节点本身与其展开前已有的边）
+function collapseNode(center) {
+  const nodeMap = new Map(allNodes.value.map(n => [n.id, n]))
+  const toRemove = new Set()
+  const stack = [...(center.expandedChildren || [])]
+  while (stack.length) {
+    const id = stack.pop()
+    if (toRemove.has(id)) continue
+    toRemove.add(id)
+    const n = nodeMap.get(id)
+    if (n?.expandedChildren) stack.push(...n.expandedChildren)
+  }
+  if (!toRemove.size) return
+  if (toRemove.has(selectedNodeId.value)) selectedNodeId.value = ''
+  allNodes.value = allNodes.value.filter(n => !toRemove.has(n.id))
+  allEdges.value = allEdges.value.filter(e => !toRemove.has(e.source) && !toRemove.has(e.target))
+  if (graphData.value?.summary) {
+    graphData.value.summary.entity_shown = Math.max(0, (graphData.value.summary.entity_shown ?? 0) - toRemove.size)
+  }
+  center.expandedChildren = new Set()
+  assignColors()
+  applyViewFilters()
+  showExpandNotice(`已收起 ${toRemove.size} 个节点`)
+}
+
+// 该边是否与「悬停或选中」的节点相连（用于高亮与简约样式下的文字显示）
+function isEdgeFocus(edge) {
+  const id = hoveredNodeId.value || selectedNodeId.value
+  return !!id && (edge.source === id || edge.target === id)
 }
 
 function selectRelationRow(row) {
@@ -957,13 +1010,19 @@ onUnmounted(() => {
     <div class="graph-toolbar">
       <div>
         <div class="toolbar-title">图谱 <span class="provider-chip" v-if="graphProvider" :title="`图库类型: ${graphProvider}`">{{ graphProvider }}</span></div>
-        <div class="toolbar-subtitle">实体关系图谱 &mdash; 先载入高度数实体，双击节点展开其邻居，滚轮缩放，拖拽画布</div>
+        <div class="toolbar-subtitle">实体关系图谱 &mdash; 双击节点/点击 + 展开邻居，点击 &minus; 收起，滚轮缩放，拖拽画布</div>
       </div>
       <div class="toolbar-right">
         <div class="view-toggle">
           <button class="toggle-btn" :class="{ on: viewMode === 'graph' }" @click="viewMode = 'graph'">图谱视图</button>
           <button class="toggle-btn" :class="{ on: viewMode === 'list' }" @click="viewMode = 'list'">列表视图</button>
         </div>
+        <button
+          class="compact-toggle"
+          :class="{ on: compactMode }"
+          :title="compactMode ? '简约样式：默认只显示节点与连线，悬停/选中时显示名称与关系' : '点击切换到简约样式'"
+          @click="compactMode = !compactMode"
+        >{{ compactMode ? '简约样式' : '详细样式' }}</button>
         <div class="toolbar-meta">
           <span class="meta-chip">实体 {{ summary.entity_total }}</span>
           <span class="meta-chip">关系 {{ summary.relation_total }}</span>
@@ -1046,7 +1105,7 @@ onUnmounted(() => {
               <span class="legend-dot" :style="{ background: color }"></span>{{ entityTypeLabel(etype) }}
             </span>
           </div>
-          <div class="graph-canvas" :class="{ panning: isPanning }">
+          <div class="graph-canvas" :class="{ panning: isPanning, compact: compactMode }">
             <transition name="expand-fade">
               <div v-if="expandNotice" class="expand-notice">{{ expandNotice }}</div>
             </transition>
@@ -1091,7 +1150,7 @@ onUnmounted(() => {
                   :style="{ '--enter-delay': `${Math.min(i, 80) * 6}ms` }"
                   :d="`M ${edge.sx} ${edge.sy} Q ${edge.cx} ${edge.cy} ${edge.tx} ${edge.ty}`"
                   class="graph-edge"
-                  :class="{ 'edge-highlight': selectedNodeId && (edge.source === selectedNodeId || edge.target === selectedNodeId) }"
+                  :class="{ 'edge-highlight': isEdgeFocus(edge) }"
                   fill="none"
                   marker-end="url(#arrowhead)"
                 />
@@ -1105,7 +1164,7 @@ onUnmounted(() => {
                   :style="{ '--enter-delay': `${Math.min(i, 80) * 6}ms` }"
                   :x="edge.mx" :y="edge.my"
                   class="edge-label"
-                  :class="{ 'edge-label-hl': selectedNodeId && (edge.source === selectedNodeId || edge.target === selectedNodeId) }"
+                  :class="{ 'edge-label-hl': isEdgeFocus(edge), 'edge-label-show': !compactMode || isEdgeFocus(edge) }"
                 >{{ edge.label }}</text>
               </g>
 
@@ -1119,6 +1178,8 @@ onUnmounted(() => {
                   :style="{ '--enter-delay': `${Math.min(i, 80) * 6}ms` }"
                   :transform="`translate(${node.x}, ${node.y})`"
                   @mousedown.prevent="onNodeMouseDown($event, node)"
+                  @mouseenter="hoveredNodeId = node.id"
+                  @mouseleave="hoveredNodeId = ''"
                   @click="onNodeClick(node)"
                   @dblclick.stop="onNodeDblClick(node)"
                 >
@@ -1145,9 +1206,24 @@ onUnmounted(() => {
                     v-if="isEntityNode(node) && (pendingExpandCount(node) > 0 || node.id === expandingNodeId)"
                     class="node-expand-badge"
                     :transform="`translate(${getNodeRadius(node) * 0.72}, ${-getNodeRadius(node) * 0.72})`"
+                    @mousedown.stop.prevent
+                    @click.stop="onNodeDblClick(node)"
+                    @dblclick.stop
                   >
                     <circle r="9" />
                     <text y="3.2">{{ node.id === expandingNodeId ? '...' : '+' }}</text>
+                  </g>
+                  <g
+                    v-if="isEntityNode(node) && node.expandedChildren && node.expandedChildren.size"
+                    class="node-expand-badge node-collapse-badge"
+                    title="收起由该节点展开引入的节点"
+                    :transform="`translate(${getNodeRadius(node) * 0.72}, ${getNodeRadius(node) * 0.72})`"
+                    @mousedown.stop.prevent
+                    @click.stop="collapseNode(node)"
+                    @dblclick.stop
+                  >
+                    <circle r="9" />
+                    <text y="3.2">&minus;</text>
                   </g>
                   <text
                     :y="getNodeRadius(node) + 18"
@@ -1490,6 +1566,9 @@ onUnmounted(() => {
   fill: #e5e7eb; font-size: 11px; font-weight: 700;
   text-anchor: middle; pointer-events: none;
 }
+.node-expand-badge { cursor: pointer; }
+.node-expand-badge:hover circle { stroke: #fff; }
+.node-collapse-badge:hover circle { stroke: rgba(255,130,130,0.95); }
 .graph-node.expanding .node-circle {
   animation: node-pulse 0.9s ease-in-out infinite;
 }
@@ -1534,6 +1613,27 @@ onUnmounted(() => {
   text-shadow: 0 1px 4px rgba(0,0,0,0.7);
 }
 .node-label.bold { fill: #fff; font-weight: 700; font-size: 13px; }
+
+/* 简约/详细样式切换按钮 */
+.compact-toggle {
+  margin-left: 8px; height: 36px; padding: 0 14px;
+  border: 1px solid var(--c-border); border-radius: 10px; background: transparent;
+  color: var(--c-secondary); font-weight: 600; font-size: 12px; cursor: pointer;
+  transition: background 200ms, color 200ms;
+}
+.compact-toggle.on { background: var(--c-fg); color: var(--c-bg); }
+
+/* 简约样式：默认只显示点线，文字随悬停/选中出现，连线更轻 */
+.graph-canvas.compact .graph-edge { stroke: rgba(255,255,255,0.20); stroke-width: 1.1; }
+.graph-canvas.compact .graph-edge.edge-highlight { stroke: rgba(255,255,255,0.6); stroke-width: 2.2; }
+.graph-canvas.compact .node-glow-ring { opacity: 0; }
+.graph-canvas.compact .node-glow-ring.active { opacity: 0.12; }
+.graph-canvas.compact .node-label { opacity: 0; transition: opacity 180ms ease; }
+.graph-canvas.compact .graph-node:hover .node-label,
+.graph-canvas.compact .graph-node.selected .node-label { opacity: 1; }
+.graph-canvas.compact .edge-label { opacity: 0; transition: opacity 180ms ease; }
+.graph-canvas.compact .edge-label-show,
+.graph-canvas.compact .edge-label.edge-label-hl { opacity: 1; }
 
 /* Inspector */
 .graph-inspector {
