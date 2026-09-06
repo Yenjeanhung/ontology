@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     GRAPH_EXTRACTION_BATCH_SIZE: int = 6
     GRAPH_EXTRACTION_CONCURRENCY: int = 3
     GRAPH_MIN_CHARS_FOR_EXTRACTION: int = 80
+    # 图推理（P2）：置信度闸门 + 单规则建议上限（防建议洪水）
+    INFERENCE_MIN_CONFIDENCE: float = 0.7
+    INFERENCE_RULE_LIMIT: int = 200
     GRAPH_MAX_ENTITIES_PER_CHUNK: int = 12
     GRAPH_MAX_RELATIONS_PER_CHUNK: int = 12
     # 抽取质量治理：过滤低价值实体名（日期/纯数值/URL/版本号/整句等）

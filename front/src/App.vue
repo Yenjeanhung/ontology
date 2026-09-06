@@ -117,6 +117,7 @@ const menuItems = [
     children: [
       { to: '/graph', label: '图谱浏览' },
       { to: '/graph-cleanup', label: '图谱清洗' },
+      { to: '/graph-analysis', label: '图分析' },
     ],
   },
   { key: 'data', label: '向量数据', icon: 'data', to: '/vectors' },

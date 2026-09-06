@@ -118,6 +118,130 @@ export async function fetchVectorSearchTest({ kbId, query, topK = 8 }) {
   return res.json()
 }
 
+// ── 图分析工作台：迁入管理（PostgreSQL 权威数据 → Neo4j 分析图） ──
+
+export async function fetchGraphSyncCategories() {
+  const res = await fetch(`${API}/api/graph-sync/categories`)
+  if (!res.ok) throw new Error('获取迁入类别失败')
+  return res.json()
+}
+
+export async function startGraphSync(categoryId, { mode = 'full', dryRun = false } = {}) {
+  const res = await fetch(`${API}/api/graph-sync/${categoryId}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode, dry_run: dryRun }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.detail || '启动迁入失败')
+  }
+  return res.json()
+}
+
+export async function fetchGraphSyncRun(runId) {
+  const res = await fetch(`${API}/api/graph-sync/runs/${runId}`)
+  if (!res.ok) throw new Error('获取迁入进度失败')
+  return res.json()
+}
+
+export async function fetchGraphSyncRuns(categoryId, limit = 20) {
+  const res = await fetch(`${API}/api/graph-sync/${categoryId}/runs?limit=${limit}`)
+  if (!res.ok) throw new Error('获取迁入历史失败')
+  return res.json()
+}
+
+// ── 图分析工作台：计算任务（GDS 算法引擎，P1） ──
+
+export async function fetchGraphAlgorithms() {
+  const res = await fetch(`${API}/api/graph-analysis/algorithms`)
+  if (!res.ok) throw new Error('获取算法列表失败')
+  return res.json()
+}
+
+export async function startGraphAnalysis(categoryId, { algorithm, top_n = 20, write_back = false, label_filter = '', similarity_cutoff = 0 } = {}) {
+  const res = await fetch(`${API}/api/graph-analysis/${categoryId}/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ algorithm, top_n, write_back, label_filter, similarity_cutoff }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.detail || '启动计算任务失败')
+  }
+  return res.json()
+}
+
+export async function fetchGraphAnalysisTask(taskId) {
+  const res = await fetch(`${API}/api/graph-analysis/tasks/${taskId}`)
+  if (!res.ok) throw new Error('获取计算任务失败')
+  return res.json()
+}
+
+export async function fetchGraphAnalysisTasks(categoryId, limit = 20) {
+  const res = await fetch(`${API}/api/graph-analysis/${categoryId}/tasks?limit=${limit}`)
+  if (!res.ok) throw new Error('获取计算历史失败')
+  return res.json()
+}
+
+// ── 图分析工作台：推理洞察（规则推理 / 传播分析 / 建议审核，P2） ──
+
+export async function runInference(categoryId) {
+  const res = await fetch(`${API}/api/graph-analysis/${categoryId}/inference/run`, { method: 'POST' })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.detail || '启动规则推理失败')
+  }
+  return res.json()
+}
+
+async function _insightGet(path, params = {}) {
+  const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null)).toString()
+  const res = await fetch(`${API}/api/graph-analysis/${path}${qs ? `?${qs}` : ''}`)
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.detail || '查询失败')
+  }
+  return res.json()
+}
+
+export const queryPropagation = (categoryId, entityId, maxHops = 3) =>
+  _insightGet(`${categoryId}/propagation`, { entity_id: entityId, max_hops: maxHops })
+
+export const queryImpact = (categoryId, entityId) =>
+  _insightGet(`${categoryId}/impact`, { entity_id: entityId })
+
+export const querySimilar = (categoryId, entityId, topK = 10) =>
+  _insightGet(`${categoryId}/similar`, { entity_id: entityId, top_k: topK })
+
+export const queryPath = (categoryId, sourceId, targetId) =>
+  _insightGet(`${categoryId}/path`, { source_id: sourceId, target_id: targetId })
+
+export const searchGraphEntities = async (categoryId, q = '', limit = 10) => {
+  const res = await fetch(`${API}/api/graph-analysis/${categoryId}/entities?q=${encodeURIComponent(q)}&limit=${limit}`)
+  if (!res.ok) return []
+  return res.json()
+}
+
+export async function fetchSuggestions(categoryId, status = 'pending') {
+  const res = await fetch(`${API}/api/graph-analysis/${categoryId}/suggestions?status=${status}`)
+  if (!res.ok) throw new Error('获取建议列表失败')
+  return res.json()
+}
+
+export async function reviewSuggestion(suggestionId, action) {
+  const res = await fetch(`${API}/api/graph-analysis/suggestions/${suggestionId}/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reviewer: '' }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.detail || '审核失败')
+  }
+  return res.json()
+}
+
 export async function fetchVectorSummaryExport({ kbId = '', format = 'json' } = {}) {
   const params = new URLSearchParams()
   if (kbId) params.set('kb_id', kbId)

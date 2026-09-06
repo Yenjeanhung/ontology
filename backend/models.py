@@ -300,6 +300,92 @@ class Relation(Base):
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
+# ===== 图分析（图迁入 / 图计算 / 图推理）=====
+
+class GraphSyncRun(Base):
+    """图迁入运行记录：PostgreSQL 权威数据 → Neo4j 分析图（按本体类别）。
+
+    进度轮询字段：status/entity_count/relation_count 由后台任务滚动更新。
+    """
+    __tablename__ = "graph_sync_runs"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    category_id = Column(String, nullable=False, index=True)
+    mode = Column(String, nullable=False)            # full / incremental
+    status = Column(String, nullable=False)          # pending / running / done / failed
+    dry_run = Column(Integer, nullable=False, default=0)
+    entity_count = Column(Integer, default=0)        # 进度计数（已写入）
+    relation_count = Column(Integer, default=0)
+    total_entities = Column(Integer, default=0)      # 预检总量（dry_run 与正式一致）
+    total_relations = Column(Integer, default=0)
+    watermark = Column(String)                       # 增量水位 max(updated_at)（P2 使用）
+    projection = Column(Text, default="")            # 迁入后投影重建结果（JSON）
+    error = Column(Text)
+    started_at = Column(String)
+    finished_at = Column(String)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class GraphAnalysisTask(Base):
+    """图计算/推理任务记录（P1：5 算法；P2：规则推理 kind='inference'）。
+
+    results 存 top-N 榜单（JSON，上限 100 行/50 社区）；stats 存规模与耗时；
+    计算分值只写回 Neo4j 节点属性（派生数据），不回 PostgreSQL 权威库。
+    """
+    __tablename__ = "graph_analysis_tasks"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    category_id = Column(String, nullable=False, index=True)
+    kind = Column(String, nullable=False, default="algorithm")   # algorithm / inference（P2）
+    algorithm = Column(String, nullable=False)                   # pagerank/betweenness/louvain/node_similarity/degree
+    params = Column(Text, nullable=False, default="{}")          # JSON：top_n/write_back/label_filter
+    status = Column(String, nullable=False)                      # pending/running/done/failed
+    stats = Column(Text, default="{}")                           # JSON：投影规模/耗时/写回数
+    results = Column(Text)                                       # JSON：榜单/社区/相似对
+    error = Column(Text)
+    started_at = Column(String)
+    finished_at = Column(String)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class RelationSuggestion(Base):
+    """隐含关系建议（图推理 / 知识补全共用审核闭环，姊妹篇 6.2 + source 扩展）。
+
+    source 来源三家：rule（规则推理）/ gds_analysis（结构推理，P3）/ completion（补全，姊妹篇）。
+    推理路径建议的 kb_id 取源实体所属 KB（批准时直接可用）；category_id 用于类别维度轮询。
+    """
+    __tablename__ = "relation_suggestions"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    kb_id = Column(String, nullable=False, index=True)
+    category_id = Column(String, nullable=False, index=True)
+    source_entity_id = Column(String, nullable=False)
+    target_entity_id = Column(String, nullable=False)
+    suggested_relation_type = Column(String, nullable=False)
+    relation_def_id = Column(String, nullable=False)             # 批准时走 create_relation 双写
+    source = Column(String, nullable=False, default="rule")      # rule / gds_analysis / completion
+    score = Column(Float, default=0)                             # 结构分
+    confidence = Column(Float, default=0)                        # 规则/LLM 置信度
+    evidence = Column(Text, default="")                          # JSON：推理路径（审核者回看）
+    reason = Column(String, default="")
+    status = Column(String, nullable=False)                      # pending / approved / rejected
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    reviewed_at = Column(String)
+    reviewer = Column(String)
+
+
+class RelationSuggestionTombstone(Base):
+    """建议 tombstone：拒绝过的 (kb, 源, 目标, 关系类型) 组合不再重推。"""
+    __tablename__ = "relation_suggestion_tombstones"
+
+    kb_id = Column(String, primary_key=True)
+    source_entity_id = Column(String, primary_key=True)
+    target_entity_id = Column(String, primary_key=True)
+    suggested_relation_type = Column(String, primary_key=True)
+    category_id = Column(String, nullable=False)                 # 类别维度闸门查询用
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
 # ===== 大模型配置（页面配置，多套方案，同一时间仅一条生效）=====
 
 class LLMConfig(Base):

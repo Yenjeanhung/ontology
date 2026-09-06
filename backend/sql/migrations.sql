@@ -213,3 +213,75 @@ CREATE TABLE IF NOT EXISTS workflow_human_tasks (
 CREATE INDEX IF NOT EXISTS idx_human_tasks_status ON workflow_human_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_human_tasks_run ON workflow_human_tasks(run_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_human_tasks_node ON workflow_human_tasks(run_id, node_id);
+
+-- migration_016: 图分析工作台——图迁入运行记录表
+CREATE TABLE IF NOT EXISTS graph_sync_runs (
+    id VARCHAR PRIMARY KEY,
+    category_id VARCHAR NOT NULL,
+    mode VARCHAR NOT NULL,
+    status VARCHAR NOT NULL,
+    dry_run INTEGER NOT NULL DEFAULT 0,
+    entity_count INTEGER DEFAULT 0,
+    relation_count INTEGER DEFAULT 0,
+    total_entities INTEGER DEFAULT 0,
+    total_relations INTEGER DEFAULT 0,
+    watermark VARCHAR,
+    projection TEXT DEFAULT '',
+    error TEXT,
+    started_at VARCHAR,
+    finished_at VARCHAR,
+    created_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_graph_sync_runs_cat ON graph_sync_runs(category_id);
+CREATE INDEX IF NOT EXISTS idx_graph_sync_runs_status ON graph_sync_runs(status);
+
+-- migration_017: 图分析工作台——图计算/推理任务表
+CREATE TABLE IF NOT EXISTS graph_analysis_tasks (
+    id VARCHAR PRIMARY KEY,
+    category_id VARCHAR NOT NULL,
+    kind VARCHAR NOT NULL DEFAULT 'algorithm',
+    algorithm VARCHAR NOT NULL,
+    params TEXT NOT NULL DEFAULT '{}',
+    status VARCHAR NOT NULL,
+    stats TEXT DEFAULT '{}',
+    results TEXT,
+    error TEXT,
+    started_at VARCHAR,
+    finished_at VARCHAR,
+    created_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_graph_analysis_tasks_cat ON graph_analysis_tasks(category_id);
+CREATE INDEX IF NOT EXISTS idx_graph_analysis_tasks_status ON graph_analysis_tasks(status);
+
+-- migration_018: 图推理——隐含关系建议表 + tombstone（审核闭环，姊妹篇共用）
+CREATE TABLE IF NOT EXISTS relation_suggestions (
+    id VARCHAR PRIMARY KEY,
+    kb_id VARCHAR NOT NULL,
+    category_id VARCHAR NOT NULL,
+    source_entity_id VARCHAR NOT NULL,
+    target_entity_id VARCHAR NOT NULL,
+    suggested_relation_type VARCHAR NOT NULL,
+    relation_def_id VARCHAR NOT NULL,
+    source VARCHAR NOT NULL DEFAULT 'rule',
+    score FLOAT DEFAULT 0,
+    confidence FLOAT DEFAULT 0,
+    evidence TEXT DEFAULT '',
+    reason VARCHAR DEFAULT '',
+    status VARCHAR NOT NULL,
+    created_at VARCHAR,
+    reviewed_at VARCHAR,
+    reviewer VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_relation_suggestions_kb ON relation_suggestions(kb_id);
+CREATE INDEX IF NOT EXISTS idx_relation_suggestions_cat ON relation_suggestions(category_id);
+CREATE INDEX IF NOT EXISTS idx_relation_suggestions_status ON relation_suggestions(status);
+
+CREATE TABLE IF NOT EXISTS relation_suggestion_tombstones (
+    kb_id VARCHAR NOT NULL,
+    source_entity_id VARCHAR NOT NULL,
+    target_entity_id VARCHAR NOT NULL,
+    suggested_relation_type VARCHAR NOT NULL,
+    category_id VARCHAR NOT NULL,
+    created_at VARCHAR,
+    PRIMARY KEY (kb_id, source_entity_id, target_entity_id, suggested_relation_type)
+);
