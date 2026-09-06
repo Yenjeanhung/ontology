@@ -298,12 +298,38 @@ class GraphDataService:
             inner_q = inner_q.where(Relation.relation_type == relation_type)
             cross_q = cross_q.where(Relation.relation_type == relation_type)
         relation_total = (await db.scalar(rel_total_q)) or 0
-        inner_rows = (
-            await db.execute(inner_q.order_by(Relation.id).limit(_INNER_RELATION_PAGE))
-        ).scalars().all()
-        cross_rows = (
-            await db.execute(cross_q.order_by(Relation.id).limit(_CROSS_RELATION_PAGE))
-        ).scalars().all()
+        # 关系按「两端实体的度数之和」降序排序：保证首屏优先展示 hub 节点之间的
+        # 核心骨架，而不是入库最早的低度实体的边（之前按 Relation.id 排序，
+        # 在民航维修这类大库里 hub 之间一条边都拿不到）。
+        sum_deg = (
+            func.coalesce(src_cnt.c.cnt, 0) + func.coalesce(tgt_cnt.c.cnt, 0)
+        ).label("sum_deg")
+        hub_deg = func.greatest(
+            func.coalesce(src_cnt.c.cnt, 0),
+            func.coalesce(tgt_cnt.c.cnt, 0),
+        ).label("hub_deg")
+
+        inner_q = (
+            select(Relation, sum_deg)
+            .outerjoin(src_cnt, src_cnt.c.eid == Relation.source_entity_id)
+            .outerjoin(tgt_cnt, tgt_cnt.c.eid == Relation.target_entity_id)
+            .where(inner_cond)
+        )
+        if relation_type:
+            inner_q = inner_q.where(Relation.relation_type == relation_type)
+        inner_q = inner_q.order_by(desc("sum_deg"), Relation.id).limit(_INNER_RELATION_PAGE)
+        inner_rows = [row[0] for row in (await db.execute(inner_q)).all()]
+
+        cross_q = (
+            select(Relation, hub_deg)
+            .outerjoin(src_cnt, src_cnt.c.eid == Relation.source_entity_id)
+            .outerjoin(tgt_cnt, tgt_cnt.c.eid == Relation.target_entity_id)
+            .where(cross_cond)
+        )
+        if relation_type:
+            cross_q = cross_q.where(Relation.relation_type == relation_type)
+        cross_q = cross_q.order_by(desc("hub_deg"), Relation.id).limit(_CROSS_RELATION_PAGE)
+        cross_rows = [row[0] for row in (await db.execute(cross_q)).all()]
         rel_rows = list(inner_rows) + list(cross_rows)
 
         # 收集关联节点 ID（仅基于截断后的关系，邻居规模可控）

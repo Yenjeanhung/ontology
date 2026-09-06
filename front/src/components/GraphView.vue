@@ -332,25 +332,36 @@ function buildGraph() {
   const cy = WORLD_H / 2
   const radius = Math.min(WORLD_W, WORLD_H) * 0.38
 
-  nodeList = nodeList.map((e, index) => {
+  // 按度数分层布点：高度数枢纽先紧贴中心，低度数节点在外圈，
+  // 让"枢纽先行、外围再展开"的视觉层次更明显。
+  const maxDegree = Math.max(1, ...nodeList.map(n => n.degree))
+  nodeList = nodeList.map((e) => {
     let x, y
+    const t = e.degree / maxDegree  // 0..1
     if (nodeList.length === 1) {
       x = cx; y = cy
-    } else if (index < 5) {
-      const angle = (index / 5) * Math.PI * 2
-      x = cx + Math.cos(angle) * radius * 0.15
-      y = cy + Math.sin(angle) * radius * 0.15
+    } else if (t > 0.6) {
+      // 高度数枢纽 → 内圈；越高度数越贴中心
+      const angle = Math.random() * Math.PI * 2
+      const r = radius * (0.05 + (1 - t) * 0.18 + Math.random() * 0.04)
+      x = cx + Math.cos(angle) * r
+      y = cy + Math.sin(angle) * r
+    } else if (t > 0.2) {
+      // 中等度数 → 中圈
+      const angle = Math.random() * Math.PI * 2
+      const r = radius * (0.32 + Math.random() * 0.20)
+      x = cx + Math.cos(angle) * r
+      y = cy + Math.sin(angle) * r
     } else {
-      const angle = ((index - 5) / (nodeList.length - 5)) * Math.PI * 2
-      const r = radius * (0.55 + Math.random() * 0.45)
+      // 低度数 → 外圈
+      const angle = Math.random() * Math.PI * 2
+      const r = radius * (0.55 + Math.random() * 0.42)
       x = cx + Math.cos(angle) * r
       y = cy + Math.sin(angle) * r
     }
     return { ...e, x, y, vx: 0, vy: 0 }
   })
 
-  nodes.value = nodeList
-  edges.value = edgeList
   // 全量缓存（同一对象引用，保留 x/y/vx/vy，便于过滤切换时位置连续）
   allNodes.value = nodeList
   allEdges.value = edgeList
@@ -358,8 +369,16 @@ function buildGraph() {
   simSettled.value = false
   viewBox.value = { ...defaultViewBox }
   zoomLevel.value = 1
-  // 应用当前精简过滤态（内部会 startSimulation）
+  // 应用当前精简过滤态（内部会 startSimulation）；所有 nodes/edges 一次性渲染，
+  // 「度数大的点 + 其关系先出来」由 CSS animation delay 控制（按 v-for 索引）。
   applyViewFilters()
+
+  console.info('[GraphView buildGraph]',
+    'rawNodes=', rawNodes.length,
+    'rawEdges=', rawEdges.length,
+    'edgeList=', edgeList.length,
+    'top hub degrees=', nodeList.slice(0, 5).map(n => `${n.name}=${n.degree}`).join(','),
+  )
 }
 
 // ===== 视图层精简：过滤逻辑 =====
@@ -513,10 +532,16 @@ function getNodeColor(node) {
 }
 
 function getNodeRadius(node) {
-  if (node.id === selectedNodeId.value) return 24
-  const base = 14
-  const extra = Math.min(node.degree * 4, 22)
-  return base + extra
+  if (node.id === selectedNodeId.value) return 30
+  // 按归一化度数用 sqrt 缩放：低度数节点明显小、高度数节点明显大。
+  // 范围：最低度数 ~7，最高度数 ~31（不依赖 allNodes 是否已就绪——若全量为空则按 nodes.value 兜底）。
+  const source = allNodes.value.length ? allNodes.value : nodes.value
+  let maxDeg = 1
+  for (const n of source) if (n.degree > maxDeg) maxDeg = n.degree
+  const t = Math.min(1, Math.max(0, node.degree / maxDeg))
+  const base = 7
+  const extra = Math.pow(t, 0.5) * 24
+  return Math.round(base + extra)
 }
 
 function getNodeLabel(node) {
@@ -1061,8 +1086,9 @@ onUnmounted(() => {
               <!-- Edges -->
               <g class="graph-edges">
                 <path
-                  v-for="edge in edgeRenderList"
+                  v-for="(edge, i) in edgeRenderList"
                   :key="edge.key"
+                  :style="{ '--enter-delay': `${Math.min(i, 80) * 6}ms` }"
                   :d="`M ${edge.sx} ${edge.sy} Q ${edge.cx} ${edge.cy} ${edge.tx} ${edge.ty}`"
                   class="graph-edge"
                   :class="{ 'edge-highlight': selectedNodeId && (edge.source === selectedNodeId || edge.target === selectedNodeId) }"
@@ -1074,8 +1100,9 @@ onUnmounted(() => {
               <!-- Edge labels -->
               <g class="edge-labels">
                 <text
-                  v-for="edge in edgeRenderList"
+                  v-for="(edge, i) in edgeRenderList"
                   :key="'el-' + edge.key"
+                  :style="{ '--enter-delay': `${Math.min(i, 80) * 6}ms` }"
                   :x="edge.mx" :y="edge.my"
                   class="edge-label"
                   :class="{ 'edge-label-hl': selectedNodeId && (edge.source === selectedNodeId || edge.target === selectedNodeId) }"
@@ -1085,10 +1112,11 @@ onUnmounted(() => {
               <!-- Nodes -->
               <g class="graph-nodes">
                 <g
-                  v-for="node in nodes"
+                  v-for="(node, i) in nodes"
                   :key="node.id"
                   class="graph-node"
                   :class="{ selected: node.id === selectedNodeId, expanding: node.id === expandingNodeId }"
+                  :style="{ '--enter-delay': `${Math.min(i, 80) * 6}ms` }"
                   :transform="`translate(${node.x}, ${node.y})`"
                   @mousedown.prevent="onNodeMouseDown($event, node)"
                   @click="onNodeClick(node)"
@@ -1419,6 +1447,9 @@ onUnmounted(() => {
   stroke: rgba(255,255,255,0.30);
   stroke-width: 1.6;
   transition: stroke 250ms, stroke-width 250ms;
+  opacity: 0;
+  animation: edge-fade-in 380ms ease-out forwards;
+  animation-delay: var(--enter-delay, 0ms);
 }
 .graph-edge.edge-highlight {
   stroke: rgba(255,255,255,0.65);
@@ -1442,7 +1473,12 @@ onUnmounted(() => {
   stroke-width: 3;
 }
 
-.graph-node { cursor: pointer; }
+.graph-node {
+  cursor: pointer;
+  opacity: 0;
+  animation: node-fade-in 420ms cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+  animation-delay: var(--enter-delay, 0ms);
+}
 
 /* 待展开角标与展开中状态 */
 .node-expand-badge circle {
@@ -1457,6 +1493,16 @@ onUnmounted(() => {
 .graph-node.expanding .node-circle {
   animation: node-pulse 0.9s ease-in-out infinite;
 }
+/* 入场动画：节点 / 边按 v-for 索引错峰淡入，让「度数大的点 + 其关系」先出现 */
+@keyframes node-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes edge-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 0.30; }    /* 终值与 .graph-edge.stroke 的 0.30 透明度对齐 */
+}
+
 @keyframes node-pulse {
   0%, 100% { stroke: rgba(255,255,255,0.9); stroke-width: 0; }
   50% { stroke: rgba(255,255,255,0.9); stroke-width: 3; }
