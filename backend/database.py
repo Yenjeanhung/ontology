@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 
@@ -12,6 +13,65 @@ engine = create_async_engine(settings.DATABASE_URL, echo=False)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 SQL_DIR = Path(__file__).parent / "sql"
+
+_DB_TROUBLESHOOT = (
+    "排查步骤：\n"
+    "  1) 启动数据库：在本仓库根目录执行 `docker-compose up -d postgres`\n"
+    "  2) 核对 backend/.env 的 DATABASE_URL（主机/端口/库名/账号密码）\n"
+    "  3) 确认容器已在运行：docker ps | findstr ontology-postgres\n"
+    "  4) 若用本地 PostgreSQL，请确认服务已启动且端口未被防火墙拦截"
+)
+
+
+class DatabaseUnavailableError(RuntimeError):
+    """数据库不可达（未启动 / 地址错 / 认证失败），用于向用户输出友好提示。"""
+
+    def __init__(self, target: str, reason: str):
+        self.target = target
+        self.reason = reason
+        super().__init__(f"数据库不可达：{target}（{reason}）")
+
+    def friendly_message(self) -> str:
+        return (
+            "============================================================\n"
+            "数据库未启动或无法连接，服务已中止启动。\n"
+            f"  目标：{self.target}\n"
+            f"  原因：{self.reason}\n"
+            f"{_DB_TROUBLESHOOT}\n"
+            "============================================================"
+        )
+
+
+def masked_database_url() -> str:
+    """连接串脱敏：隐藏密码，便于安全打印。"""
+    url = str(settings.DATABASE_URL)
+    return re.sub(r"://([^:/@]+):([^@]+)@", r"://\1:***@", url)
+
+
+def _summarize_error(exc: BaseException) -> str:
+    msg = str(exc).strip()
+    first = msg.splitlines()[0] if msg else ""
+    if not first:
+        # 部分 OSError（如 ConnectionRefusedError）str 为空，用 errno/winerror 兜底
+        errno = getattr(exc, "errno", None)
+        first = f"errno={errno}" if errno is not None else exc.__class__.__name__
+    return f"{exc.__class__.__name__}: {first[:200]}"
+
+
+async def check_database_connectivity(timeout: float = 5.0) -> None:
+    """启动前探活：连不上或超时即抛 DatabaseUnavailableError，不暴露原始堆栈。"""
+    try:
+        async with asyncio.timeout(timeout):
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+    except DatabaseUnavailableError:
+        raise
+    except TimeoutError as exc:  # asyncio.timeout 在 3.11+ 抛 TimeoutError
+        raise DatabaseUnavailableError(
+            masked_database_url(), f"连接超时（超过 {timeout:g} 秒未响应）"
+        ) from exc
+    except Exception as exc:  # ConnectionRefusedError / OSError / asyncpg 认证错误等
+        raise DatabaseUnavailableError(masked_database_url(), _summarize_error(exc)) from exc
 
 
 def _parse_migrations(sql_text: str) -> list[tuple[str, str]]:
@@ -44,6 +104,9 @@ async def init_db():
     # 仅在使用嵌入式 Kùzu 后端时才创建其数据目录（Neo4j 由 docker-compose 管理）
     if settings.GRAPH_STORE_PROVIDER == "kuzu":
         Path(settings.KUZU_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+
+    # 先探活：数据库没启动时给出友好提示，而不是抛原始堆栈
+    await check_database_connectivity()
 
     async with engine.begin() as conn:
         # 全量建表（IF NOT EXISTS，逐条执行）

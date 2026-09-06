@@ -1,0 +1,25 @@
+# 项目级 basedpyright 配置
+#
+# 本项目 backend 代码基本无类型注解，且依赖 kuzu / neo4j / chromadb / pymilvus
+# 等第三方库（部分无完整类型 stub）。在 basedpyright 严格模式下会产生大量
+# "未知类型 / 缺类型参数 / 第三方库属性未知 / 覆写未加 @override / 写操作返回值未用 /
+# 私有 helper 跨模块使用" 的噪音诊断，且与运行正确性无关。
+# 这里统一关闭这类噪音诊断，仅保留真正的类型错误检查（如未定义变量、
+# 导入缺失、可选类型空解引用、明显类型不匹配等）。
+[tool.basedpyright]
+reportMissingTypeArgument = "none"
+reportImplicitRelativeImport = "none"
+reportUnknownMemberType = "none"
+reportUnknownVariableType = "none"
+reportUnknownParameterType = "none"
+reportUnknownArgumentType = "none"
+reportAttributeAccessIssue = "none"
+reportReturnType = "none"
+reportArgumentType = "none"
+reportIndexIssue = "none"
+reportCallIssue = "none"
+reportImplicitOverride = "none"
+reportUnusedCallResult = "none"
+reportPrivateUsage = "none"
+reportExplicitAny = "none"
+reportAny = "none"

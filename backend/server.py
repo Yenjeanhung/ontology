@@ -2,7 +2,10 @@
 KnowSource backend entrypoint.
 """
 
+import asyncio
 import logging
+import os
+import sys
 from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,7 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from database import init_db
+from core.preflight import failed_required, has_run, render_report, run_preflight
+from database import DatabaseUnavailableError, init_db
 from middleware.access_log import AccessLogMiddleware
 
 # 日志目录配置
@@ -93,8 +97,32 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize storage and provider singletons at startup."""
+    # 组件自检：`uvicorn server:app` 启动时不会走 __main__ 的预检，这里补一次
+    logger.info("Checking components...")
+    try:
+        already_checked = has_run()  # __main__ 已跑过则复用结果，不重复打印
+        report = await run_preflight(dispose_engine=False)
+        if not already_checked:
+            print(render_report(report))
+        logger.info("Component preflight: %s",
+                    ", ".join(f"{i.name}={i.state}" for i in report))
+        if failed_required(report):
+            logger.error("Startup aborted: %d required component(s) unavailable",
+                         len(failed_required(report)))
+            os._exit(1)
+    except Exception:
+        # 自检只是辅助手段，自身异常不应阻断启动（后续 init_db 仍会给出数据库提示）
+        logger.exception("Component preflight failed")
+
     logger.info("Initializing database...")
-    await init_db()
+    try:
+        await init_db()
+    except DatabaseUnavailableError as exc:
+        # 数据库没启动：打印可操作的中文提示后直接退出，不刷原始堆栈。
+        # 用 os._exit 而非 sys.exit，避免 starlette/uvicorn 把 SystemExit 再展开成堆栈。
+        print(exc.friendly_message(), file=sys.stderr)
+        logger.error("Startup aborted: %s", exc)
+        os._exit(1)
 
     logger.info("Loading embedding provider...")
     from providers.embedding import create_embeddings
@@ -219,6 +247,17 @@ if front_dist.exists():
 
 
 if __name__ == "__main__":
+    # 启动前自检各外部组件（数据库 / 图库 / 向量库 / 嵌入 / Tika），
+    # 未就绪时打印状态清单与排查建议后退出，避免刷原始堆栈。
+    try:
+        report = asyncio.run(run_preflight())
+    except Exception as exc:  # 自检本身异常时兜底，仍走友好提示
+        print(f"组件自检失败：{exc}", file=sys.stderr)
+        sys.exit(1)
+    print(render_report(report))
+    if failed_required(report):
+        sys.exit(1)
+
     uvicorn.run(
         app, 
         host=settings.HOST, 
