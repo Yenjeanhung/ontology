@@ -1,12 +1,14 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchKbs, updateKb, deleteKb as apiDeleteKb, getKb } from '../api'
+import { fetchKbs, updateKb, deleteKb as apiDeleteKb, batchDeleteKbs, getKb } from '../api'
 import CreateKbModal from './CreateKbModal.vue'
 import SearchableSelect from './common/SearchableSelect.vue'
 import Pagination from './common/Pagination.vue'
 
 const router = useRouter()
+// 搜索草稿（输入框）与已应用查询（点「查询」/回车后生效）
+const kbSearchDraft = ref('')
 const kbSearch = ref('')
 const statusFilter = ref('')
 
@@ -112,7 +114,77 @@ const pageSize = ref(10)
 const pagedKbs = computed(() =>
   filteredKbs.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
 )
-watch([kbSearch, statusFilter], () => { page.value = 1 })
+watch([kbSearch, statusFilter], () => {
+  page.value = 1
+  selectedKbs.value = new Set()
+})
+
+// ── 批量选择 / 批量删除 ──
+const selectedKbs = ref(new Set())
+const batchDeleting = ref(false)
+
+const allPageSelected = computed(() =>
+  pagedKbs.value.length > 0 && pagedKbs.value.every(kb => selectedKbs.value.has(kb.id))
+)
+
+function toggleSelect(kbId) {
+  const next = new Set(selectedKbs.value)
+  if (next.has(kbId)) next.delete(kbId)
+  else next.add(kbId)
+  selectedKbs.value = next
+}
+
+function toggleSelectAll() {
+  const next = new Set(selectedKbs.value)
+  if (allPageSelected.value) {
+    pagedKbs.value.forEach(kb => next.delete(kb.id))
+  } else {
+    pagedKbs.value.forEach(kb => next.add(kb.id))
+  }
+  selectedKbs.value = next
+}
+
+function applySearch() {
+  kbSearch.value = kbSearchDraft.value
+}
+
+function resetSearch() {
+  kbSearchDraft.value = ''
+  kbSearch.value = ''
+  statusFilter.value = ''
+}
+
+async function batchDelete() {
+  if (!selectedKbs.value.size || batchDeleting.value) return
+  const picked = kbs.value.filter(kb => selectedKbs.value.has(kb.id))
+  const withFiles = picked.filter(kb => kb.file_count > 0)
+  const deletable = picked.filter(kb => !kb.file_count)
+  const parts = []
+  if (deletable.length) parts.push(`将删除 ${deletable.length} 个空知识库`)
+  if (withFiles.length) parts.push(`${withFiles.length} 个含文件的知识库无法删除，将被跳过`)
+  const confirmed = await showConfirm(
+    '批量删除知识库',
+    `确认要删除选中的知识库吗？\n\n${parts.join('；')}。此操作不可恢复。`,
+    '删除',
+    '取消',
+    'error'
+  )
+  if (!confirmed) return
+  batchDeleting.value = true
+  try {
+    const result = await batchDeleteKbs(deletable.map(kb => kb.id))
+    showAlert(
+      '批量删除完成',
+      `成功删除 ${result.deleted} 个知识库${result.not_found ? `，${result.not_found} 个不存在` : ''}` +
+      (withFiles.length ? `；${withFiles.length} 个含文件的知识库已跳过，请先清空文件后再删。` : '。')
+    )
+    selectedKbs.value = new Set()
+    await loadKbs()
+  } catch (error) {
+    showAlert('批量删除失败', error.message || '请稍后重试')
+  }
+  batchDeleting.value = false
+}
 
 const stats = computed(() => {
   const sum = fn => kbs.value.reduce((a, kb) => a + (fmtNum(fn(kb)) || 0), 0)
@@ -222,10 +294,18 @@ onMounted(loadKbs)
     <!-- 筛选栏 -->
     <div class="filter-bar">
       <svg class="filter-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <input class="filter-input" type="text" v-model="kbSearch" placeholder="搜索知识库名称...">
+      <input class="filter-input" type="text" v-model="kbSearchDraft" placeholder="搜索知识库名称..." @keydown.enter="applySearch">
       <div class="filter-select-wrap">
         <SearchableSelect v-model="statusFilter" :options="statusOptions" placeholder="全部状态" />
       </div>
+      <button class="btn primary filter-btn" @click="applySearch">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        查询
+      </button>
+      <button class="btn filter-btn" @click="resetSearch">重置</button>
+      <button v-if="selectedKbs.size" class="btn danger filter-btn" :disabled="batchDeleting" @click="batchDelete">
+        批量删除{{ selectedKbs.size ? `（${selectedKbs.size}）` : '' }}
+      </button>
       <span class="filter-count">共 {{ filteredKbs.length }} 个知识库</span>
     </div>
 
@@ -234,6 +314,7 @@ onMounted(loadKbs)
       <table>
         <thead>
           <tr>
+            <th style="width:36px"><input type="checkbox" class="row-check" :checked="allPageSelected" @click.stop @change="toggleSelectAll"></th>
             <th>知识库</th>
             <th style="width:80px">文件</th>
             <th style="width:90px">分片</th>
@@ -244,6 +325,7 @@ onMounted(loadKbs)
         </thead>
         <tbody v-if="pagedKbs.length">
           <tr v-for="kb in pagedKbs" :key="kb.id" @click="goDetail(kb.id)">
+            <td @click.stop><input type="checkbox" class="row-check" :checked="selectedKbs.has(kb.id)" @change="toggleSelect(kb.id)"></td>
             <td>
               <div class="kb-name">
                 <span class="kb-icon">{{ (kb.name || 'K').charAt(0) }}</span>
@@ -360,7 +442,9 @@ onMounted(loadKbs)
 .filter-input:focus { border-color: var(--c-fg); }
 .filter-input::placeholder { color: var(--c-secondary); opacity: 0.8; }
 .filter-select-wrap { width: 170px; flex-shrink: 0; }
+.filter-btn { height: 38px; flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; }
 .filter-count { font-size: 12px; color: var(--c-secondary); margin-left: auto; }
+.row-check { width: 15px; height: 15px; cursor: pointer; accent-color: var(--c-accent, #14b8a6); }
 
 /* 表格 */
 .table-card {
@@ -437,7 +521,7 @@ h3 { font-size: 16px; font-weight: 700; margin-bottom: 18px; color: var(--c-fg);
 .confirm-icon.warning { background: rgba(251, 191, 36, 0.1); color: #fbbf24; }
 .alert-icon { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
 .confirm-title, .alert-title { font-size: 16px; font-weight: 700; color: var(--c-fg); margin-bottom: 8px; }
-.confirm-message, .alert-message { font-size: 13px; color: var(--c-secondary); line-height: 1.5; margin-bottom: 20px; }
+.confirm-message, .alert-message { font-size: 13px; color: var(--c-secondary); line-height: 1.5; margin-bottom: 20px; white-space: pre-line; }
 .confirm-actions, .alert-actions { display: flex; gap: 10px; justify-content: center; }
 .confirm-btn, .alert-btn { padding: 10px 24px; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 150ms; border: none; }
 .confirm-btn.cancel, .alert-btn.cancel { background: var(--c-muted); color: var(--c-secondary); }

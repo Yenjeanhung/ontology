@@ -1,7 +1,7 @@
 """阶段二A 验证脚本：实体/关系实例层 CRUD + Kùzu 同步。
 
 运行方式（在 backend 目录下）：
-    python test_phase2a.py
+    python test/test_phase2a.py
 
 会使用临时 SQLite 数据库与临时 Kùzu 数据库，跑完自动清理。
 """
@@ -55,7 +55,7 @@ os.environ.setdefault("CHUNK_DIR", str(_TMP_DIR / "chunks"))
 os.environ.setdefault("MAX_FILE_SIZE", "104857600")
 
 # 切换到 backend 目录，确保模块可导入
-BACKEND_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
 # Stub 缺失的可选依赖，避免 providers/__init__.py 触发的 langchain_core 导入失败。

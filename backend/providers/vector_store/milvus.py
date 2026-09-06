@@ -12,6 +12,19 @@ from .base import VectorStoreAdapter
 _MILVUS_RESERVED_FIELDS = {"pk", "text", "vector", "$meta"}
 
 
+def _collection_name(kb_id: str) -> str:
+    """kb_id → Milvus collection 名。
+
+    Milvus 要求 collection 名以字母或下划线开头，而 kb_id 是 ``uuid4().hex[:12]``，
+    约一半概率以数字开头（如 ``5e4631d3e55c``），直接使用会被 Milvus 拒绝。
+    数字开头时统一加 ``kb_`` 前缀；字母开头的保持原样，兼容存量 collection。
+    """
+    name = kb_id or ""
+    if name and (name[0].isalpha() or name[0] == "_"):
+        return name
+    return f"kb_{name}"
+
+
 class MilvusAdapter(VectorStoreAdapter):
     provider_name = "milvus"
 
@@ -19,7 +32,7 @@ class MilvusAdapter(VectorStoreAdapter):
         from langchain_milvus import Milvus
 
         return Milvus(
-            collection_name=kb_id,
+            collection_name=_collection_name(kb_id),
             embedding_function=embeddings,
             connection_args={"host": settings.MILVUS_HOST, "port": settings.MILVUS_PORT},
             # 让 metadata 落在动态字段中，读取时可直接随 entity 返回
@@ -46,11 +59,12 @@ class MilvusAdapter(VectorStoreAdapter):
     def delete_collection(self, kb_id: str):
         from pymilvus import utility
 
+        name = _collection_name(kb_id)
         alias = f"del_{id(kb_id) & 0xFFFFFF:X}"
         self._connect(alias)
         try:
-            if utility.has_collection(kb_id, using=alias):
-                utility.drop_collection(kb_id, using=alias)
+            if utility.has_collection(name, using=alias):
+                utility.drop_collection(name, using=alias)
         finally:
             self._disconnect(alias)
 
@@ -136,12 +150,13 @@ class MilvusAdapter(VectorStoreAdapter):
 
         from pymilvus import Collection, utility
 
+        name = _collection_name(kb_id)
         alias = f"enr_{id(records) & 0xFFFFFF:X}"
         self._connect(alias)
         try:
-            if not utility.has_collection(kb_id, using=alias):
+            if not utility.has_collection(name, using=alias):
                 return records
-            col = Collection(kb_id, using=alias)
+            col = Collection(name, using=alias)
             col.load()
             # pk 由 langchain 写入时为字符串，用 in 表达式批量回查
             raw = col.query(expr=f'pk in {ids!r}', output_fields=["pk", "text"])
@@ -179,12 +194,13 @@ class MilvusAdapter(VectorStoreAdapter):
         """
         from pymilvus import Collection, utility
 
+        name = _collection_name(kb_id)
         alias = f"lst_{id(kb_id) & 0xFFFFFF:X}"
         self._connect(alias)
         try:
-            if not utility.has_collection(kb_id, using=alias):
+            if not utility.has_collection(name, using=alias):
                 return []
-            col = Collection(kb_id, using=alias)
+            col = Collection(name, using=alias)
             col.load()
 
             results: list[dict] = []
@@ -210,12 +226,13 @@ class MilvusAdapter(VectorStoreAdapter):
     def kb_document_count(self, kb_id: str) -> int:
         from pymilvus import Collection, utility
 
+        name = _collection_name(kb_id)
         alias = f"cnt_{id(kb_id) & 0xFFFFFF:X}"
         self._connect(alias)
         try:
-            if not utility.has_collection(kb_id, using=alias):
+            if not utility.has_collection(name, using=alias):
                 return 0
-            col = Collection(kb_id, using=alias)
+            col = Collection(name, using=alias)
             return int(col.num_entities)
         except Exception:
             return 0

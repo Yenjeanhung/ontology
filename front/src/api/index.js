@@ -21,7 +21,25 @@ export async function getKb(kbId) {
 }
 
 export async function deleteKb(kbId) {
-  await fetch(`${API}/api/kb/${kbId}`, { method: 'DELETE' })
+  const res = await fetch(`${API}/api/kb/${kbId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Delete kb failed')
+  }
+  return res.json()
+}
+
+export async function batchDeleteKbs(kbIds) {
+  const res = await fetch(`${API}/api/kb/batch-delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kb_ids: kbIds }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Batch delete failed')
+  }
+  return res.json()
 }
 
 export async function updateKb(kbId, { name, description }) {
@@ -638,9 +656,12 @@ export async function createDirectory({ name, parentId = null }) {
   return res.json()
 }
 
-export async function deleteDirectory(directoryId) {
-  const res = await fetch(`${API}/api/file-directories/${directoryId}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error('Delete directory failed')
+export async function deleteDirectory(directoryId, cascade = false) {
+  const res = await fetch(`${API}/api/file-directories/${directoryId}?cascade=${cascade}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Delete directory failed')
+  }
   return res.json()
 }
 

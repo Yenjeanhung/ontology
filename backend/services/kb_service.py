@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from models import KnowledgeBase
 from providers.graph_store import delete_kb_graph
 from providers.vector_store import delete_kb_collection
 from services.file_service import FileService
+
+logger = logging.getLogger(__name__)
 
 
 class KBService:
@@ -117,9 +120,27 @@ class KBService:
         if kb_dir.exists():
             shutil.rmtree(kb_dir)
 
-        delete_kb_collection(kb_id)
-        delete_kb_graph(kb_id)
+        # 外部存储清理：失败不阻塞 KB 删除（残留的孤儿 collection/graph 可后续手工清）
+        try:
+            delete_kb_collection(kb_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("删除向量 collection 失败（忽略）：%s", kb_id)
+        try:
+            delete_kb_graph(kb_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("删除知识库图谱失败（忽略）：%s", kb_id)
 
         await db.delete(kb)
         await db.commit()
         return True
+
+    @staticmethod
+    async def batch_delete(db: AsyncSession, kb_ids: list[str]) -> dict:
+        """批量删除知识库：逐个走 delete（级联删文件/向量/图谱）。"""
+        deleted, not_found = 0, 0
+        for kb_id in kb_ids:
+            if await KBService.delete(db, kb_id):
+                deleted += 1
+            else:
+                not_found += 1
+        return {"deleted": deleted, "not_found": not_found}

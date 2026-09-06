@@ -156,10 +156,16 @@ EXCLUDED_REL_TYPES = ("RELATES", "MENTIONS", "HAS_RELATION", "RELATION_SOURCE",
 
 _EXCLUDED_LIST = ", ".join(f"'{t}'" for t in EXCLUDED_REL_TYPES)
 
-# cypher 投影不支持参数化：category_id 已过 hex 白名单，安全内联
-_NODE_QUERY_TPL = "MATCH (e:Entity {category_id: '{cid}'}) RETURN id(e) AS id"
+# cypher 投影不支持参数化：category_id 已过 hex 白名单，安全内联。
+# 注意 1：模板用 str.format 渲染，Cypher 自身的花括号必须双写 {{ }} 转义，
+#         否则 {category_id: '{cid}'} 会被 format 当占位符解析抛 KeyError。
+# 注意 2：GDS 2.x 的 project.cypher 无 orientation 配置键（relationshipQuery
+#         是位置参数，configuration 里传入会报 Unexpected configuration key）。
+#         UNDIRECTED 语义用无向模式 -[r]- 实现：每条边返回 (a,b)/(b,a) 两行，
+#         与 GDS 内部 UNDIRECTED 存储（双向各存一条）等效。
+_NODE_QUERY_TPL = "MATCH (e:Entity {{category_id: '{cid}'}}) RETURN id(e) AS id"
 _REL_QUERY_TPL = (
-    "MATCH (a:Entity {category_id: '{cid}'})-[r]->(b:Entity) "
+    "MATCH (a:Entity {{category_id: '{cid}'}})-[r]-(b:Entity) "
     f"WHERE NOT type(r) IN [{_EXCLUDED_LIST}] AND b.category_id = '{{cid}}' "
     "RETURN id(a) AS source, id(b) AS target, type(r) AS type"
 )
@@ -170,7 +176,7 @@ def ensure_category_projection(category_id: str) -> dict:
 
     - 持 ``_gds_lock``：社区版 GDS 并发 = 1，重建类操作必须串行；
     - cypher 投影（gds.graph.project.cypher）：按 ``category_id`` 属性圈节点/关系，
-      UNDIRECTED 全语义关系（中心性/社区/相似度通用，见设计 3.3）；
+      无向模式实现 UNDIRECTED 全语义关系（中心性/社区/相似度通用，见设计 3.3）；
     - scope id 已过白名单，可安全内联。
     """
     if not gds_available():
@@ -185,8 +191,7 @@ def ensure_category_projection(category_id: str) -> dict:
                 # exists=false 时 drop 静默跳过（第二参 failIfMissing=false）
                 s.run("CALL gds.graph.drop($n, false)", n=name)
                 s.run(
-                    "CALL gds.graph.project.cypher($n, $node_query, $rel_query, "
-                    "{relationshipQuery: 'UNDIRECTED'})",
+                    "CALL gds.graph.project.cypher($n, $node_query, $rel_query)",
                     n=name, node_query=node_query, rel_query=rel_query,
                 )
                 info = s.run(

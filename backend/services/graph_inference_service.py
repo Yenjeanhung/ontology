@@ -481,8 +481,8 @@ def _collect_rule_candidates(category_id: str, rule: dict) -> list[dict]:
     query = (
         "MATCH (a:Entity {category_id: $cid}) "
         f"WHERE a.entity_type = '{src_type}' "
-        f"MATCH (a)-[r1:{r1}]->(m:Entity {category_id: $cid}) "
-        f"MATCH (m)-[r2:{r2}]->(b:Entity {category_id: $cid}) "
+        f"MATCH (a)-[r1:{r1}]->(m:Entity {{category_id: $cid}}) "
+        f"MATCH (m)-[r2:{r2}]->(b:Entity {{category_id: $cid}}) "
         f"WHERE a.id <> b.id AND NOT (a)-[:{rel}]->(b) "
         "RETURN a.id AS sid, a.name AS sname, a.ontology_id AS sont, a.kb_id AS skb, "
         "       b.id AS tid, b.name AS tname, b.ontology_id AS tont, "

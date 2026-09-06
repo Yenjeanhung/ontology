@@ -56,14 +56,19 @@ async def update_directory(
 
 
 @router.delete("/file-directories/{directory_id}")
-async def delete_directory(directory_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_directory(
+    directory_id: str,
+    cascade: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """删除目录。``cascade=true`` 时连同子目录与文件一并删除（含从知识库摘除）。"""
     try:
-        deleted = await LibraryService.delete_directory(db, directory_id)
+        result = await LibraryService.delete_directory(db, directory_id, cascade=cascade)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    if not deleted:
+    if not result:
         raise HTTPException(404, "Directory not found")
-    return {"status": "deleted"}
+    return result
 
 
 @router.get("/assets")

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from schemas import CreateKBRequest, UpdateKBRequest
+from schemas import BatchDeleteKBRequest, CreateKBRequest, UpdateKBRequest
 from services.kb_service import KBService
 
 router = APIRouter()
@@ -16,6 +16,11 @@ async def create_kb(req: CreateKBRequest, db: AsyncSession = Depends(get_db)):
 @router.get("/kb")
 async def list_kbs(db: AsyncSession = Depends(get_db)):
     return await KBService.list_all(db)
+
+
+@router.post("/kb/batch-delete")
+async def batch_delete_kbs(req: BatchDeleteKBRequest, db: AsyncSession = Depends(get_db)):
+    return await KBService.batch_delete(db, req.kb_ids)
 
 
 @router.get("/kb/{kb_id}")

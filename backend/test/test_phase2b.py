@@ -7,7 +7,7 @@
 4. FileService._persist_extraction_to_sqlite 实体/关系写入 SQLite + id 回填
 
 运行方式（在 backend 目录下）：
-    python test_phase2b.py
+    python test/test_phase2b.py
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ os.environ.setdefault("UPLOAD_DIR", str(_TMP_DIR / "uploads"))
 os.environ.setdefault("CHUNK_DIR", str(_TMP_DIR / "chunks"))
 os.environ.setdefault("MAX_FILE_SIZE", "104857600")
 
-BACKEND_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
 # Stub 缺失的可选依赖

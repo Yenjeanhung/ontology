@@ -1,7 +1,7 @@
 """定时调度模块验证脚本（纯逻辑 + 集成）。
 
 运行方式（在 backend 目录下）：
-    python test_scheduler.py
+    python test/test_scheduler.py
 
 不依赖 LLM / 向量库 / KG，仅验证：
   - 触发器校验（cron / interval / once）
@@ -24,7 +24,7 @@ os.environ.setdefault("DATABASE_URL", f"sqlite+aiosqlite:///{(_TMP / 'test.db').
 os.environ.setdefault("SCHEDULER_ENABLED", "false")  # 测试不启动引擎
 os.environ.setdefault("SCHEDULER_TIMEZONE", "Asia/Shanghai")
 
-BACKEND_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
 from services import scheduler_service as svc  # noqa: E402

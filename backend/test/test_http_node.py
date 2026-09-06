@@ -11,7 +11,7 @@
 网络层用 httpx.MockTransport 模拟，不出网。
 
 运行：
-    python -X utf8 test_http_node.py
+    python -X utf8 test/test_http_node.py
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import os
 import socket
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 使用独立临时库，避免污染开发数据（必须在导入 database / models 之前设置）
 _TMP_DB = "./data/_test_http_node.db"

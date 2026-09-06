@@ -11,6 +11,10 @@ class UpdateKBRequest(BaseModel):
     description: str | None = None
 
 
+class BatchDeleteKBRequest(BaseModel):
+    kb_ids: list[str]
+
+
 class QueryRequest(BaseModel):
     query: str
     kb_id: str

@@ -1,8 +1,8 @@
-"""条件分支规则引擎单元测试。运行：python -m pytest test_rule_engine.py -q"""
+"""条件分支规则引擎单元测试。运行：python -m pytest test/test_rule_engine.py -q"""
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.workflow_engine import (
     _eval_rule_tree,

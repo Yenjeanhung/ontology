@@ -4,14 +4,16 @@
 端到端用例（--e2e）：挂起 / 续跑全链路 —— 需加载 LangGraph，较慢。
 
 运行：
-    python -X utf8 test_human_node.py            # 轻量
-    python -X utf8 test_human_node.py --e2e      # 含端到端
+    python -X utf8 test/test_human_node.py            # 轻量
+    python -X utf8 test/test_human_node.py --e2e      # 含端到端
 """
 from __future__ import annotations
 
 import asyncio
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 使用独立临时库，避免污染开发数据（必须在导入 database / models 之前设置）
 _TMP_DB = "./data/_test_human_node.db"

@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -187,23 +187,75 @@ class LibraryService:
         return _directory_to_dict(directory)
 
     @staticmethod
-    async def delete_directory(db: AsyncSession, directory_id: str) -> bool:
+    async def _collect_directory_ids(db: AsyncSession, directory_id: str) -> list[str]:
+        """BFS 收集目录自身 + 所有后代目录 id（父在前、子在后）。"""
+        ids = [directory_id]
+        pending = [directory_id]
+        while pending:
+            current = pending.pop(0)
+            children = (await db.execute(
+                select(FileDirectory.id).where(FileDirectory.parent_id == current)
+            )).scalars().all()
+            ids.extend(children)
+            pending.extend(children)
+        return ids
+
+    @staticmethod
+    async def delete_directory(
+        db: AsyncSession, directory_id: str, *, cascade: bool = False,
+    ) -> dict | None:
+        """删除目录。
+
+        ``cascade=False``（默认）：目录非空（含子目录或文件）时拒绝；
+        ``cascade=True``：连同所有子目录与文件一并删除——文件先从各知识库
+        摘除（走 ``FileService._delete_index_artifacts`` 清向量/分块/图谱），
+        再删资产记录与物理文件，最后删目录（子目录在父目录之前删除）。
+        """
         directory = await db.get(FileDirectory, directory_id)
         if not directory:
-            return False
+            return None
 
-        child_count = await db.scalar(
-            select(func.count()).select_from(FileDirectory).where(FileDirectory.parent_id == directory_id)
-        )
-        asset_count = await db.scalar(
-            select(func.count()).select_from(FileAsset).where(FileAsset.directory_id == directory_id)
-        )
-        if child_count or asset_count:
-            raise ValueError("Directory is not empty")
+        dir_ids = await LibraryService._collect_directory_ids(db, directory_id)
+        assets = (await db.execute(
+            select(FileAsset)
+            .options(selectinload(FileAsset.kb_files))
+            .where(FileAsset.directory_id.in_(dir_ids))
+        )).scalars().all()
 
-        await db.delete(directory)
+        if not cascade and (len(dir_ids) > 1 or assets):
+            raise ValueError("目录非空，请先删除其中的文件，或使用级联删除")
+
+        deleted_assets = 0
+        if assets:
+            from services.file_service import FileService
+
+            for asset in assets:
+                # 先从知识库摘除（清向量 / 分块 / 图数据），资产物理文件不动
+                for kb_file in list(asset.kb_files):
+                    await FileService._delete_index_artifacts(db, kb_file, remove_source_file=False)
+                    await db.delete(kb_file)
+                if asset.kb_files:
+                    await db.flush()
+                if asset.path:
+                    path = Path(asset.path)
+                    if path.exists():
+                        path.unlink()
+                await db.delete(asset)
+                deleted_assets += 1
+            await db.flush()
+
+        # 反向删除：BFS 顺序保证子目录在父目录之后出现，反序即先子后父
+        for did in reversed(dir_ids):
+            child = await db.get(FileDirectory, did)
+            if child:
+                await db.delete(child)
+
         await db.commit()
-        return True
+        return {
+            "status": "deleted",
+            "deleted_directories": len(dir_ids),
+            "deleted_assets": deleted_assets,
+        }
 
     @staticmethod
     async def create_asset_from_path(

@@ -460,22 +460,41 @@ async function saveFolder() {
 }
 
 async function deleteFolder(folder) {
+  const fileCount = folder.file_count || 0
+  const childCount = directories.value.filter(d => d.parent_id === folder.id).length
+  const hasContent = fileCount > 0 || childCount > 0
+
+  const message = hasContent
+    ? `确定要删除文件夹「${folder.name}」吗？\n\n` +
+      `该文件夹包含 ${fileCount} 个文件${childCount ? `、${childCount} 个子文件夹` : ''}，` +
+      `确认后将级联删除：\n` +
+      `· 文件夹内所有文件及其子文件夹\n` +
+      `· 这些文件会从所有已加入的知识库中一并移除（含向量、分块与图谱数据）\n` +
+      `· 磁盘上的原始文件也会被删除\n\n` +
+      `此操作不可恢复。`
+    : `确定要删除文件夹「${folder.name}」吗？`
+
   const confirmed = await showConfirm(
     '删除文件夹',
-    `确定要删除文件夹「${folder.name}」吗？`,
-    '删除',
-    '取消'
+    message,
+    hasContent ? '确认级联删除' : '删除',
+    '取消',
+    'error'
   )
   if (!confirmed) return
   try {
-    await deleteDirectory(folder.id)
+    const res = await deleteDirectory(folder.id, hasContent)
     if (selectedDirectoryId.value === folder.id) {
       selectedDirectoryId.value = ''
     }
     await loadDirectories()
     await loadAssets()
-  } catch {
-    window.alert('删除文件夹失败')
+    const parts = []
+    if (res?.deleted_assets) parts.push(`${res.deleted_assets} 个文件`)
+    if (res?.deleted_directories > 1) parts.push(`${res.deleted_directories} 个文件夹`)
+    toast.success(parts.length ? `已删除：${parts.join('、')}` : '文件夹已删除')
+  } catch (error) {
+    window.alert(`删除文件夹失败：${error.message}`)
   }
 }
 
@@ -1361,7 +1380,7 @@ onUnmounted(() => {
 .confirm-icon { width: 56px; height: 56px; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(239, 68, 68, 0.1); color: #ef4444; }
 .confirm-icon.warning { background: rgba(251, 191, 36, 0.1); color: #fbbf24; }
 .confirm-title { font-size: 16px; font-weight: 700; color: var(--c-fg); margin-bottom: 8px; }
-.confirm-message { font-size: 13px; color: var(--c-secondary); line-height: 1.5; margin-bottom: 20px; }
+.confirm-message { font-size: 13px; color: var(--c-secondary); line-height: 1.5; margin-bottom: 20px; white-space: pre-line; text-align: left; }
 .confirm-actions { display: flex; gap: 10px; justify-content: center; }
 .confirm-btn { padding: 10px 24px; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 150ms; border: none; }
 .confirm-btn.cancel { background: var(--c-muted); color: var(--c-secondary); }

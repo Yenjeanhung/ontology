@@ -39,6 +39,12 @@ COMMUNITY_SAMPLE = 12
 WRITE_PROPS = {"pagerank": "pagerank_score", "betweenness": "betweenness_score",
                "louvain": "community_id"}
 
+# betweenness 精确算法 O(V·E)：投影节点数超阈值自动切 GDS 近似模式（MSBRA 采样；
+# seed 固定保证同图重跑结果可复现）。经验值：1 万采样在 20 万节点图分钟级可完成。
+BETWEENNESS_SAMPLE_THRESHOLD = 50_000
+BETWEENNESS_SAMPLE_SIZE = 10_000
+BETWEENNESS_SEED = 42
+
 # 算法注册表：元数据供前端算法卡片与参数表单直出
 ALGORITHMS: dict[str, dict[str, Any]] = {
     "pagerank": {
@@ -295,6 +301,8 @@ def _execute_algorithm(category_id: str, algorithm: str, params: dict) -> tuple[
             projection = gds.projection_stats(name)
         if not projection or not projection.get("node_count"):
             raise ValueError("GDS 投影为空，请先在「迁入管理」执行全量迁入")
+        # 透传投影规模给 runner（betweenness 大图自动切近似模式的依据）
+        params["_projection_nodes"] = projection.get("node_count") or 0
 
     runner = {
         "pagerank": _run_centrality,
@@ -317,10 +325,21 @@ def _run_centrality(category_id: str, algorithm: str, top_n: int, label_filter: 
 
     write 模式只跑一次算法（write 过程）+ Cypher 读 top-N；
     stream 模式直接流式聚合 top-N。
+    betweenness 精确算法 O(V·E)，大图不可行 → 超过阈值自动切 GDS 近似模式
+    （MSBRA 采样，samplingSize 固定 / samplingSeed 固定保证可复现）。
     """
     proc = {"pagerank": "pageRank", "betweenness": "betweenness"}[algorithm]
     prop = WRITE_PROPS[algorithm]
     meta = ALGORITHMS[algorithm]
+
+    # 大图 betweenness 近似模式配置（Cypher map 字面量，数值安全内联）
+    nodes = int(_params.get("_projection_nodes") or 0)
+    approximate = algorithm == "betweenness" and nodes > BETWEENNESS_SAMPLE_THRESHOLD
+    algo_cfg = (
+        f", {{samplingSize: {BETWEENNESS_SAMPLE_SIZE}, "
+        f"samplingSeed: {BETWEENNESS_SEED}}}" if approximate else ""
+    )
+
     driver = _driver()
     rows: list[dict] = []
     written = 0
@@ -329,7 +348,7 @@ def _run_centrality(category_id: str, algorithm: str, top_n: int, label_filter: 
             name = gds.category_projection_name(category_id)
             if write_back:
                 rec = s.run(
-                    f"CALL gds.{proc}.write($p, {{writeProperty: $wp}}) "
+                    f"CALL gds.{proc}.write($p, {{writeProperty: $wp}}{algo_cfg}) "
                     "YIELD nodePropertiesWritten",
                     p=name, wp=prop,
                 ).single()
@@ -346,7 +365,7 @@ def _run_centrality(category_id: str, algorithm: str, top_n: int, label_filter: 
                                  "entity_type": r["type"], "score": round(float(r["score"]), 6)})
             else:
                 for r in s.run(
-                    f"CALL gds.{proc}.stream($p) YIELD nodeId, score "
+                    f"CALL gds.{proc}.stream($p{algo_cfg}) YIELD nodeId, score "
                     "WITH gds.util.asNode(nodeId) AS n, score "
                     "WHERE $lf = '' OR n.entity_type = $lf "
                     "RETURN n.id AS id, n.name AS name, n.entity_type AS type, score "
@@ -359,6 +378,9 @@ def _run_centrality(category_id: str, algorithm: str, top_n: int, label_filter: 
         driver.close()
 
     stats = {"total_rows": len(rows), "written": written}
+    if approximate:
+        stats["approximate"] = True
+        stats["sampling_size"] = BETWEENNESS_SAMPLE_SIZE
     results = {"kind": "ranking", "algorithm": algorithm,
                "score_label": meta["score_label"], "rows": rows}
     return stats, results

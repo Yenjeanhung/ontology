@@ -1,6 +1,6 @@
 # 工作流「HTTP 节点」功能设计
 
-> 状态：**已实现**（2026-08-30 开发完成，56 项测试全过：`backend/test_http_node.py --e2e`）
+> 状态：**已实现**（2026-08-30 开发完成，56 项测试全过：`backend/test/test_http_node.py --e2e`）
 > 日期：2026-08-29（初稿） / 2026-08-29（评审确认） / 2026-08-30（实现）
 > 一句话需求：工作流画布新增「HTTP 请求」节点，支持调用**任意 RESTful 接口**（GET / POST / PUT / PATCH / DELETE / HEAD / OPTIONS），把外部系统、内部微服务、第三方 OpenAPI 纳入工作流编排。
 > 关联文档：[工作流功能设计](./工作流_功能设计.md)、[条件分支规则引擎设计](./条件分支规则引擎设计.md)、[人工节点功能设计](./人工节点_功能设计.md)
@@ -296,7 +296,7 @@ POST /api/workflows/http-node/test
 
 | 层 | 用例 |
 |----|------|
-| 单测（新增 `test_http_node.py`） | 7 种方法各打一遍（本地起 `httpx.MockTransport`）；变量渲染进 URL/Header/Body/Query；JSON 响应解析 + `data.list[0].name` 引用；非 JSON（HTML）落到 text；`fail_on_error=true` 4xx/5xx → 节点失败；`=false` → success=false 继续；超时触发与重试次数（MockTransport 抛 Timeout）；响应超限报错；鉴权三种方式请求头正确；密钥脱敏；scheme 非法拒绝；内网开关关闭时拦截 |
+| 单测（新增 `test/test_http_node.py`） | 7 种方法各打一遍（本地起 `httpx.MockTransport`）；变量渲染进 URL/Header/Body/Query；JSON 响应解析 + `data.list[0].name` 引用；非 JSON（HTML）落到 text；`fail_on_error=true` 4xx/5xx → 节点失败；`=false` → success=false 继续；超时触发与重试次数（MockTransport 抛 Timeout）；响应超限报错；鉴权三种方式请求头正确；密钥脱敏；scheme 非法拒绝；内网开关关闭时拦截 |
 | 集成 | 一个含「HTTP → 条件(status_code==200) → LLM」的 E2E 工作流跑通；HTTP 节点失败后 fail-fast 与恢复 |
 | 手测 | 编辑器拖入节点 → 配置外部接口 → 发送测试 → 保存 → 运行 → 运行详情回看 |
 
@@ -311,7 +311,7 @@ POST /api/workflows/http-node/test
 | 3 | 3 个 settings 配置项 | `backend/config.py` | ~5 行 |
 | 4 | 测试请求接口 | `backend/routers/workflow.py` + `schemas.py` | ~40 行 |
 | 5 | 节点注册 + 配置抽屉 + 测试弹窗 | `front/src/components/workflow/*` | ~300 行 |
-| 6 | 单测 `test_http_node.py` | `backend/` | ~200 行 |
+| 6 | 单测 `test/test_http_node.py` | `backend/` | ~200 行 |
 
 ---
 
