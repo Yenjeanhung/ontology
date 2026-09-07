@@ -61,11 +61,11 @@
             <!-- 属性契约 -->
             <div class="if-sec">
               <div class="if-sec-head">
-                <span class="if-sec-title">属性契约</span>
+                <span class="if-sec-title">接口属性</span>
                 <div class="if-sec-ops">
                   <button class="btn sm" @click="addPropRow">添加属性</button>
                   <button class="btn primary sm" :disabled="propsSaving" @click="saveProps">
-                    <span v-if="propsSaving" class="spinner"></span> 保存契约
+                    <span v-if="propsSaving" class="spinner"></span> 保存属性
                   </button>
                 </div>
               </div>
@@ -79,7 +79,7 @@
                     <td><input v-model="p.code" placeholder="如 ticker"></td>
                     <td>
                       <select v-model="p.data_type">
-                        <option v-for="d in DATA_TYPES" :key="d.value" :value="d.value">{{ d.value }}</option>
+                        <option v-for="d in DATA_TYPES" :key="d" :value="d">{{ d }}</option>
                       </select>
                     </td>
                     <td class="if-center"><input type="checkbox" v-model="p.is_required"></td>
@@ -325,7 +325,7 @@ function addPropRow() {
 async function saveProps() {
   propsSaving.value = true
   try {
-    await setInterfaceProperties(detail.value.id, { properties: propRows.value })
+    await setInterfaceProperties(detail.value.id, propRows.value)
     await load()
     await loadDetail(detail.value.id)
   } catch (e) {
