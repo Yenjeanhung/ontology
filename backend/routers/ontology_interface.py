@@ -6,6 +6,8 @@
 - 接口：``/api/ontology-categories/{cid}/interfaces``，共享属性/链接契约 + implements
   映射 + 多态查询（按接口取各实现本体的对象并投影为统一属性）。
 """
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -184,13 +186,26 @@ async def resolve_interface_objects(
     interface_code: str,
     q: str = "",
     ontology_id: str = "",
+    prop_filters: str = "",
     limit: int = 50,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
-    """多态查询：按接口取各实现本体的对象，属性按映射投影为接口属性。"""
+    """多态查询：按接口取各实现本体的对象，属性按映射投影为接口属性。
+
+    ``prop_filters`` 为 JSON 字符串，如 ``{"desc":"C919"}``，按接口属性筛选。
+    """
+    filters: dict = {}
+    if prop_filters:
+        try:
+            parsed = json.loads(prop_filters)
+            if isinstance(parsed, dict):
+                filters = parsed
+        except (ValueError, TypeError):
+            filters = {}
     res = await OntologyInterfaceService.resolve_objects(
-        db, category_id, interface_code, q, ontology_id, limit, offset,
+        db, category_id, interface_code, q=q, ontology_id=ontology_id,
+        prop_filters=filters, limit=limit, offset=offset,
     )
     if res is None:
         raise _not_found("Interface not found")

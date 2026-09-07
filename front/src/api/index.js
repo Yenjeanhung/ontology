@@ -1122,10 +1122,13 @@ export async function fetchOntologyInterfaces(ontologyId) {
 }
 
 // 多态查询：按接口取各实现本体的对象（属性按映射投影）
-export async function resolveInterfaceObjects(categoryId, interfaceCode, { q = '', ontology_id = '', limit = 50, offset = 0 } = {}) {
+export async function resolveInterfaceObjects(categoryId, interfaceCode, { q = '', ontology_id = '', prop_filters = null, limit = 50, offset = 0 } = {}) {
   const params = new URLSearchParams()
   if (q) params.set('q', q)
   if (ontology_id) params.set('ontology_id', ontology_id)
+  if (prop_filters && Object.keys(prop_filters).length) {
+    params.set('prop_filters', JSON.stringify(prop_filters))
+  }
   params.set('limit', String(limit))
   params.set('offset', String(offset))
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/interfaces/${encodeURIComponent(interfaceCode)}/objects?${params.toString()}`)
@@ -1164,6 +1167,43 @@ export async function updateRelation(categoryId, relationId, data) {
 export async function deleteRelation(categoryId, relationId) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/relations/${relationId}`, { method: 'DELETE' })
   if (!res.ok) throw new Error('Delete relation failed')
+  return res.json()
+}
+
+// 模块三·续：关系属性（链接可带属性）
+export async function fetchRelationProperties(categoryId, relationId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/relations/${relationId}/properties`)
+  if (!res.ok) throw new Error('Fetch relation properties failed')
+  return res.json()
+}
+
+export async function createRelationProperty(categoryId, relationId, { name, code, data_type, description = '', is_required = false, enum_values = null, sort_order = 0 }) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/relations/${relationId}/properties`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, code, data_type, description, is_required, enum_values, sort_order }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Create relation property failed')
+  }
+  return res.json()
+}
+
+export async function updateRelationProperty(propId, data) {
+  const res = await fetch(`${API}/api/ontology-relation-properties/${propId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Update relation property failed')
+  }
+  return res.json()
+}
+
+export async function deleteRelationProperty(propId) {
+  const res = await fetch(`${API}/api/ontology-relation-properties/${propId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete relation property failed')
   return res.json()
 }
 
@@ -1447,6 +1487,232 @@ export async function copyServiceToEntity(entityId, serviceId) {
   if (!res.ok) {
     const body = await res.json().catch(() => null)
     throw new Error(body?.detail || 'Copy service failed')
+  }
+  return res.json()
+}
+
+// ───────────────────── S3：函数（只读计算） ─────────────────────
+
+export async function fetchOntologyFunctions(categoryId, ontologyId = '') {
+  const qs = ontologyId ? `?ontology_id=${encodeURIComponent(ontologyId)}` : ''
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/functions${qs}`)
+  if (!res.ok) throw new Error('获取函数列表失败')
+  return res.json()
+}
+
+export async function getOntologyFunction(functionId) {
+  const res = await fetch(`${API}/api/functions/${functionId}`)
+  if (!res.ok) throw new Error('获取函数失败')
+  return res.json()
+}
+
+export async function createOntologyFunction(categoryId, data) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/functions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '创建函数失败')
+  }
+  return res.json()
+}
+
+export async function updateOntologyFunction(functionId, data) {
+  const res = await fetch(`${API}/api/functions/${functionId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '更新函数失败')
+  }
+  return res.json()
+}
+
+export async function deleteOntologyFunction(functionId) {
+  const res = await fetch(`${API}/api/functions/${functionId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '删除函数失败')
+  }
+  return res.json()
+}
+
+export async function testOntologyFunction(functionId, { params, mock_entity } = {}) {
+  const res = await fetch(`${API}/api/functions/${functionId}/test`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ params, mock_entity }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '测试运行失败')
+  }
+  return res.json()
+}
+
+export async function invokeEntityFunction(entityId, functionId, params = {}) {
+  const res = await fetch(`${API}/api/entities/${entityId}/functions/${functionId}/invoke`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ params }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '函数调用失败')
+  }
+  return res.json()
+}
+
+// ───────────────────── S3：派生属性 ─────────────────────
+
+export async function fetchDerivedProperties(categoryId, ontologyId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/derived-properties`)
+  if (!res.ok) throw new Error('获取派生属性失败')
+  return res.json()
+}
+
+export async function createDerivedProperty(categoryId, ontologyId, data) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/derived-properties`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '创建派生属性失败')
+  }
+  return res.json()
+}
+
+export async function updateDerivedProperty(propId, data) {
+  const res = await fetch(`${API}/api/derived-properties/${propId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '更新派生属性失败')
+  }
+  return res.json()
+}
+
+export async function deleteDerivedProperty(propId) {
+  const res = await fetch(`${API}/api/derived-properties/${propId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '删除派生属性失败')
+  }
+  return res.json()
+}
+
+export async function materializeDerivedProperty(propId, limit = 1000) {
+  const res = await fetch(`${API}/api/derived-properties/${propId}/materialize?limit=${limit}`, { method: 'POST' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '物化失败')
+  }
+  return res.json()
+}
+
+// ───────────────────── S4：动作规则 / 副作用 / 执行记录 / 撤销 / 批量 ─────────────────────
+
+export async function fetchServiceRules(serviceId) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}/rules`)
+  if (!res.ok) throw new Error('获取规则失败')
+  return res.json()
+}
+
+export async function createServiceRule(serviceId, data) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}/rules`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '创建规则失败')
+  }
+  return res.json()
+}
+
+export async function updateServiceRule(ruleId, data) {
+  const res = await fetch(`${API}/api/ontology-service-rules/${ruleId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '更新规则失败')
+  }
+  return res.json()
+}
+
+export async function deleteServiceRule(ruleId) {
+  const res = await fetch(`${API}/api/ontology-service-rules/${ruleId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('删除规则失败')
+  return res.json()
+}
+
+export async function fetchServiceEffects(serviceId) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}/effects`)
+  if (!res.ok) throw new Error('获取副作用失败')
+  return res.json()
+}
+
+export async function createServiceEffect(serviceId, data) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}/effects`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '创建副作用失败')
+  }
+  return res.json()
+}
+
+export async function updateServiceEffect(effectId, data) {
+  const res = await fetch(`${API}/api/ontology-service-effects/${effectId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '更新副作用失败')
+  }
+  return res.json()
+}
+
+export async function deleteServiceEffect(effectId) {
+  const res = await fetch(`${API}/api/ontology-service-effects/${effectId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('删除副作用失败')
+  return res.json()
+}
+
+export async function fetchServiceInvocations(serviceId, limit = 50) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}/invocations?limit=${limit}`)
+  if (!res.ok) throw new Error('获取执行记录失败')
+  return res.json()
+}
+
+export async function undoServiceInvocation(invocationId, undoneBy = 'user') {
+  const res = await fetch(`${API}/api/ontology-service-invocations/${invocationId}/undo`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ undone_by: undoneBy }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '撤销失败')
+  }
+  return res.json()
+}
+
+export async function batchInvokeService(serviceId, entityIds, params = {}) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}/batch-invoke`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_ids: entityIds, params }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '批量执行失败')
   }
   return res.json()
 }
@@ -1997,6 +2263,115 @@ export async function validateCron(cfg) {
     body: JSON.stringify(cfg),
   })
   if (!res.ok) throw new Error('校验失败')
+  return res.json()
+}
+
+// ===== S6（P1-3）：对象视图 =====
+
+export async function fetchObjectViews(categoryId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/object-views`)
+  if (!res.ok) throw new Error('Fetch object views failed')
+  return res.json()
+}
+
+export async function createObjectView(categoryId, payload) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/object-views`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Create object view failed')
+  }
+  return res.json()
+}
+
+export async function updateObjectView(viewId, payload) {
+  const res = await fetch(`${API}/api/object-views/${viewId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Update object view failed')
+  }
+  return res.json()
+}
+
+export async function setDefaultObjectView(viewId) {
+  const res = await fetch(`${API}/api/object-views/${viewId}/set-default`, { method: 'POST' })
+  if (!res.ok) throw new Error('Set default object view failed')
+  return res.json()
+}
+
+export async function deleteObjectView(viewId) {
+  const res = await fetch(`${API}/api/object-views/${viewId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Delete object view failed')
+  return res.json()
+}
+
+export async function resolveObjectView(categoryId, ontologyId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/object-view`)
+  if (!res.ok) throw new Error('Resolve object view failed')
+  return res.json()
+}
+
+// ===== S7（P1-4）：版本 / 提案 / 影响分析 / 回滚 =====
+
+export async function createVersion(categoryId, { note = '', source = 'manual', created_by = '' }) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/versions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note, source, created_by }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Create version failed')
+  }
+  return res.json()
+}
+
+export async function fetchVersions(categoryId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/versions`)
+  if (!res.ok) throw new Error('Fetch versions failed')
+  return res.json()
+}
+
+export async function rollbackVersion(categoryId, versionId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/versions/${versionId}/rollback`, { method: 'POST' })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Rollback failed')
+  }
+  return res.json()
+}
+
+export async function fetchOntologyUsages(categoryId, ontologyId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/usages`)
+  if (!res.ok) throw new Error('Fetch usages failed')
+  return res.json()
+}
+
+export async function upgradeSuggestion(suggestionId, { note = '', reviewers = '', base_version = null, diff = null }) {
+  const res = await fetch(`${API}/api/ontology-suggestions/${suggestionId}/upgrade`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note, reviewers, base_version, diff }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Upgrade suggestion failed')
+  }
+  return res.json()
+}
+
+export async function mergeProposal(suggestionId, { note = '', created_by = '' }) {
+  const res = await fetch(`${API}/api/ontology-suggestions/${suggestionId}/merge`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note, created_by }),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Merge proposal failed')
+  }
   return res.json()
 }
 

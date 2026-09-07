@@ -15,6 +15,7 @@ from models import (
     OntologyInterfaceImplementation,
     OntologyRelation,
     OntologyRelationConstraint,
+    OntologyRelationProperty,
     OntologySuggestion,
     OntologyTemplateAttribute,
     OntologyTemplateBinding,
@@ -106,6 +107,11 @@ async def _serialize_constraint(db: AsyncSession, c: OntologyRelationConstraint)
         "target_ontology_name": tgt.scalar_one_or_none(),
         "description": c.description or "",
         "created_at": c.created_at,
+        "source_min": getattr(c, "source_min", 0) or 0,
+        "source_max": getattr(c, "source_max", 0) or 0,
+        "target_min": getattr(c, "target_min", 0) or 0,
+        "target_max": getattr(c, "target_max", 0) or 0,
+        "is_required": bool(getattr(c, "is_required", 0)),
     }
 
 
@@ -627,12 +633,21 @@ class OntologyService:
         )
         return [
             {"id": r.id, "category_id": r.category_id, "name": r.name, "code": r.code,
-             "description": r.description or "", "created_at": r.created_at}
+             "description": r.description or "", "created_at": r.created_at,
+             "cardinality": getattr(r, "cardinality", "") or "MANY_TO_MANY",
+             "inverse_name": getattr(r, "inverse_name", "") or "",
+             "is_symmetric": bool(getattr(r, "is_symmetric", 0)),
+             "is_transitive": bool(getattr(r, "is_transitive", 0)),
+             "status": getattr(r, "status", "") or "active"}
             for r in result.scalars().all()
         ]
 
     @staticmethod
-    async def create_relation(db: AsyncSession, category_id: str, name: str, code: str | None = None, description: str = "") -> dict:
+    async def create_relation(
+        db: AsyncSession, category_id: str, name: str, code: str | None = None, description: str = "",
+        cardinality: str | None = None, inverse_name: str | None = None,
+        is_symmetric: bool | None = None, is_transitive: bool | None = None, status: str | None = None,
+    ) -> dict:
         code = (code or "").strip() or None
         if code:
             existing = await db.execute(
@@ -644,13 +659,32 @@ class OntologyService:
             if existing.scalar_one_or_none():
                 raise ValueError(f'编码 "{code}" 在该类别中已存在')
         rel = OntologyRelation(category_id=category_id, name=name.strip(), code=code, description=(description or "").strip())
+        if cardinality is not None:
+            rel.cardinality = cardinality
+        if inverse_name is not None:
+            rel.inverse_name = inverse_name.strip()
+        if is_symmetric is not None:
+            rel.is_symmetric = int(bool(is_symmetric))
+        if is_transitive is not None:
+            rel.is_transitive = int(bool(is_transitive))
+        if status is not None:
+            rel.status = status
         db.add(rel)
         await db.commit()
         await db.refresh(rel)
-        return {"id": rel.id, "name": rel.name, "code": rel.code, "description": rel.description}
+        return {
+            "id": rel.id, "name": rel.name, "code": rel.code, "description": rel.description,
+            "cardinality": rel.cardinality, "inverse_name": rel.inverse_name,
+            "is_symmetric": bool(rel.is_symmetric), "is_transitive": bool(rel.is_transitive),
+            "status": rel.status,
+        }
 
     @staticmethod
-    async def update_relation(db: AsyncSession, relation_id: str, name: str | None, code: str | None, description: str | None) -> dict | None:
+    async def update_relation(
+        db: AsyncSession, relation_id: str, name: str | None, code: str | None, description: str | None,
+        cardinality: str | None = None, inverse_name: str | None = None,
+        is_symmetric: bool | None = None, is_transitive: bool | None = None, status: str | None = None,
+    ) -> dict | None:
         result = await db.execute(select(OntologyRelation).where(OntologyRelation.id == relation_id))
         rel = result.scalar_one_or_none()
         if not rel:
@@ -672,9 +706,24 @@ class OntologyService:
             rel.code = new_code
         if description is not None:
             rel.description = description.strip()
+        if cardinality is not None:
+            rel.cardinality = cardinality
+        if inverse_name is not None:
+            rel.inverse_name = inverse_name.strip()
+        if is_symmetric is not None:
+            rel.is_symmetric = int(bool(is_symmetric))
+        if is_transitive is not None:
+            rel.is_transitive = int(bool(is_transitive))
+        if status is not None:
+            rel.status = status
         rel.updated_at = datetime.now().isoformat()
         await db.commit()
-        return {"id": rel.id, "name": rel.name, "code": rel.code, "description": rel.description}
+        return {
+            "id": rel.id, "name": rel.name, "code": rel.code, "description": rel.description,
+            "cardinality": rel.cardinality, "inverse_name": rel.inverse_name,
+            "is_symmetric": bool(rel.is_symmetric), "is_transitive": bool(rel.is_transitive),
+            "status": rel.status,
+        }
 
     @staticmethod
     async def delete_relation(db: AsyncSession, relation_id: str) -> bool:
@@ -682,9 +731,12 @@ class OntologyService:
         rel = result.scalar_one_or_none()
         if not rel:
             return False
-        # 级联：删除引用它的三元组
+        # 级联：删除引用它的三元组与关系属性定义
         await db.execute(
             delete(OntologyRelationConstraint).where(OntologyRelationConstraint.relation_id == relation_id)
+        )
+        await db.execute(
+            delete(OntologyRelationProperty).where(OntologyRelationProperty.relation_id == relation_id)
         )
         await db.delete(rel)
         await db.commit()
@@ -782,6 +834,12 @@ class OntologyService:
             c.target_ontology_id = req.target_ontology_id
         if req.description is not None:
             c.description = req.description.strip()
+        for fld in ("source_min", "source_max", "target_min", "target_max"):
+            val = getattr(req, fld, None)
+            if val is not None:
+                setattr(c, fld, int(val))
+        if req.is_required is not None:
+            c.is_required = int(bool(req.is_required))
         await db.commit()
         return await _serialize_constraint(db, c)
 

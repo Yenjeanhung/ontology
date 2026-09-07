@@ -15,10 +15,15 @@ from models import Entity, Ontology
 from providers.llm import build_llm, chunk_text
 from schemas import (
     AiAssistServiceCodeRequest,
+    BatchInvokeRequest,
     InvokeEntityServiceRequest,
     SaveOntologyServiceRequest,
+    SaveServiceEffectRequest,
+    SaveServiceRuleRequest,
     TestOntologyServiceRequest,
+    UndoInvocationRequest,
 )
+from services.ontology_action_enhance_service import ActionEnhanceService
 from services.ontology_action_service import (
     OntologyServiceService,
     ServiceRuntimeService,
@@ -37,10 +42,6 @@ async def validate_code(payload: dict):
         return {"valid": False, "error": "代码为空"}
     err = check_code(code_text)
     return {"valid": not err, "error": err or None}
-
-
-def _nf(detail: str):
-    return HTTPException(status_code=404, detail=detail)
 
 
 def _nf(detail: str):
@@ -298,7 +299,8 @@ async def invoke_entity_service(
     req: InvokeEntityServiceRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    result, err = await ServiceRuntimeService.invoke(db, entity_id, service_id, req.params)
+    # S4：走增强执行链（规则 → 沙箱 → 声明式写回 → 副作用 → 记录/可撤销）
+    result, err = await ActionEnhanceService.invoke(db, entity_id, service_id, req.params)
     if err:
         raise _bad_request(err)
     return result
@@ -314,3 +316,98 @@ async def copy_service_to_entity(
     if err:
         raise _bad_request(err)
     return svc
+
+
+# ===== S4：动作规则 / 副作用 / 执行记录 / 撤销 / 批量 =====
+
+
+@router.get("/ontology-services/{service_id}/rules")
+async def list_service_rules(service_id: str, db: AsyncSession = Depends(get_db)):
+    return await ActionEnhanceService.list_rules(db, service_id)
+
+
+@router.post("/ontology-services/{service_id}/rules")
+async def create_service_rule(
+    service_id: str, req: SaveServiceRuleRequest, db: AsyncSession = Depends(get_db)
+):
+    rule, err = await ActionEnhanceService.create_rule(db, service_id, req)
+    if err:
+        raise _bad_request(err)
+    return rule
+
+
+@router.put("/ontology-service-rules/{rule_id}")
+async def update_service_rule(
+    rule_id: str, req: SaveServiceRuleRequest, db: AsyncSession = Depends(get_db)
+):
+    rule, err = await ActionEnhanceService.update_rule(db, rule_id, req)
+    if err:
+        raise _nf(err)
+    return rule
+
+
+@router.delete("/ontology-service-rules/{rule_id}")
+async def delete_service_rule(rule_id: str, db: AsyncSession = Depends(get_db)):
+    if not await ActionEnhanceService.delete_rule(db, rule_id):
+        raise _nf("规则不存在")
+    return {"status": "deleted"}
+
+
+@router.get("/ontology-services/{service_id}/effects")
+async def list_service_effects(service_id: str, db: AsyncSession = Depends(get_db)):
+    return await ActionEnhanceService.list_effects(db, service_id)
+
+
+@router.post("/ontology-services/{service_id}/effects")
+async def create_service_effect(
+    service_id: str, req: SaveServiceEffectRequest, db: AsyncSession = Depends(get_db)
+):
+    effect, err = await ActionEnhanceService.create_effect(db, service_id, req)
+    if err:
+        raise _bad_request(err)
+    return effect
+
+
+@router.put("/ontology-service-effects/{effect_id}")
+async def update_service_effect(
+    effect_id: str, req: SaveServiceEffectRequest, db: AsyncSession = Depends(get_db)
+):
+    effect, err = await ActionEnhanceService.update_effect(db, effect_id, req)
+    if err:
+        raise _nf(err)
+    return effect
+
+
+@router.delete("/ontology-service-effects/{effect_id}")
+async def delete_service_effect(effect_id: str, db: AsyncSession = Depends(get_db)):
+    if not await ActionEnhanceService.delete_effect(db, effect_id):
+        raise _nf("副作用不存在")
+    return {"status": "deleted"}
+
+
+@router.get("/ontology-services/{service_id}/invocations")
+async def list_service_invocations(
+    service_id: str, limit: int = 50, db: AsyncSession = Depends(get_db)
+):
+    return await ActionEnhanceService.list_invocations(db, service_id, limit)
+
+
+@router.post("/ontology-service-invocations/{invocation_id}/undo")
+async def undo_service_invocation(
+    invocation_id: str, req: UndoInvocationRequest, db: AsyncSession = Depends(get_db)
+):
+    res, err = await ActionEnhanceService.undo(db, invocation_id, req.undone_by)
+    if err:
+        raise _bad_request(err)
+    return res
+
+
+@router.post("/ontology-services/{service_id}/batch-invoke")
+async def batch_invoke_service(
+    service_id: str, req: BatchInvokeRequest, db: AsyncSession = Depends(get_db)
+):
+    if not req.entity_ids:
+        raise _bad_request("entity_ids 不能为空")
+    return await ActionEnhanceService.batch_invoke(
+        db, service_id, req.entity_ids, req.params
+    )

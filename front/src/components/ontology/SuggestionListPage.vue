@@ -1,6 +1,6 @@
 ﻿<script setup>
 import { ref, computed, watch, onMounted, onActivated } from 'vue'
-import { fetchOntologySuggestions, deleteOntologySuggestion, fetchKbs } from '../../api'
+import { fetchOntologySuggestions, deleteOntologySuggestion, fetchKbs, upgradeSuggestion, mergeProposal } from '../../api'
 import { refreshNotifications } from '../../stores/notifications'
 import { useToast } from '../../composables/useToast'
 import SuggestionReviewEditor from './SuggestionReviewEditor.vue'
@@ -85,6 +85,32 @@ async function removeSuggestion(item) {
     refreshNotifications()
   } catch (e) {
     toast.error('删除失败: ' + e.message)
+  }
+}
+
+// S7：把普通建议升级为变更提案（change proposal）
+async function upgradeToProposal(item) {
+  if (!confirm('确认将这条建议升级为「变更提案」？升级后进入提案审查流程，可合并并自动打版本。')) return
+  try {
+    await upgradeSuggestion(item.id, { note: '从本体建议升级为变更提案' })
+    toast.success('已升级为变更提案')
+    await load()
+    refreshNotifications()
+  } catch (e) {
+    toast.error('升级失败: ' + e.message)
+  }
+}
+
+// S7：合并变更提案：应用 diff 到本体类别，并自动打新版本
+async function merge(item) {
+  if (!confirm('确认合并该变更提案？将把变更应用至本体类别并生成新版本。')) return
+  try {
+    await mergeProposal(item.id, {})
+    toast.success('已合并并生成新版本')
+    await load()
+    refreshNotifications()
+  } catch (e) {
+    toast.error('合并失败: ' + e.message)
   }
 }
 
@@ -176,6 +202,7 @@ onActivated(async () => {
               >{{ STATUS_MAP[item.status] || item.status }}</span>
             </div>
             <span class="sl-source-tag">{{ SOURCE_MAP[item.source_mode] || item.source_mode || '-' }}</span>
+            <span v-if="item.proposal_type === 'change'" class="sl-proposal-badge">变更提案</span>
           </div>
           <div class="sl-card-stats">
             <span class="sl-stat">本体 {{ statsData(item).ontologyCount }}</span>
@@ -186,10 +213,20 @@ onActivated(async () => {
         </div>
         <div class="sl-card-actions">
           <button
-            v-if="item.status === 'ready'"
+            v-if="item.status === 'ready' && item.proposal_type !== 'change'"
             class="btn primary sm"
             @click="openReview(item.id)"
           >审核</button>
+          <button
+            v-if="item.status === 'ready' && item.proposal_type !== 'change'"
+            class="btn sm"
+            @click="upgradeToProposal(item)"
+          >升级为提案</button>
+          <button
+            v-if="item.proposal_type === 'change' && item.status !== 'approved'"
+            class="btn primary sm"
+            @click="merge(item)"
+          >合并并打版本</button>
           <button
             class="btn sm"
             @click="removeSuggestion(item)"
@@ -289,6 +326,10 @@ onActivated(async () => {
 .sl-source-tag {
   font-size: 11px; padding: 2px 8px; border-radius: 10px;
   background: var(--c-muted); color: var(--c-secondary);
+}
+.sl-proposal-badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: rgba(139, 92, 246, 0.15); color: #a78bfa; font-weight: 600;
 }
 .sl-card-stats { display: flex; align-items: center; gap: 12px; }
 .sl-stat { font-size: 12px; color: var(--c-secondary); }

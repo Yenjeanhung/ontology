@@ -18,7 +18,7 @@ import json
 import logging
 from datetime import datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
@@ -699,9 +699,15 @@ class OntologyInterfaceService:
     @staticmethod
     async def resolve_objects(
         db: AsyncSession, category_id: str, interface_code: str,
-        q: str = "", ontology_id: str = "", limit: int = 50, offset: int = 0,
+        q: str = "", ontology_id: str = "", prop_filters: dict | None = None,
+        limit: int = 50, offset: int = 0,
     ) -> dict | None:
-        """按接口查询对象：把各实现本体的本地属性投影为接口属性，返回统一结构。"""
+        """按接口查询对象：把各实现本体的本地属性投影为接口属性，返回统一结构。
+
+        :param prop_filters: 按接口属性筛选，形如 ``{接口属性code: 关键字}``；
+            每个接口属性会通过各实现的 ``property_mapping`` 反查成本体本地属性键再过滤
+            （不同本体的本地键不同，按 (本体, 本地键) 组合做 OR，多个属性之间为 AND）。
+        """
         iface = (await db.execute(
             select(OntologyInterface).where(
                 OntologyInterface.category_id == category_id,
@@ -729,6 +735,22 @@ class OntologyInterfaceService:
             stmt = stmt.where(Entity.name.contains(q))
         if ontology_id and ontology_id in ont_ids:
             stmt = stmt.where(Entity.ontology_id == ontology_id)
+        # 按接口属性筛选：接口属性 code → 各实现的本地属性键
+        for code, kw in (prop_filters or {}).items():
+            kw = str(kw or "").strip()
+            if not kw:
+                continue
+            ors = []
+            for oid, mapping in mapping_by_ont.items():
+                local_key = mapping.get(code)
+                if not local_key:
+                    continue
+                ors.append(and_(
+                    Entity.ontology_id == oid,
+                    Entity.properties.like(f'%"{local_key}": "%{kw}%'),
+                ))
+            # 属性存在但没有任何本体映射它 → 不可能匹配到任何对象
+            stmt = stmt.where(or_(*ors) if ors else false())
         total = int((await db.execute(
             select(func.count()).select_from(stmt.subquery())
         )).scalar() or 0)

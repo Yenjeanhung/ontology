@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchEntities, deleteEntity, createEntity, fetchKbs, fetchOntologyCategories, getOntologyCategoryDetail } from '../../api'
+import { fetchEntities, deleteEntity, createEntity, fetchKbs, fetchOntologyCategories, getOntologyCategoryDetail, getOntologyDetail, fetchOntologyServices, batchInvokeService } from '../../api'
 import SearchableSelect from '../common/SearchableSelect.vue'
 import Pagination from '../common/Pagination.vue'
 
@@ -179,12 +179,38 @@ async function ensureCategoryDetail(g) {
   }
 }
 
+// 选中具体本体时，加载其全部属性作为列表动态列
+const ontAttributes = ref([]) // [{name, code, data_type}]
+
+async function loadOntAttributes(ontologyId) {
+  ontAttributes.value = []
+  if (!ontologyId) return
+  try {
+    const g = ontologyTree.value.find(grp => (grp.ontologies || []).some(o => o.id === ontologyId))
+    if (!g) return
+    const detail = await getOntologyDetail(g.category.id, ontologyId)
+    ontAttributes.value = (detail.attributes || [])
+      .filter(a => a.code || a.name)
+      .map(a => ({ name: a.name || a.code, code: a.code || a.name, data_type: a.data_type || '' }))
+  } catch (e) {
+    console.error('load ontology attributes failed', e)
+  }
+}
+
+function formatAttr(v) {
+  if (v === null || v === undefined || v === '') return '—'
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+
 function selectOntology(ontologyId) {
   if (selectedOntologyId.value === ontologyId) {
     selectedOntologyId.value = ''
+    ontAttributes.value = []
   } else {
     selectedOntologyId.value = ontologyId
     selectedCategoryId.value = ''
+    loadOntAttributes(ontologyId)
   }
   page.value = 1
   load()
@@ -197,6 +223,7 @@ function selectCategory(categoryId) {
     selectedCategoryId.value = categoryId
     selectedOntologyId.value = ''
   }
+  ontAttributes.value = []
   page.value = 1
   load()
 }
@@ -204,6 +231,7 @@ function selectCategory(categoryId) {
 function clearFilter() {
   selectedOntologyId.value = ''
   selectedCategoryId.value = ''
+  ontAttributes.value = []
   page.value = 1
   load()
 }
@@ -266,6 +294,95 @@ async function remove(entity, e) {
     await load()
   } catch (e) {
     alert('删除失败：' + e.message)
+  }
+}
+
+// ══ 批量执行动作（S4）══
+const checkedIds = ref(new Set())
+const showBatch = ref(false)
+const batchCatId = ref('')
+const batchOntId = ref('')
+const batchServices = ref([])
+const batchServiceId = ref('')
+const batchParams = ref('{}')
+const batchResult = ref(null)
+const batchRunning = ref(false)
+const batchError = ref('')
+
+const checkedCount = computed(() => checkedIds.value.size)
+const allChecked = computed(() =>
+  entities.value.length > 0 && entities.value.every(e => checkedIds.value.has(e.id)))
+
+function toggleCheck(id) {
+  const next = new Set(checkedIds.value)
+  next.has(id) ? next.delete(id) : next.add(id)
+  checkedIds.value = next
+}
+
+function toggleCheckAll() {
+  const next = new Set(checkedIds.value)
+  if (allChecked.value) entities.value.forEach(e => next.delete(e.id))
+  else entities.value.forEach(e => next.add(e.id))
+  checkedIds.value = next
+}
+
+function clearChecked() { checkedIds.value = new Set() }
+
+// 选中本体所属分类（批量弹窗默认值）
+function findCategoryOfOntology(ontologyId) {
+  const g = ontologyTree.value.find(grp => (grp.ontologies || []).some(o => o.id === ontologyId))
+  return g?.category?.id || ''
+}
+
+function openBatch() {
+  batchError.value = ''
+  batchResult.value = null
+  batchServiceId.value = ''
+  batchServices.value = []
+  batchParams.value = '{}'
+  batchCatId.value = selectedCategoryId.value || findCategoryOfOntology(selectedOntologyId.value) || (ontologyTree.value[0]?.category?.id || '')
+  batchOntId.value = selectedOntologyId.value || ''
+  showBatch.value = true
+  // 默认分类未加载明细时补齐本体列表
+  const g = ontologyTree.value.find(x => x.category.id === batchCatId.value)
+  if (g && !g.detailLoaded) ensureCategoryDetail(g).then(() => { if (batchOntId.value) loadBatchServices() })
+  if (batchOntId.value) loadBatchServices()
+}
+
+async function loadBatchServices() {
+  batchServices.value = []
+  batchServiceId.value = ''
+  if (!batchCatId.value || !batchOntId.value) return
+  try {
+    batchServices.value = await fetchOntologyServices(batchCatId.value, batchOntId.value)
+  } catch (e) {
+    batchError.value = '加载服务失败：' + e.message
+  }
+}
+
+const batchSelService = computed(() =>
+  batchServices.value.find(s => s.id === batchServiceId.value) || null)
+
+const batchOntOptions = computed(() => {
+  const g = ontologyTree.value.find(x => x.category.id === batchCatId.value)
+  return g ? (g.ontologies || []) : []
+})
+
+async function runBatchInvoke() {
+  const ids = [...checkedIds.value]
+  if (!batchServiceId.value) { batchError.value = '请选择要执行的动作'; return }
+  let params = {}
+  try { params = JSON.parse(batchParams.value || '{}') }
+  catch { batchError.value = '参数 JSON 格式不正确'; return }
+  batchRunning.value = true
+  batchError.value = ''
+  batchResult.value = null
+  try {
+    batchResult.value = await batchInvokeService(batchServiceId.value, ids, params)
+  } catch (e) {
+    batchError.value = e.message || '批量执行失败'
+  } finally {
+    batchRunning.value = false
   }
 }
 
@@ -375,6 +492,8 @@ onActivated(() => {
           <button class="icon-btn refresh-btn" @click="load" title="刷新">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
           </button>
+          <button v-if="checkedCount" class="batch-btn" @click="openBatch">⚡ 批量执行动作（{{ checkedCount }}）</button>
+          <button v-if="checkedCount" class="filter-clear" @click="clearChecked" title="清除勾选">✕</button>
         </div>
 
         <div v-if="filterLabel" class="filter-breadcrumb">
@@ -386,44 +505,87 @@ onActivated(() => {
         <div v-if="loading && !entities.length" class="loading-state"><span class="spinner"></span> 加载中...</div>
 
         <div v-else-if="entities.length" class="ent-table">
-          <div class="ent-row ent-row-head">
-            <span class="col-name">实体名称</span>
-            <span class="col-type">本体类型</span>
-            <span class="col-stat">属性</span>
-            <span class="col-num">关系</span>
-            <span class="col-stat">服务</span>
-            <span class="col-props">属性概要</span>
-            <span class="col-actions"></span>
-          </div>
-          <div
-            v-for="ent in entities"
-            :key="ent.id"
-            class="ent-row"
-            @click="goDetail(ent.id)"
-          >
-            <span class="col-name">
-              <span class="ent-dot" :style="{ background: 'var(--c-accent)' }"></span>
-              {{ ent.name }}
-            </span>
-            <span class="col-type">
-              <span class="type-tag">{{ ent.entity_type || ent.ontology_name || '—' }}</span>
-            </span>
-            <span class="col-stat">
-              <span class="stat-total">{{ ent.property_count ?? 0 }}</span>
-              <span class="stat-split">继承{{ ent.property_inherited_count ?? 0 }} · 自定义{{ ent.property_custom_count ?? 0 }}</span>
-            </span>
-            <span class="col-num">{{ ent.relation_count ?? 0 }}</span>
-            <span class="col-stat">
-              <span class="stat-total">{{ ent.service_count ?? 0 }}</span>
-              <span class="stat-split">继承{{ ent.service_inherited_count ?? 0 }} · 自定义{{ ent.service_custom_count ?? 0 }}</span>
-            </span>
-            <span class="col-props">{{ ent.property_preview || '—' }}</span>
-            <span class="col-actions">
-              <button class="rm-btn sm" @click="remove(ent, $event)" title="删除">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-              </button>
-            </span>
-          </div>
+          <!-- 选中具体本体：表头展示该本体全部属性列 -->
+          <template v-if="ontAttributes.length">
+            <div class="ent-row ent-row-head">
+              <span class="col-check"><input type="checkbox" :checked="allChecked" @change="toggleCheckAll" @click.stop></span>
+              <span class="col-name">实体名称</span>
+              <span class="col-type">本体类型</span>
+              <span v-for="a in ontAttributes" :key="a.code" class="col-attr head" :title="a.name + (a.data_type ? ` · ${a.data_type}` : '')">{{ a.name }}</span>
+              <span class="col-mini head">属性 / 关系 / 服务</span>
+              <span class="col-actions"></span>
+            </div>
+            <div
+              v-for="ent in entities"
+              :key="ent.id"
+              class="ent-row"
+              @click="goDetail(ent.id)"
+            >
+              <span class="col-check" @click.stop><input type="checkbox" :checked="checkedIds.has(ent.id)" @change="toggleCheck(ent.id)"></span>
+              <span class="col-name">
+                <span class="ent-dot" :style="{ background: 'var(--c-accent)' }"></span>
+                {{ ent.name }}
+              </span>
+              <span class="col-type">
+                <span class="type-tag">{{ ent.entity_type || ent.ontology_name || '—' }}</span>
+              </span>
+              <span v-for="a in ontAttributes" :key="a.code" class="col-attr" :title="formatAttr(ent.properties?.[a.code])">{{ formatAttr(ent.properties?.[a.code]) }}</span>
+              <span class="col-mini">
+                <span class="mini-item"><span class="mini-num">{{ ent.property_count ?? 0 }}</span><span class="mini-label">属性</span></span>
+                <span class="mini-item"><span class="mini-num">{{ ent.relation_count ?? 0 }}</span><span class="mini-label">关系</span></span>
+                <span class="mini-item"><span class="mini-num">{{ ent.service_count ?? 0 }}</span><span class="mini-label">服务</span></span>
+              </span>
+              <span class="col-actions">
+                <button class="rm-btn sm" @click="remove(ent, $event)" title="删除">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </span>
+            </div>
+          </template>
+
+          <!-- 分类/全部：保持原有概要列 -->
+          <template v-else>
+            <div class="ent-row ent-row-head">
+              <span class="col-check"><input type="checkbox" :checked="allChecked" @change="toggleCheckAll" @click.stop></span>
+              <span class="col-name">实体名称</span>
+              <span class="col-type">本体类型</span>
+              <span class="col-stat">属性</span>
+              <span class="col-num">关系</span>
+              <span class="col-stat">服务</span>
+              <span class="col-props">属性概要</span>
+              <span class="col-actions"></span>
+            </div>
+            <div
+              v-for="ent in entities"
+              :key="ent.id"
+              class="ent-row"
+              @click="goDetail(ent.id)"
+            >
+              <span class="col-check" @click.stop><input type="checkbox" :checked="checkedIds.has(ent.id)" @change="toggleCheck(ent.id)"></span>
+              <span class="col-name">
+                <span class="ent-dot" :style="{ background: 'var(--c-accent)' }"></span>
+                {{ ent.name }}
+              </span>
+              <span class="col-type">
+                <span class="type-tag">{{ ent.entity_type || ent.ontology_name || '—' }}</span>
+              </span>
+              <span class="col-stat">
+                <span class="stat-total">{{ ent.property_count ?? 0 }}</span>
+                <span class="stat-split">继承{{ ent.property_inherited_count ?? 0 }} · 自定义{{ ent.property_custom_count ?? 0 }}</span>
+              </span>
+              <span class="col-num">{{ ent.relation_count ?? 0 }}</span>
+              <span class="col-stat">
+                <span class="stat-total">{{ ent.service_count ?? 0 }}</span>
+                <span class="stat-split">继承{{ ent.service_inherited_count ?? 0 }} · 自定义{{ ent.service_custom_count ?? 0 }}</span>
+              </span>
+              <span class="col-props">{{ ent.property_preview || '—' }}</span>
+              <span class="col-actions">
+                <button class="rm-btn sm" @click="remove(ent, $event)" title="删除">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </span>
+            </div>
+          </template>
         </div>
 
         <div v-else class="empty-state">
@@ -475,6 +637,57 @@ onActivated(() => {
       </div>
     </div>
 
+    <!-- 批量执行动作弹窗（S4） -->
+    <div v-if="showBatch" class="modal-overlay" @click.self="showBatch = false">
+      <div class="modal-card batch-card">
+        <div class="modal-head">
+          <h3>批量执行动作（已选 {{ checkedCount }} 个实体）</h3>
+          <button class="close-btn" @click="showBatch = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row two">
+            <label>分类</label>
+            <select v-model="batchCatId">
+              <option value="">请选择</option>
+              <option v-for="g in ontologyTree" :key="g.category.id" :value="g.category.id">{{ g.category.name }}</option>
+            </select>
+          </div>
+          <div class="form-row two">
+            <label>本体</label>
+            <select v-model="batchOntId" @change="loadBatchServices">
+              <option value="">请选择</option>
+              <option v-for="o in batchOntOptions" :key="o.id" :value="o.id">{{ o.name }}</option>
+            </select>
+          </div>
+          <div class="form-row two">
+            <label>动作（服务）</label>
+            <select v-model="batchServiceId">
+              <option value="">请选择</option>
+              <option v-for="s in batchServices" :key="s.id" :value="s.id">{{ s.name }}（{{ s.code }}）</option>
+            </select>
+          </div>
+          <div v-if="batchSelService?.params?.length" class="batch-params-hint">
+            参数：{{ batchSelService.params.map(p => `${p.name}${p.required ? '*' : ''}`).join('、') }}
+          </div>
+          <div class="form-row">
+            <label>公共参数（JSON，对所有实体相同）</label>
+            <textarea v-model="batchParams" rows="4" spellcheck="false" placeholder='{"reason": "批量处理"}'></textarea>
+          </div>
+          <div v-if="batchError" class="form-error">{{ batchError }}</div>
+          <div v-if="batchResult" class="batch-result">
+            <div class="batch-result-head">
+              成功 {{ batchResult.succeeded || 0 }} · 失败 {{ batchResult.failed || 0 }}
+            </div>
+            <pre>{{ JSON.stringify(batchResult.items || [], null, 2) }}</pre>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" @click="showBatch = false">关闭</button>
+          <button class="primary-btn" :disabled="batchRunning || !batchServiceId" @click="runBatchInvoke">{{ batchRunning ? '执行中...' : '▶ 批量执行' }}</button>
+        </div>
+      </div>
+    </div>
+
         <!-- 分页 -->
         <Pagination v-if="total > 0" v-model:page="page" v-model:page-size="pageSize" :total="total" @change="load" />
       </div>
@@ -484,6 +697,17 @@ onActivated(() => {
 
 <style scoped>
 .page-shell { display: flex; flex-direction: column; gap: 16px; height: 100%; }
+
+/* 勾选列与批量按钮 */
+.col-check { flex: 0 0 34px; display: flex; align-items: center; justify-content: center; }
+.col-check input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--c-accent); cursor: pointer; }
+.batch-btn { flex: 0 0 auto; padding: 7px 14px; border: 1px solid var(--c-accent); border-radius: var(--radius-sm); background: rgba(59,130,246,0.08); color: var(--c-accent); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.batch-btn:hover { background: rgba(59,130,246,0.16); }
+.batch-card { width: 640px; }
+.batch-params-hint { font-size: 11px; color: var(--c-secondary); background: var(--c-muted); border-radius: var(--radius-sm); padding: 6px 10px; }
+.batch-result { border: 1px solid var(--c-border); border-radius: var(--radius-sm); overflow: hidden; }
+.batch-result-head { padding: 8px 12px; font-size: 12px; font-weight: 700; color: var(--c-fg); background: var(--c-muted); border-bottom: 1px solid var(--c-border); }
+.batch-result pre { margin: 0; padding: 10px 12px; font-size: 11px; max-height: 220px; overflow: auto; font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--c-border); }
 .page-title-row { display: flex; flex-direction: column; gap: 2px; }
 .page-title { font-size: 20px; font-weight: 700; color: var(--c-fg); }
@@ -562,6 +786,13 @@ onActivated(() => {
 .stat-total { font-size: 13px; font-weight: 600; color: var(--c-fg); font-variant-numeric: tabular-nums; }
 .stat-split { font-size: 10px; color: var(--c-secondary); white-space: nowrap; }
 .col-props { flex: 2; min-width: 0; font-size: 12px; color: var(--c-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-attr { flex: 1 1 0; min-width: 0; font-size: 12px; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-attr.head { color: var(--c-secondary); font-weight: 600; text-transform: none; letter-spacing: 0; }
+.col-mini { flex: 0 0 150px; min-width: 0; display: flex; align-items: center; justify-content: space-around; gap: 6px; }
+.col-mini.head { font-size: 12px; font-weight: 600; color: var(--c-secondary); justify-content: center; }
+.mini-item { display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 0; }
+.mini-num { font-size: 13px; font-weight: 600; color: var(--c-fg); font-variant-numeric: tabular-nums; }
+.mini-label { font-size: 10px; color: var(--c-secondary); white-space: nowrap; }
 .col-actions { flex: 0 0 40px; display: flex; justify-content: flex-end; }
 .ent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .type-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--c-muted); color: var(--c-secondary); }

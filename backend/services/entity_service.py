@@ -358,7 +358,8 @@ class EntityService:
             custom_svc = service_custom.get(r.id, 0)
             inherited_svc = service_inherited.get(r.ontology_id, 0)
 
-            it = _serialize_entity(r, ontology_name=ont_map.get(r.ontology_id), include_properties=False)
+            # 按具体本体过滤时返回完整 properties，供列表按本体属性展示列
+            it = _serialize_entity(r, ontology_name=ont_map.get(r.ontology_id), include_properties=bool(ontology_id))
             it["relation_count"] = relation_counts.get(r.id, 0)
             it["property_inherited_count"] = inherited
             it["property_custom_count"] = len(props) - inherited
@@ -375,6 +376,10 @@ class EntityService:
         if not ent:
             return None
         ont_name = await _enrich_entity_ontology_name(db, ent)
+        ont_cat_row = await db.execute(
+            select(Ontology.category_id).where(Ontology.id == ent.ontology_id)
+        )
+        category_id = ont_cat_row.scalar_one_or_none()
 
         # 关联关系实例（作为起点或终点）
         rels_row = await db.execute(
@@ -390,6 +395,7 @@ class EntityService:
             related_relations.append(_serialize_relation(rel, extra))
 
         result = _serialize_entity(ent, ontology_name=ont_name)
+        result["category_id"] = category_id or ""
 
         if ent.source_file_id:
             file_row = await db.execute(select(File.name).where(File.id == ent.source_file_id))

@@ -98,6 +98,7 @@ const menuItems = [
       { to: '/ontology/templates', label: '本体模板' },
       { to: '/ontology/shared-properties', label: '共享属性' },
       { to: '/ontology/ontologies', label: '本体管理' },
+      { to: '/ontology/functions', label: '函数与派生属性' },
       { to: '/ontology/relations-dict', label: '关系字典' },
       { to: '/ontology/constraints', label: '本体关系' },
       { to: '/ontology/suggestions', label: '本体建议', badgeKey: 'suggestions' },
@@ -139,6 +140,7 @@ const menuItems = [
     children: [
       { to: '/config/models', label: '模型配置' },
       { to: '/config/monitor', label: '系统监控' },
+      { to: '/config/api-docs', label: 'API 文档' },
     ],
   },
 ]
@@ -1107,6 +1109,7 @@ onBeforeUnmount(() => {
 .main-content {
   flex: 1;
   padding: 28px 32px 48px;
+  position: relative;
 }
 
 .main-area.home-main .main-content {

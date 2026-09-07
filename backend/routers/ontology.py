@@ -20,6 +20,8 @@ from schemas import (
     CreateOntologyRelationRequest,
     CreateOntologyRequest,
     CreateRelationConstraintRequest,
+    CreateOntologyRelationPropertyRequest,
+    UpdateOntologyRelationPropertyRequest,
     CreateTemplateAttributeRequest,
     GenerateOntologySuggestionRequest,
     UpdateAttributeTemplateRequest,
@@ -31,6 +33,7 @@ from schemas import (
     UpdateRelationConstraintRequest,
 )
 from services.ontology_service import OntologyService, OntologySuggestionService
+from services.ontology_relation_property_service import RelationPropertyService
 
 router = APIRouter()
 
@@ -200,7 +203,11 @@ async def batch_create_relations(category_id: str, req: BatchCreateRelationsRequ
 @router.post("/ontology-categories/{category_id}/relations")
 async def create_relation(category_id: str, req: CreateOntologyRelationRequest, db: AsyncSession = Depends(get_db)):
     try:
-        return await OntologyService.create_relation(db, category_id, req.name, req.code, req.description or "")
+        return await OntologyService.create_relation(
+            db, category_id, req.name, req.code, req.description or "",
+            cardinality=req.cardinality, inverse_name=req.inverse_name,
+            is_symmetric=req.is_symmetric, is_transitive=req.is_transitive, status=req.status,
+        )
     except ValueError as e:
         raise _bad_request(str(e))
 
@@ -208,7 +215,11 @@ async def create_relation(category_id: str, req: CreateOntologyRelationRequest, 
 @router.put("/ontology-categories/{category_id}/relations/{relation_id}")
 async def update_relation(category_id: str, relation_id: str, req: UpdateOntologyRelationRequest, db: AsyncSession = Depends(get_db)):
     try:
-        res = await OntologyService.update_relation(db, relation_id, req.name, req.code, req.description)
+        res = await OntologyService.update_relation(
+            db, relation_id, req.name, req.code, req.description,
+            cardinality=req.cardinality, inverse_name=req.inverse_name,
+            is_symmetric=req.is_symmetric, is_transitive=req.is_transitive, status=req.status,
+        )
     except ValueError as e:
         raise _bad_request(str(e))
     if not res:
@@ -220,6 +231,42 @@ async def update_relation(category_id: str, relation_id: str, req: UpdateOntolog
 async def delete_relation(category_id: str, relation_id: str, db: AsyncSession = Depends(get_db)):
     if not await OntologyService.delete_relation(db, relation_id):
         raise _nf("Relation not found")
+    return {"status": "deleted"}
+
+
+# ===== 模块三·续：关系属性（链接可带属性）=====
+
+
+@router.get("/ontology-categories/{category_id}/relations/{relation_id}/properties")
+async def list_relation_properties(category_id: str, relation_id: str, db: AsyncSession = Depends(get_db)):
+    return await RelationPropertyService.list_for_relation(db, relation_id)
+
+
+@router.post("/ontology-categories/{category_id}/relations/{relation_id}/properties")
+async def create_relation_property(
+    category_id: str, relation_id: str,
+    req: CreateOntologyRelationPropertyRequest, db: AsyncSession = Depends(get_db),
+):
+    prop, err = await RelationPropertyService.create(db, relation_id, req)
+    if err:
+        raise _bad_request(err)
+    return prop
+
+
+@router.put("/ontology-relation-properties/{prop_id}")
+async def update_relation_property(
+    prop_id: str, req: UpdateOntologyRelationPropertyRequest, db: AsyncSession = Depends(get_db)
+):
+    prop, err = await RelationPropertyService.update(db, prop_id, req)
+    if err:
+        raise _nf(err)
+    return prop
+
+
+@router.delete("/ontology-relation-properties/{prop_id}")
+async def delete_relation_property(prop_id: str, db: AsyncSession = Depends(get_db)):
+    if not await RelationPropertyService.delete(db, prop_id):
+        raise _nf("关系属性不存在")
     return {"status": "deleted"}
 
 

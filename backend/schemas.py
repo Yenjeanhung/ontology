@@ -327,12 +327,24 @@ class CreateOntologyRelationRequest(BaseModel):
     name: str
     code: str | None = None
     description: str | None = ""
+    # S5：链接语义（新建时即可指定）
+    cardinality: str | None = None    # ONE_TO_ONE / ONE_TO_MANY / MANY_TO_MANY
+    inverse_name: str | None = None
+    is_symmetric: bool | None = None
+    is_transitive: bool | None = None
+    status: str | None = None
 
 
 class UpdateOntologyRelationRequest(BaseModel):
     name: str | None = None
     code: str | None = None
     description: str | None = None
+    # S5：链接语义
+    cardinality: str | None = None    # ONE_TO_ONE / ONE_TO_MANY / MANY_TO_MANY
+    inverse_name: str | None = None
+    is_symmetric: bool | None = None
+    is_transitive: bool | None = None
+    status: str | None = None
 
 
 class BatchCreateRelationsRequest(BaseModel):
@@ -351,6 +363,12 @@ class UpdateRelationConstraintRequest(BaseModel):
     relation_id: str | None = None
     target_ontology_id: str | None = None
     description: str | None = None
+    # S5：端点基数
+    source_min: int | None = None
+    source_max: int | None = None
+    target_min: int | None = None
+    target_max: int | None = None
+    is_required: bool | None = None
 
 
 class BatchCreateConstraintsRequest(BaseModel):
@@ -584,3 +602,163 @@ class LLMPlanRequest(BaseModel):
     model: str = ""
     max_tokens: int = 4096
     temperature: float = 0.7
+
+
+# ===== S3（P0-3）：函数 + 派生属性 =====
+
+
+class SaveFunctionRequest(BaseModel):
+    """新建/更新只读函数。"""
+    name: str
+    code: str
+    description: str = ""
+    ontology_id: str = ""
+    params_schema: list = []
+    return_schema: dict | str | None = None
+    code_text: str = ""
+    language: str = "python"
+    timeout_seconds: int = 30
+    is_deterministic: bool = True
+    cache_seconds: int = 0
+    is_enabled: bool = True
+    sort_order: int = 0
+
+
+class TestFunctionRequest(BaseModel):
+    """函数测试运行。"""
+    params: dict = {}
+    mock_entity: dict | None = None
+
+
+class InvokeFunctionRequest(BaseModel):
+    """在实体上调用函数。"""
+    params: dict = {}
+
+
+class ResolveFunctionsRequest(BaseModel):
+    """批量解析函数（对象集/视图用）。"""
+    function_id: str
+    entity_ids: list[str] = []
+    params: dict = {}
+
+
+class SaveDerivedPropertyRequest(BaseModel):
+    """新建/更新派生属性。"""
+    name: str
+    code: str
+    data_type: str = "number"
+    source_kind: str = "function"        # function / graph_metric
+    function_id: str = ""
+    graph_metric: str = ""               # pagerank / betweenness / community / degree
+    params: dict = {}
+    materialize_mode: str = "virtual"    # virtual / materialized
+    is_enabled: bool = True
+    sort_order: int = 0
+
+
+# ===== S4（P1-1）：动作规则 / 副作用 / 撤销 / 批量 =====
+
+
+class SaveServiceRuleRequest(BaseModel):
+    """新建/更新动作规则。"""
+    rule_type: str = "precondition"      # precondition / validation / post
+    expression: dict | str = {}
+    error_message: str = ""
+    sort_order: int = 0
+    is_enabled: bool = True
+
+
+class SaveServiceEffectRequest(BaseModel):
+    """新建/更新动作副作用。"""
+    effect_type: str = "notify"          # notify / webhook / update_property / create_relation
+    config: dict = {}
+    sort_order: int = 0
+    is_enabled: bool = True
+
+
+class BatchInvokeRequest(BaseModel):
+    """批量调用动作。"""
+    entity_ids: list[str] = []
+    params: dict = {}
+
+
+class UndoInvocationRequest(BaseModel):
+    """撤销一次动作执行。"""
+    undone_by: str = "user"
+
+
+# ===== S5（P1-2）：链接基数 / 反向 / 关系属性 =====
+
+
+class CreateOntologyRelationPropertyRequest(BaseModel):
+    name: str
+    code: str | None = None
+    data_type: str = "string"
+    description: str | None = ""
+    is_required: bool = False
+    enum_values: list[str] | None = None
+    sort_order: int = 0
+
+
+class UpdateOntologyRelationPropertyRequest(BaseModel):
+    name: str | None = None
+    code: str | None = None
+    data_type: str | None = None
+    description: str | None = None
+    is_required: bool | None = None
+    enum_values: list[str] | None = None
+    sort_order: int | None = None
+
+
+# ===== S6（P1-3）：对象视图 =====
+
+
+class ObjectViewWidget(BaseModel):
+    """视图微件：properties / relations / actions / derived / chart / timeline。"""
+    kind: str
+    title: str | None = ""
+    config: dict = {}
+
+
+class ObjectViewSection(BaseModel):
+    title: str = ""
+    widgets: list[ObjectViewWidget] = []
+
+
+class ObjectViewTab(BaseModel):
+    name: str
+    sections: list[ObjectViewSection] = []
+
+
+class SaveObjectViewRequest(BaseModel):
+    name: str
+    ontology_id: str | None = ""       # 空 = 类别缺省 / 接口级视图
+    interface_code: str | None = ""
+    layout: dict = {}                   # {tabs: [...]}
+    is_default: bool = False
+    version: int | None = None
+    set_default: bool = False           # 保存时是否设为该本体/类别缺省
+
+
+# ===== S7（P1-4）：版本 / 提案 / 影响分析 / 回滚 =====
+
+
+class CreateVersionRequest(BaseModel):
+    """发布一个版本快照。"""
+    note: str | None = ""
+    source: str = "manual"             # manual / auto_before_change / proposal
+    created_by: str = ""
+
+
+class UpgradeSuggestionRequest(BaseModel):
+    """把一条本体建议升级为变更提案（change）。"""
+    note: str | None = ""
+    reviewers: str | None = ""
+    base_version: int | None = None
+    diff: list | None = None            # JSON：变更项列表
+
+
+class MergeProposalRequest(BaseModel):
+    """合并变更提案：应用 diff 到本体类别，并生成新版本。"""
+    note: str | None = ""
+    created_by: str | None = ""

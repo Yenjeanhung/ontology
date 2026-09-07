@@ -372,3 +372,65 @@ CREATE TABLE IF NOT EXISTS relation_suggestion_tombstones (
     created_at VARCHAR,
     PRIMARY KEY (kb_id, source_entity_id, target_entity_id, suggested_relation_type)
 );
+
+-- migration_021: 链接升级（S5）——基数/反向/对称/传递/状态 + 约束端点基数 + 关系实例属性
+ALTER TABLE ontology_relations ADD COLUMN cardinality VARCHAR(16) DEFAULT 'MANY_TO_MANY';
+ALTER TABLE ontology_relations ADD COLUMN inverse_name VARCHAR(50) DEFAULT '';
+ALTER TABLE ontology_relations ADD COLUMN is_symmetric INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ontology_relations ADD COLUMN is_transitive INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ontology_relations ADD COLUMN status VARCHAR(20) DEFAULT 'active';
+ALTER TABLE ontology_relation_constraints ADD COLUMN source_min INTEGER DEFAULT 0;
+ALTER TABLE ontology_relation_constraints ADD COLUMN source_max INTEGER DEFAULT 0;
+ALTER TABLE ontology_relation_constraints ADD COLUMN target_min INTEGER DEFAULT 0;
+ALTER TABLE ontology_relation_constraints ADD COLUMN target_max INTEGER DEFAULT 0;
+ALTER TABLE ontology_relation_constraints ADD COLUMN is_required INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE relations ADD COLUMN properties TEXT DEFAULT NULL;
+
+-- migration_022: 关系属性定义表（S5）
+CREATE TABLE IF NOT EXISTS ontology_relation_properties (
+    id VARCHAR PRIMARY KEY,
+    relation_id VARCHAR NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    code VARCHAR(64) DEFAULT NULL,
+    data_type VARCHAR(20) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    is_required INTEGER NOT NULL DEFAULT 0,
+    enum_values TEXT DEFAULT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    UNIQUE(relation_id, code)
+);
+
+-- migration_023: 对象视图表（S6）
+CREATE TABLE IF NOT EXISTS ontology_object_views (
+    id VARCHAR PRIMARY KEY,
+    category_id VARCHAR NOT NULL,
+    ontology_id VARCHAR DEFAULT '',
+    interface_code VARCHAR DEFAULT '',
+    name VARCHAR(100) NOT NULL,
+    layout TEXT NOT NULL DEFAULT '{}',
+    is_default INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+
+-- migration_024: 本体版本快照表（S7）
+CREATE TABLE IF NOT EXISTS ontology_versions (
+    id VARCHAR PRIMARY KEY,
+    category_id VARCHAR NOT NULL,
+    version_no INTEGER NOT NULL,
+    snapshot TEXT NOT NULL DEFAULT '{}',
+    source VARCHAR(20) DEFAULT 'manual',
+    note VARCHAR(1000) DEFAULT '',
+    created_by VARCHAR(64) DEFAULT '',
+    merged_suggestion_id VARCHAR DEFAULT '',
+    created_at VARCHAR
+);
+
+-- migration_025: 本体建议提案化（S7）——suggestion / change 共用一张表
+ALTER TABLE ontology_suggestions ADD COLUMN proposal_type VARCHAR(20) DEFAULT 'suggestion';
+ALTER TABLE ontology_suggestions ADD COLUMN base_version INTEGER DEFAULT 0;
+ALTER TABLE ontology_suggestions ADD COLUMN diff TEXT DEFAULT NULL;
+ALTER TABLE ontology_suggestions ADD COLUMN reviewers VARCHAR DEFAULT '';
+ALTER TABLE ontology_suggestions ADD COLUMN merged_version_id VARCHAR DEFAULT '';

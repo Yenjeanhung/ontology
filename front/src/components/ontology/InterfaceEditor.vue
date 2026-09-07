@@ -162,18 +162,22 @@
           <button class="btn sm" @click="showPoly = false">关闭</button>
         </div>
         <div class="if-modal-filters">
-          <div class="if-field">
+          <div class="if-field grow">
             <label>实体名</label>
             <input v-model="polyQ" placeholder="按实体名称筛选" @keydown.enter="applyFilters">
           </div>
-          <div class="if-field">
+          <div class="if-field fixed">
             <label>本体名</label>
             <select v-model="polyOntId">
               <option value="">全部本体</option>
               <option v-for="impl in detail?.implementations || []" :key="impl.ontology_id" :value="impl.ontology_id">{{ impl.ontology_name }}</option>
             </select>
           </div>
-          <button class="btn primary sm" :disabled="polyLoading" @click="applyFilters">查询</button>
+          <div class="if-field prop" v-for="p in detail?.properties || []" :key="p.code">
+            <label :title="`${p.name} (${p.code})`">{{ p.name }}<span class="if-mini-code">{{ p.code }}</span></label>
+            <input v-model="polyPropFilters[p.code]" placeholder="按属性值筛选" @keydown.enter="applyFilters">
+          </div>
+          <button class="btn primary sm filter-btn" :disabled="polyLoading" @click="applyFilters">查询</button>
         </div>
         <div v-if="polyError" class="if-error">{{ polyError }}</div>
         <div v-else-if="polyLoading" class="if-text muted">查询中…</div>
@@ -276,6 +280,7 @@ const showPoly = ref(false)
 const polyPage = ref(1); const polyPageSize = ref(10); const polyTotal = ref(0)
 const polyQ = ref('')
 const polyOntId = ref('')
+const polyPropFilters = ref({})   // {接口属性code: 关键字}
 
 // 新建
 const showCreate = ref(false)
@@ -304,7 +309,7 @@ async function toggleExpand(id) {
   expandedId.value = expandedId.value === id ? '' : id
   detail.value = null
   polyRows.value = []; polyError.value = ''; polyQueried.value = false
-  showPoly.value = false; polyPage.value = 1; polyTotal.value = 0; polyQ.value = ''; polyOntId.value = ''
+  showPoly.value = false; polyPage.value = 1; polyTotal.value = 0; polyQ.value = ''; polyOntId.value = ''; polyPropFilters.value = {}
   addingImpl.value = false
   if (expandedId.value) await loadDetail(id)
 }
@@ -430,10 +435,13 @@ async function removeImpl(impl) {
 }
 
 async function openPolyForRow(iface) {
-  if (expandedId.value !== iface.id || !detail.value) {
+  const switched = expandedId.value !== iface.id || !detail.value
+  if (switched) {
     expandedId.value = iface.id
     await loadDetail(iface.id)
   }
+  // 换接口时旧的属性筛选 code 不再适用，清空
+  if (switched) { polyPropFilters.value = {}; polyQ.value = ''; polyOntId.value = '' }
   showPoly.value = true
   polyPage.value = 1
   runPolyQuery(1)
@@ -445,6 +453,7 @@ async function runPolyQuery(page = polyPage.value) {
     const res = await resolveInterfaceObjects(props.categoryId, detail.value.code, {
       q: polyQ.value,
       ontology_id: polyOntId.value,
+      prop_filters: { ...polyPropFilters.value },
       limit: polyPageSize.value,
       offset: (page - 1) * polyPageSize.value,
     })
@@ -567,9 +576,14 @@ defineExpose({ reload: load })
 .if-modal { background: var(--c-panel); border-radius: var(--radius); padding: 22px; width: 100%; max-width: 460px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18); }
 .if-modal.poly-modal { max-width: 92vw; width: 1180px; height: 84vh; display: flex; flex-direction: column; }
 .if-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.if-modal-filters { display: grid; grid-template-columns: 1fr 200px auto; gap: 10px; align-items: end; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed var(--c-border); flex-shrink: 0; }
+.if-modal-filters { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed var(--c-border); flex-shrink: 0; }
 .if-modal-filters .if-field { margin-bottom: 0; }
-.if-modal-filters .if-field label { font-size: 11.5px; font-weight: 600; color: var(--c-secondary); }
+.if-modal-filters .if-field.grow { flex: 1 1 220px; min-width: 180px; }
+.if-modal-filters .if-field.fixed { flex: 0 0 180px; }
+.if-modal-filters .if-field.prop { flex: 1 1 170px; min-width: 150px; max-width: 250px; }
+.if-modal-filters .if-field label { font-size: 11.5px; font-weight: 600; color: var(--c-secondary); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; max-width: 100%; }
+.if-modal-filters .if-field label .if-mini-code { margin-left: 0; flex-shrink: 0; }
+.if-modal-filters .filter-btn { flex: 0 0 auto; padding: 7px 16px; }
 .poly-body { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--c-border); border-radius: var(--radius-sm); }
 .poly-body .if-table { margin: 0; }
 .poly-body .if-table thead th { position: sticky; top: 0; background: var(--c-muted); z-index: 1; font-weight: 600; }

@@ -178,6 +178,12 @@ class OntologyRelation(Base):
     name = Column(String, nullable=False)
     code = Column(String, nullable=True)
     description = Column(String, default="")
+    # ── 链接语义（S5：对标 Palantir Link type）──
+    cardinality = Column(String(16), default="MANY_TO_MANY")  # ONE_TO_ONE/ONE_TO_MANY/MANY_TO_MANY
+    inverse_name = Column(String(50), default="")             # 反向展示名：任职于 ↔ 雇佣
+    is_symmetric = Column(Integer, nullable=False, default=0)  # 如"合作"
+    is_transitive = Column(Integer, nullable=False, default=0)  # 如"位于/属于"
+    status = Column(String(20), default="active")             # active / deprecated
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
@@ -191,6 +197,12 @@ class OntologyRelationConstraint(Base):
     relation_id = Column(String, nullable=False)
     target_ontology_id = Column(String, nullable=False)
     description = Column(String, default="")
+    # ── 端点基数（S5）──
+    source_min = Column(Integer, default=0)   # 0 = 不限
+    source_max = Column(Integer, default=0)   # 0 = 不限
+    target_min = Column(Integer, default=0)
+    target_max = Column(Integer, default=0)
+    is_required = Column(Integer, nullable=False, default=0)  # 该起点必须存在此关系
     created_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
@@ -219,6 +231,47 @@ class OntologySuggestion(Base):
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     reviewed_at = Column(String, nullable=True)
     reviewer = Column(String, nullable=True)
+    # ── S7：提案化（suggestion / change 共用一张表，两种 proposal_type）──
+    proposal_type = Column(String(20), default="suggestion")  # suggestion / change
+    base_version = Column(Integer, default=0)                 # 提案基于的版本号
+    diff = Column(Text, nullable=True)                         # JSON：变更项列表
+    reviewers = Column(String, default="")                     # 逗号分隔的审核人
+    merged_version_id = Column(String, default="")             # 合并后生成的版本 id
+
+
+# ===== S6：对象视图（可配置详情页布局）=====
+
+
+class OntologyObjectView(Base):
+    __tablename__ = "ontology_object_views"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    category_id = Column(String, nullable=False)
+    ontology_id = Column(String, default="")         # 空 = 该类别的缺省视图 / 接口级视图
+    interface_code = Column(String, default="")      # 非空 = 接口级视图（与 ontology_id 二选一）
+    name = Column(String(100), nullable=False)
+    layout = Column(Text, nullable=False, default="{}")  # JSON: {tabs:[{name, sections:[{title, widgets}]}]}
+    is_default = Column(Integer, nullable=False, default=0)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+# ===== S7：本体版本快照 =====
+
+
+class OntologyVersion(Base):
+    __tablename__ = "ontology_versions"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    category_id = Column(String, nullable=False)
+    version_no = Column(Integer, nullable=False)
+    snapshot = Column(Text, nullable=False, default="{}")  # JSON：定义层完整快照
+    source = Column(String(20), default="manual")          # manual / auto_before_change / proposal
+    note = Column(String, default="")
+    created_by = Column(String, default="")
+    merged_suggestion_id = Column(String, default="")       # 来源提案（proposal 合并时回填）
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
 # ===== 属性模板（全局，跨本体类别复用）=====
@@ -361,6 +414,122 @@ class OntologyService(Base):
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
+# ===== S3：函数 + 派生属性 + 运行时调用记录（无外键）=====
+
+
+class OntologyFunction(Base):
+    """只读计算函数（不写数据、可缓存、可被动作/视图/派生属性复用）。"""
+
+    __tablename__ = "ontology_functions"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    category_id = Column(String, default="")     # 空 = 全局函数
+    ontology_id = Column(String, default="")     # 空 = 类别级；有值 = 挂在本体下
+    name = Column(String(100), nullable=False)
+    code = Column(String(64), nullable=False)
+    description = Column(String(500), default="")
+    params_schema = Column(Text, default="[]")
+    return_schema = Column(Text, default="")
+    code_text = Column(Text, nullable=False, default="")
+    language = Column(String(20), nullable=False, default="python")
+    timeout_seconds = Column(Integer, nullable=False, default=30)
+    is_deterministic = Column(Integer, nullable=False, default=1)
+    cache_seconds = Column(Integer, nullable=False, default=0)
+    is_enabled = Column(Integer, nullable=False, default=1)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class OntologyDerivedProperty(Base):
+    """派生属性：来源为函数（function）或图计算指标（graph_metric）。"""
+
+    __tablename__ = "ontology_derived_properties"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    ontology_id = Column(String, nullable=False)
+    name = Column(String(50), nullable=False)
+    code = Column(String(64), nullable=False)
+    data_type = Column(String(20), nullable=False, default="number")
+    source_kind = Column(String(20), nullable=False, default="function")   # function / graph_metric
+    function_id = Column(String, default="")
+    graph_metric = Column(String(32), default="")   # pagerank/betweenness/community/degree
+    params = Column(Text, default="{}")
+    materialize_mode = Column(String(20), default="virtual")   # virtual / materialized
+    last_materialized_at = Column(String, default="")
+    is_enabled = Column(Integer, nullable=False, default=1)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class OntologyRuntimeInvocation(Base):
+    """函数/动作调用记录（轻量审计，函数与动作共用）。"""
+
+    __tablename__ = "ontology_runtime_invocations"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    kind = Column(String(10), nullable=False)          # function / action
+    ref_id = Column(String, nullable=False)            # function_id / service_id
+    entity_id = Column(String, default="")
+    params = Column(Text)
+    result = Column(Text)
+    status = Column(String(20), nullable=False)        # success / error / timeout
+    error = Column(Text)
+    duration_ms = Column(Integer, default=0)
+    triggered_by = Column(String(64), default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+# ===== S4：动作规则 / 副作用 / 执行记录（无外键）=====
+
+
+class OntologyServiceRule(Base):
+    """动作规则：precondition（提交条件）/ validation（参数校验）/ post（提交后）。"""
+
+    __tablename__ = "ontology_service_rules"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    service_id = Column(String, nullable=False)
+    rule_type = Column(String(20), nullable=False)
+    expression = Column(Text, nullable=False, default="")   # JSON：规则树 或 {kind:'python', code}
+    error_message = Column(String(300), default="")
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_enabled = Column(Integer, nullable=False, default=1)
+
+
+class OntologyServiceEffect(Base):
+    """动作副作用：notify / webhook / update_property / create_relation。"""
+
+    __tablename__ = "ontology_service_effects"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    service_id = Column(String, nullable=False)
+    effect_type = Column(String(20), nullable=False)
+    config = Column(Text, nullable=False, default="{}")
+    is_enabled = Column(Integer, nullable=False, default=1)
+    sort_order = Column(Integer, nullable=False, default=0)
+
+
+class OntologyServiceInvocation(Base):
+    """动作执行记录（含撤销所需前像）。"""
+
+    __tablename__ = "ontology_service_invocations"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    service_id = Column(String, nullable=False)
+    entity_id = Column(String, default="")
+    params = Column(Text)
+    result = Column(Text)
+    status = Column(String(20), nullable=False)   # success / error / timeout / undone
+    error = Column(Text)
+    duration_ms = Column(Integer, default=0)
+    undo_payload = Column(Text)                   # JSON：属性旧值 / 新建关系 id
+    triggered_by = Column(String(64), default="")
+    undone_at = Column(String, default="")
+    undone_by = Column(String(64), default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
 # ===== 实体实例层（抽取后生成，无外键）=====
 
 class Entity(Base):
@@ -391,8 +560,27 @@ class Relation(Base):
     description = Column(String, default="")
     source_file_id = Column(String, nullable=True)
     source_chunk_id = Column(String, nullable=True)
+    properties = Column(Text, nullable=True)               # 关系实例属性 JSON（S5：链接可带属性）
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+# ===== S5：关系属性定义（链接本身可带属性）=====
+
+
+class OntologyRelationProperty(Base):
+    __tablename__ = "ontology_relation_properties"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    relation_id = Column(String, nullable=False)     # 逻辑关联 ontology_relations.id
+    name = Column(String(50), nullable=False)
+    code = Column(String(64), nullable=False)
+    data_type = Column(String(20), nullable=False)
+    description = Column(String, default="")
+    is_required = Column(Integer, nullable=False, default=0)
+    enum_values = Column(Text, nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
 # ===== 图分析（图迁入 / 图计算 / 图推理）=====

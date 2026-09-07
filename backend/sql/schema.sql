@@ -133,6 +133,11 @@ CREATE TABLE IF NOT EXISTS ontology_relations (
     category_id VARCHAR NOT NULL,
     name VARCHAR(50) NOT NULL,
     description VARCHAR(500) DEFAULT '',
+    cardinality VARCHAR(16) DEFAULT 'MANY_TO_MANY',
+    inverse_name VARCHAR(50) DEFAULT '',
+    is_symmetric INTEGER NOT NULL DEFAULT 0,
+    is_transitive INTEGER NOT NULL DEFAULT 0,
+    status VARCHAR(20) DEFAULT 'active',
     created_at VARCHAR,
     updated_at VARCHAR,
     UNIQUE(category_id, name)
@@ -145,8 +150,29 @@ CREATE TABLE IF NOT EXISTS ontology_relation_constraints (
     relation_id VARCHAR NOT NULL,
     target_ontology_id VARCHAR NOT NULL,
     description VARCHAR(500) DEFAULT '',
+    source_min INTEGER DEFAULT 0,
+    source_max INTEGER DEFAULT 0,
+    target_min INTEGER DEFAULT 0,
+    target_max INTEGER DEFAULT 0,
+    is_required INTEGER NOT NULL DEFAULT 0,
     created_at VARCHAR,
     UNIQUE(category_id, source_ontology_id, relation_id, target_ontology_id)
+);
+
+-- ===== S5（P1-2）：关系属性定义（链接本身可带属性）=====
+
+CREATE TABLE IF NOT EXISTS ontology_relation_properties (
+    id VARCHAR PRIMARY KEY,
+    relation_id VARCHAR NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    code VARCHAR(64) DEFAULT NULL,
+    data_type VARCHAR(20) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    is_required INTEGER NOT NULL DEFAULT 0,
+    enum_values TEXT DEFAULT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    UNIQUE(relation_id, code)
 );
 
 CREATE TABLE IF NOT EXISTS kb_ontology_bindings (
@@ -241,6 +267,7 @@ CREATE TABLE IF NOT EXISTS relations (
     description VARCHAR(1000) DEFAULT '',
     source_file_id VARCHAR DEFAULT NULL,
     source_chunk_id VARCHAR DEFAULT NULL,
+    properties TEXT DEFAULT NULL,
     created_at VARCHAR,
     updated_at VARCHAR,
     UNIQUE(kb_id, source_entity_id, relation_type, target_entity_id)
@@ -539,4 +566,124 @@ CREATE TABLE IF NOT EXISTS relation_suggestion_tombstones (
     category_id VARCHAR NOT NULL,
     created_at VARCHAR,
     PRIMARY KEY (kb_id, source_entity_id, target_entity_id, suggested_relation_type)
+);
+
+-- ===== S3（P0-3）：函数 + 派生属性 + 运行时调用记录 =====
+
+CREATE TABLE IF NOT EXISTS ontology_functions (
+    id VARCHAR PRIMARY KEY,
+    category_id VARCHAR DEFAULT '',
+    ontology_id VARCHAR DEFAULT '',
+    name VARCHAR(100) NOT NULL,
+    code VARCHAR(64) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    params_schema TEXT DEFAULT NULL,
+    return_schema TEXT DEFAULT NULL,
+    code_text TEXT NOT NULL,
+    language VARCHAR(20) DEFAULT 'python',
+    timeout_seconds INTEGER NOT NULL DEFAULT 30,
+    is_deterministic INTEGER NOT NULL DEFAULT 1,
+    cache_seconds INTEGER NOT NULL DEFAULT 0,
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS ontology_derived_properties (
+    id VARCHAR PRIMARY KEY,
+    ontology_id VARCHAR NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    code VARCHAR(64) NOT NULL,
+    data_type VARCHAR(20) NOT NULL,
+    source_kind VARCHAR(20) NOT NULL,
+    function_id VARCHAR DEFAULT '',
+    graph_metric VARCHAR(32) DEFAULT '',
+    params TEXT DEFAULT NULL,
+    materialize_mode VARCHAR(20) DEFAULT 'virtual',
+    last_materialized_at VARCHAR DEFAULT '',
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    UNIQUE(ontology_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS ontology_runtime_invocations (
+    id VARCHAR PRIMARY KEY,
+    kind VARCHAR(10) NOT NULL,
+    ref_id VARCHAR NOT NULL,
+    entity_id VARCHAR DEFAULT '',
+    params TEXT DEFAULT NULL,
+    result TEXT DEFAULT NULL,
+    status VARCHAR(20) NOT NULL,
+    error TEXT DEFAULT NULL,
+    duration_ms INTEGER DEFAULT 0,
+    triggered_by VARCHAR(64) DEFAULT '',
+    created_at VARCHAR
+);
+
+-- ===== S4（P1-1）：动作规则 / 副作用 / 执行记录 =====
+
+CREATE TABLE IF NOT EXISTS ontology_service_rules (
+    id VARCHAR PRIMARY KEY,
+    service_id VARCHAR NOT NULL,
+    rule_type VARCHAR(20) NOT NULL,
+    expression TEXT NOT NULL,
+    error_message VARCHAR(300) DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_enabled INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS ontology_service_effects (
+    id VARCHAR PRIMARY KEY,
+    service_id VARCHAR NOT NULL,
+    effect_type VARCHAR(20) NOT NULL,
+    config TEXT NOT NULL,
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS ontology_service_invocations (
+    id VARCHAR PRIMARY KEY,
+    service_id VARCHAR NOT NULL,
+    entity_id VARCHAR DEFAULT '',
+    params TEXT DEFAULT NULL,
+    result TEXT DEFAULT NULL,
+    status VARCHAR(20) NOT NULL,
+    error TEXT DEFAULT NULL,
+    duration_ms INTEGER DEFAULT 0,
+    undo_payload TEXT DEFAULT NULL,
+    triggered_by VARCHAR(64) DEFAULT '',
+    undone_at VARCHAR DEFAULT '',
+    undone_by VARCHAR(64) DEFAULT '',
+    created_at VARCHAR
+);
+
+-- ===== S6（P1-3）：对象视图（可配置详情页布局）=====
+
+CREATE TABLE IF NOT EXISTS ontology_object_views (
+    id VARCHAR PRIMARY KEY,
+    category_id VARCHAR NOT NULL,
+    ontology_id VARCHAR DEFAULT '',
+    interface_code VARCHAR DEFAULT '',
+    name VARCHAR(100) NOT NULL,
+    layout TEXT NOT NULL DEFAULT '{}',
+    is_default INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+
+-- ===== S7（P1-4）：本体版本快照 =====
+
+CREATE TABLE IF NOT EXISTS ontology_versions (
+    id VARCHAR PRIMARY KEY,
+    category_id VARCHAR NOT NULL,
+    version_no INTEGER NOT NULL,
+    snapshot TEXT NOT NULL DEFAULT '{}',
+    source VARCHAR(20) DEFAULT 'manual',
+    note VARCHAR(1000) DEFAULT '',
+    created_by VARCHAR(64) DEFAULT '',
+    merged_suggestion_id VARCHAR DEFAULT '',
+    created_at VARCHAR
 );

@@ -4,6 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   createOntologyService, createEntityService, updateOntologyService, testOntologyService,
   aiAssistServiceCode, getOntologyService,
+  fetchServiceRules, createServiceRule, updateServiceRule, deleteServiceRule,
+  fetchServiceEffects, createServiceEffect, updateServiceEffect, deleteServiceEffect,
+  fetchServiceInvocations, undoServiceInvocation, batchInvokeService,
 } from '../../api'
 import PythonEditor from '../workflow/PythonEditor.vue'
 import { useToast } from '../../composables/useToast'
@@ -352,6 +355,251 @@ async function runTest() {
     testing.value = false
   }
 }
+
+// ══════════ S4：动作规则 / 副作用 / 执行记录 / 撤销 / 批量 ══════════
+
+const s4Tab = ref('rules')
+const s4Loading = ref(false)
+
+const RULE_TYPE_LABELS = { precondition: '前置条件', validation: '参数校验', post: '后置断言' }
+const EFFECT_TYPE_LABELS = {
+  update_property: '写回属性',
+  create_relation: '创建关系',
+  webhook: 'Webhook',
+  notify: '通知',
+}
+
+async function loadS4() {
+  if (!savedId.value) return
+  s4Loading.value = true
+  try {
+    const [r, e, i] = await Promise.all([
+      fetchServiceRules(savedId.value),
+      fetchServiceEffects(savedId.value),
+      fetchServiceInvocations(savedId.value, 30),
+    ])
+    rules.value = r
+    effects.value = e
+    invocations.value = i
+  } catch (e) {
+    toast.error(`加载动作增强数据失败：${e.message}`)
+  } finally {
+    s4Loading.value = false
+  }
+}
+
+watch(savedId, id => { if (id) loadS4() })
+
+// ── 规则 CRUD ──
+const rules = ref([])
+const showRuleModal = ref(false)
+const ruleSaving = ref(false)
+const ruleForm = ref(emptyRuleForm())
+
+function emptyRuleForm() {
+  return {
+    id: '', rule_type: 'precondition', expr_mode: 'python',
+    python_code: 'return True', tree_json: '{}',
+    error_message: '', sort_order: 0, is_enabled: true,
+  }
+}
+
+function exprToForm(expression) {
+  if (expression && typeof expression === 'object' && expression.kind === 'python') {
+    return { expr_mode: 'python', python_code: expression.code || 'return True', tree_json: '{}' }
+  }
+  return { expr_mode: 'tree', python_code: 'return True', tree_json: JSON.stringify(expression || {}, null, 2) }
+}
+
+function openRuleNew() {
+  ruleForm.value = emptyRuleForm()
+  showRuleModal.value = true
+}
+
+function openRuleEdit(rule) {
+  const { expr_mode, python_code, tree_json } = exprToForm(rule.expression)
+  ruleForm.value = {
+    id: rule.id, rule_type: rule.rule_type,
+    expr_mode, python_code, tree_json,
+    error_message: rule.error_message || '',
+    sort_order: rule.sort_order || 0,
+    is_enabled: rule.is_enabled !== false,
+  }
+  showRuleModal.value = true
+}
+
+async function saveRule() {
+  const f = ruleForm.value
+  let expression
+  if (f.expr_mode === 'python') {
+    expression = { kind: 'python', code: f.python_code }
+  } else {
+    try { expression = JSON.parse(f.tree_json || '{}') }
+    catch { toast.error('规则树 JSON 格式不正确'); return }
+  }
+  const payload = {
+    rule_type: f.rule_type, expression, error_message: f.error_message,
+    sort_order: Number(f.sort_order) || 0, is_enabled: !!f.is_enabled,
+  }
+  ruleSaving.value = true
+  try {
+    if (f.id) await updateServiceRule(f.id, payload)
+    else await createServiceRule(savedId.value, payload)
+    showRuleModal.value = false
+    toast.success('规则已保存')
+    rules.value = await fetchServiceRules(savedId.value)
+  } catch (e) {
+    toast.error(e.message)
+  } finally {
+    ruleSaving.value = false
+  }
+}
+
+async function removeRule(rule) {
+  if (!confirm(`确认删除规则（${RULE_TYPE_LABELS[rule.rule_type] || rule.rule_type}）？`)) return
+  try {
+    await deleteServiceRule(rule.id)
+    rules.value = await fetchServiceRules(savedId.value)
+  } catch (e) {
+    toast.error(e.message)
+  }
+}
+
+// ── 副作用 CRUD ──
+const effects = ref([])
+const showEffectModal = ref(false)
+const effectSaving = ref(false)
+const effectForm = ref(emptyEffectForm())
+
+const EFFECT_TEMPLATES = {
+  update_property: '{"property_code": "status", "value": "已完成"}',
+  create_relation: '{"target_entity_id": "", "relation_type": "depends_on"}',
+  webhook: '{"url": "https://example.com/hook", "method": "POST"}',
+  notify: '{"title": "动作已执行", "content": "执行结果见记录", "level": "info"}',
+}
+
+function emptyEffectForm() {
+  return {
+    id: '', effect_type: 'update_property',
+    config_json: EFFECT_TEMPLATES.update_property,
+    sort_order: 0, is_enabled: true,
+  }
+}
+
+function openEffectNew() {
+  effectForm.value = emptyEffectForm()
+  showEffectModal.value = true
+}
+
+function openEffectEdit(effect) {
+  const cfg = (effect.config && typeof effect.config === 'object') ? effect.config : {}
+  effectForm.value = {
+    id: effect.id, effect_type: effect.effect_type,
+    config_json: JSON.stringify(cfg, null, 2),
+    sort_order: effect.sort_order || 0,
+    is_enabled: effect.is_enabled !== false,
+  }
+  showEffectModal.value = true
+}
+
+function onEffectTypeChange() {
+  effectForm.value.config_json = EFFECT_TEMPLATES[effectForm.value.effect_type] || '{}'
+}
+
+async function saveEffect() {
+  const f = effectForm.value
+  let config
+  try { config = JSON.parse(f.config_json || '{}') }
+  catch { toast.error('配置 JSON 格式不正确'); return }
+  const payload = {
+    effect_type: f.effect_type, config,
+    sort_order: Number(f.sort_order) || 0, is_enabled: !!f.is_enabled,
+  }
+  effectSaving.value = true
+  try {
+    if (f.id) await updateServiceEffect(f.id, payload)
+    else await createServiceEffect(savedId.value, payload)
+    showEffectModal.value = false
+    toast.success('副作用已保存')
+    effects.value = await fetchServiceEffects(savedId.value)
+  } catch (e) {
+    toast.error(e.message)
+  } finally {
+    effectSaving.value = false
+  }
+}
+
+async function removeEffect(effect) {
+  if (!confirm(`确认删除副作用（${EFFECT_TYPE_LABELS[effect.effect_type] || effect.effect_type}）？`)) return
+  try {
+    await deleteServiceEffect(effect.id)
+    effects.value = await fetchServiceEffects(savedId.value)
+  } catch (e) {
+    toast.error(e.message)
+  }
+}
+
+// ── 执行记录 / 撤销 ──
+const invocations = ref([])
+const undoingId = ref('')
+
+function ruleExprPreview(rule) {
+  const expr = rule.expression
+  if (expr && typeof expr === 'object' && expr.kind === 'python') {
+    return (expr.code || '').replace(/\s+/g, ' ').slice(0, 80)
+  }
+  if (expr && typeof expr === 'object') return JSON.stringify(expr)
+  return String(expr || '')
+}
+
+const invStatus = i => i.undone_at ? '已撤销' : (i.status === 'success' ? '成功' : i.status === 'failed' ? '失败' : (i.status || '—'))
+const fmtTime = t => (t || '').replace('T', ' ').slice(0, 19)
+function invResultPreview(inv) {
+  if (inv.error) return inv.error
+  if (inv.result == null) return '—'
+  try {
+    const s = typeof inv.result === 'string' ? inv.result : JSON.stringify(inv.result)
+    return s.length > 60 ? s.slice(0, 60) + '…' : s
+  } catch { return '—' }
+}
+
+async function undoInvocation(inv) {
+  if (!confirm('确认撤销该次执行？写回的属性/创建的关系将回滚。')) return
+  undoingId.value = inv.id
+  try {
+    const res = await undoServiceInvocation(inv.id)
+    toast.success(res.message || '已撤销')
+    invocations.value = await fetchServiceInvocations(savedId.value, 30)
+  } catch (e) {
+    toast.error(e.message)
+  } finally {
+    undoingId.value = ''
+  }
+}
+
+// ── 批量调用 ──
+const batchIds = ref('')
+const batchParams = ref('{}')
+const batchRunning = ref(false)
+const batchResult = ref(null)
+
+async function runBatch() {
+  const ids = batchIds.value.split(/[\n,;，；]/).map(s => s.trim()).filter(Boolean)
+  if (!ids.length) { toast.error('请填写至少一个实体 ID'); return }
+  let params = {}
+  try { params = JSON.parse(batchParams.value || '{}') }
+  catch { toast.error('参数 JSON 格式不正确'); return }
+  batchRunning.value = true
+  batchResult.value = null
+  try {
+    batchResult.value = await batchInvokeService(savedId.value, ids, params)
+    toast.success(`批量执行完成：成功 ${batchResult.value.succeeded || 0} / 失败 ${batchResult.value.failed || 0}`)
+  } catch (e) {
+    toast.error(e.message)
+  } finally {
+    batchRunning.value = false
+  }
+}
 </script>
 
 <template>
@@ -506,6 +754,117 @@ async function runTest() {
           </template>
         </div>
 
+        <!-- ══ S4：动作增强（规则 / 副作用 / 执行记录 / 批量） ══ -->
+        <div v-if="savedId" class="sep-block sep-s4">
+          <div class="sep-block-head">
+            <span class="sep-block-title">动作增强</span>
+            <div class="sep-s4-tabs">
+              <button :class="{ on: s4Tab === 'rules' }" @click="s4Tab = 'rules'">规则（{{ rules.length }}）</button>
+              <button :class="{ on: s4Tab === 'effects' }" @click="s4Tab = 'effects'">副作用（{{ effects.length }}）</button>
+              <button :class="{ on: s4Tab === 'invocations' }" @click="s4Tab = 'invocations'">执行记录（{{ invocations.length }}）</button>
+              <button :class="{ on: s4Tab === 'batch' }" @click="s4Tab = 'batch'">批量调用</button>
+            </div>
+          </div>
+          <div v-if="s4Loading" class="sep-hint">加载中...</div>
+
+          <!-- 规则 -->
+          <template v-else-if="s4Tab === 'rules'">
+            <div class="sep-s4-toolbar">
+              <button class="btn sm primary" @click="openRuleNew">+ 新建规则</button>
+              <span class="sep-hint">执行前校验 precondition / validation，执行后校验 post，未通过则拦截或告警</span>
+            </div>
+            <div v-if="!rules.length" class="sep-hint">暂无规则。</div>
+            <div v-else class="sep-s4-table">
+              <div class="sep-s4-row head"><span>类型</span><span>表达式</span><span>错误消息</span><span>排序</span><span>启用</span><span></span></div>
+              <div v-for="r in rules" :key="r.id" class="sep-s4-row">
+                <span><span class="sep-pill">{{ RULE_TYPE_LABELS[r.rule_type] || r.rule_type }}</span></span>
+                <span class="sep-expr" :title="r.expression">{{ ruleExprPreview(r) }}</span>
+                <span class="sep-ellipsis" :title="r.error_message">{{ r.error_message || '—' }}</span>
+                <span>{{ r.sort_order ?? 0 }}</span>
+                <span>{{ r.is_enabled ? '✓' : '—' }}</span>
+                <span class="sep-s4-ops">
+                  <button class="btn sm" @click="openRuleEdit(r)">编辑</button>
+                  <button class="btn sm danger" @click="removeRule(r)">删除</button>
+                </span>
+              </div>
+            </div>
+          </template>
+
+          <!-- 副作用 -->
+          <template v-else-if="s4Tab === 'effects'">
+            <div class="sep-s4-toolbar">
+              <button class="btn sm primary" @click="openEffectNew">+ 新建副作用</button>
+              <span class="sep-hint">动作成功后自动执行：写回属性 / 创建关系（可撤销）/ Webhook / 通知</span>
+            </div>
+            <div v-if="!effects.length" class="sep-hint">暂无副作用。</div>
+            <div v-else class="sep-s4-table">
+              <div class="sep-s4-row head"><span>类型</span><span>配置</span><span>排序</span><span>启用</span><span></span></div>
+              <div v-for="ef in effects" :key="ef.id" class="sep-s4-row">
+                <span><span class="sep-pill">{{ EFFECT_TYPE_LABELS[ef.effect_type] || ef.effect_type }}</span></span>
+                <span class="sep-expr" :title="ef.config">{{ ef.config }}</span>
+                <span>{{ ef.sort_order ?? 0 }}</span>
+                <span>{{ ef.is_enabled ? '✓' : '—' }}</span>
+                <span class="sep-s4-ops">
+                  <button class="btn sm" @click="openEffectEdit(ef)">编辑</button>
+                  <button class="btn sm danger" @click="removeEffect(ef)">删除</button>
+                </span>
+              </div>
+            </div>
+          </template>
+
+          <!-- 执行记录 -->
+          <template v-else-if="s4Tab === 'invocations'">
+            <div class="sep-s4-toolbar">
+              <button class="btn sm" @click="loadS4">↻ 刷新</button>
+              <span class="sep-hint">最近 30 条；写回型动作可撤销（回滚属性/关系前像）</span>
+            </div>
+            <div v-if="!invocations.length" class="sep-hint">暂无执行记录。在实体上调用该动作后，记录会出现在这里。</div>
+            <div v-else class="sep-s4-table inv">
+              <div class="sep-s4-row head"><span>时间</span><span>实体</span><span>状态</span><span>耗时</span><span>结果摘要</span><span></span></div>
+              <div v-for="inv in invocations" :key="inv.id" class="sep-s4-row">
+                <span class="mono">{{ fmtTime(inv.created_at) }}</span>
+                <span class="sep-ellipsis mono" :title="inv.entity_id">{{ inv.entity_id ? inv.entity_id.slice(0, 12) + '…' : '—' }}</span>
+                <span><span class="sep-pill" :class="inv.undone_at ? 'off' : inv.status === 'success' ? 'ok' : 'fail'">{{ invStatus(inv) }}</span></span>
+                <span>{{ inv.duration_ms != null ? inv.duration_ms + 'ms' : '—' }}</span>
+                <span class="sep-ellipsis" :title="inv.error || ''">{{ invResultPreview(inv) }}</span>
+                <span class="sep-s4-ops">
+                  <button v-if="!inv.undone_at" class="btn sm" :disabled="undoingId === inv.id || !inv.can_undo" @click="undoInvocation(inv)" :title="inv.can_undo ? '' : '非写回型动作，无撤销数据'">
+                    {{ undoingId === inv.id ? '撤销中...' : '撤销' }}
+                  </button>
+                </span>
+              </div>
+            </div>
+          </template>
+
+          <!-- 批量调用 -->
+          <template v-else>
+            <div class="sep-batch">
+              <div class="sep-field">
+                <label>实体 ID 列表（每行一个，或逗号分隔）</label>
+                <textarea v-model="batchIds" rows="5" spellcheck="false" placeholder="粘贴实体 ID&#10;如：3f2a...&#10;b81c..."></textarea>
+              </div>
+              <div class="sep-field">
+                <label>公共参数（JSON，对所有实体相同）</label>
+                <textarea v-model="batchParams" rows="4" spellcheck="false"></textarea>
+              </div>
+              <div class="sep-test-actions">
+                <button class="btn primary sm" :disabled="batchRunning" @click="runBatch">
+                  <span v-if="batchRunning" class="spinner"></span>
+                  {{ batchRunning ? '执行中...' : '▶ 批量执行' }}
+                </button>
+              </div>
+              <div v-if="batchResult" class="sep-result">
+                <div class="sep-result-meta">
+                  <span class="sep-status" :class="batchResult.failed ? 'fail' : 'ok'">
+                    成功 {{ batchResult.succeeded || 0 }} · 失败 {{ batchResult.failed || 0 }}
+                  </span>
+                </div>
+                <pre>{{ JSON.stringify(batchResult.items || batchResult, null, 2) }}</pre>
+              </div>
+            </div>
+          </template>
+        </div>
+
         <div v-if="errMsg" class="sep-error">{{ errMsg }}</div>
       </main>
 
@@ -567,6 +926,105 @@ async function runTest() {
           <button class="btn primary sm" @click="chatSend" :disabled="chatLoading || !chatInput.trim()">发送</button>
         </div>
       </aside>
+    </div>
+
+    <!-- S4：规则编辑弹窗 -->
+    <div v-if="showRuleModal" class="sep-modal-mask" @click.self="showRuleModal = false">
+      <div class="sep-modal">
+        <div class="sep-modal-head">
+          <h3>{{ ruleForm.id ? '编辑' : '新建' }}动作规则</h3>
+          <button class="sep-chat-close" @click="showRuleModal = false">×</button>
+        </div>
+        <div class="sep-modal-body">
+          <div class="sep-grid2">
+            <div class="sep-field">
+              <label>规则类型</label>
+              <select v-model="ruleForm.rule_type">
+                <option value="precondition">前置条件（执行前拦截）</option>
+                <option value="validation">参数校验（执行前拦截）</option>
+                <option value="post">后置断言（执行后校验）</option>
+              </select>
+            </div>
+            <div class="sep-field">
+              <label>表达式模式</label>
+              <select v-model="ruleForm.expr_mode">
+                <option value="python">Python 表达式（推荐）</option>
+                <option value="tree">规则树 JSON</option>
+              </select>
+            </div>
+          </div>
+          <div v-if="ruleForm.expr_mode === 'python'" class="sep-field">
+            <label>Python 表达式（可用 params / entity / context，返回真值通过）</label>
+            <textarea v-model="ruleForm.python_code" rows="5" spellcheck="false" placeholder="return entity.get('properties', {}).get('status') == 'active'"></textarea>
+          </div>
+          <div v-else class="sep-field">
+            <label>规则树 JSON（与工作流条件同构）</label>
+            <textarea v-model="ruleForm.tree_json" rows="7" spellcheck="false"></textarea>
+          </div>
+          <div class="sep-field">
+            <label>未通过时错误消息</label>
+            <input type="text" v-model="ruleForm.error_message" placeholder="如：实体状态不允许该操作">
+          </div>
+          <div class="sep-grid2">
+            <div class="sep-field">
+              <label>排序</label>
+              <input type="number" v-model.number="ruleForm.sort_order">
+            </div>
+            <div class="sep-field">
+              <label>启用</label>
+              <select v-model="ruleForm.is_enabled"><option :value="true">启用</option><option :value="false">停用</option></select>
+            </div>
+          </div>
+        </div>
+        <div class="sep-modal-foot">
+          <button class="btn sm" @click="showRuleModal = false">取消</button>
+          <button class="btn sm primary" :disabled="ruleSaving" @click="saveRule">{{ ruleSaving ? '保存中...' : '保存' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- S4：副作用编辑弹窗 -->
+    <div v-if="showEffectModal" class="sep-modal-mask" @click.self="showEffectModal = false">
+      <div class="sep-modal">
+        <div class="sep-modal-head">
+          <h3>{{ effectForm.id ? '编辑' : '新建' }}副作用</h3>
+          <button class="sep-chat-close" @click="showEffectModal = false">×</button>
+        </div>
+        <div class="sep-modal-body">
+          <div class="sep-field">
+            <label>副作用类型</label>
+            <select v-model="effectForm.effect_type" @change="onEffectTypeChange">
+              <option value="update_property">写回属性（可撤销）</option>
+              <option value="create_relation">创建关系（可撤销）</option>
+              <option value="webhook">Webhook 回调</option>
+              <option value="notify">通知</option>
+            </select>
+          </div>
+          <div class="sep-field">
+            <label>配置 JSON</label>
+            <textarea v-model="effectForm.config_json" rows="8" spellcheck="false"></textarea>
+          </div>
+          <div class="sep-hint">
+            update_property：property_code / value（value 留空则取动作返回结果同名键）；
+            create_relation：target_entity_id / relation_type / direction(outgoing|incoming)；
+            webhook：url / method / payload / headers；notify：title / content / level。
+          </div>
+          <div class="sep-grid2">
+            <div class="sep-field">
+              <label>排序</label>
+              <input type="number" v-model.number="effectForm.sort_order">
+            </div>
+            <div class="sep-field">
+              <label>启用</label>
+              <select v-model="effectForm.is_enabled"><option :value="true">启用</option><option :value="false">停用</option></select>
+            </div>
+          </div>
+        </div>
+        <div class="sep-modal-foot">
+          <button class="btn sm" @click="showEffectModal = false">取消</button>
+          <button class="btn sm primary" :disabled="effectSaving" @click="saveEffect">{{ effectSaving ? '保存中...' : '保存' }}</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -668,4 +1126,40 @@ async function runTest() {
 
 .ghost { background: transparent; border-color: transparent; color: var(--c-secondary); }
 .ghost:hover { background: var(--c-muted); color: var(--c-fg); }
+
+/* ══ S4 动作增强 ══ */
+.sep-s4 { border-top: 1px solid var(--c-border); padding-top: 12px; }
+.sep-s4-tabs { display: inline-flex; border: 1px solid var(--c-border); border-radius: var(--radius-sm); overflow: hidden; }
+.sep-s4-tabs button { border: 0; background: var(--c-panel); color: var(--c-secondary); padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.sep-s4-tabs button.on { background: var(--c-accent); color: #fff; }
+.sep-s4-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sep-s4-table { border: 1px solid var(--c-border); border-radius: var(--radius-sm); overflow: hidden; }
+.sep-s4-row { display: grid; grid-template-columns: 100px 1fr 1fr 48px 40px 130px; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--c-border); font-size: 12px; }
+.sep-s4-row:last-child { border-bottom: 0; }
+.sep-s4-row.head { background: var(--c-muted); font-size: 11px; font-weight: 700; color: var(--c-secondary); }
+.sep-s4-row.inv { grid-template-columns: 140px 1fr 70px 64px 1fr 70px; }
+.sep-s4-ops { display: flex; gap: 6px; justify-content: flex-end; }
+.sep-pill { font-size: 11px; padding: 1px 8px; border-radius: 9px; background: var(--c-muted); color: var(--c-secondary); white-space: nowrap; }
+.sep-pill.ok { background: rgba(34,197,94,0.14); color: #16a34a; }
+.sep-pill.fail { background: rgba(220,38,38,0.12); color: var(--c-danger); }
+.sep-pill.off { background: var(--c-muted); color: var(--c-secondary); opacity: 0.7; }
+.sep-expr { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; color: var(--c-secondary); }
+.sep-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--c-secondary); }
+.sep-s4-row .mono { font-family: ui-monospace, Consolas, monospace; color: var(--c-secondary); }
+.btn.danger { border-color: rgba(220,38,38,0.4); color: var(--c-danger); }
+.btn.danger:hover { background: rgba(220,38,38,0.08); }
+.sep-batch { display: flex; flex-direction: column; gap: 10px; max-width: 640px; }
+.sep-batch textarea { padding: 7px 9px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; font-family: ui-monospace, Consolas, monospace; outline: none; resize: vertical; }
+.sep-batch textarea:focus { border-color: var(--c-fg); }
+.sep-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+/* S4 弹窗 */
+.sep-modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 300; }
+.sep-modal { width: 640px; max-width: 92vw; max-height: 86vh; overflow-y: auto; background: var(--c-panel); border: 1px solid var(--c-border); border-radius: var(--radius); box-shadow: 0 20px 60px rgba(0,0,0,0.35); display: flex; flex-direction: column; }
+.sep-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--c-border); }
+.sep-modal-head h3 { margin: 0; font-size: 14px; font-weight: 700; color: var(--c-fg); }
+.sep-modal-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.sep-modal-body textarea { padding: 7px 9px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; font-family: ui-monospace, Consolas, monospace; outline: none; resize: vertical; }
+.sep-modal-body textarea:focus { border-color: var(--c-fg); }
+.sep-modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--c-border); }
 </style>

@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch, nextTick, onActivated } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl, fetchEntityServices, copyServiceToEntity, deleteOntologyService } from '../../api'
+import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl, fetchEntityServices, copyServiceToEntity, deleteOntologyService, resolveObjectView } from '../../api'
 import { marked } from 'marked'
 import ServiceInvokeDialog from './ServiceInvokeDialog.vue'
 
@@ -49,6 +49,35 @@ const inheritedServices = computed(() =>
 const customServices = computed(() =>
   services.value.filter(s => s.owner_type === 'entity')
 )
+
+// ===== S6：对象视图（可配置详情页布局）=====
+const objectView = ref(null)
+const ovTab = ref(0)
+const ovLoading = ref(false)
+const WIDGET_LABELS = { properties: '属性', relations: '关系', actions: '动作', derived: '派生属性', timeline: '时间线', chart: '图表' }
+
+function currentViewTab() {
+  const tabs = objectView.value?.layout?.tabs
+  if (!tabs || !tabs.length) return { name: '', sections: [] }
+  const idx = Math.min(ovTab.value, tabs.length - 1)
+  return tabs[idx] || tabs[0]
+}
+function widgetLabel(k) { return WIDGET_LABELS[k] || k }
+
+async function loadObjectView() {
+  const cat = entity.value?.category_id
+  const ont = entity.value?.ontology_id
+  if (!cat || !ont) { objectView.value = null; return }
+  ovLoading.value = true
+  try {
+    objectView.value = await resolveObjectView(cat, ont)
+    ovTab.value = 0
+  } catch {
+    objectView.value = null
+  } finally {
+    ovLoading.value = false
+  }
+}
 
 async function loadServices() {
   servicesLoading.value = true
@@ -107,6 +136,33 @@ const parsedProperties = computed(() => {
     try { p = JSON.parse(p) } catch { return {} }
   }
   return p || {}
+})
+
+const derivedEntries = computed(() => {
+  if (!entity.value) return []
+  const raw = entity.value.derived_properties || entity.value.derived_results
+  if (!raw) return []
+  if (typeof raw === 'string') {
+    try { return Object.entries(JSON.parse(raw)) } catch { return [] }
+  }
+  return Object.entries(raw)
+})
+
+const numericChartData = computed(() => {
+  const entries = Object.entries(parsedProperties.value)
+    .map(([k, v]) => ({ key: k, value: Number(v) }))
+    .filter((d) => !isNaN(d.value) && isFinite(d.value))
+  const max = Math.max(...entries.map((d) => d.value), 0)
+  return { entries, max }
+})
+
+const timelineEvents = computed(() => {
+  const events = []
+  if (entity.value?.created_at) events.push({ time: entity.value.created_at, label: '实体创建' })
+  if (entity.value?.updated_at && entity.value.updated_at !== entity.value.created_at) {
+    events.push({ time: entity.value.updated_at, label: '最后更新' })
+  }
+  return events.sort((a, b) => new Date(a.time) - new Date(b.time))
 })
 
 function startEdit() {
@@ -192,6 +248,7 @@ async function load() {
     } else {
       entity.value = data
       loadServices()
+      loadObjectView()
     }
   } catch (e) {
     loadError.value = '加载失败：' + e.message
@@ -441,7 +498,7 @@ onMounted(load)
         </div>
 
         <!-- 属性 -->
-        <div class="detail-section">
+        <div v-if="!objectView" class="detail-section">
           <div class="section-head">
             <span class="section-title">属性</span>
             <button v-if="editing" class="btn sm" @click="addProp">添加属性</button>
@@ -466,8 +523,107 @@ onMounted(load)
         </div>
       </div>
 
+      <!-- S6：对象视图（按配置布局渲染） -->
+      <div v-if="objectView" class="detail-card">
+        <div class="detail-section">
+          <div class="section-head">
+            <span class="section-title">对象视图：{{ objectView.name }}</span>
+            <span class="ov-badge" v-if="objectView.ontology_id">本体级</span>
+            <span class="ov-badge" v-else>类别缺省</span>
+          </div>
+          <div v-if="ovLoading" class="props-empty">加载视图中...</div>
+          <template v-else>
+            <div class="ov-tabs">
+              <button
+                v-for="(tab, ti) in objectView.layout.tabs"
+                :key="ti"
+                class="ov-tab"
+                :class="{ on: ovTab === ti }"
+                @click="ovTab = ti"
+              >{{ tab.name }}</button>
+            </div>
+            <div v-for="(sec, si) in currentViewTab().sections" :key="si" class="ov-sec">
+              <div class="ov-sec-title" v-if="sec.title">{{ sec.title }}</div>
+              <div v-for="(w, wi) in sec.widgets" :key="wi" class="ov-widget">
+                <div class="ov-widget-title">{{ widgetLabel(w.kind) }}</div>
+                <div v-if="w.kind === 'properties'" class="props-view">
+                  <div v-for="(v, k) in parsedProperties" :key="k" class="prop-view-row">
+                    <span class="prop-view-key">{{ k }}</span>
+                    <span class="prop-view-val">{{ v }}</span>
+                  </div>
+                  <div v-if="!Object.keys(parsedProperties).length" class="props-empty">无属性</div>
+                </div>
+                <div v-else-if="w.kind === 'relations'" class="rel-list">
+                  <div v-for="rel in entity.relations" :key="rel.id" class="rel-item">
+                    <span class="rel-current">{{ entity.name }}</span>
+                    <span class="rel-arrow">{{ rel.role === 'source' ? '→' : '←' }}</span>
+                    <span class="rel-type">{{ rel.relation_def_name || rel.relation_type }}</span>
+                    <span class="rel-arrow">{{ rel.role === 'source' ? '→' : '←' }}</span>
+                    <span class="rel-other">
+                      <span class="rel-other-name">{{ relOtherName(rel) || '—' }}</span>
+                      <span class="rel-other-type" v-if="relOtherType(rel)">{{ relOtherType(rel) }}</span>
+                    </span>
+                  </div>
+                  <div v-if="!entity.relations?.length" class="props-empty">无关联关系</div>
+                </div>
+                <div v-else-if="w.kind === 'actions'" class="svc-list">
+                  <div v-for="svc in inheritedServices" :key="svc.id" class="svc-row">
+                    <span class="svc-status on"></span>
+                    <span class="svc-name">{{ svc.name }}</span>
+                    <span class="svc-desc" v-if="svc.description">{{ svc.description }}</span>
+                    <span class="svc-spacer"></span>
+                    <button class="btn sm primary" @click="openInvoke(svc)">执行</button>
+                  </div>
+                  <div v-if="!inheritedServices.length && !customServices.length" class="props-empty">无可用动作</div>
+                </div>
+                <div v-else-if="w.kind === 'derived'" class="props-view">
+                  <div v-for="([k, v]) in derivedEntries" :key="k" class="prop-view-row">
+                    <span class="prop-view-key">{{ k }}</span>
+                    <span class="prop-view-val">{{ v }}</span>
+                  </div>
+                  <div v-if="!derivedEntries.length" class="props-empty">暂无派生属性计算结果</div>
+                </div>
+                <div v-else-if="w.kind === 'timeline'" class="timeline-list">
+                  <div v-for="(ev, ei) in timelineEvents" :key="ei" class="timeline-item">
+                    <div class="timeline-dot"></div>
+                    <div class="timeline-meta">
+                      <div class="timeline-label">{{ ev.label }}</div>
+                      <div class="timeline-time">{{ fmtTime(ev.time) }}</div>
+                    </div>
+                  </div>
+                  <div v-if="!timelineEvents.length" class="props-empty">无时间线数据</div>
+                </div>
+                <div v-else-if="w.kind === 'chart'" class="chart-wrap">
+                  <svg v-if="numericChartData.entries.length" viewBox="0 0 600 220" preserveAspectRatio="xMidYMid meet" class="chart-svg">
+                    <g v-for="(d, i) in numericChartData.entries" :key="i">
+                      <rect
+                        :x="i * (600 / numericChartData.entries.length) + 10"
+                        :y="200 - (numericChartData.max ? (d.value / numericChartData.max) * 180 : 0)"
+                        :width="(600 / numericChartData.entries.length) - 20"
+                        :height="numericChartData.max ? (d.value / numericChartData.max) * 180 : 0"
+                        fill="var(--c-accent)"
+                        rx="4"
+                      />
+                      <text
+                        :x="i * (600 / numericChartData.entries.length) + (600 / numericChartData.entries.length) / 2"
+                        y="215"
+                        text-anchor="middle"
+                        font-size="11"
+                        fill="var(--c-secondary)"
+                      >{{ d.key }}</text>
+                    </g>
+                  </svg>
+                  <div v-else class="props-empty">无可用数值属性用于绘图</div>
+                </div>
+                <div v-else class="ov-placeholder">微件类型 <code>{{ w.kind }}</code>（暂以默认详情页渲染）</div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
       <!-- 服务（动作）：本体继承 + 实体自定义 -->
-      <div class="detail-card">
+      <div v-if="!objectView" class="detail-card">
         <div class="detail-section">
           <div class="section-head">
             <span class="section-title">服务（动作）</span>
@@ -518,7 +674,7 @@ onMounted(load)
       </div>
 
       <!-- 关联关系 -->
-      <div class="detail-card">
+      <div v-if="!objectView" class="detail-card">
         <div class="detail-section">
           <div class="section-head">
             <span class="section-title">关联关系 · {{ entity.relations?.length || 0 }}</span>
@@ -657,6 +813,28 @@ onMounted(load)
 .rel-other { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .rel-other-name { font-weight: 600; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rel-other-type { font-size: 11px; color: var(--c-secondary); }
+
+.ov-badge { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: var(--c-muted); color: var(--c-secondary); }
+.ov-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--c-border); padding-bottom: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+.ov-tab { padding: 5px 13px; font-size: 12.5px; font-weight: 600; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--c-secondary); cursor: pointer; }
+.ov-tab:hover { background: var(--c-muted); color: var(--c-fg); }
+.ov-tab.on { background: var(--c-fg); color: var(--c-panel); }
+.ov-sec { margin-bottom: 12px; }
+.ov-sec-title { font-size: 12px; font-weight: 700; color: var(--c-fg); margin: 8px 0 6px; }
+.ov-widget { border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 8px; background: var(--c-muted); }
+.ov-widget-title { font-size: 12px; font-weight: 600; color: var(--c-secondary); margin-bottom: 6px; }
+.ov-placeholder { font-size: 12px; color: var(--c-secondary); }
+.ov-placeholder code { font-family: ui-monospace, Consolas, monospace; background: var(--c-panel); padding: 0 4px; border-radius: 4px; }
+
+.timeline-list { display: flex; flex-direction: column; gap: 0; padding-left: 8px; }
+.timeline-item { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; position: relative; }
+.timeline-item:not(:last-child) { border-bottom: 1px solid var(--c-border); }
+.timeline-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c-accent); margin-top: 4px; flex-shrink: 0; }
+.timeline-label { font-size: 13px; font-weight: 600; color: var(--c-fg); }
+.timeline-time { font-size: 12px; color: var(--c-secondary); }
+
+.chart-wrap { width: 100%; }
+.chart-svg { width: 100%; height: auto; max-height: 240px; }
 
   .modal-mask { position: fixed; inset: 0; z-index: 999; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.45); padding: 20px; }
   .preview-modal { width: min(940px, 100%); max-height: min(90vh, 800px); border-radius: 16px; background: var(--c-panel); overflow: hidden; box-shadow: 0 18px 60px rgba(0,0,0,0.22); display: flex; flex-direction: column; }

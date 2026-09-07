@@ -13,6 +13,9 @@ import {
 } from '../../api'
 import OntologyEditor from './OntologyEditor.vue'
 import InterfaceEditor from './InterfaceEditor.vue'
+import ObjectViewManager from './ObjectViewManager.vue'
+import VersionManager from './VersionManager.vue'
+import UsageAnalysis from './UsageAnalysis.vue'
 import ModalDialog from '../common/ModalDialog.vue'
 
 const search = ref('')
@@ -23,7 +26,7 @@ const selectedId = ref('')
 const detail = ref(null)
 const loadingDetail = ref(false)
 const loadError = ref('')
-// 详情 Tab：本体定义 / 接口
+// 详情 Tab：本体定义 / 接口 / 对象视图(S6) / 版本(S7) / 影响分析(S7)
 const detailTab = ref('ont')
 
 // 基本信息 编辑
@@ -476,10 +479,13 @@ onMounted(loadCategories)
             </div>
           </div>
 
-          <!-- 详情 Tab：本体定义 / 接口 -->
+          <!-- 详情 Tab：本体定义 / 接口 / 对象视图 / 版本 / 影响分析 -->
           <div class="detail-tabs">
             <button class="detail-tab" :class="{ active: detailTab === 'ont' }" @click="detailTab = 'ont'">本体定义</button>
             <button class="detail-tab" :class="{ active: detailTab === 'iface' }" @click="detailTab = 'iface'">接口</button>
+            <button class="detail-tab" :class="{ active: detailTab === 'view' }" @click="detailTab = 'view'">对象视图</button>
+            <button class="detail-tab" :class="{ active: detailTab === 'version' }" @click="detailTab = 'version'">版本</button>
+            <button class="detail-tab" :class="{ active: detailTab === 'usage' }" @click="detailTab = 'usage'">影响分析</button>
           </div>
 
           <!-- 本体编辑器（列表+详情按需加载，自身管理数据） -->
@@ -487,6 +493,15 @@ onMounted(loadCategories)
 
           <!-- 接口管理（属性契约 + 实现 + 多态查询） -->
           <InterfaceEditor v-if="detailTab === 'iface'" class="detail-editor" :category-id="selectedId" />
+
+          <!-- S6：对象视图 -->
+          <ObjectViewManager v-if="detailTab === 'view' && selectedId" :category-id="selectedId" />
+
+          <!-- S7：版本 / 回滚 -->
+          <VersionManager v-if="detailTab === 'version' && selectedId" :category-id="selectedId" />
+
+          <!-- S7：影响分析（Usages） -->
+          <UsageAnalysis v-if="detailTab === 'usage' && selectedId" :category-id="selectedId" />
         </template>
       </div>
     </div>

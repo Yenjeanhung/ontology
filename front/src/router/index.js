@@ -16,7 +16,9 @@ import OntologyManagePage from '../components/ontology/OntologyManagePage.vue'
 import RelationDictPage from '../components/ontology/RelationDictPage.vue'
 import ConstraintPage from '../components/ontology/ConstraintPage.vue'
 import SuggestionListPage from '../components/ontology/SuggestionListPage.vue'
+import FunctionEditorPage from '../components/ontology/FunctionEditorPage.vue'
 import ModelConfigPage from '../components/config/ModelConfigPage.vue'
+import ApiDocsPage from '../components/config/ApiDocsPage.vue'
 import MonitorPage from '../components/monitor/MonitorPage.vue'
 import EntityListPage from '../components/entity/EntityListPage.vue'
 import EntityDetailPage from '../components/entity/EntityDetailPage.vue'
@@ -39,6 +41,7 @@ const routes = [
   { path: '/ontology/relations-dict', name: 'ontology-relations-dict', component: RelationDictPage, meta: { keepAlive: true } },
   { path: '/ontology/constraints', name: 'ontology-constraints', component: ConstraintPage, meta: { keepAlive: true } },
   { path: '/ontology/suggestions', name: 'ontology-suggestions', component: SuggestionListPage, meta: { keepAlive: true } },
+  { path: '/ontology/functions', name: 'ontology-functions', component: FunctionEditorPage, meta: { keepAlive: true } },
   // 实体管理
   { path: '/entities', name: 'entities', component: EntityListPage, meta: { keepAlive: true } },
   { path: '/entities/:entityId', name: 'entity-detail', component: EntityDetailPage, props: true },
@@ -74,6 +77,7 @@ const routes = [
   // 配置
   { path: '/config/models', name: 'config-models', component: ModelConfigPage, meta: { keepAlive: true } },
   { path: '/config/monitor', name: 'config-monitor', component: MonitorPage, meta: { keepAlive: true } },
+  { path: '/config/api-docs', name: 'config-api-docs', component: ApiDocsPage, meta: { keepAlive: true } },
 ]
 
 const router = createRouter({

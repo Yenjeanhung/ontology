@@ -54,6 +54,7 @@ def _var(ctx, node, field=None, default=None):
 
 
 def main():
+    import inspect
     payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     code = payload.get("code") or ""
     params = payload.get("params") or {}
@@ -71,8 +72,16 @@ def main():
             exec(compile(code, "<service>", "exec"), g)
             fn = g.get("run")
             if not callable(fn):
-                raise RuntimeError("代码中未定义 run(params, entity, context) 函数")
-            data = fn(params, entity, context)
+                raise RuntimeError("代码中未定义 run(params[, entity, context]) 函数")
+            # 按签名参数数量自适应传参，兼容 1/2/3 个参数：
+            #   run(params) | run(params, entity) | run(params, ctx) | run(params, entity, context)
+            nargs = len(inspect.signature(fn).parameters)
+            if nargs <= 1:
+                data = fn(params) if nargs == 1 else fn()
+            elif nargs == 2:
+                data = fn(params, entity)
+            else:
+                data = fn(params, entity, context)
     except BaseException as e:
         error = "".join(traceback.format_exception_only(type(e), e)).strip() or f"{type(e).__name__}"
     sys.stdout.write(json.dumps(
