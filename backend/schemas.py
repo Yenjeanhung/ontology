@@ -179,6 +179,16 @@ class CreateOntologyRequest(BaseModel):
     description: str | None = ""
     color: str | None = None
     sort_order: int = 0
+    # 对象类型元数据
+    code: str | None = None
+    display_name: str | None = ""
+    plural_name: str | None = ""
+    title_key: str | None = ""
+    primary_key: str | None = "name"
+    icon: str | None = ""
+    status: str | None = "active"
+    visibility: str | None = "public"
+    group_name: str | None = ""
 
 
 class UpdateOntologyRequest(BaseModel):
@@ -186,6 +196,15 @@ class UpdateOntologyRequest(BaseModel):
     description: str | None = None
     color: str | None = None
     sort_order: int | None = None
+    code: str | None = None
+    display_name: str | None = None
+    plural_name: str | None = None
+    title_key: str | None = None
+    primary_key: str | None = None
+    icon: str | None = None
+    status: str | None = None
+    visibility: str | None = None
+    group_name: str | None = None
 
 
 class BatchCreateOntologiesRequest(BaseModel):
@@ -200,6 +219,12 @@ class CreateOntologyAttributeRequest(BaseModel):
     is_required: bool = False
     default_value: str | None = None
     sort_order: int = 0
+    # 属性元数据扩展
+    is_edit_only: bool = False          # 仅人工编辑，不进抽取 Prompt
+    render_hint: str | None = ""       # text/textarea/tag/link/image/badge
+    format: str | None = ""
+    unit: str | None = ""
+    shared_property_id: str | None = ""
 
 
 class UpdateOntologyAttributeRequest(BaseModel):
@@ -210,6 +235,88 @@ class UpdateOntologyAttributeRequest(BaseModel):
     is_required: bool | None = None
     default_value: str | None = None
     sort_order: int | None = None
+    is_edit_only: bool | None = None
+    render_hint: str | None = None
+    format: str | None = None
+    unit: str | None = None
+    shared_property_id: str | None = None
+
+
+# ===== 共享属性 / 本体接口 =====
+
+
+class CreateSharedPropertyRequest(BaseModel):
+    name: str
+    code: str | None = None
+    data_type: str = "string"
+    description: str | None = ""
+    is_required: bool = False
+    default_value: str | None = None
+    enum_values: list[str] | None = None
+    unit: str | None = ""
+    format: str | None = ""
+
+
+class UpdateSharedPropertyRequest(BaseModel):
+    name: str | None = None
+    code: str | None = None
+    data_type: str | None = None
+    description: str | None = None
+    is_required: bool | None = None
+    default_value: str | None = None
+    enum_values: list[str] | None = None
+    unit: str | None = None
+    format: str | None = None
+
+
+class ApplySharedPropertyRequest(BaseModel):
+    ontology_ids: list[str]
+    overwrite: bool = False
+
+
+class CreateInterfaceRequest(BaseModel):
+    name: str
+    code: str
+    description: str | None = ""
+    icon: str | None = ""
+    extends: list[str] | None = None
+    interface_kind: str = "functional"   # functional / abstract_object
+
+
+class UpdateInterfaceRequest(BaseModel):
+    name: str | None = None
+    code: str | None = None
+    description: str | None = None
+    icon: str | None = None
+    extends: list[str] | None = None
+    interface_kind: str | None = None
+
+
+class CreateInterfacePropertyRequest(BaseModel):
+    name: str
+    code: str
+    data_type: str = "string"
+    description: str | None = ""
+    is_required: bool = True
+    default_value: str | None = None
+    enum_values: list[str] | None = None
+    shared_property_id: str | None = ""
+    sort_order: int = 0
+
+
+class CreateInterfaceLinkRequest(BaseModel):
+    name: str
+    code: str
+    target_interface_id: str | None = None
+    target_ontology_id: str | None = ""
+    cardinality: str = "ONE_TO_MANY"
+    is_required: bool = False
+
+
+class ImplementInterfaceRequest(BaseModel):
+    ontology_id: str
+    property_mapping: dict[str, str] = {}   # 接口属性 code → 本体属性名
+    link_mapping: dict[str, str] | None = None
 
 
 class BatchSaveAttributesRequest(BaseModel):

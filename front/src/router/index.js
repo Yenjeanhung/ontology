@@ -11,6 +11,7 @@ import VectorDataView from '../components/VectorDataView.vue'
 import VectorFileDetail from '../components/VectorFileDetail.vue'
 import GraphView from '../components/GraphView.vue'
 import AttributeTemplateList from '../components/ontology/AttributeTemplateList.vue'
+import SharedPropertyList from '../components/ontology/SharedPropertyList.vue'
 import OntologyManagePage from '../components/ontology/OntologyManagePage.vue'
 import RelationDictPage from '../components/ontology/RelationDictPage.vue'
 import ConstraintPage from '../components/ontology/ConstraintPage.vue'
@@ -33,6 +34,7 @@ const routes = [
   { path: '/', name: 'home', component: HomeView },
   // 本体管理（大菜单）
   { path: '/ontology/templates', name: 'ontology-templates', component: AttributeTemplateList, meta: { keepAlive: true } },
+  { path: '/ontology/shared-properties', name: 'ontology-shared-properties', component: SharedPropertyList, meta: { keepAlive: true } },
   { path: '/ontology/ontologies', name: 'ontology-ontologies', component: OntologyManagePage, meta: { keepAlive: true } },
   { path: '/ontology/relations-dict', name: 'ontology-relations-dict', component: RelationDictPage, meta: { keepAlive: true } },
   { path: '/ontology/constraints', name: 'ontology-constraints', component: ConstraintPage, meta: { keepAlive: true } },

@@ -94,6 +94,15 @@ CREATE TABLE IF NOT EXISTS ontologies (
     description VARCHAR(500) DEFAULT '',
     color VARCHAR(20) DEFAULT NULL,
     sort_order INTEGER NOT NULL DEFAULT 0,
+    code VARCHAR(64) DEFAULT NULL,
+    display_name VARCHAR(100) DEFAULT '',
+    plural_name VARCHAR(100) DEFAULT '',
+    title_key VARCHAR(64) DEFAULT '',
+    primary_key VARCHAR(64) DEFAULT 'name',
+    icon VARCHAR(64) DEFAULT '',
+    status VARCHAR(20) DEFAULT 'active',
+    visibility VARCHAR(20) DEFAULT 'public',
+    group_name VARCHAR(100) DEFAULT '',
     created_at VARCHAR,
     updated_at VARCHAR,
     UNIQUE(category_id, name)
@@ -109,6 +118,11 @@ CREATE TABLE IF NOT EXISTS ontology_attributes (
     is_required INTEGER NOT NULL DEFAULT 0,
     default_value VARCHAR(200) DEFAULT NULL,
     sort_order INTEGER NOT NULL DEFAULT 0,
+    is_edit_only INTEGER NOT NULL DEFAULT 0,
+    render_hint VARCHAR(50) DEFAULT '',
+    format VARCHAR(100) DEFAULT '',
+    unit VARCHAR(32) DEFAULT '',
+    shared_property_id VARCHAR DEFAULT '',
     created_at VARCHAR,
     updated_at VARCHAR,
     UNIQUE(ontology_id, name)
@@ -445,6 +459,78 @@ CREATE INDEX IF NOT EXISTS idx_relation_suggestions_cat ON relation_suggestions(
 CREATE INDEX IF NOT EXISTS idx_relation_suggestions_status ON relation_suggestions(status);
 
 -- 建议 tombstone：拒绝过的组合不再重推
+-- ===== 共享属性（跨本体统一定义，值各自独立）=====
+CREATE TABLE IF NOT EXISTS ontology_shared_properties (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(50) NOT NULL,
+    code VARCHAR(64) DEFAULT NULL,
+    data_type VARCHAR(20) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    is_required INTEGER NOT NULL DEFAULT 0,
+    default_value VARCHAR(200) DEFAULT NULL,
+    enum_values TEXT DEFAULT NULL,
+    unit VARCHAR(32) DEFAULT '',
+    format VARCHAR(100) DEFAULT '',
+    is_system INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR,
+    UNIQUE(code)
+);
+
+-- ===== 本体接口（Interface）：共享属性/链接契约 → 多态 =====
+CREATE TABLE IF NOT EXISTS ontology_interfaces (
+    id VARCHAR PRIMARY KEY,
+    category_id VARCHAR NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    code VARCHAR(64) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    icon VARCHAR(64) DEFAULT '',
+    extends TEXT DEFAULT NULL,
+    interface_kind VARCHAR(20) DEFAULT 'functional',
+    is_system INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR,
+    UNIQUE(category_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS ontology_interface_properties (
+    id VARCHAR PRIMARY KEY,
+    interface_id VARCHAR NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    code VARCHAR(64) NOT NULL,
+    data_type VARCHAR(20) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    is_required INTEGER NOT NULL DEFAULT 1,
+    default_value VARCHAR(200) DEFAULT NULL,
+    enum_values TEXT DEFAULT NULL,
+    shared_property_id VARCHAR DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(interface_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS ontology_interface_links (
+    id VARCHAR PRIMARY KEY,
+    interface_id VARCHAR NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    code VARCHAR(64) NOT NULL,
+    target_interface_id VARCHAR DEFAULT NULL,
+    target_ontology_id VARCHAR DEFAULT '',
+    cardinality VARCHAR(16) DEFAULT 'ONE_TO_MANY',
+    is_required INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(interface_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS ontology_interface_implementations (
+    id VARCHAR PRIMARY KEY,
+    interface_id VARCHAR NOT NULL,
+    ontology_id VARCHAR NOT NULL,
+    property_mapping TEXT DEFAULT '{}',
+    link_mapping TEXT DEFAULT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    created_at VARCHAR,
+    UNIQUE(interface_id, ontology_id)
+);
+
 CREATE TABLE IF NOT EXISTS relation_suggestion_tombstones (
     kb_id VARCHAR NOT NULL,
     source_entity_id VARCHAR NOT NULL,

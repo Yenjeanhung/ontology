@@ -906,10 +906,10 @@ export async function getOntologyDetail(categoryId, ontologyId) {
   return res.json()
 }
 
-export async function createOntology(categoryId, { name, description = '', color = null, sort_order = 0 }) {
+export async function createOntology(categoryId, { name, description = '', color = null, sort_order = 0, ...meta }) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, color, sort_order }),
+    body: JSON.stringify({ name, description, color, sort_order, ...meta }),
   })
   if (!res.ok) throw new Error('Create ontology failed')
   return res.json()
@@ -966,6 +966,169 @@ export async function replaceOntologyAttributes(categoryId, ontologyId, { attrib
     body: JSON.stringify({ attributes }),
   })
   if (!res.ok) throw new Error('Replace ontology attributes failed')
+  return res.json()
+}
+
+// 模块 2.5：共享属性（跨本体统一定义，契约引用）
+export async function fetchSharedProperties(q = '') {
+  const params = new URLSearchParams()
+  if (q) params.set('q', q)
+  const res = await fetch(`${API}/api/shared-properties?${params.toString()}`)
+  if (!res.ok) throw new Error('Fetch shared properties failed')
+  return res.json()
+}
+
+export async function createSharedProperty(data) {
+  const res = await fetch(`${API}/api/shared-properties`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Create shared property failed')
+  }
+  return res.json()
+}
+
+export async function updateSharedProperty(propId, data) {
+  const res = await fetch(`${API}/api/shared-properties/${propId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Update shared property failed')
+  }
+  return res.json()
+}
+
+export async function deleteSharedProperty(propId) {
+  const res = await fetch(`${API}/api/shared-properties/${propId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Delete shared property failed')
+  }
+  return res.json()
+}
+
+// 把共享属性挂到多个本体（overwrite=true 时同步已有同名属性）
+export async function applySharedProperty(propId, { ontology_ids, overwrite = false }) {
+  const res = await fetch(`${API}/api/shared-properties/${propId}/apply`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ontology_ids, overwrite }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Apply shared property failed')
+  }
+  return res.json()
+}
+
+// 模块 2.6：本体接口（Interface）
+export async function fetchInterfaces(categoryId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/interfaces`)
+  if (!res.ok) throw new Error('Fetch interfaces failed')
+  return res.json()
+}
+
+export async function createInterface(categoryId, data) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/interfaces`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Create interface failed')
+  }
+  return res.json()
+}
+
+export async function getInterfaceDetail(interfaceId) {
+  const res = await fetch(`${API}/api/interfaces/${interfaceId}`)
+  if (!res.ok) throw new Error('Fetch interface detail failed')
+  return res.json()
+}
+
+export async function updateInterface(interfaceId, data) {
+  const res = await fetch(`${API}/api/interfaces/${interfaceId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Update interface failed')
+  }
+  return res.json()
+}
+
+export async function deleteInterface(interfaceId) {
+  const res = await fetch(`${API}/api/interfaces/${interfaceId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Delete interface failed')
+  }
+  return res.json()
+}
+
+// 整体替换接口属性契约 / 链接契约
+export async function setInterfaceProperties(interfaceId, properties) {
+  const res = await fetch(`${API}/api/interfaces/${interfaceId}/properties`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(properties),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Set interface properties failed')
+  }
+  return res.json()
+}
+
+export async function setInterfaceLinks(interfaceId, links) {
+  const res = await fetch(`${API}/api/interfaces/${interfaceId}/links`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(links),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Set interface links failed')
+  }
+  return res.json()
+}
+
+// 本体 implements 接口（提交属性映射，后端自动校验）
+export async function implementInterface(interfaceId, data) {
+  const res = await fetch(`${API}/api/interfaces/${interfaceId}/implement`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Implement interface failed')
+  }
+  return res.json()
+}
+
+export async function removeImplementation(interfaceId, ontologyId) {
+  const res = await fetch(`${API}/api/interfaces/${interfaceId}/implement/${ontologyId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Remove implementation failed')
+  return res.json()
+}
+
+// 某本体实现的全部接口
+export async function fetchOntologyInterfaces(ontologyId) {
+  const res = await fetch(`${API}/api/ontologies/${ontologyId}/interfaces`)
+  if (!res.ok) throw new Error('Fetch ontology interfaces failed')
+  return res.json()
+}
+
+// 多态查询：按接口取各实现本体的对象（属性按映射投影）
+export async function resolveInterfaceObjects(categoryId, interfaceCode, { q = '', limit = 50, offset = 0 } = {}) {
+  const params = new URLSearchParams()
+  if (q) params.set('q', q)
+  params.set('limit', String(limit))
+  params.set('offset', String(offset))
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/interfaces/${encodeURIComponent(interfaceCode)}/objects?${params.toString()}`)
+  if (!res.ok) throw new Error('Resolve interface objects failed')
   return res.json()
 }
 

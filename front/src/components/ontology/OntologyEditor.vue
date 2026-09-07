@@ -12,6 +12,12 @@ import {
   fetchOntologyServices,
   deleteOntologyService,
   updateOntologyService,
+  fetchSharedProperties,
+  fetchInterfaces,
+  fetchOntologyInterfaces,
+  implementInterface,
+  removeImplementation,
+  getInterfaceDetail,
 } from '../../api'
 import AttributeEditor from '../common/AttributeEditor.vue'
 import SearchableSelect from '../common/SearchableSelect.vue'
@@ -58,6 +64,33 @@ const savingInfo = ref(false)
 const editName = ref('')
 const editDesc = ref('')
 const editColor = ref('')
+// 对象类型元数据
+const editCode = ref('')
+const editDisplayName = ref('')
+const editPluralName = ref('')
+const editIcon = ref('')
+const editStatus = ref('active')
+const editGroup = ref('')
+const editTitleKey = ref('name')
+
+const STATUS_OPTIONS = [
+  { value: 'active', label: '活跃' },
+  { value: 'draft', label: '草稿' },
+  { value: 'deprecated', label: '已弃用' },
+]
+const statusLabel = s => STATUS_OPTIONS.find(o => o.value === s)?.label || s || '活跃'
+
+// 标题属性下拉选项：固有 name + 自有属性名
+const titleKeyOptions = computed(() => {
+  const names = ['name', ...(detail.value?.attributes || []).map(a => a.name).filter(Boolean)]
+  return [...new Set(names)]
+})
+
+// 共享属性（供属性编辑器绑定）
+const sharedProps = ref([])
+async function loadSharedProps() {
+  try { sharedProps.value = await fetchSharedProperties() } catch { sharedProps.value = [] }
+}
 
 // 模板绑定（仅当前本体）
 const tplBinding = ref([])
@@ -120,17 +153,20 @@ async function loadDetail(ontId) {
   detailLoading.value = true
   detailError.value = ''
   try {
-    const [d, svcs] = await Promise.all([
+    const [d, svcs, implIfaces] = await Promise.all([
       getOntologyDetail(props.categoryId, ontId),
       fetchOntologyServices(props.categoryId, ontId).catch(() => []),
+      fetchOntologyInterfaces(ontId).catch(() => []),
     ])
     detail.value = d
     services.value = svcs
+    implInterfaces.value = implIfaces
     tplBinding.value = [...(d.template_ids || [])]
     tplDirty.value = false
     editingInfo.value = false
     mergedVisible.value = false
     merged.value = null
+    if (!interfaces.length) loadInterfaces()
   } catch (e) {
     detailError.value = '加载失败：' + e.message
     detail.value = null
@@ -169,6 +205,7 @@ watch(() => props.categoryId, () => {
 onMounted(() => {
   loadList()
   loadTemplates()
+  loadSharedProps()
 })
 
 function openDetail(ont) {
@@ -219,6 +256,13 @@ function startEditInfo() {
   editName.value = d.name
   editDesc.value = d.description || ''
   editColor.value = d.color || COLOR_PRESETS[0]
+  editCode.value = d.code || ''
+  editDisplayName.value = d.display_name || ''
+  editPluralName.value = d.plural_name || ''
+  editIcon.value = d.icon || ''
+  editStatus.value = d.status || 'active'
+  editGroup.value = d.group_name || ''
+  editTitleKey.value = d.title_key || 'name'
   editingInfo.value = true
 }
 
@@ -230,6 +274,13 @@ async function saveInfo() {
       name: editName.value.trim(),
       description: editDesc.value.trim(),
       color: editColor.value,
+      code: editCode.value.trim(),
+      display_name: editDisplayName.value.trim(),
+      plural_name: editPluralName.value.trim(),
+      icon: editIcon.value.trim(),
+      status: editStatus.value,
+      group_name: editGroup.value.trim(),
+      title_key: editTitleKey.value || 'name',
     })
     await refreshAfterChange()
   } catch (e) {
@@ -311,6 +362,87 @@ function attrSourceLabel(source) {
 
 // ── 本体服务（动作） ──
 
+// ── 实现的接口（implements）──
+const interfaces = ref([])          // 类别下全部接口
+const implInterfaces = ref([])      // 本本体已实现：[{interface_id, code, name, property_mapping, status}]
+const ifaceDetailCache = ref({})    // interface_id -> detail（含属性契约）
+const mappingIfaceId = ref('')      // 正在配置映射的接口 id
+const mappingDraft = ref({})        // {接口属性code: 本体属性名}
+const implSaving = ref(false)
+
+const ifaceKindLabel = k => (k === 'abstract_object' ? '抽象对象' : '功能接口')
+
+async function loadInterfaces() {
+  try { interfaces.value = await fetchInterfaces(props.categoryId) } catch { interfaces.value = [] }
+}
+
+async function getIfaceDetail(ifaceId) {
+  if (!ifaceDetailCache.value[ifaceId]) {
+    try {
+      ifaceDetailCache.value[ifaceId] = await getInterfaceDetail(ifaceId)
+    } catch {
+      return null
+    }
+  }
+  return ifaceDetailCache.value[ifaceId]
+}
+
+// 本体属性名选项（固有 name + 自有属性）
+const ownAttrNames = computed(() => [
+  'name', ...(detail.value?.attributes || []).map(a => a.name).filter(Boolean),
+])
+
+async function openMapping(iface) {
+  const d = await getIfaceDetail(iface.id)
+  if (!d) { alert('加载接口属性失败'); return }
+  if (mappingIfaceId.value === iface.id) { mappingIfaceId.value = ''; return }
+  mappingIfaceId.value = iface.id
+  // 预填：已有映射沿用；缺失的按同名属性自动匹配
+  const existing = implInterfaces.value.find(i => i.interface_id === iface.id)?.property_mapping || {}
+  const draft = {}
+  for (const p of d.properties || []) {
+    if (existing[p.code]) draft[p.code] = existing[p.code]
+    else draft[p.code] = ownAttrNames.value.includes(p.name) ? p.name : ''
+  }
+  mappingDraft.value = draft
+}
+
+async function saveImplement(iface) {
+  if (!detail.value) return
+  implSaving.value = true
+  try {
+    const res = await implementInterface(iface.id, {
+      ontology_id: detail.value.id,
+      property_mapping: { ...mappingDraft.value },
+    })
+    if (res.status === 'partial') {
+      const miss = (res.missing || []).join('、')
+      const bad = (res.type_mismatch || []).map(m => `${m.interface_property}→${m.ontology_property}`).join('、')
+      alert(`已保存，但映射不完整：${miss ? `缺失 ${miss}；` : ''}${bad ? `类型不匹配 ${bad}` : ''}`)
+    }
+    mappingIfaceId.value = ''
+    implInterfaces.value = await fetchOntologyInterfaces(detail.value.id)
+  } catch (e) {
+    alert('保存实现失败：' + e.message)
+  } finally {
+    implSaving.value = false
+  }
+}
+
+async function unimplement(iface) {
+  if (!detail.value || !confirm(`解除接口「${iface.name}」的实现？多态查询将不再包含该本体。`)) return
+  try {
+    await removeImplementation(iface.id, detail.value.id)
+    implInterfaces.value = implInterfaces.value.filter(i => i.interface_id !== iface.id)
+  } catch (e) {
+    alert('解除失败：' + e.message)
+  }
+}
+
+function implStatusOf(ifaceId) {
+  return implInterfaces.value.find(i => i.interface_id === ifaceId) || null
+}
+
 function openSvcCreate() {
   const d = detail.value
   if (!d) return
@@ -382,47 +514,49 @@ onActivated(() => { onSvcSaved() })
 
     <!-- 本体列表（表格） -->
     <div v-else class="oe-table-card">
-      <table class="oe-table">
-        <thead>
-          <tr>
-            <th>本体名称</th>
-            <th class="num-col">实体</th>
-            <th class="num-col">属性</th>
-            <th class="num-col">模板</th>
-            <th class="num-col">服务</th>
-            <th class="date-col">创建时间</th>
-            <th class="op-col">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="ont in pagedList"
-            :key="ont.id"
-            :class="{ active: ont.id === currentId }"
-            @click="openDetail(ont)"
-          >
-            <td>
-              <div class="oe-cell-name">
-                <span class="oe-color-dot" :style="{ background: ont.color || '#A16207' }"></span>
-                <div class="oe-cell-text">
-                  <span class="oe-name">{{ ont.name }}</span>
-                  <span class="oe-desc" :title="ont.description">{{ ont.description || '—' }}</span>
+      <div class="oe-table-scroll">
+        <table class="oe-table">
+          <thead>
+            <tr>
+              <th>本体名称</th>
+              <th class="num-col">实体</th>
+              <th class="num-col">属性</th>
+              <th class="num-col">模板</th>
+              <th class="num-col">服务</th>
+              <th class="date-col">创建时间</th>
+              <th class="op-col">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="ont in pagedList"
+              :key="ont.id"
+              :class="{ active: ont.id === currentId }"
+              @click="openDetail(ont)"
+            >
+              <td>
+                <div class="oe-cell-name">
+                  <span class="oe-color-dot" :style="{ background: ont.color || '#A16207' }"></span>
+                  <div class="oe-cell-text">
+                    <span class="oe-name">{{ ont.name }}</span>
+                    <span class="oe-desc" :title="ont.description">{{ ont.description || '—' }}</span>
+                  </div>
                 </div>
-              </div>
-            </td>
-            <td class="num-cell">{{ ont.entity_count ?? '—' }}</td>
-            <td class="num-cell">{{ ont.attribute_count ?? '—' }}</td>
-            <td class="num-cell">{{ ont.template_count || '—' }}</td>
-            <td class="num-cell">{{ ont.service_count || '—' }}</td>
-            <td class="date-cell">{{ fmtDate(ont.created_at) }}</td>
-            <td class="op-cell" @click.stop>
-              <button class="oe-link-btn" @click="openDetail(ont)">编辑</button>
-              <button class="oe-link-btn danger" @click="removeOntology(ont)">删除</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <Pagination v-if="list.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="list.length" />
+              </td>
+              <td class="num-cell">{{ ont.entity_count ?? '—' }}</td>
+              <td class="num-cell">{{ ont.attribute_count ?? '—' }}</td>
+              <td class="num-cell">{{ ont.template_count || '—' }}</td>
+              <td class="num-cell">{{ ont.service_count || '—' }}</td>
+              <td class="date-cell">{{ fmtDate(ont.created_at) }}</td>
+              <td class="op-cell" @click.stop>
+                <button class="oe-link-btn" @click="openDetail(ont)">编辑</button>
+                <button class="oe-link-btn danger" @click="removeOntology(ont)">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <Pagination v-if="list.length" v-model:page="page" v-model:page-size="pageSize" :total="list.length" />
     </div>
 
     <!-- 详情抽屉 -->
@@ -450,6 +584,10 @@ onActivated(() => { onSvcSaved() })
             <div class="oe-section">
               <div class="oe-section-head">
                 <span class="oe-section-title">基础信息</span>
+                <span
+                  v-if="detail.status && detail.status !== 'active'"
+                  class="oe-status-tag" :class="detail.status"
+                >{{ statusLabel(detail.status) }}</span>
                 <button v-if="!editingInfo" class="btn sm" @click="startEditInfo">编辑</button>
               </div>
               <template v-if="editingInfo">
@@ -475,6 +613,40 @@ onActivated(() => { onSvcSaved() })
                       ></button>
                     </div>
                   </div>
+                  <div class="oe-meta-grid">
+                    <div class="oe-field">
+                      <label>类型编码 (code)</label>
+                      <input type="text" v-model="editCode" placeholder="如 person_org（API 名）">
+                    </div>
+                    <div class="oe-field">
+                      <label>显示名</label>
+                      <input type="text" v-model="editDisplayName" placeholder="默认同名称">
+                    </div>
+                    <div class="oe-field">
+                      <label>复数名</label>
+                      <input type="text" v-model="editPluralName" placeholder="如 人物列表">
+                    </div>
+                    <div class="oe-field">
+                      <label>图标</label>
+                      <input type="text" v-model="editIcon" placeholder="图标名（预留）">
+                    </div>
+                    <div class="oe-field">
+                      <label>状态</label>
+                      <select v-model="editStatus">
+                        <option v-for="s in STATUS_OPTIONS" :key="s.value" :value="s.value">{{ s.label }}</option>
+                      </select>
+                    </div>
+                    <div class="oe-field">
+                      <label>对象类型组</label>
+                      <input type="text" v-model="editGroup" placeholder="前端分组展示（可选）">
+                    </div>
+                    <div class="oe-field">
+                      <label>标题属性</label>
+                      <select v-model="editTitleKey">
+                        <option v-for="n in titleKeyOptions" :key="n" :value="n">{{ n === 'name' ? 'name（默认）' : n }}</option>
+                      </select>
+                    </div>
+                  </div>
                 </div>
                 <div class="oe-info-actions">
                   <button class="btn sm" @click="editingInfo = false">取消</button>
@@ -487,6 +659,7 @@ onActivated(() => { onSvcSaved() })
                 <div class="oe-info-view">
                   <span class="oe-info-desc" v-if="detail.description">{{ detail.description }}</span>
                   <span class="oe-info-desc placeholder" v-else>暂无描述</span>
+                  <span v-if="detail.code" class="oe-info-code">{{ detail.code }}</span>
                 </div>
               </template>
             </div>
@@ -522,8 +695,62 @@ onActivated(() => { onSvcSaved() })
                 :attributes="detail.attributes"
                 :builtins="BUILTIN_ATTRS"
                 :save-fn="saveAttributes"
+                :shared-properties="sharedProps"
                 @saved="() => {}"
               />
+            </div>
+
+            <!-- 实现的接口 -->
+            <div v-if="interfaces.length" class="oe-section">
+              <div class="oe-section-head">
+                <span class="oe-section-title">实现的接口</span>
+                <span class="oe-section-tip">勾选接口并映射属性，即可参与多态查询</span>
+              </div>
+              <div class="oe-iface-list">
+                <div v-for="iface in interfaces" :key="iface.id" class="oe-iface-item">
+                  <div class="oe-iface-row">
+                    <span class="oe-iface-name">{{ iface.name }}</span>
+                    <span class="oe-iface-code">{{ iface.code }}</span>
+                    <span class="oe-iface-kind">{{ ifaceKindLabel(iface.kind) }}</span>
+                    <template v-if="implStatusOf(iface.id)">
+                      <span class="oe-impl-tag" :class="implStatusOf(iface.id).status">
+                        {{ implStatusOf(iface.id).status === 'partial' ? '部分映射' : '完整映射' }}
+                      </span>
+                      <button class="btn sm" @click="openMapping(iface)">调整映射</button>
+                      <button class="btn sm danger" @click="unimplement(iface)">解除</button>
+                    </template>
+                    <template v-else>
+                      <button class="btn sm" @click="openMapping(iface)">实现…</button>
+                    </template>
+                  </div>
+                  <div v-if="mappingIfaceId === iface.id" class="oe-iface-mapping">
+                    <table class="oe-mapping-table">
+                      <thead>
+                        <tr><th>接口属性</th><th>类型</th><th>必填</th><th>映射到本体属性</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="p in (ifaceDetailCache[iface.id]?.properties || [])" :key="p.code">
+                          <td>{{ p.name }} <span class="oe-mapping-code">{{ p.code }}</span></td>
+                          <td>{{ p.data_type }}</td>
+                          <td>{{ p.is_required ? '是' : '否' }}</td>
+                          <td>
+                            <select v-model="mappingDraft[p.code]">
+                              <option value="">未映射</option>
+                              <option v-for="n in ownAttrNames" :key="n" :value="n">{{ n }}</option>
+                            </select>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <div class="oe-mapping-actions">
+                      <button class="btn sm" @click="mappingIfaceId = ''">取消</button>
+                      <button class="btn primary sm" :disabled="implSaving" @click="saveImplement(iface)">
+                        <span v-if="implSaving" class="spinner"></span> 保存实现
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- 合并属性预览 -->
@@ -639,23 +866,25 @@ onActivated(() => { onSvcSaved() })
 </template>
 
 <style scoped>
-.oe-root { display: flex; flex-direction: column; gap: 12px; width: 100%; }
-.oe-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.oe-tip { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--c-secondary); }
+.oe-root { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; overflow: hidden; }
+.oe-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-shrink: 0; }
+.oe-tip { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--c-secondary); }
 .btn.sm { padding: 5px 11px; font-size: 12px; }
 .oe-loading { padding: 28px; text-align: center; color: var(--c-secondary); font-size: 13px; }
 .oe-empty { padding: 28px; text-align: center; color: var(--c-secondary); font-size: 13px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); }
 
 /* ─── 表格 ─── */
-.oe-table-card { border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); overflow: hidden; }
+.oe-table-card { border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); overflow: hidden; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.oe-table-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .oe-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .oe-table thead th {
-  text-align: left; padding: 9px 14px;
+  text-align: left; padding: 8px 14px;
   font-size: 12px; font-weight: 600; color: var(--c-secondary);
   background: var(--c-muted); border-bottom: 1px solid var(--c-border);
   white-space: nowrap;
+  position: sticky; top: 0; z-index: 1;
 }
-.oe-table tbody td { padding: 10px 14px; border-bottom: 1px solid var(--c-border); vertical-align: middle; }
+.oe-table tbody td { padding: 8px 14px; border-bottom: 1px solid var(--c-border); vertical-align: middle; }
 .oe-table tbody tr:last-child td { border-bottom: none; }
 .oe-table tbody tr { cursor: pointer; transition: background 120ms; }
 .oe-table tbody tr:hover { background: var(--c-muted); }
@@ -755,4 +984,36 @@ onActivated(() => { onSvcSaved() })
 .oe-modal h3 { font-size: 15px; font-weight: 700; margin-bottom: 16px; color: var(--c-fg); }
 .oe-modal .oe-field { margin-bottom: 12px; }
 .oe-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* 元数据编辑网格 / 状态标签 */
+.oe-field select { width: 100%; padding: 6px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 13px; font-family: var(--font); outline: none; }
+.oe-field select:focus { border-color: var(--c-fg); }
+.oe-meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+.oe-info-code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--c-secondary); background: var(--c-muted); border-radius: 4px; padding: 1px 6px; }
+.oe-status-tag { font-size: 10px; padding: 1px 8px; border-radius: 999px; font-weight: 500; }
+.oe-status-tag.draft { background: rgba(245, 158, 11, 0.15); color: #B45309; }
+.oe-status-tag.deprecated { background: rgba(107, 114, 128, 0.18); color: #6B7280; }
+.oe-section-tip { font-size: 11px; color: var(--c-secondary); font-weight: 400; margin-left: auto; }
+
+/* 实现的接口区块 */
+.oe-iface-list { display: flex; flex-direction: column; gap: 6px; }
+.oe-iface-item { border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 8px 10px; background: var(--c-panel); }
+.oe-iface-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.oe-iface-name { font-size: 13px; font-weight: 600; color: var(--c-fg); }
+.oe-iface-code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--c-secondary); }
+.oe-iface-kind { font-size: 10px; padding: 0 6px; border-radius: 4px; background: rgba(37, 99, 235, 0.08); color: #2563EB; }
+.oe-impl-tag { font-size: 10px; padding: 0 6px; border-radius: 4px; }
+.oe-impl-tag.complete { background: rgba(34, 197, 94, 0.12); color: #16A34A; }
+.oe-impl-tag.partial { background: rgba(245, 158, 11, 0.15); color: #B45309; }
+.oe-iface-row .btn { margin-left: auto; }
+.oe-iface-row .btn + .btn { margin-left: 0; }
+.oe-iface-mapping { margin-top: 8px; border-top: 1px dashed var(--c-border); padding-top: 8px; }
+.oe-mapping-table { width: 100%; font-size: 12px; border-collapse: collapse; }
+.oe-mapping-table th, .oe-mapping-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--c-border); }
+.oe-mapping-table th { color: var(--c-secondary); font-weight: 500; }
+.oe-mapping-table tbody tr:last-child td { border-bottom: none; }
+.oe-mapping-code { font-family: ui-monospace, Consolas, monospace; font-size: 10px; color: var(--c-secondary); margin-left: 4px; }
+.oe-mapping-table select { width: 100%; padding: 4px 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; outline: none; }
+.oe-mapping-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.oe-attr-section { border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 10px; margin-top: 6px; }
 </style>

@@ -223,7 +223,7 @@ app.add_middleware(
 # 访问日志：后加的更靠外，因此放在 CORS 之后以包住全部请求（含异常响应）
 app.add_middleware(AccessLogMiddleware)
 
-from routers import agent, config, entity, files, graph, graph_analysis, graph_sync, kb, library, monitor, notifications, ontology, ontology_service, query, scheduler, vector_data, workflow
+from routers import agent, config, entity, files, graph, graph_analysis, graph_sync, kb, library, monitor, notifications, ontology, ontology_interface, ontology_service, query, scheduler, vector_data, workflow
 
 app.include_router(kb.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
@@ -235,6 +235,7 @@ app.include_router(query.router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
 app.include_router(vector_data.router, prefix="/api")
 app.include_router(ontology.router, prefix="/api")
+app.include_router(ontology_interface.router, prefix="/api")
 app.include_router(ontology_service.router, prefix="/api")
 app.include_router(entity.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")

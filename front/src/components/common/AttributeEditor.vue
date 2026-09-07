@@ -26,6 +26,11 @@ const props = defineProps({
     type: String,
     default: '属性',
   },
+  // 可绑定的共享属性列表（可选）：[{ id, name, code, data_type }]
+  sharedProperties: {
+    type: Array,
+    default: () => [],
+  },
 })
 
 const emit = defineEmits(['saved', 'change'])
@@ -37,6 +42,16 @@ const DATA_TYPES = [
   { value: 'boolean', label: '布尔 (boolean)' },
   { value: 'date', label: '日期 (date)' },
   { value: 'datetime', label: '日期时间 (datetime)' },
+]
+
+const RENDER_HINTS = [
+  { value: '', label: '默认' },
+  { value: 'text', label: '单行文本' },
+  { value: 'textarea', label: '多行文本' },
+  { value: 'tag', label: '标签' },
+  { value: 'link', label: '链接' },
+  { value: 'image', label: '图片' },
+  { value: 'badge', label: '徽标' },
 ]
 
 // 工作副本
@@ -61,6 +76,11 @@ function syncFromProps() {
       is_required: !!a.is_required,
       default_value: a.default_value || '',
       sort_order: a.sort_order || 0,
+      is_edit_only: !!a.is_edit_only,
+      render_hint: a.render_hint || '',
+      unit: a.unit || '',
+      format: a.format || '',
+      shared_property_id: a.shared_property_id || '',
       _dirty: false,
       _isNew: false,
     }))
@@ -98,6 +118,11 @@ function addAttribute() {
     is_required: false,
     default_value: '',
     sort_order: list.value.length,
+    is_edit_only: false,
+    render_hint: '',
+    unit: '',
+    format: '',
+    shared_property_id: '',
     _dirty: true,
     _isNew: true,
   }
@@ -159,6 +184,11 @@ async function saveAll() {
         is_required: a.is_required,
         default_value: a.default_value || null,
         sort_order: i,
+        is_edit_only: !!a.is_edit_only,
+        render_hint: a.render_hint || '',
+        unit: (a.unit || '').trim(),
+        format: (a.format || '').trim(),
+        shared_property_id: a.shared_property_id || '',
       })),
     }
     const result = await props.saveFn(payload)
@@ -175,6 +205,26 @@ async function saveAll() {
 function typeLabel(t) {
   const found = DATA_TYPES.find(d => d.value === t)
   return found ? found.label.split(' ')[0] : t
+}
+
+// 绑定共享属性：名称/类型跟随共享定义（锁定）
+function onSharedPropChange(idx) {
+  const attr = list.value[idx]
+  if (attr.shared_property_id) {
+    const sp = (props.sharedProperties || []).find(p => p.id === attr.shared_property_id)
+    if (sp) {
+      if (!attr.name.trim()) attr.name = sp.name
+      if (!attr.code?.trim() && sp.code) attr.code = sp.code
+      if (sp.data_type) attr.data_type = sp.data_type
+      if (sp.unit && !attr.unit) attr.unit = sp.unit
+      if (sp.format && !attr.format) attr.format = sp.format
+    }
+  }
+  markDirty(idx)
+}
+
+function sharedPropOf(attr) {
+  return (props.sharedProperties || []).find(p => p.id === attr.shared_property_id) || null
 }
 </script>
 
@@ -241,6 +291,8 @@ function typeLabel(t) {
           <span class="ae-name" :class="{ placeholder: !attr.name }">{{ attr.name || '未命名属性' }}</span>
           <span class="ae-type-tag">{{ typeLabel(attr.data_type) }}</span>
           <span v-if="attr.is_required" class="ae-req-tag">必填</span>
+          <span v-if="attr.is_edit_only" class="ae-editonly-tag" title="仅人工编辑，不参与抽取">仅编辑</span>
+          <span v-if="attr.shared_property_id && sharedPropOf(attr)" class="ae-shared-tag" title="已绑定共享属性">共享</span>
           <span v-if="attr._dirty || attr._isNew" class="ae-dirty-dot" title="未保存"></span>
           <span class="ae-spacer"></span>
           <span v-if="editable" class="ae-actions">
@@ -252,6 +304,23 @@ function typeLabel(t) {
         </div>
 
         <div v-if="isExpanded(idx)" class="ae-card-body">
+          <div v-if="sharedProperties.length" class="ae-field-row">
+            <div class="ae-field">
+              <label>绑定共享属性</label>
+              <select v-model="attr.shared_property_id" @change="onSharedPropChange(idx)">
+                <option value="">不绑定</option>
+                <option v-for="sp in sharedProperties" :key="sp.id" :value="sp.id">
+                  {{ sp.name }}{{ sp.code ? ` (${sp.code})` : '' }}
+                </option>
+              </select>
+            </div>
+            <div class="ae-field">
+              <label class="ae-hint-label" v-if="sharedPropOf(attr)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                已绑定共享属性：类型/单位/格式以共享定义为准，改共享定义全局生效
+              </label>
+            </div>
+          </div>
           <div class="ae-field-row">
             <div class="ae-field">
               <label>属性编码</label>
@@ -265,13 +334,29 @@ function typeLabel(t) {
           <div class="ae-field-row">
             <div class="ae-field">
               <label>数据类型</label>
-              <select v-model="attr.data_type" @change="markDirty(idx)">
+              <select v-model="attr.data_type" @change="markDirty(idx)" :disabled="!!sharedPropOf(attr)">
                 <option v-for="d in DATA_TYPES" :key="d.value" :value="d.value">{{ d.label }}</option>
               </select>
             </div>
             <div class="ae-field">
               <label>默认值</label>
               <input type="text" v-model="attr.default_value" @input="markDirty(idx)" placeholder="（可选）">
+            </div>
+          </div>
+          <div class="ae-field-row">
+            <div class="ae-field">
+              <label>渲染提示</label>
+              <select v-model="attr.render_hint" @change="markDirty(idx)">
+                <option v-for="r in RENDER_HINTS" :key="r.value" :value="r.value">{{ r.label }}</option>
+              </select>
+            </div>
+            <div class="ae-field">
+              <label>单位</label>
+              <input type="text" v-model="attr.unit" @input="markDirty(idx)" placeholder="如：万元 / %">
+            </div>
+            <div class="ae-field">
+              <label>格式化</label>
+              <input type="text" v-model="attr.format" @input="markDirty(idx)" placeholder="如 #,##0.00 / YYYY-MM-DD">
             </div>
           </div>
           <div class="ae-field">
@@ -285,6 +370,14 @@ function typeLabel(t) {
                 <input type="checkbox" v-model="attr.is_required" @change="markDirty(idx)">
                 <span class="switch-slider"></span>
                 <span class="switch-label">{{ attr.is_required ? '必填' : '可选' }}</span>
+              </label>
+            </div>
+            <div class="ae-field-check">
+              <label>仅人工编辑</label>
+              <label class="switch">
+                <input type="checkbox" v-model="attr.is_edit_only" @change="markDirty(idx)">
+                <span class="switch-slider"></span>
+                <span class="switch-label">{{ attr.is_edit_only ? '不参与抽取' : '参与抽取' }}</span>
               </label>
             </div>
           </div>
@@ -340,6 +433,12 @@ function typeLabel(t) {
   color: var(--c-accent);
 }
 .ae-req-tag { background: rgba(220, 38, 38, 0.1); color: var(--c-danger); }
+.ae-editonly-tag { background: rgba(147, 51, 234, 0.12); color: #9333EA; }
+.ae-shared-tag { background: rgba(14, 116, 144, 0.12); color: var(--c-accent); }
+.ae-hint-label {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 500;
+  color: var(--c-accent); padding-top: 4px; line-height: 1.4;
+}
 .ae-dirty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c-accent); flex-shrink: 0; }
 .ae-spacer { flex: 1; }
 .ae-actions { display: inline-flex; gap: 4px; }

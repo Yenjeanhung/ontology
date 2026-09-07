@@ -134,6 +134,16 @@ class Ontology(Base):
     description = Column(String, default="")
     color = Column(String, nullable=True)
     sort_order = Column(Integer, nullable=False, default=0)
+    # ── 对象类型元数据（对标 Palantir Object type）──
+    code = Column(String, nullable=True)                      # 类型 API 名，如 person
+    display_name = Column(String, default="")                 # 显示名（可与 name 不同）
+    plural_name = Column(String, default="")                  # 复数名
+    title_key = Column(String, default="")                    # 标题属性名，空则回落 name
+    primary_key = Column(String, default="name")              # 主键属性名
+    icon = Column(String, default="")                         # 图标标识
+    status = Column(String, default="active")                 # draft / active / deprecated
+    visibility = Column(String, default="public")             # public / restricted（预留权限）
+    group_name = Column(String, default="")                   # 对象类型组（前端分组）
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
@@ -150,6 +160,12 @@ class OntologyAttribute(Base):
     is_required = Column(Integer, nullable=False, default=0)
     default_value = Column(String, nullable=True)
     sort_order = Column(Integer, nullable=False, default=0)
+    # ── 属性元数据扩展 ──
+    is_edit_only = Column(Integer, nullable=False, default=0)   # 仅人工编辑，不进抽取 Prompt
+    render_hint = Column(String, default="")                    # text/textarea/tag/link/image/badge
+    format = Column(String, default="")                         # 值格式化，如 #,##0.00 / YYYY-MM-DD
+    unit = Column(String, default="")                           # 单位
+    shared_property_id = Column(String, default="")             # 绑定的共享属性（可空）
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
@@ -241,6 +257,85 @@ class OntologyTemplateBinding(Base):
     ontology_id = Column(String, nullable=False)
     template_id = Column(String, nullable=False)
     sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+# ===== 共享属性（跨本体统一定义，值各自独立）=====
+
+class OntologySharedProperty(Base):
+    __tablename__ = "ontology_shared_properties"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String, nullable=False)
+    code = Column(String, nullable=True)
+    data_type = Column(String, nullable=False)
+    description = Column(String, default="")
+    is_required = Column(Integer, nullable=False, default=0)
+    default_value = Column(String, nullable=True)
+    enum_values = Column(Text, nullable=True)      # JSON 数组，仅 data_type=enum
+    unit = Column(String, default="")
+    format = Column(String, default="")
+    is_system = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+# ===== 本体接口（Interface）：共享属性/链接契约 → 多态 =====
+
+class OntologyInterface(Base):
+    __tablename__ = "ontology_interfaces"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    category_id = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    code = Column(String, nullable=False)               # party / monitorable
+    description = Column(String, default="")
+    icon = Column(String, default="")
+    extends = Column(Text, nullable=True)               # JSON 数组：[interface_id]
+    interface_kind = Column(String, default="functional")  # functional / abstract_object
+    is_system = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class OntologyInterfaceProperty(Base):
+    __tablename__ = "ontology_interface_properties"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    interface_id = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    code = Column(String, nullable=False)
+    data_type = Column(String, nullable=False)
+    description = Column(String, default="")
+    is_required = Column(Integer, nullable=False, default=1)
+    default_value = Column(String, nullable=True)
+    enum_values = Column(Text, nullable=True)
+    shared_property_id = Column(String, default="")
+    sort_order = Column(Integer, nullable=False, default=0)
+
+
+class OntologyInterfaceLink(Base):
+    __tablename__ = "ontology_interface_links"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    interface_id = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    code = Column(String, nullable=False)
+    target_interface_id = Column(String, nullable=True)
+    target_ontology_id = Column(String, default="")
+    cardinality = Column(String, default="ONE_TO_MANY")
+    is_required = Column(Integer, nullable=False, default=0)
+
+
+class OntologyInterfaceImplementation(Base):
+    __tablename__ = "ontology_interface_implementations"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    interface_id = Column(String, nullable=False)
+    ontology_id = Column(String, nullable=False)
+    property_mapping = Column(Text, default="{}")   # JSON: {接口属性code: 本体属性名}
+    link_mapping = Column(Text, nullable=True)      # JSON: {接口链接code: relation_id}
+    status = Column(String, default="active")       # active / partial
     created_at = Column(String, default=lambda: datetime.now().isoformat())
 
 

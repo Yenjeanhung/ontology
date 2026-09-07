@@ -96,6 +96,7 @@ const menuItems = [
     key: 'ontology', label: '本体管理', icon: 'ontology',
     children: [
       { to: '/ontology/templates', label: '本体模板' },
+      { to: '/ontology/shared-properties', label: '共享属性' },
       { to: '/ontology/ontologies', label: '本体管理' },
       { to: '/ontology/relations-dict', label: '关系字典' },
       { to: '/ontology/constraints', label: '本体关系' },

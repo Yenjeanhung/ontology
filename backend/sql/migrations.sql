@@ -276,6 +276,93 @@ CREATE INDEX IF NOT EXISTS idx_relation_suggestions_kb ON relation_suggestions(k
 CREATE INDEX IF NOT EXISTS idx_relation_suggestions_cat ON relation_suggestions(category_id);
 CREATE INDEX IF NOT EXISTS idx_relation_suggestions_status ON relation_suggestions(status);
 
+-- migration_019: 对象类型/属性元数据扩展 + 共享属性
+ALTER TABLE ontologies ADD COLUMN code VARCHAR(64) DEFAULT NULL;
+ALTER TABLE ontologies ADD COLUMN display_name VARCHAR(100) DEFAULT '';
+ALTER TABLE ontologies ADD COLUMN plural_name VARCHAR(100) DEFAULT '';
+ALTER TABLE ontologies ADD COLUMN title_key VARCHAR(64) DEFAULT '';
+ALTER TABLE ontologies ADD COLUMN primary_key VARCHAR(64) DEFAULT 'name';
+ALTER TABLE ontologies ADD COLUMN icon VARCHAR(64) DEFAULT '';
+ALTER TABLE ontologies ADD COLUMN status VARCHAR(20) DEFAULT 'active';
+ALTER TABLE ontologies ADD COLUMN visibility VARCHAR(20) DEFAULT 'public';
+ALTER TABLE ontologies ADD COLUMN group_name VARCHAR(100) DEFAULT '';
+ALTER TABLE ontology_attributes ADD COLUMN is_edit_only INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ontology_attributes ADD COLUMN render_hint VARCHAR(50) DEFAULT '';
+ALTER TABLE ontology_attributes ADD COLUMN format VARCHAR(100) DEFAULT '';
+ALTER TABLE ontology_attributes ADD COLUMN unit VARCHAR(32) DEFAULT '';
+ALTER TABLE ontology_attributes ADD COLUMN shared_property_id VARCHAR DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS ontology_shared_properties (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(50) NOT NULL,
+    code VARCHAR(64) DEFAULT NULL,
+    data_type VARCHAR(20) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    is_required INTEGER NOT NULL DEFAULT 0,
+    default_value VARCHAR(200) DEFAULT NULL,
+    enum_values TEXT DEFAULT NULL,
+    unit VARCHAR(32) DEFAULT '',
+    format VARCHAR(100) DEFAULT '',
+    is_system INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR,
+    UNIQUE(code)
+);
+
+-- migration_020: 本体接口（Interface）：共享属性/链接契约 → 多态
+CREATE TABLE IF NOT EXISTS ontology_interfaces (
+    id VARCHAR PRIMARY KEY,
+    category_id VARCHAR NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    code VARCHAR(64) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    icon VARCHAR(64) DEFAULT '',
+    extends TEXT DEFAULT NULL,
+    interface_kind VARCHAR(20) DEFAULT 'functional',
+    is_system INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR,
+    UNIQUE(category_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS ontology_interface_properties (
+    id VARCHAR PRIMARY KEY,
+    interface_id VARCHAR NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    code VARCHAR(64) NOT NULL,
+    data_type VARCHAR(20) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    is_required INTEGER NOT NULL DEFAULT 1,
+    default_value VARCHAR(200) DEFAULT NULL,
+    enum_values TEXT DEFAULT NULL,
+    shared_property_id VARCHAR DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(interface_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS ontology_interface_links (
+    id VARCHAR PRIMARY KEY,
+    interface_id VARCHAR NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    code VARCHAR(64) NOT NULL,
+    target_interface_id VARCHAR DEFAULT NULL,
+    target_ontology_id VARCHAR DEFAULT '',
+    cardinality VARCHAR(16) DEFAULT 'ONE_TO_MANY',
+    is_required INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(interface_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS ontology_interface_implementations (
+    id VARCHAR PRIMARY KEY,
+    interface_id VARCHAR NOT NULL,
+    ontology_id VARCHAR NOT NULL,
+    property_mapping TEXT DEFAULT '{}',
+    link_mapping TEXT DEFAULT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    created_at VARCHAR,
+    UNIQUE(interface_id, ontology_id)
+);
+
 CREATE TABLE IF NOT EXISTS relation_suggestion_tombstones (
     kb_id VARCHAR NOT NULL,
     source_entity_id VARCHAR NOT NULL,

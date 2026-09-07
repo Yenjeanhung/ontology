@@ -101,14 +101,16 @@ async def batch_create_ontologies(category_id: str, req: BatchCreateOntologiesRe
 @router.post("/ontology-categories/{category_id}/ontologies")
 async def create_ontology(category_id: str, req: CreateOntologyRequest, db: AsyncSession = Depends(get_db)):
     return await OntologyService.create_ontology(
-        db, category_id, req.name, req.description or "", req.color, req.sort_order
+        db, category_id, req.name, req.description or "", req.color, req.sort_order,
+        meta=req.model_dump(exclude={"name", "description", "color", "sort_order"}, exclude_none=True),
     )
 
 
 @router.put("/ontology-categories/{category_id}/ontologies/{ontology_id}")
 async def update_ontology(category_id: str, ontology_id: str, req: UpdateOntologyRequest, db: AsyncSession = Depends(get_db)):
     res = await OntologyService.update_ontology(
-        db, ontology_id, req.name, req.description, req.color, req.sort_order
+        db, ontology_id, req.name, req.description, req.color, req.sort_order,
+        meta=req.model_dump(exclude={"name", "description", "color", "sort_order"}, exclude_none=True),
     )
     if not res:
         raise _nf("Ontology not found")

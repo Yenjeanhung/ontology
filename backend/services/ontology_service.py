@@ -12,6 +12,7 @@ from models import (
     OntologyAttribute,
     OntologyAttributeTemplate,
     OntologyCategory,
+    OntologyInterfaceImplementation,
     OntologyRelation,
     OntologyRelationConstraint,
     OntologySuggestion,
@@ -39,8 +40,55 @@ def _serialize_attribute(attr, source: str = "own") -> dict:
         "is_required": bool(attr.is_required),
         "default_value": attr.default_value,
         "sort_order": attr.sort_order,
+        "is_edit_only": bool(getattr(attr, "is_edit_only", 0)),
+        "render_hint": getattr(attr, "render_hint", "") or "",
+        "format": getattr(attr, "format", "") or "",
+        "unit": getattr(attr, "unit", "") or "",
+        "shared_property_id": getattr(attr, "shared_property_id", "") or "",
         "source": source,
     }
+
+
+def _serialize_ontology(ont: Ontology, extra: dict | None = None) -> dict:
+    """本体（对象类型）基础字段 + 元数据序列化。"""
+    base = {
+        "id": ont.id,
+        "category_id": ont.category_id,
+        "name": ont.name,
+        "description": ont.description or "",
+        "color": ont.color,
+        "sort_order": ont.sort_order,
+        "code": getattr(ont, "code", None),
+        "display_name": getattr(ont, "display_name", "") or "",
+        "plural_name": getattr(ont, "plural_name", "") or "",
+        "title_key": getattr(ont, "title_key", "") or "",
+        "primary_key": getattr(ont, "primary_key", "") or "name",
+        "icon": getattr(ont, "icon", "") or "",
+        "status": getattr(ont, "status", "") or "active",
+        "visibility": getattr(ont, "visibility", "") or "public",
+        "group_name": getattr(ont, "group_name", "") or "",
+    }
+    if extra:
+        base.update(extra)
+    return base
+
+
+# 对象类型元数据可写字段（code 需同类别唯一性校验，单独处理）
+_ONTOLOGY_META_FIELDS = (
+    "display_name", "plural_name", "title_key", "primary_key", "icon",
+    "status", "visibility", "group_name",
+)
+
+
+def _apply_ontology_meta(ont: Ontology, meta: dict | None) -> None:
+    """把对象类型元数据写入本体（None 表示"不修改"）。"""
+    if not meta:
+        return
+    for field in _ONTOLOGY_META_FIELDS:
+        if field in meta and meta[field] is not None:
+            setattr(ont, field, meta[field])
+    if "code" in meta and meta["code"] is not None:
+        ont.code = (meta["code"] or "").strip() or None
 
 
 async def _serialize_constraint(db: AsyncSession, c: OntologyRelationConstraint) -> dict:
@@ -248,9 +296,17 @@ class OntologyService:
             await db.execute(
                 delete(OntologyTemplateBinding).where(OntologyTemplateBinding.ontology_id.in_(ont_ids))
             )
+            await db.execute(
+                delete(OntologyInterfaceImplementation)
+                .where(OntologyInterfaceImplementation.ontology_id.in_(ont_ids))
+            )
             # 级联：本体服务（动作）
             for oid in ont_ids:
                 await OntologyServiceService.delete_for_ontology(db, oid)
+        # 级联：接口（含属性/链接/实现）
+        from services.ontology_interface_service import OntologyInterfaceService
+
+        await OntologyInterfaceService.delete_for_category(db, category_id)
         # 三元组、关系字典、本体、绑定
         await db.execute(
             delete(OntologyRelationConstraint).where(OntologyRelationConstraint.category_id == category_id)
@@ -293,21 +349,17 @@ class OntologyService:
         tpl_counts = await _counts(OntologyTemplateBinding)
         entity_counts = await _counts(Entity)
         svc_counts = await _counts(OntologyServiceModel)
+        iface_counts = await _counts(OntologyInterfaceImplementation)
 
         return [
-            {
-                "id": ont.id,
-                "category_id": ont.category_id,
-                "name": ont.name,
-                "description": ont.description or "",
-                "color": ont.color,
-                "sort_order": ont.sort_order,
+            _serialize_ontology(ont, {
                 "attribute_count": attr_counts.get(ont.id, 0),
                 "template_count": tpl_counts.get(ont.id, 0),
                 "service_count": svc_counts.get(ont.id, 0),
+                "interface_count": iface_counts.get(ont.id, 0),
                 "entity_count": entity_counts.get(ont.id, 0),
                 "created_at": ont.created_at,
-            }
+            })
             for ont in rows
         ]
 
@@ -346,41 +398,46 @@ class OntologyService:
             )).scalar() or 0
         )
 
-        return {
-            "id": ont.id,
-            "category_id": ont.category_id,
-            "name": ont.name,
-            "description": ont.description or "",
-            "color": ont.color,
-            "sort_order": ont.sort_order,
+        iface_count = int(
+            (await db.execute(
+                select(func.count()).where(
+                    OntologyInterfaceImplementation.ontology_id == ont.id
+                )
+            )).scalar() or 0
+        )
+
+        return _serialize_ontology(ont, {
             "attributes": attrs,
             "template_ids": template_ids,
             "attribute_count": len(attrs),
             "template_count": len(template_ids),
             "service_count": service_count,
+            "interface_count": iface_count,
             "entity_count": entity_count,
             "created_at": ont.created_at,
-        }
+        })
 
     @staticmethod
     async def create_ontology(
         db: AsyncSession, category_id: str, name: str,
         description: str = "", color: str | None = None, sort_order: int = 0,
+        meta: dict | None = None,
     ) -> dict:
         ont = Ontology(
             category_id=category_id, name=name.strip(),
             description=(description or "").strip(), color=color, sort_order=sort_order,
         )
+        _apply_ontology_meta(ont, meta)
         db.add(ont)
         await db.commit()
         await db.refresh(ont)
-        return {"id": ont.id, "category_id": ont.category_id, "name": ont.name,
-                "description": ont.description, "color": ont.color, "sort_order": ont.sort_order}
+        return _serialize_ontology(ont)
 
     @staticmethod
     async def update_ontology(
         db: AsyncSession, ontology_id: str, name: str | None = None,
         description: str | None = None, color: str | None = None, sort_order: int | None = None,
+        meta: dict | None = None,
     ) -> dict | None:
         result = await db.execute(select(Ontology).where(Ontology.id == ontology_id))
         ont = result.scalar_one_or_none()
@@ -394,10 +451,10 @@ class OntologyService:
             ont.color = color
         if sort_order is not None:
             ont.sort_order = sort_order
+        _apply_ontology_meta(ont, meta)
         ont.updated_at = datetime.now().isoformat()
         await db.commit()
-        return {"id": ont.id, "name": ont.name, "description": ont.description,
-                "color": ont.color, "sort_order": ont.sort_order}
+        return _serialize_ontology(ont)
 
     @staticmethod
     async def delete_ontology(db: AsyncSession, ontology_id: str) -> bool:
@@ -405,12 +462,16 @@ class OntologyService:
         ont = result.scalar_one_or_none()
         if not ont:
             return False
-        # 级联：属性、模板绑定、本体服务、引用它的三元组
+        # 级联：属性、模板绑定、本体服务、接口实现、引用它的三元组
         await db.execute(
             delete(OntologyAttribute).where(OntologyAttribute.ontology_id == ontology_id)
         )
         await db.execute(
             delete(OntologyTemplateBinding).where(OntologyTemplateBinding.ontology_id == ontology_id)
+        )
+        await db.execute(
+            delete(OntologyInterfaceImplementation)
+            .where(OntologyInterfaceImplementation.ontology_id == ontology_id)
         )
         await OntologyServiceService.delete_for_ontology(db, ontology_id)
         await db.execute(
@@ -467,6 +528,11 @@ class OntologyService:
             data_type=req.data_type, description=(req.description or "").strip(),
             is_required=int(req.is_required), default_value=req.default_value,
             sort_order=req.sort_order,
+            is_edit_only=int(getattr(req, "is_edit_only", False) or False),
+            render_hint=(getattr(req, "render_hint", "") or "").strip(),
+            format=(getattr(req, "format", "") or "").strip(),
+            unit=(getattr(req, "unit", "") or "").strip(),
+            shared_property_id=(getattr(req, "shared_property_id", "") or "").strip(),
         )
         db.add(attr)
         await db.commit()
@@ -504,6 +570,12 @@ class OntologyService:
             attr.default_value = req.default_value
         if req.sort_order is not None:
             attr.sort_order = req.sort_order
+        # 元数据扩展（局部更新，None 表示不修改）
+        if getattr(req, "is_edit_only", None) is not None:
+            attr.is_edit_only = int(req.is_edit_only)
+        for field in ("render_hint", "format", "unit", "shared_property_id"):
+            if getattr(req, field, None) is not None:
+                setattr(attr, field, getattr(req, field).strip())
         attr.updated_at = datetime.now().isoformat()
         await db.commit()
         return _serialize_attribute(attr)
@@ -535,6 +607,11 @@ class OntologyService:
                 data_type=a.data_type, description=(a.description or "").strip(),
                 is_required=int(a.is_required), default_value=a.default_value,
                 sort_order=a.sort_order if a.sort_order is not None else idx,
+                is_edit_only=int(getattr(a, "is_edit_only", False) or False),
+                render_hint=(getattr(a, "render_hint", "") or "").strip(),
+                format=(getattr(a, "format", "") or "").strip(),
+                unit=(getattr(a, "unit", "") or "").strip(),
+                shared_property_id=(getattr(a, "shared_property_id", "") or "").strip(),
             ))
         await db.commit()
         return {"ontology_id": ontology_id, "count": len(attributes)}
@@ -1093,9 +1170,13 @@ class OntologyService:
         ontology_list = []
         ontology_by_name: dict[str, dict] = {}
         for ont in ontologies:
+            # deprecated（已停用）对象类型不进抽取 Prompt
+            if (ont.get("status") or "active") == "deprecated":
+                continue
             merged = await OntologyService.get_merged_attributes(db, ont["id"])
             attrs = merged.get("attributes", []) if merged else ont.get("attributes", [])
-            # 精简属性，只保留抽取 Prompt 与后处理校验需要的字段
+            # 精简属性，只保留抽取 Prompt 与后处理校验需要的字段；
+            # is_edit_only（仅人工编辑）属性不参与抽取
             slim_attrs = [
                 {
                     "name": a["name"],
@@ -1105,6 +1186,7 @@ class OntologyService:
                     "description": a.get("description", ""),
                 }
                 for a in attrs
+                if not a.get("is_edit_only")
             ]
             entry = {
                 "id": ont["id"],

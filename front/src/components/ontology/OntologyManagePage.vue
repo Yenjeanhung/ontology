@@ -12,6 +12,7 @@ import {
   triggerDownload,
 } from '../../api'
 import OntologyEditor from './OntologyEditor.vue'
+import InterfaceEditor from './InterfaceEditor.vue'
 import ModalDialog from '../common/ModalDialog.vue'
 
 const search = ref('')
@@ -22,6 +23,8 @@ const selectedId = ref('')
 const detail = ref(null)
 const loadingDetail = ref(false)
 const loadError = ref('')
+// 详情 Tab：本体定义 / 接口
+const detailTab = ref('ont')
 
 // 基本信息 编辑
 const editingInfo = ref(false)
@@ -204,6 +207,7 @@ async function loadDetail() {
 }
 
 function selectCategory(id) {
+  detailTab.value = 'ont'
   selectedId.value = id
   loadDetail()
 }
@@ -472,8 +476,17 @@ onMounted(loadCategories)
             </div>
           </div>
 
+          <!-- 详情 Tab：本体定义 / 接口 -->
+          <div class="detail-tabs">
+            <button class="detail-tab" :class="{ active: detailTab === 'ont' }" @click="detailTab = 'ont'">本体定义</button>
+            <button class="detail-tab" :class="{ active: detailTab === 'iface' }" @click="detailTab = 'iface'">接口</button>
+          </div>
+
           <!-- 本体编辑器（列表+详情按需加载，自身管理数据） -->
-          <OntologyEditor :category-id="selectedId" @changed="onSubChanged" />
+          <OntologyEditor v-show="detailTab === 'ont'" class="detail-editor" :category-id="selectedId" @changed="onSubChanged" />
+
+          <!-- 接口管理（属性契约 + 实现 + 多态查询） -->
+          <InterfaceEditor v-if="detailTab === 'iface'" class="detail-editor" :category-id="selectedId" />
         </template>
       </div>
     </div>
@@ -644,7 +657,9 @@ onMounted(loadCategories)
 </template>
 
 <style scoped>
-.page-shell { display: flex; flex-direction: column; gap: 16px; height: 100%; }
+/* 占有视口剩余高度（顶栏 52 + 内边距 28+48 = 128），使左右两栏各自独立滚动，
+   而非整页滚动。左侧类别面板与右侧本体列表各自带独立滚动条、互不影响。 */
+.page-shell { display: flex; flex-direction: column; gap: 16px; height: calc(100dvh - 128px); min-height: 0; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--c-border); }
 .page-title-row { display: flex; flex-direction: column; gap: 2px; }
 .page-title { font-size: 20px; font-weight: 700; color: var(--c-fg); }
@@ -667,8 +682,15 @@ onMounted(loadCategories)
 .icon-btn.sm:hover { background: var(--c-muted); color: var(--c-fg); }
 
 .cat-scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
-.cat-item { display: flex; align-items: center; gap: 10px; padding: 10px 10px; border-radius: var(--radius-sm); cursor: pointer; transition: background 120ms; }
-.cat-item:hover { background: var(--c-muted); }
+.detail-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--c-border); padding-bottom: 4px; margin-bottom: 2px; }
+.detail-tab {
+  padding: 6px 14px; font-size: 12.5px; font-weight: 600; font-family: var(--font);
+  border: 1px solid transparent; border-radius: 999px; background: transparent;
+  color: var(--c-secondary); cursor: pointer; transition: all 120ms;
+}
+.detail-tab:hover { background: var(--c-muted); color: var(--c-fg); }
+.detail-tab.active { background: var(--c-fg); color: var(--c-panel); }
+.cat-item { display: flex; align-items: center; gap: 10px; padding: 10px 10px; border-radius: var(--radius-sm); cursor: pointer; transition: background 120ms; }.cat-item:hover { background: var(--c-muted); }
 .cat-item.active { background: var(--c-muted); }
 .cat-item.active .cat-item-title { color: var(--c-fg); font-weight: 700; }
 .cat-item-icon { flex-shrink: 0; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); background: var(--c-muted); color: var(--c-accent); }
@@ -690,16 +712,18 @@ onMounted(loadCategories)
 .tag.custom { background: var(--c-muted); color: var(--c-secondary); }
 
 /* 右侧详情面板 */
-.detail-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+.detail-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
 
-.info-card { border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); padding: 4px 20px; max-width: 720px; }
-.info-row { display: flex; align-items: flex-start; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--c-border); }
+.detail-editor { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+
+.info-card { border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); padding: 10px 16px; }
+.info-row { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--c-border); }
 .info-row:last-child { border-bottom: 0; }
-.info-label { flex: 0 0 90px; font-size: 13px; font-weight: 600; color: var(--c-secondary); padding-top: 2px; }
-.info-value { flex: 1; min-width: 0; font-size: 14px; color: var(--c-fg); word-break: break-word; }
-.info-input { width: 100%; padding: 7px 11px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 14px; font-family: var(--font); outline: none; resize: vertical; }
+.info-label { flex: 0 0 80px; font-size: 12.5px; font-weight: 600; color: var(--c-secondary); padding-top: 2px; }
+.info-value { flex: 1; min-width: 0; font-size: 13px; color: var(--c-fg); word-break: break-word; }
+.info-input { width: 100%; padding: 6px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 13px; font-family: var(--font); outline: none; resize: vertical; }
 .info-input:focus { border-color: var(--c-fg); }
-.info-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 0; }
+.info-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 0 0; }
 
 .loading-state { padding: 40px; text-align: center; color: var(--c-secondary); font-size: 14px; }
 .loading-state.sm { padding: 20px; }
