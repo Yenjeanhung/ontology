@@ -699,7 +699,7 @@ class OntologyInterfaceService:
     @staticmethod
     async def resolve_objects(
         db: AsyncSession, category_id: str, interface_code: str,
-        q: str = "", limit: int = 50, offset: int = 0,
+        q: str = "", ontology_id: str = "", limit: int = 50, offset: int = 0,
     ) -> dict | None:
         """按接口查询对象：把各实现本体的本地属性投影为接口属性，返回统一结构。"""
         iface = (await db.execute(
@@ -727,6 +727,8 @@ class OntologyInterfaceService:
         stmt = select(Entity).where(Entity.ontology_id.in_(ont_ids))
         if q:
             stmt = stmt.where(Entity.name.contains(q))
+        if ontology_id and ontology_id in ont_ids:
+            stmt = stmt.where(Entity.ontology_id == ontology_id)
         total = int((await db.execute(
             select(func.count()).select_from(stmt.subquery())
         )).scalar() or 0)

@@ -21,6 +21,7 @@
           <span class="if-count">{{ iface.property_count ?? (iface.properties || []).length }} 属性</span>
           <span class="if-count">{{ iface.implementation_count ?? (iface.implementations || []).length }} 实现</span>
           <span class="if-desc" v-if="iface.description">{{ iface.description }}</span>
+          <button class="btn sm ghost" @click.stop="openPolyForRow(iface)" title="跨本体多态查询">查询对象</button>
           <button class="btn sm danger" @click.stop="removeIface(iface)" title="删除接口">删除</button>
         </div>
 
@@ -133,7 +134,7 @@
                       <td>
                         <select v-model="implMapping[p.code]">
                           <option value="">未映射</option>
-                          <option v-for="n in implOntAttrNames" :key="n" :value="n">{{ n }}</option>
+                          <option v-for="a in implOntAttrs" :key="a.value" :value="a.value">{{ a.label }}</option>
                         </select>
                       </td>
                     </tr>
@@ -148,35 +149,60 @@
               </div>
             </div>
 
-            <!-- 多态查询预览 -->
-            <div class="if-sec">
-              <div class="if-sec-head">
-                <span class="if-sec-title">多态查询预览</span>
-                <button class="btn sm" :disabled="polyLoading" @click="runPolyQuery">
-                  <span v-if="polyLoading" class="spinner"></span> 按接口查询对象
-                </button>
-              </div>
-              <div v-if="polyError" class="if-error">{{ polyError }}</div>
-              <table v-if="polyRows.length" class="if-table">
-                <thead>
-                  <tr>
-                    <th>本体</th>
-                    <th>名称</th>
-                    <th v-for="p in detail.properties" :key="p.code">{{ p.name }}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(r, i) in polyRows" :key="i">
-                    <td><span class="if-mini-code">{{ r._ontology }}</span></td>
-                    <td>{{ r.name }}</td>
-                    <td v-for="p in detail.properties" :key="p.code">{{ r.properties?.[p.code] ?? '—' }}</td>
-                  </tr>
-                </tbody>
-              </table>
-              <p v-else-if="polyQueried && !polyRows.length" class="if-text muted">无实现该接口的对象，或实现均为 partial。</p>
-            </div>
           </template>
         </div>
+      </div>
+    </div>
+
+    <!-- 多态查询弹窗（点击遮罩不关闭，仅关闭按钮） -->
+    <div v-if="showPoly" class="if-mask poly-mask">
+      <div class="if-modal poly-modal">
+        <div class="if-modal-head">
+          <h3>多态查询预览 · {{ detail?.name }}</h3>
+          <button class="btn sm" @click="showPoly = false">关闭</button>
+        </div>
+        <div class="if-modal-filters">
+          <div class="if-field">
+            <label>实体名</label>
+            <input v-model="polyQ" placeholder="按实体名称筛选" @keydown.enter="applyFilters">
+          </div>
+          <div class="if-field">
+            <label>本体名</label>
+            <select v-model="polyOntId">
+              <option value="">全部本体</option>
+              <option v-for="impl in detail?.implementations || []" :key="impl.ontology_id" :value="impl.ontology_id">{{ impl.ontology_name }}</option>
+            </select>
+          </div>
+          <button class="btn primary sm" :disabled="polyLoading" @click="applyFilters">查询</button>
+        </div>
+        <div v-if="polyError" class="if-error">{{ polyError }}</div>
+        <div v-else-if="polyLoading" class="if-text muted">查询中…</div>
+        <div v-else class="poly-body">
+          <table v-if="polyRows.length" class="if-table">
+            <thead>
+              <tr>
+                <th>本体</th>
+                <th>名称</th>
+                <th v-for="p in detail.properties" :key="p.code">{{ p.name }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(r, i) in polyRows" :key="r.id || i">
+                <td><span class="if-mini-code">{{ r._ontology }}</span></td>
+                <td>{{ r.name }}</td>
+                <td v-for="p in detail.properties" :key="p.code">{{ r.properties?.[p.code] ?? '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else-if="polyQueried && !polyRows.length" class="if-text muted">无匹配对象，请调整筛选条件。</p>
+        </div>
+        <Pagination
+          v-if="!polyLoading && !polyError && polyTotal > 0"
+          v-model:page="polyPage"
+          v-model:page-size="polyPageSize"
+          :total="polyTotal"
+          @change="onPolyPagerChange"
+        />
       </div>
     </div>
 
@@ -207,6 +233,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import Pagination from '../common/Pagination.vue'
 import {
   fetchInterfaces, createInterface, getInterfaceDetail, updateInterface, deleteInterface,
   setInterfaceProperties, implementInterface, removeImplementation,
@@ -239,12 +266,16 @@ const ontologies = ref([])
 const sharedProps = ref([])
 const addingImpl = ref(false)
 const implOntId = ref('')
-const implOntAttrNames = ref([])
+const implOntAttrs = ref([])   // [{value: 属性编码, label: 名称(编码)}]
 const implMapping = ref({})
 const implSaving = ref(false)
 
 // 多态预览
 const polyRows = ref([]); const polyLoading = ref(false); const polyError = ref(''); const polyQueried = ref(false)
+const showPoly = ref(false)
+const polyPage = ref(1); const polyPageSize = ref(10); const polyTotal = ref(0)
+const polyQ = ref('')
+const polyOntId = ref('')
 
 // 新建
 const showCreate = ref(false)
@@ -273,6 +304,7 @@ async function toggleExpand(id) {
   expandedId.value = expandedId.value === id ? '' : id
   detail.value = null
   polyRows.value = []; polyError.value = ''; polyQueried.value = false
+  showPoly.value = false; polyPage.value = 1; polyTotal.value = 0; polyQ.value = ''; polyOntId.value = ''
   addingImpl.value = false
   if (expandedId.value) await loadDetail(id)
 }
@@ -342,20 +374,28 @@ function mapSummary(mapping) {
 }
 
 function openAddImpl() {
-  implOntId.value = ''; implMapping.value = {}; implOntAttrNames.value = []
+  implOntId.value = ''; implMapping.value = {}; implOntAttrs.value = []
   addingImpl.value = true
 }
 
 async function loadImplOntAttrs() {
-  implMapping.value = {}; implOntAttrNames.value = []
+  implMapping.value = {}; implOntAttrs.value = []
   if (!implOntId.value || !detail.value) return
   try {
     const d = await getOntologyDetail(props.categoryId, implOntId.value)
-    implOntAttrNames.value = ['name', ...(d.attributes || []).map(a => a.name).filter(Boolean)]
-    // 同名预填
+    const attrs = [{ name: 'name', code: 'name' }, ...(d.attributes || [])]
+    implOntAttrs.value = attrs
+      .filter(a => a.code || a.name)
+      .map(a => ({
+        value: a.code || a.name,
+        label: a.code && a.code !== a.name ? `${a.name} (${a.code})` : a.name,
+      }))
+    // 同编码/同名预填（映射值用编码，与实体 properties 键一致）
     const draft = {}
     for (const p of detail.value.properties || []) {
-      draft[p.code] = implOntAttrNames.value.includes(p.name) ? p.name : ''
+      const hit = attrs.find(a => (a.code || a.name) === p.code)
+        || attrs.find(a => a.name === p.name)
+      draft[p.code] = hit ? (hit.code || hit.name) : ''
     }
     implMapping.value = draft
   } catch { /* 忽略，用户可手动选 */ }
@@ -389,17 +429,43 @@ async function removeImpl(impl) {
   }
 }
 
-async function runPolyQuery() {
+async function openPolyForRow(iface) {
+  if (expandedId.value !== iface.id || !detail.value) {
+    expandedId.value = iface.id
+    await loadDetail(iface.id)
+  }
+  showPoly.value = true
+  polyPage.value = 1
+  runPolyQuery(1)
+}
+
+async function runPolyQuery(page = polyPage.value) {
   polyLoading.value = true; polyError.value = ''; polyQueried.value = false
   try {
-    const res = await resolveInterfaceObjects(props.categoryId, detail.value.code)
+    const res = await resolveInterfaceObjects(props.categoryId, detail.value.code, {
+      q: polyQ.value,
+      ontology_id: polyOntId.value,
+      limit: polyPageSize.value,
+      offset: (page - 1) * polyPageSize.value,
+    })
     polyRows.value = (res.items || []).map(o => ({ ...o, _ontology: o.ontology_name || o.ontology_id }))
+    polyTotal.value = res.total ?? polyRows.value.length
+    polyPage.value = page
     polyQueried.value = true
   } catch (e) {
     polyError.value = '查询失败：' + e.message
   } finally {
     polyLoading.value = false
   }
+}
+
+function applyFilters() {
+  polyPage.value = 1
+  runPolyQuery(1)
+}
+
+function onPolyPagerChange() {
+  runPolyQuery(polyPage.value)
 }
 
 async function removeIface(iface) {
@@ -461,6 +527,9 @@ defineExpose({ reload: load })
 .if-count { font-size: 11px; color: var(--c-secondary); }
 .if-desc { font-size: 12px; color: var(--c-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 .if-row .btn { margin-left: auto; }
+.if-row .btn + .btn { margin-left: 8px; }
+.if-row .btn.ghost { background: transparent; color: var(--c-fg); }
+.if-row .btn.ghost:hover { border-color: var(--c-fg); }
 
 .if-body { border-top: 1px solid var(--c-border); padding: 14px 16px; display: flex; flex-direction: column; gap: 18px; background: var(--c-bg); }
 .if-sec { display: flex; flex-direction: column; gap: 8px; }
@@ -496,6 +565,17 @@ defineExpose({ reload: load })
 
 .if-mask { position: fixed; inset: 0; background: var(--c-overlay); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 20px; }
 .if-modal { background: var(--c-panel); border-radius: var(--radius); padding: 22px; width: 100%; max-width: 460px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18); }
+.if-modal.poly-modal { max-width: 92vw; width: 1180px; height: 84vh; display: flex; flex-direction: column; }
+.if-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.if-modal-filters { display: grid; grid-template-columns: 1fr 200px auto; gap: 10px; align-items: end; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed var(--c-border); flex-shrink: 0; }
+.if-modal-filters .if-field { margin-bottom: 0; }
+.if-modal-filters .if-field label { font-size: 11.5px; font-weight: 600; color: var(--c-secondary); }
+.poly-body { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--c-border); border-radius: var(--radius-sm); }
+.poly-body .if-table { margin: 0; }
+.poly-body .if-table thead th { position: sticky; top: 0; background: var(--c-muted); z-index: 1; font-weight: 600; }
+.poly-body .if-table tbody tr:nth-child(even) { background: var(--c-bg); }
+.poly-body .if-table tbody tr:hover { background: var(--c-muted); }
+.if-modal-head h3 { font-size: 15px; font-weight: 700; color: var(--c-fg); margin: 0; }
 .if-modal h3 { font-size: 15px; font-weight: 700; margin-bottom: 16px; color: var(--c-fg); }
 .if-modal .if-field { margin-bottom: 12px; }
 

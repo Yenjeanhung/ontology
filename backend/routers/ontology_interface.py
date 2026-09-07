@@ -183,13 +183,14 @@ async def resolve_interface_objects(
     category_id: str,
     interface_code: str,
     q: str = "",
+    ontology_id: str = "",
     limit: int = 50,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
     """多态查询：按接口取各实现本体的对象，属性按映射投影为接口属性。"""
     res = await OntologyInterfaceService.resolve_objects(
-        db, category_id, interface_code, q, limit, offset,
+        db, category_id, interface_code, q, ontology_id, limit, offset,
     )
     if res is None:
         raise _not_found("Interface not found")

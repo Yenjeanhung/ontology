@@ -1122,9 +1122,10 @@ export async function fetchOntologyInterfaces(ontologyId) {
 }
 
 // 多态查询：按接口取各实现本体的对象（属性按映射投影）
-export async function resolveInterfaceObjects(categoryId, interfaceCode, { q = '', limit = 50, offset = 0 } = {}) {
+export async function resolveInterfaceObjects(categoryId, interfaceCode, { q = '', ontology_id = '', limit = 50, offset = 0 } = {}) {
   const params = new URLSearchParams()
   if (q) params.set('q', q)
+  if (ontology_id) params.set('ontology_id', ontology_id)
   params.set('limit', String(limit))
   params.set('offset', String(offset))
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/interfaces/${encodeURIComponent(interfaceCode)}/objects?${params.toString()}`)
