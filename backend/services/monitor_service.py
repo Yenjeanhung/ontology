@@ -308,7 +308,7 @@ _COMPONENTS: list[dict] = [
         "config_func": lambda: {
             "EMBEDDING_PROVIDER": settings.EMBEDDING_PROVIDER,
             "EMBEDDING_MODEL": settings.EMBEDDING_MODEL if settings.EMBEDDING_PROVIDER == "local" else settings.OPENAI_EMBEDDING_MODEL,
-            "OPENAI_EMBEDDING_DIMENSION": settings.OPENAI_EMBEDDING_DIMENSION,
+            "EMBEDDING_DIMENSION": settings.EMBEDDING_DIMENSION if settings.EMBEDDING_PROVIDER == "local" else settings.OPENAI_EMBEDDING_DIMENSION,
         },
     },
     {
