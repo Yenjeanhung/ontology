@@ -37,6 +37,11 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  // 模板 id -> 名称 映射，用于在「继承」标签上提示来源模板
+  templateNameMap: {
+    type: Object,
+    default: () => ({}),
+  },
 })
 
 const emit = defineEmits(['saved', 'change'])
@@ -92,6 +97,7 @@ function syncFromProps() {
       // 来源：'own' 本体自有；'template:xxx' 继承自模板（不可删除；改动只作为自有覆盖）
       _source: a.source || 'own',
       _templateId: (a.source && a.source.startsWith('template:')) ? a.source.slice('template:'.length) : '',
+      _templateName: (a.source && a.source.startsWith('template:')) ? (props.templateNameMap[a.source.slice('template:'.length)] || '') : '',
       _dirty: false,
       _isNew: false,
     }))
@@ -307,6 +313,7 @@ function sharedPropOf(attr) {
           <span class="ae-type-tag">{{ typeLabel(t.data_type) }}</span>
           <span v-if="t.is_required" class="ae-req-tag">必填</span>
           <span class="ae-tpl-tag" title="继承自属性模板，本体自有同名属性会覆盖它">继承</span>
+          <span v-if="t._templateName" class="ae-tpl-src" :title="'继承自属性模板「' + t._templateName + '」'">来自 {{ t._templateName }}</span>
           <span class="ae-spacer"></span>
           <span v-if="t.description" class="ae-builtin-desc">{{ t.description }}</span>
         </div>
@@ -332,7 +339,7 @@ function sharedPropOf(attr) {
           <span class="ae-type-tag">{{ typeLabel(attr.data_type) }}</span>
           <span v-if="attr.is_required" class="ae-req-tag">必填</span>
           <span v-if="attr.is_edit_only" class="ae-editonly-tag" title="仅人工编辑，不参与抽取">仅编辑</span>
-          <span v-if="attr._source && attr._source.startsWith('template:')" class="ae-tpl-tag" title="继承自属性模板（在此编辑只作为自有覆盖）">继承</span>
+          <span v-if="attr._source && attr._source.startsWith('template:')" class="ae-tpl-tag" :title="'继承自属性模板' + (attr._templateName ? '「' + attr._templateName + '」' : '') + '（在此编辑只作为自有覆盖）'">继承{{ attr._templateName ? '·' + attr._templateName : '' }}</span>
           <span v-if="attr.shared_property_id && sharedPropOf(attr)" class="ae-shared-tag" title="已绑定共享属性">共享</span>
           <span v-if="attr._dirty || attr._isNew" class="ae-dirty-dot" title="未保存"></span>
           <span class="ae-spacer"></span>
@@ -490,6 +497,11 @@ function sharedPropOf(attr) {
 .ae-editonly-tag { background: rgba(147, 51, 234, 0.12); color: #9333EA; }
 .ae-shared-tag { background: rgba(14, 116, 144, 0.12); color: var(--c-accent); }
 .ae-tpl-tag { background: rgba(245, 158, 11, 0.14); color: #B45309; }
+.ae-tpl-src {
+  font-size: 11px; padding: 1px 7px; border-radius: 10px;
+  background: rgba(245, 158, 11, 0.08); color: #B45309; flex-shrink: 0;
+  max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .ae-locked-tip { font-size: 11px; color: var(--c-secondary); font-style: italic; }
 .ae-hint-label {
   display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 500;

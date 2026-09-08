@@ -123,6 +123,13 @@ const templateOptions = computed(() =>
   templates.value.map(t => ({ value: t.id, label: t.name, meta: `${t.attribute_count} 个属性` }))
 )
 
+// 模板 id -> 名称 映射，传给属性编辑器用于显示继承来源
+const templateNameMap = computed(() => {
+  const m = {}
+  for (const t of templates.value) m[t.id] = t.name
+  return m
+})
+
 const activeTab = ref('info')
 
 const detailTabs = computed(() => [
@@ -146,10 +153,6 @@ async function loadList() {
   listLoading.value = true
   try {
     list.value = await fetchOntologies(props.categoryId)
-    // 若当前抽屉中的本体已被删除，关闭抽屉
-    if (currentId.value && !list.value.some(o => o.id === currentId.value)) {
-      closeDetail()
-    }
   } catch {
     list.value = []
   } finally {
@@ -179,7 +182,6 @@ async function loadDetail(ontId) {
     tplDirty.value = false
     editingInfo.value = false
     inheritedAttrs.value = []
-    activeTab.value = 'info'
     // 后台拉取每个已绑定模板的完整属性，组装成「继承」只读列表
     const tplIds = tplBinding.value
     if (tplIds.length) {
@@ -245,6 +247,7 @@ function openDetail(ont) {
   currentId.value = ont.id
   drawerOpen.value = true
   detail.value = null
+  activeTab.value = 'info'
   loadDetail(ont.id)
 }
 
@@ -610,13 +613,14 @@ onActivated(() => { onSvcSaved() })
     </div>
 
     <!-- 本体详情弹窗 -->
-    <ModalDialog
-      v-model="drawerOpen"
-      :title="(detail || currentRow)?.name || '本体详情'"
-      size="xl"
-      close-on-esc
-      @close="editingInfo = false"
-    >
+    <div class="oe-detail-dialog">
+      <ModalDialog
+        v-model="drawerOpen"
+        :title="(detail || currentRow)?.name || '本体详情'"
+        size="xl"
+        close-on-esc
+        @close="editingInfo = false"
+      >
       <div class="oe-detail-head">
         <span class="oe-color-dot lg" :style="{ background: (detail || currentRow)?.color || '#A16207' }"></span>
         <div class="oe-detail-title">
@@ -752,6 +756,7 @@ onActivated(() => { onSvcSaved() })
                   :save-fn="saveAttributes"
                   :shared-properties="sharedProps"
                   :inherited-attributes="inheritedAttrs"
+                  :template-name-map="templateNameMap"
                   @saved="() => {}"
                 />
               </div>
@@ -853,7 +858,8 @@ onActivated(() => { onSvcSaved() })
           </div>
           </template>
         </div>
-    </ModalDialog>
+      </ModalDialog>
+    </div>
 
     <!-- 新建本体弹窗 -->
     <div v-if="showCreate" class="oe-modal-mask" @click.self="showCreate = false">
@@ -1025,4 +1031,8 @@ onActivated(() => { onSvcSaved() })
 .oe-tab-panels { flex: 1; overflow-y: auto; padding-top: 16px; min-height: 0; }
 .oe-tab-panel { display: flex; flex-direction: column; gap: 12px; }
 .oe-tab-panel > .oe-section { gap: 10px; }
+
+/* 本体详情弹窗整体向右偏移，避免与左侧菜单重叠 */
+.oe-detail-dialog:deep(.md-mask) { padding-left: var(--sidebar-width, 216px); }
+.oe-detail-dialog:deep(.md-dialog) { max-width: min(1100px, calc(100vw - var(--sidebar-width, 216px) - 40px)); }
 </style>

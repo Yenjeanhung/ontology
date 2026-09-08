@@ -82,6 +82,11 @@ const triggerText = computed(() => {
   return selectedLabels.value[0] || props.placeholder
 })
 
+// 多选时，触发器内最多展示的标签数，超出折叠为「+N」
+const VISIBLE_CHIPS = 3
+const visibleChips = computed(() => selectedLabels.value.slice(0, VISIBLE_CHIPS))
+const hiddenChipCount = computed(() => Math.max(0, selectedLabels.value.length - VISIBLE_CHIPS))
+
 const isPlaceholder = computed(() => selectedValues.value.length === 0)
 
 function toggleOpen() {
@@ -144,18 +149,20 @@ function handleClickOutside(e) {
 
 function handleEsc(e) {
   if (e.key === 'Escape' && open.value) {
+    // 捕获阶段拦截并阻止冒泡：下拉打开时 ESC 只关闭下拉，不连带关闭外层弹窗
+    e.stopPropagation()
     close()
   }
 }
 
 onMounted(() => {
   document.addEventListener('mousedown', handleClickOutside)
-  document.addEventListener('keydown', handleEsc)
+  document.addEventListener('keydown', handleEsc, true)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', handleClickOutside)
-  document.removeEventListener('keydown', handleEsc)
+  document.removeEventListener('keydown', handleEsc, true)
 })
 
 watch(() => props.options, () => {
@@ -180,7 +187,12 @@ watch(() => props.options, () => {
       @click="toggleOpen"
     >
       <span v-if="iconSvg" class="ss-trigger-icon" v-html="iconSvg"></span>
-      <span class="ss-trigger-text" :class="{ placeholder: isPlaceholder }">
+      <span v-if="multiple && selectedValues.length === 0" class="ss-trigger-text placeholder">{{ placeholder }}</span>
+      <span v-else-if="multiple && selectedValues.length" class="ss-chips">
+        <span v-for="(lbl, i) in visibleChips" :key="i" class="ss-chip">{{ lbl }}</span>
+        <button v-if="hiddenChipCount > 0" type="button" class="ss-chip more" title="展开查看全部" @click.stop="toggleOpen">+{{ hiddenChipCount }}</button>
+      </span>
+      <span v-else class="ss-trigger-text" :class="{ placeholder: isPlaceholder }">
         {{ triggerText }}
       </span>
       <span class="ss-trigger-actions">
@@ -290,6 +302,39 @@ watch(() => props.options, () => {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--c-fg);
+}
+
+.ss-chips {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.ss-chip {
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 9px;
+  border-radius: 10px;
+  background: var(--c-muted);
+  border: 1px solid var(--c-border);
+  color: var(--c-fg);
+  white-space: nowrap;
+}
+
+.ss-chip.more {
+  cursor: pointer;
+  background: var(--c-accent);
+  border-color: var(--c-accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.ss-chip.more:hover {
+  opacity: 0.9;
 }
 
 .ss-trigger-text.placeholder {

@@ -210,8 +210,13 @@ function selectCategory(id) {
   loadDetail()
 }
 
-function onSubChanged() {
-  loadDetail()
+// 子组件变更后静默刷新详情（不显示 loading，避免编辑器及其弹窗被销毁重建导致状态丢失）
+async function onSubChanged() {
+  if (!selectedId.value) return
+  try {
+    const data = await getOntologyCategoryDetail(selectedId.value)
+    if (data) detail.value = data
+  } catch { /* 静默失败，保留现有数据 */ }
 }
 
 // 新建类别

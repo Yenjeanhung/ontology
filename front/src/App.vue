@@ -481,7 +481,9 @@ onBeforeUnmount(() => {
   max-width: 100%;
   margin: 0;
   overflow: visible;
+  --sidebar-width: 216px;
 }
+.app-shell.is-collapsed { --sidebar-width: 80px; }
 
 /* ─── 侧栏（展开态：宽侧栏专业样式） ─── */
 .sidebar {
