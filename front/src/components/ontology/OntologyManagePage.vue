@@ -29,12 +29,6 @@ const loadError = ref('')
 // 详情 Tab：本体定义 / 接口 / 对象视图(S6) / 版本(S7) / 影响分析(S7)
 const detailTab = ref('ont')
 
-// 基本信息 编辑
-const editingInfo = ref(false)
-const infoName = ref('')
-const infoDesc = ref('')
-const savingInfo = ref(false)
-
 // 新建弹窗
 const showCreate = ref(false)
 const createName = ref('')
@@ -198,8 +192,6 @@ async function loadDetail() {
       detail.value = null
     } else {
       detail.value = data
-      infoName.value = data.name
-      infoDesc.value = data.description || ''
     }
   } catch (e) {
     loadError.value = '加载失败：' + e.message
@@ -213,39 +205,6 @@ function selectCategory(id) {
   detailTab.value = 'ont'
   selectedId.value = id
   loadDetail()
-}
-
-function startEditInfo() {
-  infoName.value = detail.value.name
-  infoDesc.value = detail.value.description || ''
-  editingInfo.value = true
-}
-
-async function saveInfo() {
-  if (!infoName.value.trim()) return
-  savingInfo.value = true
-  try {
-    await updateOntologyCategory(selectedId.value, {
-      name: infoName.value.trim(),
-      description: infoDesc.value.trim(),
-    })
-    if (detail.value) {
-      detail.value.name = infoName.value.trim()
-      detail.value.description = infoDesc.value.trim()
-    }
-    editingInfo.value = false
-    await loadCategories()
-  } catch (e) {
-    alert('保存失败：' + e.message)
-  } finally {
-    savingInfo.value = false
-  }
-}
-
-function cancelEditInfo() {
-  editingInfo.value = false
-  infoName.value = detail.value?.name || ''
-  infoDesc.value = detail.value?.description || ''
 }
 
 function onSubChanged() {
@@ -442,40 +401,15 @@ onMounted(loadCategories)
         </div>
 
         <div v-else-if="detail" class="detail-body">
-          <!-- 基本信息 -->
+          <!-- 基本信息：紧凑单行摘要（名称 + 描述 + 类型），编辑入口在左侧类别列表里 -->
           <div class="info-card">
-            <div class="info-row">
-              <span class="info-label">类别名称</span>
-              <div class="info-value">
-                <input v-if="editingInfo" type="text" v-model="infoName" class="info-input">
-                <span v-else>{{ detail.name }}</span>
-              </div>
-            </div>
-            <div class="info-row">
-              <span class="info-label">描述</span>
-              <div class="info-value">
-                <textarea v-if="editingInfo" v-model="infoDesc" rows="2" class="info-input"></textarea>
-                <span v-else>{{ detail.description || '—' }}</span>
-              </div>
-            </div>
-            <div class="info-row">
-              <span class="info-label">类型</span>
-              <span class="info-value">
-                <span v-if="detail.is_system" class="tag system">系统内置</span>
-                <span v-else class="tag custom">自定义</span>
-              </span>
-            </div>
-            <div class="info-actions">
-              <template v-if="editingInfo">
-                <button class="btn" @click="cancelEditInfo">取消</button>
-                <button class="btn primary" @click="saveInfo" :disabled="savingInfo || !infoName.trim()">
-                  <span v-if="savingInfo" class="spinner"></span> 保存
-                </button>
-              </template>
-              <button v-else class="btn" @click="startEditInfo">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
-                编辑
-              </button>
+            <div class="info-summary">
+              <span class="info-name" :title="detail.name">{{ detail.name }}</span>
+              <span class="info-sep">·</span>
+              <span class="info-desc" :title="detail.description || '（无描述）'">{{ detail.description || '（无描述）' }}</span>
+              <span class="info-sep" v-if="detail.description">·</span>
+              <span v-if="detail.is_system" class="tag system xs">系统内置</span>
+              <span v-else class="tag custom xs">自定义</span>
             </div>
           </div>
 
@@ -732,14 +666,18 @@ onMounted(loadCategories)
 .detail-editor { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .detail-body { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 10px; overflow: hidden; }
 
-.info-card { border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); padding: 10px 16px; }
-.info-row { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--c-border); }
-.info-row:last-child { border-bottom: 0; }
-.info-label { flex: 0 0 80px; font-size: 12.5px; font-weight: 600; color: var(--c-secondary); padding-top: 2px; }
-.info-value { flex: 1; min-width: 0; font-size: 13px; color: var(--c-fg); word-break: break-word; }
-.info-input { width: 100%; padding: 6px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 13px; font-family: var(--font); outline: none; resize: vertical; }
+.info-card { border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); padding: 6px 10px; flex-shrink: 0; }
+.info-summary { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--c-fg); min-height: 26px; }
+.info-name { font-weight: 600; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+.info-sep { color: var(--c-secondary); opacity: 0.6; flex-shrink: 0; }
+.info-desc { color: var(--c-secondary); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.info-spacer { flex: 0 0 0; }
+.tag.xs { font-size: 10px; padding: 1px 6px; border-radius: 8px; }
+.info-edit { display: flex; flex-direction: column; gap: 6px; padding: 4px 0; }
+.info-input { width: 100%; padding: 5px 9px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12.5px; font-family: var(--font); outline: none; resize: vertical; }
 .info-input:focus { border-color: var(--c-fg); }
-.info-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 0 0; }
+.info-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.btn.xs { padding: 2px 9px; font-size: 11px; }
 
 .loading-state { padding: 40px; text-align: center; color: var(--c-secondary); font-size: 14px; }
 .loading-state.sm { padding: 20px; }
