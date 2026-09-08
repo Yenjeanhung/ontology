@@ -1,16 +1,20 @@
 <script setup>
 import { ref, onMounted, watch } from 'vue'
-import { fetchVersions, createVersion, rollbackVersion } from '../../api'
+import { fetchVersions, createVersion, rollbackVersion, deleteVersion } from '../../api'
+import { useToast } from '../../composables/useToast'
 
 const props = defineProps({
   categoryId: { type: String, required: true },
 })
 
+const toast = useToast()
 const versions = ref([])
 const loading = ref(false)
 const creating = ref(false)
 const note = ref('')
 const rollbackingId = ref('')
+const deletingId = ref('')
+const pendingDelete = ref(null)
 
 async function load() {
   if (!props.categoryId) return
@@ -29,9 +33,10 @@ async function create() {
   try {
     await createVersion(props.categoryId, { note: note.value, source: 'manual' })
     note.value = ''
+    toast.success('版本已发布')
     await load()
   } catch (e) {
-    alert('发布版本失败：' + e.message)
+    toast.error('发布版本失败：' + e.message)
   } finally {
     creating.value = false
   }
@@ -42,12 +47,36 @@ async function rollback(v) {
   rollbackingId.value = v.id
   try {
     await rollbackVersion(props.categoryId, v.id)
-    alert('已回滚到 v' + v.version_no)
+    toast.success('已回滚到 v' + v.version_no)
     await load()
   } catch (e) {
-    alert('回滚失败：' + e.message)
+    toast.error('回滚失败：' + e.message)
   } finally {
     rollbackingId.value = ''
+  }
+}
+
+function askDelete(v) {
+  pendingDelete.value = v
+}
+
+function cancelDelete() {
+  pendingDelete.value = null
+}
+
+async function confirmDelete() {
+  const v = pendingDelete.value
+  if (!v) return
+  deletingId.value = v.id
+  try {
+    await deleteVersion(props.categoryId, v.id)
+    toast.success(`已删除版本 v${v.version_no}`)
+    pendingDelete.value = null
+    await load()
+  } catch (e) {
+    toast.error('删除版本失败：' + e.message)
+  } finally {
+    deletingId.value = ''
   }
 }
 
@@ -84,9 +113,19 @@ onMounted(load)
           </div>
         </div>
         <div class="vm-actions">
-          <button class="btn sm" :disabled="rollbackingId === v.id" @click="rollback(v)">
-            <span v-if="rollbackingId === v.id" class="spinner"></span> 回滚到此版本
-          </button>
+          <template v-if="pendingDelete?.id === v.id">
+            <span class="vm-del-ask">确认删除该版本？</span>
+            <button class="btn sm danger" :disabled="deletingId === v.id" @click="confirmDelete">
+              <span v-if="deletingId === v.id" class="spinner"></span> 删除
+            </button>
+            <button class="btn sm" @click="cancelDelete">取消</button>
+          </template>
+          <template v-else>
+            <button class="btn sm" :disabled="rollbackingId === v.id" @click="rollback(v)">
+              <span v-if="rollbackingId === v.id" class="spinner"></span> 回滚到此版本
+            </button>
+            <button class="btn sm danger outline" :disabled="deletingId === v.id" @click="askDelete(v)" title="删除该版本快照（不影响已录入的实体数据）">删除</button>
+          </template>
         </div>
       </div>
     </div>
@@ -94,17 +133,19 @@ onMounted(load)
 </template>
 
 <style scoped>
-.vm-root { display: flex; flex-direction: column; gap: 12px; }
-.vm-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.vm-root { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; overflow: hidden; }
+.vm-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; flex-shrink: 0; }
 .vm-tip { font-size: 12px; color: var(--c-secondary); }
 .vm-create { display: flex; gap: 8px; }
 .vm-create input { width: 220px; padding: 6px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 13px; outline: none; }
 .vm-create input:focus { border-color: var(--c-fg); }
 .btn.sm { padding: 5px 11px; font-size: 12px; }
+.btn.sm.danger.outline { background: transparent; color: var(--c-danger); border: 1px solid rgba(220, 38, 38, 0.4); }
+.btn.sm.danger.outline:hover { background: var(--c-danger); color: #fff; }
 .vm-hint { font-size: 12px; color: var(--c-secondary); }
 .vm-empty { padding: 28px; text-align: center; color: var(--c-secondary); font-size: 13px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); }
-.vm-list { display: flex; flex-direction: column; gap: 6px; }
-.vm-card { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); }
+.vm-list { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }
+.vm-card { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); flex-shrink: 0; }
 .vm-card-main { flex: 1; min-width: 0; }
 .vm-title { font-size: 14px; font-weight: 700; color: var(--c-fg); }
 .vm-src { font-size: 11px; font-weight: 500; color: var(--c-secondary); background: var(--c-muted); padding: 1px 7px; border-radius: 9px; }
@@ -113,5 +154,6 @@ onMounted(load)
 .vm-stats { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 5px; }
 .vm-stats-label { font-size: 11px; color: var(--c-primary); font-weight: 600; }
 .vm-stat { font-size: 11px; color: var(--c-secondary); background: var(--c-muted); padding: 1px 7px; border-radius: 9px; }
-.vm-actions { flex-shrink: 0; }
+.vm-actions { flex-shrink: 0; display: flex; gap: 6px; align-items: center; }
+.vm-del-ask { font-size: 12px; color: var(--c-danger); margin-right: 2px; }
 </style>

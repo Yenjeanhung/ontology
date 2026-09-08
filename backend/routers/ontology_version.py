@@ -42,6 +42,17 @@ async def get_version(category_id: str, version_id: str, db: AsyncSession = Depe
     return v
 
 
+@router.delete("/ontology-categories/{category_id}/versions/{version_id}")
+async def delete_version(
+    category_id: str, version_id: str, db: AsyncSession = Depends(get_db)
+):
+    """删除版本快照（仅删除快照记录，不影响定义层与实体数据）。"""
+    res, err = await OntologyVersionService.delete_version(db, category_id, version_id)
+    if err:
+        raise _nf(err) if err == "版本不存在" else _bad_request(err)
+    return res
+
+
 @router.post("/ontology-categories/{category_id}/versions/{version_id}/rollback")
 async def rollback_version(
     category_id: str, version_id: str, db: AsyncSession = Depends(get_db)

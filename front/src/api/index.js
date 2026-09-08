@@ -2345,6 +2345,16 @@ export async function rollbackVersion(categoryId, versionId) {
   return res.json()
 }
 
+// 删除版本快照
+export async function deleteVersion(categoryId, versionId) {
+  const res = await fetch(`${API}/api/ontology-categories/${categoryId}/versions/${versionId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.detail || 'Delete version failed')
+  }
+  return res.json()
+}
+
 export async function fetchOntologyUsages(categoryId, ontologyId) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/usages`)
   if (!res.ok) throw new Error('Fetch usages failed')

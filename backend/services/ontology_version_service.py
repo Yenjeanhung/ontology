@@ -155,6 +155,25 @@ class OntologyVersionService:
         return OntologyVersionService._serialize(v) if v else None
 
     @staticmethod
+    async def delete_version(
+        db: AsyncSession, category_id: str, version_id: str
+    ) -> tuple[dict | None, str | None]:
+        """删除某个版本快照。只删快照记录本身，不动定义层与实体数据。
+
+        返回 (删除结果, 错误信息)，错误时第一项为 None。
+        """
+        v = await db.get(OntologyVersion, version_id)
+        if not v:
+            return None, "版本不存在"
+        # 校验归属，避免误删其它类别的版本
+        if str(v.category_id) != str(category_id):
+            return None, "版本不属于该本体类别"
+        result = OntologyVersionService._serialize(v)
+        await db.delete(v)
+        await db.commit()
+        return result, None
+
+    @staticmethod
     async def rollback(db: AsyncSession, version_id: str) -> tuple[dict | None, str | None]:
         v = await db.get(OntologyVersion, version_id)
         if not v:
