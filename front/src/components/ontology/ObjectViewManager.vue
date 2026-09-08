@@ -37,18 +37,56 @@ function emptyLayout() {
       {
         name: '概览',
         sections: [
-          { title: '基本信息', widgets: [{ kind: 'properties', title: '属性', config: {} }] },
-          { title: '关联', widgets: [{ kind: 'relations', title: '关系', config: {} }] },
+          { title: '关键指标', columns: 3, widgets: [
+            { kind: 'stats', title: '指标卡', span: 3, config: { items: [] } },
+          ] },
+          { title: '基本信息', columns: 2, widgets: [
+            { kind: 'properties', title: '属性', span: 1, config: {} },
+            { kind: 'chart', title: '属性图表', span: 1, config: { chartType: 'bar', source: 'self', labelField: '', valueField: '' } },
+          ] },
+          { title: '关联', columns: 1, widgets: [
+            { kind: 'relations', title: '关系', span: 1, config: {} },
+            { kind: 'table', title: '关联实体明细', span: 1, config: { columns: [] } },
+          ] },
         ],
       },
       {
         name: '操作',
         sections: [
-          { title: '动作', widgets: [{ kind: 'actions', title: '可用动作', config: {} }] },
+          { title: '动作', columns: 1, widgets: [{ kind: 'actions', title: '可用动作', span: 1, config: {} }] },
         ],
       },
     ],
   }
+}
+
+const WIDGET_KINDS = [
+  { value: 'properties', label: 'properties 属性' },
+  { value: 'relations', label: 'relations 关系' },
+  { value: 'actions', label: 'actions 动作' },
+  { value: 'derived', label: 'derived 派生属性' },
+  { value: 'timeline', label: 'timeline 时间线' },
+  { value: 'chart', label: 'chart 图表' },
+  { value: 'stats', label: 'stats 指标卡' },
+  { value: 'table', label: 'table 关联表格' },
+  { value: 'note', label: 'note 说明文本' },
+]
+
+const DEFAULT_CONFIGS = {
+  properties: () => ({ labelOverrides: {} }),
+  relations: () => ({}),
+  actions: () => ({}),
+  derived: () => ({}),
+  timeline: () => ({}),
+  chart: () => ({ chartType: 'bar', source: 'self', labelField: '', valueField: '' }),
+  stats: () => ({ items: [], labelOverrides: {} }),
+  table: () => ({ columns: [], labelOverrides: {} }),
+  note: () => ({ text: '' }),
+}
+
+const KIND_TITLES = {
+  properties: '属性', relations: '关系', actions: '可用动作', derived: '派生属性',
+  timeline: '时间线', chart: '图表', stats: '指标卡', table: '关联实体明细', note: '说明',
 }
 
 function parseLayout(text) {
@@ -71,15 +109,6 @@ function switchMode(mode) {
     layoutModel.value = parseLayout(form.value.layout_text)
   }
 }
-
-const WIDGET_KINDS = [
-  { value: 'properties', label: 'properties 属性' },
-  { value: 'relations', label: 'relations 关系' },
-  { value: 'actions', label: 'actions 动作' },
-  { value: 'derived', label: 'derived 派生属性' },
-  { value: 'timeline', label: 'timeline 时间线' },
-  { value: 'chart', label: 'chart 图表' },
-]
 
 function activeTabIndex() {
   return layoutModel.value.tabs.findIndex((t) => t._active) || 0
@@ -113,7 +142,7 @@ function removeTab(idx) {
 function addSection() {
   const tab = layoutModel.value.tabs.find((t) => t._active)
   if (!tab) return
-  tab.sections.push({ title: `分区 ${tab.sections.length + 1}`, widgets: [] })
+  tab.sections.push({ title: `分区 ${tab.sections.length + 1}`, columns: 1, widgets: [] })
   syncLayoutText()
 }
 
@@ -122,9 +151,17 @@ function removeSection(tabIdx, secIdx) {
   syncLayoutText()
 }
 
+function setSectionColumns(section, cols) {
+  section.columns = Number(cols) || 1
+  section.widgets.forEach((w) => {
+    if ((w.span || 1) > section.columns) w.span = section.columns
+  })
+  syncLayoutText()
+}
+
 function addWidget(tabIdx, secIdx) {
   const section = layoutModel.value.tabs[tabIdx].sections[secIdx]
-  section.widgets.push({ kind: 'properties', title: '属性', config: {} })
+  section.widgets.push({ kind: 'properties', title: '属性', span: 1, config: DEFAULT_CONFIGS.properties() })
   syncLayoutText()
 }
 
@@ -135,10 +172,35 @@ function removeWidget(tabIdx, secIdx, widIdx) {
 
 function onWidgetKindChange(widget, kind) {
   widget.kind = kind
-  const found = WIDGET_KINDS.find((k) => k.value === kind)
-  widget.title = found ? found.label.split(' ')[1] || found.label : widget.title
+  widget.title = KIND_TITLES[kind] || widget.title
+  widget.config = (DEFAULT_CONFIGS[kind] || (() => ({})))()
   syncLayoutText()
 }
+
+function setWidgetSpan(widget, span, section) {
+  widget.span = Math.min(Number(span) || 1, section.columns || 1)
+  syncLayoutText()
+}
+
+// stats 指标卡条目
+function addStatItem(widget) {
+  if (!Array.isArray(widget.config.items)) widget.config.items = []
+  widget.config.items.push({ key: '', label: '', unit: '' })
+  syncLayoutText()
+}
+function removeStatItem(widget, idx) {
+  widget.config.items.splice(idx, 1)
+  syncLayoutText()
+}
+// table 列配置（逗号分隔 <-> 数组）
+function tableColsText(widget) { return (widget.config.columns || []).join(', ') }
+function onTableColsInput(widget, text) {
+  widget.config.columns = text.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+  syncLayoutText()
+}
+
+// labelOverrides 编辑面板已移除（用户在视图层面不维护字段名覆盖，本体未填中文名时显示「未定义」提示）
+// 渲染端仍保留 widget.config.labelOverrides 兼容读取（已存在的视图 JSON 数据继续生效）
 
 function onDragStart(type, path, event) {
   drag.value = { type, from: path, to: path }
@@ -418,6 +480,12 @@ onMounted(load)
                     <div class="ovm-section-head">
                       <span class="ovm-drag-handle" title="拖拽排序">⋮⋮</span>
                       <input v-model="section.title" @input="syncLayoutText" class="ovm-section-title" placeholder="分区标题">
+                      <label class="ovm-mini-label">列</label>
+                      <select class="ovm-cols-select" :value="section.columns || 1" @change="setSectionColumns(section, $event.target.value)">
+                        <option :value="1">1</option>
+                        <option :value="2">2</option>
+                        <option :value="3">3</option>
+                      </select>
                       <button class="ovm-icon-btn ovm-sort-btn" :disabled="sIdx === 0" @click="moveSectionUp(tIdx, sIdx)" title="上移">↑</button>
                       <button class="ovm-icon-btn ovm-sort-btn" :disabled="sIdx === tab.sections.length - 1" @click="moveSectionDown(tIdx, sIdx)" title="下移">↓</button>
                       <button class="ovm-icon-btn" @click="removeSection(tIdx, sIdx)" title="删除分区">×</button>
@@ -426,20 +494,64 @@ onMounted(load)
                       <div
                         v-for="(widget, wIdx) in section.widgets"
                         :key="`wid-${tIdx}-${sIdx}-${wIdx}`"
-                        :class="['ovm-widget-row', { 'drag-target': isDragTarget('widget', [tIdx, sIdx, wIdx]) }]"
-                        draggable="true"
-                        @dragstart="onDragStart('widget', [tIdx, sIdx, wIdx], $event)"
-                        @dragover.prevent="onDragOver('widget', [tIdx, sIdx, wIdx])"
-                        @drop.prevent="onDrop('widget')"
+                        :class="['ovm-widget-item', { 'drag-target': isDragTarget('widget', [tIdx, sIdx, wIdx]) }]"
                       >
-                        <span class="ovm-drag-handle" title="拖拽排序">⋮⋮</span>
-                        <select :value="widget.kind" @change="onWidgetKindChange(widget, $event.target.value)">
-                          <option v-for="k in WIDGET_KINDS" :key="k.value" :value="k.value">{{ k.label }}</option>
-                        </select>
-                        <input v-model="widget.title" @input="syncLayoutText" class="ovm-widget-title" placeholder="微件标题">
-                        <button class="ovm-icon-btn ovm-sort-btn" :disabled="wIdx === 0" @click="moveWidgetUp(tIdx, sIdx, wIdx)" title="上移">↑</button>
-                        <button class="ovm-icon-btn ovm-sort-btn" :disabled="wIdx === section.widgets.length - 1" @click="moveWidgetDown(tIdx, sIdx, wIdx)" title="下移">↓</button>
-                        <button class="ovm-icon-btn" @click="removeWidget(tIdx, sIdx, wIdx)" title="删除微件">×</button>
+                        <div
+                          class="ovm-widget-row"
+                          draggable="true"
+                          @dragstart="onDragStart('widget', [tIdx, sIdx, wIdx], $event)"
+                          @dragover.prevent="onDragOver('widget', [tIdx, sIdx, wIdx])"
+                          @drop.prevent="onDrop('widget')"
+                        >
+                          <span class="ovm-drag-handle" title="拖拽排序">⋮⋮</span>
+                          <select :value="widget.kind" @change="onWidgetKindChange(widget, $event.target.value)">
+                            <option v-for="k in WIDGET_KINDS" :key="k.value" :value="k.value">{{ k.label }}</option>
+                          </select>
+                          <input v-model="widget.title" @input="syncLayoutText" class="ovm-widget-title" placeholder="微件标题">
+                          <label class="ovm-mini-label">占</label>
+                          <select class="ovm-span-select" :value="widget.span || 1" @change="setWidgetSpan(widget, $event.target.value, section)">
+                            <option v-for="c in (section.columns || 1)" :key="c" :value="c">{{ c }}列</option>
+                          </select>
+                          <button class="ovm-icon-btn ovm-sort-btn" :disabled="wIdx === 0" @click="moveWidgetUp(tIdx, sIdx, wIdx)" title="上移">↑</button>
+                          <button class="ovm-icon-btn ovm-sort-btn" :disabled="wIdx === section.widgets.length - 1" @click="moveWidgetDown(tIdx, sIdx, wIdx)" title="下移">↓</button>
+                          <button class="ovm-icon-btn" @click="removeWidget(tIdx, sIdx, wIdx)" title="删除微件">×</button>
+                        </div>
+                        <div v-if="widget.kind === 'chart'" class="ovm-widget-cfg">
+                          <label class="ovm-mini-label">图型</label>
+                          <select :value="widget.config.chartType || 'bar'" @change="widget.config.chartType = $event.target.value; syncLayoutText()">
+                            <option value="bar">柱状图</option>
+                            <option value="line">折线图</option>
+                            <option value="pie">饼图</option>
+                          </select>
+                          <label class="ovm-mini-label">数据源</label>
+                          <select :value="widget.config.source || 'self'" @change="widget.config.source = $event.target.value; syncLayoutText()">
+                            <option value="self">本实体数值属性</option>
+                            <option value="relations">关联实体</option>
+                            <option value="peers">同类实体对比</option>
+                          </select>
+                          <template v-if="(widget.config.source || 'self') !== 'self'">
+                            <label class="ovm-mini-label">标签字段</label>
+                            <input v-model="widget.config.labelField" @input="syncLayoutText" class="ovm-cfg-input" placeholder="如 name">
+                            <label class="ovm-mini-label">数值字段</label>
+                            <input v-model="widget.config.valueField" @input="syncLayoutText" class="ovm-cfg-input" placeholder="留空自动探测">
+                          </template>
+                        </div>
+                        <div v-else-if="widget.kind === 'stats'" class="ovm-widget-cfg ovm-stats-cfg">
+                          <div v-for="(it, ii) in (widget.config.items || [])" :key="ii" class="ovm-stats-row">
+                            <input v-model="it.key" @input="syncLayoutText" placeholder="属性名，如 value">
+                            <input v-model="it.label" @input="syncLayoutText" placeholder="显示名">
+                            <input v-model="it.unit" @input="syncLayoutText" placeholder="单位">
+                            <button class="ovm-icon-btn" @click="removeStatItem(widget, ii)" title="删除指标">×</button>
+                          </div>
+                          <button class="ovm-add-widget" @click="addStatItem(widget)">+ 添加指标</button>
+                        </div>
+                        <div v-else-if="widget.kind === 'table'" class="ovm-widget-cfg">
+                          <label class="ovm-mini-label">列（逗号分隔，留空自动）</label>
+                          <input class="ovm-cfg-input ovm-cfg-wide" :value="tableColsText(widget)" @change="onTableColsInput(widget, $event.target.value)" placeholder="如 name, value, unit">
+                        </div>
+                        <div v-else-if="widget.kind === 'note'" class="ovm-widget-cfg">
+                          <textarea v-model="widget.config.text" @input="syncLayoutText" class="ovm-note-input" rows="2" placeholder="说明文本，支持 Markdown"></textarea>
+                        </div>
                       </div>
                       <button class="ovm-add-widget" @click="addWidget(tIdx, sIdx)">+ 添加微件</button>
                     </div>
@@ -453,7 +565,7 @@ onMounted(load)
             </div>
 
             <div class="ovm-hint">
-              微件 kind：<code>properties</code> 属性 · <code>relations</code> 关系 · <code>actions</code> 动作 · <code>derived</code> 派生属性 · <code>timeline</code> 时间线 · <code>chart</code> 图表
+              微件：<code>properties</code> 属性 · <code>relations</code> 关系 · <code>actions</code> 动作 · <code>derived</code> 派生 · <code>timeline</code> 时间线 · <code>chart</code> 图表（柱/折/饼，可取本实体 / 关联实体 / 同类实体数据）· <code>stats</code> 指标卡 · <code>table</code> 关联表格 · <code>note</code> 说明。分区可选 1-3 列网格，微件可跨列。
             </div>
           </div>
           <label class="ovm-check"><input type="checkbox" v-model="form.is_default"> 设为该本体/类别的默认视图</label>
@@ -528,9 +640,23 @@ onMounted(load)
 .ovm-section-title:focus { outline: 1px solid var(--c-fg); border-radius: 3px; }
 
 .ovm-widgets { display: flex; flex-direction: column; gap: 6px; }
+.ovm-widget-item { display: flex; flex-direction: column; border-radius: var(--radius-sm); }
 .ovm-widget-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); cursor: grab; }
-.ovm-widget-row select { padding: 4px 6px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; }
+.ovm-widget-row select, .ovm-cols-select, .ovm-span-select { padding: 4px 6px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; }
 .ovm-widget-title { flex: 1; border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 4px 6px; background: var(--c-panel); color: var(--c-fg); font-size: 12px; }
+.ovm-mini-label { font-size: 11px; color: var(--c-secondary); white-space: nowrap; }
+.ovm-cols-select, .ovm-span-select { flex-shrink: 0; }
+
+.ovm-widget-cfg { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; margin-left: 18px; padding: 6px 8px; border-left: 2px solid var(--c-accent); background: var(--c-muted); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.ovm-widget-cfg select { padding: 4px 6px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; }
+.ovm-cfg-input { padding: 4px 6px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; width: 120px; }
+.ovm-cfg-wide { flex: 1; min-width: 220px; width: auto; }
+.ovm-note-input { width: 100%; padding: 4px 6px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; resize: vertical; box-sizing: border-box; }
+
+.ovm-stats-cfg { align-items: stretch; }
+.ovm-stats-row { display: flex; align-items: center; gap: 6px; width: 100%; }
+.ovm-stats-row input { padding: 4px 6px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; flex: 1; min-width: 100px; }
+.ovm-stats-row .ovm-add-widget { width: fit-content; }
 
 .ovm-add-widget, .ovm-add-section { padding: 5px 10px; font-size: 12px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); cursor: pointer; }
 .ovm-add-widget { align-self: flex-start; margin-top: 2px; }

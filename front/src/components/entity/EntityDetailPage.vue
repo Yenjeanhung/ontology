@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch, nextTick, onActivated } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl, fetchEntityServices, copyServiceToEntity, deleteOntologyService, resolveObjectView } from '../../api'
+import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl, fetchEntityServices, copyServiceToEntity, deleteOntologyService, resolveObjectView, fetchEntities, getMergedAttributes } from '../../api'
 import { marked } from 'marked'
 import ServiceInvokeDialog from './ServiceInvokeDialog.vue'
 
@@ -54,7 +54,12 @@ const customServices = computed(() =>
 const objectView = ref(null)
 const ovTab = ref(0)
 const ovLoading = ref(false)
-const WIDGET_LABELS = { properties: '属性', relations: '关系', actions: '动作', derived: '派生属性', timeline: '时间线', chart: '图表' }
+const WIDGET_LABELS = { properties: '属性', relations: '关系', actions: '动作', derived: '派生属性', timeline: '时间线', chart: '图表', stats: '指标卡', table: '关联表格', note: '说明' }
+
+// 图表数据源缓存：关联实体详情 / 同类实体列表
+const relatedEntityMap = ref({}) // id -> entity detail
+const peerEntities = ref(null) // 同类实体数组
+const chartSourcesLoading = ref(false)
 
 function currentViewTab() {
   const tabs = objectView.value?.layout?.tabs
@@ -72,11 +77,212 @@ async function loadObjectView() {
   try {
     objectView.value = await resolveObjectView(cat, ont)
     ovTab.value = 0
+    loadChartSources()
   } catch {
     objectView.value = null
   } finally {
     ovLoading.value = false
   }
+}
+
+// 扫描布局：按需拉取关联实体详情与同类实体，供图表/表格使用
+async function loadChartSources() {
+  const layout = objectView.value?.layout
+  if (!layout?.tabs) return
+  const needsRelated = layout.tabs.some((t) => (t.sections || []).some((s) => (s.widgets || []).some((w) => w.kind === 'chart' || w.kind === 'table')))
+  const needsPeers = layout.tabs.some((t) => (t.sections || []).some((s) => (s.widgets || []).some((w) => w.kind === 'chart' && (w.config?.source === 'peers'))))
+  if (!needsRelated && !needsPeers) return
+  chartSourcesLoading.value = true
+  try {
+    if (needsRelated && Array.isArray(entity.value?.relations)) {
+      const ids = entity.value.relations
+        .map((r) => (r.role === 'source' ? r.target_entity_id : r.source_entity_id))
+        .filter((id) => id && !relatedEntityMap.value[id])
+        .slice(0, 50)
+      const details = await Promise.all(ids.map((id) => getEntityDetail(id).catch(() => null)))
+      const map = { ...relatedEntityMap.value }
+      ids.forEach((id, i) => { if (details[i]) map[id] = details[i] })
+      relatedEntityMap.value = map
+    }
+    if (needsPeers && peerEntities.value === null && entity.value?.category_id) {
+      const res = await fetchEntities({ category_id: entity.value.category_id, page: 1, page_size: 50 })
+      peerEntities.value = Array.isArray(res) ? res : (res?.items || [])
+    }
+  } catch {
+    // 数据源加载失败时图表显示空态
+  } finally {
+    chartSourcesLoading.value = false
+  }
+}
+
+function entityProps(e) {
+  if (!e) return {}
+  let p = e.properties
+  if (typeof p === 'string') {
+    try { p = JSON.parse(p) } catch { return {} }
+  }
+  return p || {}
+}
+
+function toNumber(v) {
+  if (typeof v === 'number') return v
+  if (typeof v !== 'string') return NaN
+  return Number(v.trim())
+}
+
+// 图表数据：{ points: [{ label, value }], empty: reason }
+function chartData(w) {
+  const cfg = w.config || {}
+  const source = cfg.source || 'self'
+  if (source === 'self') {
+    const points = Object.entries(parsedProperties.value)
+      .map(([k, v]) => ({ label: k, value: toNumber(v) }))
+      .filter((d) => !isNaN(d.value) && isFinite(d.value))
+    return { points, empty: points.length ? '' : '本实体无可绘图的数值属性，可切换数据源为「关联实体」或「同类实体」' }
+  }
+  let list = []
+  if (source === 'relations') {
+    list = (entity.value?.relations || [])
+      .map((r) => relatedEntityMap.value[r.role === 'source' ? r.target_entity_id : r.source_entity_id])
+      .filter(Boolean)
+  } else {
+    list = peerEntities.value || []
+  }
+  const labelField = (cfg.labelField || '').trim()
+  const valueField = (cfg.valueField || '').trim()
+  const points = []
+  for (const e of list) {
+    const p = entityProps(e)
+    const label = String(labelField ? (p[labelField] ?? '') : (e.name || '')) || '—'
+    let value
+    if (valueField) value = toNumber(p[valueField])
+    else {
+      const firstNum = Object.entries(p).find(([, v]) => !isNaN(toNumber(v)) && isFinite(toNumber(v)))
+      value = firstNum ? toNumber(firstNum[1]) : NaN
+    }
+    if (!isNaN(value) && isFinite(value)) points.push({ label, value })
+  }
+  const emptyReason = chartSourcesLoading.value ? '图表数据加载中...'
+    : (source === 'relations' && !(entity.value?.relations || []).length ? '暂无关联实体'
+      : points.length ? '' : '所选数据源暂无匹配的数值数据，请检查标签/数值字段配置')
+  return { points, empty: emptyReason }
+}
+
+const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#84cc16', '#ec4899', '#64748b']
+
+function pieGeom(points) {
+  const total = points.reduce((s, d) => s + Math.abs(d.value), 0) || 1
+  let angle = -Math.PI / 2
+  return points.map((d, i) => {
+    const frac = Math.abs(d.value) / total
+    const a2 = angle + frac * Math.PI * 2
+    const cx = 110, cy = 110, r = 90
+    const large = frac > 0.5 ? 1 : 0
+    const x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle)
+    const x2 = cx + r * Math.cos(a2), y2 = cy + r * Math.sin(a2)
+    angle = a2
+    return { d: `M ${cx} ${cy} L ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} Z`, color: PIE_COLORS[i % PIE_COLORS.length], frac }
+  })
+}
+
+function linePath(points, yMax) {
+  const n = points.length
+  if (!n) return ''
+  const max = yMax || niceMax(Math.max(...points.map((d) => d.value), 0))
+  const step = 530 / Math.max(n - 1, 1)
+  return points
+    .map((d, i) => `${i === 0 ? 'M' : 'L'} ${(50 + i * step).toFixed(1)} ${(190 - (d.value / max) * 160).toFixed(1)}`)
+    .join(' ')
+}
+
+function linePointY(points, i, yMax) {
+  const max = yMax || niceMax(Math.max(...points.map((d) => d.value), 0))
+  return 190 - (points[i].value / max) * 160
+}
+
+// 图表坐标轴与刻度（柱/折线共用）
+function niceMax(v) {
+  if (v <= 0) return 1
+  const exp = Math.floor(Math.log10(v))
+  const base = Math.pow(10, exp)
+  const m = v / base
+  let n
+  if (m <= 1) n = 1
+  else if (m <= 2) n = 2
+  else if (m <= 5) n = 5
+  else n = 10
+  return n * base
+}
+function chartLayout(w, data) {
+  const cfg = w.config || {}
+  const source = cfg.source || 'self'
+  const pts = data?.points || []
+  const max = niceMax(pts.reduce((s, d) => Math.max(s, d.value), 0))
+  const yTicks = [0, max * 0.25, max * 0.5, max * 0.75, max]
+  const xTitle = cfg.titleX || (source === 'self' ? '属性' : (cfg.labelField ? attrName(cfg.labelField) : '类别'))
+  const yTitle = cfg.titleY || (source === 'self' ? '属性值' : (cfg.valueField ? attrName(cfg.valueField) : '数值'))
+  return { xTitle, yTitle, yTicks, yMax: max }
+}
+
+// self 模式语义提示：跨字段拼图无意义
+function selfHint(w, data) {
+  if ((w.config?.source || 'self') !== 'self') return ''
+  const pts = data?.points || []
+  if (pts.length === 0) return ''
+  if (pts.length === 1) return '提示：仅 1 个数值属性，柱状/折线图意义不大，建议改用「指标卡」微件。'
+  if (pts.length >= 3) return '提示：当前将本实体各属性拼到 X 轴上，量纲可能不同。推荐改用数据源「关联实体」或「同类实体对比」作真正的对比图。'
+  return ''
+}
+
+// stats 指标卡数据
+function statItems(w) {
+  const items = Array.isArray(w.config?.items) ? w.config.items.filter((it) => it.key) : []
+  if (items.length) {
+    return items.map((it) => {
+      const label = it.label || attrLabel(it.key, w)
+      return {
+        label,
+        code: it.key,
+        hasAttrName: isFriendlyLabel(it.key, label, w) || !!it.label,
+        value: parsedProperties.value[it.key] ?? '—',
+        unit: it.unit || '',
+      }
+    })
+  }
+  return Object.entries(parsedProperties.value)
+    .filter(([, v]) => !isNaN(toNumber(v)) && isFinite(toNumber(v)))
+    .slice(0, 6)
+    .map(([k, v]) => {
+      const label = attrLabel(k, w)
+      return { label, code: k, hasAttrName: isFriendlyLabel(k, label, w), value: v, unit: '' }
+    })
+}
+
+// table 关联表格数据
+function tableData(w) {
+  const rels = entity.value?.relations || []
+  const rows = rels
+    .map((r) => {
+      const other = relatedEntityMap.value[r.role === 'source' ? r.target_entity_id : r.source_entity_id]
+      return other ? { rel: r, ent: other, props: entityProps(other) } : null
+    })
+    .filter(Boolean)
+  const cols = Array.isArray(w.config?.columns) ? w.config.columns.filter(Boolean) : []
+  return { rows, cols }
+}
+
+function secStyle(sec) {
+  const cols = Math.max(1, Math.min(3, sec.columns || 1))
+  return { 'grid-template-columns': `repeat(${cols}, minmax(0, 1fr))` }
+}
+function spanStyle(sec, w) {
+  const cols = Math.max(1, Math.min(3, sec.columns || 1))
+  const span = Math.max(1, Math.min(cols, w.span || 1))
+  return { 'grid-column': `span ${span}` }
+}
+
+function renderNote(text) {
+  try { return marked.parse(String(text || '')) } catch { return String(text || '') }
 }
 
 async function loadServices() {
@@ -138,6 +344,33 @@ const parsedProperties = computed(() => {
   return p || {}
 })
 
+// 本体属性定义（code -> { code, name, type, ... }）
+const attrDefs = ref({})
+function humanize(code) {
+  if (!code) return ''
+  return String(code).replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+function attrName(code) {
+  const def = attrDefs.value[code]
+  return def?.name || humanize(code)
+}
+function hasAttrName(code) { return !!attrDefs.value[code]?.name }
+function attrType(code) { return attrDefs.value[code]?.type || '' }
+
+// 视图层面覆盖：widget.config.labelOverrides = { code: 显示名 }，优先于本体名
+function attrLabel(code, widget) {
+  const ov = widget?.config?.labelOverrides
+  if (ov && ov[code]) return ov[code]
+  const def = attrDefs.value[code]
+  if (def?.name) return def.name
+  return humanize(code)
+}
+function isFriendlyLabel(code, label, widget) {
+  if (widget?.config?.labelOverrides?.[code]) return true
+  if (attrDefs.value[code]?.name) return true
+  return label !== humanize(code)
+}
+
 const derivedEntries = computed(() => {
   if (!entity.value) return []
   const raw = entity.value.derived_properties || entity.value.derived_results
@@ -155,6 +388,10 @@ const numericChartData = computed(() => {
   const max = Math.max(...entries.map((d) => d.value), 0)
   return { entries, max }
 })
+
+function chartMax(data) {
+  return Math.max(...(data?.points || []).map((d) => d.value), 0)
+}
 
 const timelineEvents = computed(() => {
   const events = []
@@ -249,6 +486,7 @@ async function load() {
       entity.value = data
       loadServices()
       loadObjectView()
+      loadAttrDefs()
     }
   } catch (e) {
     loadError.value = '加载失败：' + e.message
@@ -257,6 +495,30 @@ async function load() {
     loading.value = false
   }
 }
+
+async function loadAttrDefs() {
+  const cat = entity.value?.category_id
+  const ont = entity.value?.ontology_id
+  if (!cat || !ont) { attrDefs.value = {}; return }
+  try {
+    const res = await getMergedAttributes(cat, ont)
+    const arr = Array.isArray(res) ? res : (res?.attributes || [])
+    const map = {}
+    for (const a of arr) { if (a?.code) map[a.code] = a }
+    attrDefs.value = map
+  } catch {
+    attrDefs.value = {}
+  }
+}
+
+// 仅展示本体已定义中文名的属性（未定义则视为遗留数据/脏字段，不显示）
+const displayedProperties = computed(() => {
+  const out = {}
+  for (const [k, v] of Object.entries(parsedProperties.value)) {
+    if (attrDefs.value[k]?.name) out[k] = v
+  }
+  return out
+})
 
 function fmtTime(t) {
   if (!t) return '—'
@@ -513,12 +775,24 @@ onMounted(load)
             </div>
             <div v-if="!editProps.length" class="props-empty">无属性，点击「添加属性」</div>
           </div>
-          <div v-else class="props-view">
-            <div v-for="(v, k) in parsedProperties" :key="k" class="prop-view-row">
-              <span class="prop-view-key">{{ k }}</span>
-              <span class="prop-view-val">{{ v }}</span>
-            </div>
-            <div v-if="!Object.keys(parsedProperties).length" class="props-empty">无属性</div>
+          <div v-else>
+            <table v-if="Object.keys(displayedProperties).length" class="prop-table">
+              <thead>
+                <tr>
+                  <th>属性编码</th>
+                  <th>属性名称</th>
+                  <th>属性值</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(v, k) in displayedProperties" :key="k">
+                  <td class="prop-code">{{ k }}</td>
+                  <td class="prop-name">{{ attrName(k) }}</td>
+                  <td class="prop-value">{{ v }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else class="props-empty">无属性（或本体尚未定义）</div>
           </div>
         </div>
       </div>
@@ -544,78 +818,166 @@ onMounted(load)
             </div>
             <div v-for="(sec, si) in currentViewTab().sections" :key="si" class="ov-sec">
               <div class="ov-sec-title" v-if="sec.title">{{ sec.title }}</div>
-              <div v-for="(w, wi) in sec.widgets" :key="wi" class="ov-widget">
-                <div class="ov-widget-title">{{ widgetLabel(w.kind) }}</div>
-                <div v-if="w.kind === 'properties'" class="props-view">
-                  <div v-for="(v, k) in parsedProperties" :key="k" class="prop-view-row">
-                    <span class="prop-view-key">{{ k }}</span>
-                    <span class="prop-view-val">{{ v }}</span>
+              <div class="ov-grid" :style="secStyle(sec)">
+                <div v-for="(w, wi) in sec.widgets" :key="wi" class="ov-widget" :style="spanStyle(sec, w)">
+                  <div class="ov-widget-title">{{ w.title || widgetLabel(w.kind) }}</div>
+                  <div v-if="w.kind === 'properties'">
+                    <table v-if="Object.keys(displayedProperties).length" class="prop-table">
+                      <thead>
+                        <tr>
+                          <th>属性编码</th>
+                          <th>属性名称</th>
+                          <th>属性值</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(v, k) in displayedProperties" :key="k">
+                          <td class="prop-code">{{ k }}</td>
+                          <td class="prop-name">{{ attrLabel(k, w) }}</td>
+                          <td class="prop-value">{{ v }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <div v-else class="props-empty">无属性（或本体尚未定义）</div>
                   </div>
-                  <div v-if="!Object.keys(parsedProperties).length" class="props-empty">无属性</div>
-                </div>
-                <div v-else-if="w.kind === 'relations'" class="rel-list">
-                  <div v-for="rel in entity.relations" :key="rel.id" class="rel-item">
-                    <span class="rel-current">{{ entity.name }}</span>
-                    <span class="rel-arrow">{{ rel.role === 'source' ? '→' : '←' }}</span>
-                    <span class="rel-type">{{ rel.relation_def_name || rel.relation_type }}</span>
-                    <span class="rel-arrow">{{ rel.role === 'source' ? '→' : '←' }}</span>
-                    <span class="rel-other">
-                      <span class="rel-other-name">{{ relOtherName(rel) || '—' }}</span>
-                      <span class="rel-other-type" v-if="relOtherType(rel)">{{ relOtherType(rel) }}</span>
-                    </span>
-                  </div>
-                  <div v-if="!entity.relations?.length" class="props-empty">无关联关系</div>
-                </div>
-                <div v-else-if="w.kind === 'actions'" class="svc-list">
-                  <div v-for="svc in inheritedServices" :key="svc.id" class="svc-row">
-                    <span class="svc-status on"></span>
-                    <span class="svc-name">{{ svc.name }}</span>
-                    <span class="svc-desc" v-if="svc.description">{{ svc.description }}</span>
-                    <span class="svc-spacer"></span>
-                    <button class="btn sm primary" @click="openInvoke(svc)">执行</button>
-                  </div>
-                  <div v-if="!inheritedServices.length && !customServices.length" class="props-empty">无可用动作</div>
-                </div>
-                <div v-else-if="w.kind === 'derived'" class="props-view">
-                  <div v-for="([k, v]) in derivedEntries" :key="k" class="prop-view-row">
-                    <span class="prop-view-key">{{ k }}</span>
-                    <span class="prop-view-val">{{ v }}</span>
-                  </div>
-                  <div v-if="!derivedEntries.length" class="props-empty">暂无派生属性计算结果</div>
-                </div>
-                <div v-else-if="w.kind === 'timeline'" class="timeline-list">
-                  <div v-for="(ev, ei) in timelineEvents" :key="ei" class="timeline-item">
-                    <div class="timeline-dot"></div>
-                    <div class="timeline-meta">
-                      <div class="timeline-label">{{ ev.label }}</div>
-                      <div class="timeline-time">{{ fmtTime(ev.time) }}</div>
+                  <div v-else-if="w.kind === 'relations'" class="rel-list">
+                    <div v-for="rel in entity.relations" :key="rel.id" class="rel-item">
+                      <span class="rel-current">{{ entity.name }}</span>
+                      <span class="rel-arrow">{{ rel.role === 'source' ? '→' : '←' }}</span>
+                      <span class="rel-type">{{ rel.relation_def_name || rel.relation_type }}</span>
+                      <span class="rel-arrow">{{ rel.role === 'source' ? '→' : '←' }}</span>
+                      <span class="rel-other">
+                        <span class="rel-other-name">{{ relOtherName(rel) || '—' }}</span>
+                        <span class="rel-other-type" v-if="relOtherType(rel)">{{ relOtherType(rel) }}</span>
+                      </span>
                     </div>
+                    <div v-if="!entity.relations?.length" class="props-empty">无关联关系</div>
                   </div>
-                  <div v-if="!timelineEvents.length" class="props-empty">无时间线数据</div>
+                  <div v-else-if="w.kind === 'actions'" class="svc-list">
+                    <div v-for="svc in inheritedServices" :key="svc.id" class="svc-row">
+                      <span class="svc-status on"></span>
+                      <span class="svc-name">{{ svc.name }}</span>
+                      <span class="svc-desc" v-if="svc.description">{{ svc.description }}</span>
+                      <span class="svc-spacer"></span>
+                      <button class="btn sm primary" @click="openInvoke(svc)">执行</button>
+                    </div>
+                    <div v-if="!inheritedServices.length && !customServices.length" class="props-empty">无可用动作</div>
+                  </div>
+                  <div v-else-if="w.kind === 'derived'" class="props-view">
+                    <div v-for="([k, v]) in derivedEntries" :key="k" class="prop-view-row">
+                      <span class="prop-view-key">{{ k }}</span>
+                      <span class="prop-view-val">{{ v }}</span>
+                    </div>
+                    <div v-if="!derivedEntries.length" class="props-empty">暂无派生属性计算结果</div>
+                  </div>
+                  <div v-else-if="w.kind === 'timeline'" class="timeline-list">
+                    <div v-for="(ev, ei) in timelineEvents" :key="ei" class="timeline-item">
+                      <div class="timeline-dot"></div>
+                      <div class="timeline-meta">
+                        <div class="timeline-label">{{ ev.label }}</div>
+                        <div class="timeline-time">{{ fmtTime(ev.time) }}</div>
+                      </div>
+                    </div>
+                    <div v-if="!timelineEvents.length" class="props-empty">无时间线数据</div>
+                  </div>
+                  <div v-else-if="w.kind === 'chart'" class="chart-wrap">
+                    <div v-if="selfHint(w, chartData(w))" class="chart-hint">{{ selfHint(w, chartData(w)) }}</div>
+                    <template v-if="chartData(w).points.length">
+                      <!-- 柱状图 -->
+                      <svg v-if="(w.config?.chartType || 'bar') === 'bar'" viewBox="0 0 600 240" preserveAspectRatio="xMidYMid meet" class="chart-svg">
+                        <!-- Y 轴刻度 -->
+                        <g class="axis-y">
+                          <line v-for="(t, i) in chartLayout(w, chartData(w)).yTicks" :key="'y'+i" x1="50" :y1="190 - t / chartLayout(w, chartData(w)).yMax * 160" x2="580" :y2="190 - t / chartLayout(w, chartData(w)).yMax * 160" stroke="var(--c-border)" stroke-dasharray="2 3" />
+                          <text v-for="(t, i) in chartLayout(w, chartData(w)).yTicks" :key="'yt'+i" x="46" :y="193 - t / chartLayout(w, chartData(w)).yMax * 160" text-anchor="end" font-size="10" fill="var(--c-secondary)">{{ Number.isInteger(t) ? t : t.toFixed(2) }}</text>
+                          <line x1="50" y1="30" x2="50" y2="190" stroke="var(--c-secondary)" />
+                          <line x1="50" y1="190" x2="580" y2="190" stroke="var(--c-secondary)" />
+                          <text x="20" y="110" :transform="'rotate(-90 20 110)'" text-anchor="middle" font-size="11" fill="var(--c-secondary)">{{ chartLayout(w, chartData(w)).yTitle }}</text>
+                        </g>
+                        <!-- 柱与 X 标签 -->
+                        <g v-for="(d, i) in chartData(w).points" :key="i">
+                          <rect
+                            :x="60 + i * ((520 - 60) / Math.max(chartData(w).points.length, 1)) + 4"
+                            :y="190 - (d.value / Math.max(chartLayout(w, chartData(w)).yMax, 1)) * 160"
+                            :width="((520 - 60) / Math.max(chartData(w).points.length, 1)) - 8"
+                            :height="(d.value / Math.max(chartLayout(w, chartData(w)).yMax, 1)) * 160"
+                            fill="var(--c-accent)"
+                            rx="3"
+                          />
+                          <text
+                            :x="60 + i * ((520 - 60) / Math.max(chartData(w).points.length, 1)) + ((520 - 60) / Math.max(chartData(w).points.length, 1)) / 2"
+                            y="205"
+                            text-anchor="middle"
+                            font-size="10"
+                            fill="var(--c-secondary)"
+                          >{{ d.label }}</text>
+                        </g>
+                        <text :x="(50 + 580) / 2" y="232" text-anchor="middle" font-size="11" fill="var(--c-secondary)">{{ chartLayout(w, chartData(w)).xTitle }}</text>
+                      </svg>
+                      <!-- 折线图 -->
+                      <svg v-else-if="(w.config?.chartType) === 'line'" viewBox="0 0 600 240" preserveAspectRatio="xMidYMid meet" class="chart-svg">
+                        <g class="axis-y">
+                          <line v-for="(t, i) in chartLayout(w, chartData(w)).yTicks" :key="'y'+i" x1="50" :y1="190 - t / chartLayout(w, chartData(w)).yMax * 160" x2="580" :y2="190 - t / chartLayout(w, chartData(w)).yMax * 160" stroke="var(--c-border)" stroke-dasharray="2 3" />
+                          <text v-for="(t, i) in chartLayout(w, chartData(w)).yTicks" :key="'yt'+i" x="46" :y="193 - t / chartLayout(w, chartData(w)).yMax * 160" text-anchor="end" font-size="10" fill="var(--c-secondary)">{{ Number.isInteger(t) ? t : t.toFixed(2) }}</text>
+                          <line x1="50" y1="30" x2="50" y2="190" stroke="var(--c-secondary)" />
+                          <line x1="50" y1="190" x2="580" y2="190" stroke="var(--c-secondary)" />
+                          <text x="20" y="110" :transform="'rotate(-90 20 110)'" text-anchor="middle" font-size="11" fill="var(--c-secondary)">{{ chartLayout(w, chartData(w)).yTitle }}</text>
+                        </g>
+                        <path :d="linePath(chartData(w).points, chartLayout(w, chartData(w)).yMax)" fill="none" stroke="var(--c-accent)" stroke-width="2" />
+                        <g v-for="(d, i) in chartData(w).points" :key="i">
+                          <circle :cx="50 + i * (530 / Math.max(chartData(w).points.length - 1, 1))" :cy="linePointY(chartData(w).points, i, chartLayout(w, chartData(w)).yMax)" r="3.5" fill="var(--c-accent)" />
+                          <text :x="50 + i * (530 / Math.max(chartData(w).points.length - 1, 1))" y="205" text-anchor="middle" font-size="10" fill="var(--c-secondary)">{{ d.label }}</text>
+                        </g>
+                        <text :x="(50 + 580) / 2" y="232" text-anchor="middle" font-size="11" fill="var(--c-secondary)">{{ chartLayout(w, chartData(w)).xTitle }}</text>
+                      </svg>
+                      <!-- 饼图 -->
+                      <div v-else class="pie-flex">
+                        <svg viewBox="0 0 220 220" class="chart-svg pie-svg">
+                          <path v-for="(g, i) in pieGeom(chartData(w).points)" :key="i" :d="g.d" :fill="g.color" stroke="var(--c-panel)" stroke-width="1.5" />
+                        </svg>
+                        <div class="pie-legend">
+                          <div v-for="(d, i) in chartData(w).points" :key="i" class="pie-legend-item">
+                            <span class="pie-dot" :style="{ background: PIE_COLORS[i % PIE_COLORS.length] }"></span>
+                            <span class="pie-name">{{ d.label }}</span>
+                            <span class="pie-val">{{ d.value }}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
+                    <div v-else-if="chartData(w).empty" class="props-empty">{{ chartData(w).empty }}</div>
+                    <div v-else class="props-empty">无数据</div>
+                  </div>
+                  <div v-else-if="w.kind === 'stats'" class="stats-grid">
+                    <div v-for="(it, i) in statItems(w)" :key="i" class="stat-card">
+                      <div class="stat-value">{{ it.value }}<span class="stat-unit" v-if="it.unit">{{ it.unit }}</span></div>
+                      <div class="stat-label">
+                        {{ it.label }}<span v-if="it.hasAttrName && it.label !== it.code" class="stat-code">({{ it.code }})</span>
+                      </div>
+                    </div>
+                    <div v-if="!statItems(w).length" class="props-empty">无匹配指标，可在视图中配置指标字段</div>
+                  </div>
+                  <div v-else-if="w.kind === 'table'" class="ov-table-wrap">
+                    <table v-if="tableData(w).rows.length" class="ov-table">
+                      <thead>
+                        <tr>
+                          <th>名称</th>
+                          <th v-for="c in tableData(w).cols" :key="c">{{ attrLabel(c, w) }}<span class="ov-table-th-code" v-if="isFriendlyLabel(c, attrLabel(c, w), w) && attrLabel(c, w) !== c">({{ c }})</span></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in tableData(w).rows" :key="row.ent.id">
+                          <td class="ov-table-name">
+                            <span class="ov-table-rel" v-if="row.rel.relation_def_name">{{ row.rel.relation_def_name }}</span>
+                            <span>{{ row.ent.name }}</span>
+                          </td>
+                          <td v-for="c in tableData(w).cols" :key="c">{{ row.props[c] ?? '—' }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <div v-else class="props-empty">{{ chartSourcesLoading ? '关联数据加载中...' : '暂无关联实体' }}</div>
+                  </div>
+                  <div v-else-if="w.kind === 'note'" class="ov-note" v-html="renderNote(w.config?.text)"></div>
+                  <div v-else class="ov-placeholder">微件类型 <code>{{ w.kind }}</code>（暂以默认详情页渲染）</div>
                 </div>
-                <div v-else-if="w.kind === 'chart'" class="chart-wrap">
-                  <svg v-if="numericChartData.entries.length" viewBox="0 0 600 220" preserveAspectRatio="xMidYMid meet" class="chart-svg">
-                    <g v-for="(d, i) in numericChartData.entries" :key="i">
-                      <rect
-                        :x="i * (600 / numericChartData.entries.length) + 10"
-                        :y="200 - (numericChartData.max ? (d.value / numericChartData.max) * 180 : 0)"
-                        :width="(600 / numericChartData.entries.length) - 20"
-                        :height="numericChartData.max ? (d.value / numericChartData.max) * 180 : 0"
-                        fill="var(--c-accent)"
-                        rx="4"
-                      />
-                      <text
-                        :x="i * (600 / numericChartData.entries.length) + (600 / numericChartData.entries.length) / 2"
-                        y="215"
-                        text-anchor="middle"
-                        font-size="11"
-                        fill="var(--c-secondary)"
-                      >{{ d.key }}</text>
-                    </g>
-                  </svg>
-                  <div v-else class="props-empty">无可用数值属性用于绘图</div>
-                </div>
-                <div v-else class="ov-placeholder">微件类型 <code>{{ w.kind }}</code>（暂以默认详情页渲染）</div>
               </div>
             </div>
           </template>
@@ -786,7 +1148,18 @@ onMounted(load)
 .props-view { display: flex; flex-direction: column; gap: 6px; }
 .prop-view-row { display: flex; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--c-border); }
 .prop-view-row:last-child { border-bottom: 0; }
-.prop-view-key { flex: 0 0 160px; font-size: 13px; font-weight: 600; color: var(--c-secondary); }
+.prop-view-key { flex: 0 0 200px; font-size: 13px; font-weight: 600; color: var(--c-secondary); }
+.prop-view-code { color: var(--c-secondary); font-weight: 400; font-size: 12px; opacity: 0.7; margin-left: 4px; }
+
+.prop-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.prop-table th { text-align: left; padding: 6px 10px; color: var(--c-secondary); font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--c-border); white-space: nowrap; background: var(--c-muted); }
+.prop-table td { padding: 8px 10px; border-bottom: 1px solid var(--c-border); vertical-align: top; }
+.prop-table tr:last-child td { border-bottom: 0; }
+.prop-table .prop-code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--c-secondary); white-space: nowrap; }
+.prop-table .prop-name { color: var(--c-fg); font-weight: 500; }
+.prop-table .prop-name-missing { color: var(--c-secondary); font-weight: 400; font-style: italic; opacity: 0.7; }
+.prop-name-tip { display: inline-block; font-size: 10px; padding: 0 5px; margin-left: 6px; border-radius: 8px; background: rgba(245,158,11,0.15); color: #b45309; font-style: normal; font-weight: 400; }
+.prop-table .prop-value { color: var(--c-fg); word-break: break-word; }
 .prop-view-val { flex: 1; font-size: 13px; color: var(--c-fg); word-break: break-word; }
 .props-empty { padding: 16px; text-align: center; color: var(--c-secondary); font-size: 13px; }
 
@@ -821,10 +1194,39 @@ onMounted(load)
 .ov-tab.on { background: var(--c-fg); color: var(--c-panel); }
 .ov-sec { margin-bottom: 12px; }
 .ov-sec-title { font-size: 12px; font-weight: 700; color: var(--c-fg); margin: 8px 0 6px; }
-.ov-widget { border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 8px; background: var(--c-muted); }
+.ov-grid { display: grid; gap: 8px; align-items: stretch; }
+.ov-widget { border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 10px 14px; background: var(--c-muted); overflow: hidden; min-width: 0; }
 .ov-widget-title { font-size: 12px; font-weight: 600; color: var(--c-secondary); margin-bottom: 6px; }
 .ov-placeholder { font-size: 12px; color: var(--c-secondary); }
 .ov-placeholder code { font-family: ui-monospace, Consolas, monospace; background: var(--c-panel); padding: 0 4px; border-radius: 4px; }
+
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.stat-card { border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); padding: 12px; text-align: center; }
+.stat-value { font-size: 22px; font-weight: 700; color: var(--c-fg); line-height: 1.2; word-break: break-all; }
+.stat-unit { font-size: 12px; font-weight: 500; color: var(--c-secondary); margin-left: 3px; }
+.stat-label { font-size: 12px; color: var(--c-secondary); margin-top: 4px; }
+.stat-code { opacity: 0.7; font-weight: 400; margin-left: 3px; }
+
+.ov-table-wrap { overflow-x: auto; }
+.ov-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ov-table th { text-align: left; padding: 6px 10px; color: var(--c-secondary); font-weight: 600; border-bottom: 1px solid var(--c-border); white-space: nowrap; }
+.ov-table-th-code { opacity: 0.6; font-weight: 400; margin-left: 3px; }
+.ov-table td { padding: 6px 10px; border-bottom: 1px solid var(--c-border); color: var(--c-fg); }
+.ov-table tr:last-child td { border-bottom: 0; }
+.ov-table-name { display: flex; flex-direction: column; gap: 2px; white-space: nowrap; }
+.ov-table-rel { font-size: 10.5px; color: var(--c-secondary); background: var(--c-muted); border-radius: 8px; padding: 0 6px; width: fit-content; }
+
+.pie-flex { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.pie-svg { width: 180px; flex-shrink: 0; }
+.pie-legend { display: flex; flex-direction: column; gap: 4px; min-width: 120px; }
+.pie-legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.pie-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.pie-name { color: var(--c-fg); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pie-val { color: var(--c-secondary); font-variant-numeric: tabular-nums; }
+
+.ov-note { font-size: 13px; color: var(--c-fg); line-height: 1.7; word-break: break-word; }
+.ov-note :first-child { margin-top: 0; }
+.ov-note :last-child { margin-bottom: 0; }
 
 .timeline-list { display: flex; flex-direction: column; gap: 0; padding-left: 8px; }
 .timeline-item { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; position: relative; }
@@ -834,7 +1236,8 @@ onMounted(load)
 .timeline-time { font-size: 12px; color: var(--c-secondary); }
 
 .chart-wrap { width: 100%; }
-.chart-svg { width: 100%; height: auto; max-height: 240px; }
+.chart-svg { width: 100%; height: auto; max-height: 280px; }
+.chart-hint { background: rgba(245, 158, 11, 0.1); color: #b45309; border-left: 3px solid #f59e0b; padding: 6px 10px; border-radius: 4px; font-size: 12px; margin-bottom: 8px; line-height: 1.5; }
 
   .modal-mask { position: fixed; inset: 0; z-index: 999; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.45); padding: 20px; }
   .preview-modal { width: min(940px, 100%); max-height: min(90vh, 800px); border-radius: 16px; background: var(--c-panel); overflow: hidden; box-shadow: 0 18px 60px rgba(0,0,0,0.22); display: flex; flex-direction: column; }
