@@ -929,7 +929,7 @@ async function runBatch() {
     </div>
 
     <!-- S4：规则编辑弹窗 -->
-    <div v-if="showRuleModal" class="sep-modal-mask" @click.self="showRuleModal = false">
+    <div v-if="showRuleModal" class="sep-modal-mask">
       <div class="sep-modal">
         <div class="sep-modal-head">
           <h3>{{ ruleForm.id ? '编辑' : '新建' }}动作规则</h3>
@@ -984,7 +984,7 @@ async function runBatch() {
     </div>
 
     <!-- S4：副作用编辑弹窗 -->
-    <div v-if="showEffectModal" class="sep-modal-mask" @click.self="showEffectModal = false">
+    <div v-if="showEffectModal" class="sep-modal-mask">
       <div class="sep-modal">
         <div class="sep-modal-head">
           <h3>{{ effectForm.id ? '编辑' : '新建' }}副作用</h3>

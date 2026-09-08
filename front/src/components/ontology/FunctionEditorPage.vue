@@ -554,7 +554,7 @@ onMounted(async () => {
     </div>
 
     <!-- 派生属性弹窗 -->
-    <div v-if="showDerivedModal" class="modal-overlay" @click.self="showDerivedModal = false">
+    <div v-if="showDerivedModal" class="modal-overlay">
       <div class="modal-card">
         <div class="modal-head"><h3>{{ derivedForm.id ? '编辑' : '新建' }}派生属性</h3><button class="close-btn" @click="showDerivedModal = false">✕</button></div>
         <div class="modal-body">
@@ -618,7 +618,7 @@ onMounted(async () => {
     </div>
 
     <!-- 派生属性测试弹窗 -->
-    <div v-if="showDpTestModal" class="modal-overlay" @click.self="showDpTestModal = false">
+    <div v-if="showDpTestModal" class="modal-overlay">
       <div class="modal-card">
         <div class="modal-head"><h3>测试派生属性：{{ dpTest.dp?.name }}</h3><button class="close-btn" @click="showDpTestModal = false">✕</button></div>
         <div class="modal-body">

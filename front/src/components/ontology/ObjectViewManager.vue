@@ -443,7 +443,7 @@ onMounted(load)
       </div>
     </div>
 
-    <div v-if="showEditor" class="ovm-mask" @click.self="showEditor = false">
+    <div v-if="showEditor" class="ovm-mask">
       <div class="ovm-modal">
         <div class="ovm-modal-head">
           <h3>{{ editingId ? '编辑' : '新建' }}对象视图</h3>

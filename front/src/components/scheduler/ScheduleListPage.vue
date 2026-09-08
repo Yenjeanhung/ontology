@@ -267,7 +267,7 @@ function enabledLabel(s) {
     </ModalDialog>
 
     <!-- 运行详情抽屉 -->
-    <div class="run-drawer-mask" v-if="historyDetail" @click.self="closeRunDetail">
+    <div class="run-drawer-mask" v-if="historyDetail">
       <div class="run-drawer">
         <div class="rd-head">
           <span class="rd-title">运行详情 · {{ historyDetail.id }}</span>

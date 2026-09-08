@@ -233,7 +233,7 @@ watch(
     </template>
 
     <!-- 详情 / 处理抽屉 -->
-    <div v-if="detail" class="mask" @click.self="detail = null">
+    <div v-if="detail" class="mask">
       <div class="drawer">
         <header class="drawer-head">
           <h3>👤 {{ detail.node_title || detail.node_id }}</h3>

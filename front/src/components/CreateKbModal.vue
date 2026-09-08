@@ -20,7 +20,7 @@ async function create() {
 </script>
 
 <template>
-  <div class="modal-mask" @click.self="emit('close')">
+  <div class="modal-mask">
     <div class="modal" @click.stop>
       <h3>新建知识库</h3>
       <div class="field">

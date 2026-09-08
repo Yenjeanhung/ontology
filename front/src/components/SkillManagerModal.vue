@@ -120,7 +120,7 @@ const selectedPreset = () => {
 
 <template>
   <Teleport to="body">
-    <div class="skill-modal-backdrop" v-if="visible" @click.self="emit('close')">
+    <div class="skill-modal-backdrop" v-if="visible">
       <div class="skill-modal">
         <div class="skill-modal-head">
           <h4>技能管理</h4>

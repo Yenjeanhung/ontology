@@ -334,7 +334,7 @@ onBeforeUnmount(() => {
 
       <!-- 测试弹窗 -->
       <Teleport to="body">
-        <div v-if="dialogVisible" class="dlg-overlay" @click.self="closeDialog">
+        <div v-if="dialogVisible" class="dlg-overlay">
           <div class="dlg-box">
             <header class="dlg-head">
               <h3>

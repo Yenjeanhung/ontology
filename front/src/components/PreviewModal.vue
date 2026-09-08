@@ -444,7 +444,7 @@ function onClose() {
 </script>
 
 <template>
-  <div class="preview-overlay" v-if="visible" @click.self="onClose">
+  <div class="preview-overlay" v-if="visible">
     <div class="preview-modal">
       <div class="preview-header">
         <span class="preview-title">

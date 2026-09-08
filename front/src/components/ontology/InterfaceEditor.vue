@@ -219,7 +219,7 @@
     </div>
 
     <!-- 新建接口弹窗 -->
-    <div v-if="showCreate" class="if-mask" @click.self="showCreate = false">
+    <div v-if="showCreate" class="if-mask">
       <div class="if-modal">
         <h3>新建接口</h3>
         <div class="if-field"><label>名称</label><input v-model="newName" placeholder="如：可投资对象" @keydown.enter="submitCreate"></div>

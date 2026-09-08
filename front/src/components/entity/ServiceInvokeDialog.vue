@@ -42,7 +42,7 @@ async function run() {
 </script>
 
 <template>
-  <div v-if="modelValue && service" class="sid-mask" @click.self="emit('update:modelValue', false)">
+  <div v-if="modelValue && service" class="sid-mask">
     <div class="sid-modal">
       <h3>执行动作：{{ service.name }}</h3>
       <div v-if="service.description" class="sid-desc">{{ service.description }}</div>

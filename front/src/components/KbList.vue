@@ -358,7 +358,7 @@ onMounted(loadKbs)
     </div>
 
     <!-- Edit Modal -->
-    <div class="modal-mask" v-if="showEditModal" @click.self="showEditModal = false">
+    <div class="modal-mask" v-if="showEditModal">
       <div class="modal" @click.stop>
         <h3>编辑知识库</h3>
         <div class="field"><label>名称</label><input type="text" v-model="editName" placeholder="知识库名称" @keydown.enter="saveEdit" autofocus></div>
@@ -367,7 +367,7 @@ onMounted(loadKbs)
       </div>
     </div>
 
-    <div class="modal-mask" v-if="showConfirmDialog" @click.self="confirmDialogCancel">
+    <div class="modal-mask" v-if="showConfirmDialog">
       <div class="modal confirm-modal" @click.stop>
         <div :class="['confirm-icon', confirmDialogType]">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
@@ -384,7 +384,7 @@ onMounted(loadKbs)
     </div>
 
     <!-- Alert Dialog -->
-    <div class="modal-mask" v-if="showAlertDialog" @click.self="closeAlertDialog">
+    <div class="modal-mask" v-if="showAlertDialog">
       <div class="modal alert-modal" @click.stop>
         <div class="alert-icon">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">

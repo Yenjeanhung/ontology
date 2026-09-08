@@ -283,7 +283,7 @@ async function saveAdv() {
     </div>
 
     <!-- S5：高级语义 + 关系属性 弹窗 -->
-    <div v-if="showAdv" class="rde-mask" @click.self="showAdv = false">
+    <div v-if="showAdv" class="rde-mask">
       <div class="rde-modal">
         <div class="rde-modal-head">
           <h3>关系高级配置：{{ advRel?.name }}</h3>

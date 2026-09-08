@@ -899,7 +899,7 @@ function stageIconClass(file, stageName) {
     </div>
 
     <!-- 本体类别选择弹窗 -->
-    <div v-if="showOntologyPicker" class="modal-mask" @click.self="showOntologyPicker = false">
+    <div v-if="showOntologyPicker" class="modal-mask">
       <div class="modal ob-picker-modal">
         <h3>选择本体类别</h3>
         <div class="ob-picker-list">
@@ -1161,7 +1161,7 @@ function stageIconClass(file, stageName) {
     </div>
 
     <Teleport to="body">
-      <div class="dialog-overlay" v-if="showProcessDialog" @click.self="showProcessDialog = false">
+      <div class="dialog-overlay" v-if="showProcessDialog">
         <div class="dialog-card">
           <div class="dialog-head">
             <div class="dialog-icon">
@@ -1212,7 +1212,7 @@ function stageIconClass(file, stageName) {
       </div>
 
       <!-- Confirm Dialog -->
-      <div class="dialog-overlay" v-if="showConfirmDialog" @click.self="confirmDialogCancel">
+      <div class="dialog-overlay" v-if="showConfirmDialog">
         <div class="dialog-card confirm-card">
           <div class="confirm-icon">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -1229,7 +1229,7 @@ function stageIconClass(file, stageName) {
         </div>
       </div>
 
-      <div class="dialog-overlay" v-if="showAssetPicker" @click.self="showAssetPicker = false">
+      <div class="dialog-overlay" v-if="showAssetPicker">
         <div class="dialog-card asset-picker-card" style="width: 90vw; max-width: 1000px;">
           <div class="dialog-head">
             <div class="dialog-icon">

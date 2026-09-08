@@ -862,7 +862,7 @@ onActivated(() => { onSvcSaved() })
     </div>
 
     <!-- 新建本体弹窗 -->
-    <div v-if="showCreate" class="oe-modal-mask" @click.self="showCreate = false">
+    <div v-if="showCreate" class="oe-modal-mask">
       <div class="oe-modal">
         <h3>新建本体</h3>
         <div class="oe-field">

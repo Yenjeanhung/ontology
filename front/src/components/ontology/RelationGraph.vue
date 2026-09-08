@@ -975,7 +975,7 @@ onUnmounted(stopSimulation)
 
     <!-- 添加关系对话框 -->
     <Teleport to="body">
-      <div v-if="showAddDialog" class="rg-overlay" @click.self="showAddDialog = false">
+      <div v-if="showAddDialog" class="rg-overlay">
         <div class="rg-dialog">
           <div class="rg-dialog-head">
             <span class="rg-dialog-title">添加关系约束</span>
@@ -1021,7 +1021,7 @@ onUnmounted(stopSimulation)
 
     <!-- 编辑关系对话框 -->
     <Teleport to="body">
-      <div v-if="showEditDialog" class="rg-overlay" @click.self="showEditDialog = false">
+      <div v-if="showEditDialog" class="rg-overlay">
         <div class="rg-dialog">
           <div class="rg-dialog-head">
             <span class="rg-dialog-title">修改关系类型</span>

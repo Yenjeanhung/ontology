@@ -666,7 +666,7 @@ const sortedEntities = computed(() => {
         </div>
 
     <!-- 新增实体弹窗 -->
-    <div v-if="showCreate" class="modal-overlay" @click.self="showCreate = false">
+    <div v-if="showCreate" class="modal-overlay">
       <div class="modal-card">
         <div class="modal-head">
           <h3>新增实体</h3>
@@ -706,7 +706,7 @@ const sortedEntities = computed(() => {
     </div>
 
     <!-- 批量执行动作弹窗（S4） -->
-    <div v-if="showBatch" class="modal-overlay" @click.self="showBatch = false">
+    <div v-if="showBatch" class="modal-overlay">
       <div class="modal-card batch-card">
         <div class="modal-head">
           <h3>批量执行动作（已选 {{ checkedCount }} 个实体）</h3>

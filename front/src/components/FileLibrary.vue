@@ -940,7 +940,7 @@ onUnmounted(() => {
     </div>
 
     <!-- 文件夹编辑弹窗 -->
-    <div class="modal-mask" v-if="showFolderModal" @click.self="showFolderModal = false">
+    <div class="modal-mask" v-if="showFolderModal">
       <div class="create-dir-modal" @click.stop>
         <h3>{{ folderModalMode === 'create' ? '新建文件夹' : '编辑文件夹' }}</h3>
         <div class="field">
@@ -963,7 +963,7 @@ onUnmounted(() => {
     </div>
 
     <!-- 预览弹窗 -->
-    <div class="modal-mask" v-if="previewAsset" @click.self="closePreview">
+    <div class="modal-mask" v-if="previewAsset">
       <div class="preview-modal">
         <div class="preview-head">
           <div>
@@ -1008,7 +1008,7 @@ onUnmounted(() => {
     </div>
 
     <!-- 来源详情弹窗 -->
-    <div class="modal-mask" v-if="sourceDetailAsset" @click.self="closeSourceDetail">
+    <div class="modal-mask" v-if="sourceDetailAsset">
       <div class="source-detail-modal" @click.stop>
         <div class="preview-head">
           <div>
@@ -1031,7 +1031,7 @@ onUnmounted(() => {
     </div>
 
     <!-- 确认对话框 -->
-    <div class="modal-mask" v-if="showConfirmDialog" @click.self="confirmDialogCancel">
+    <div class="modal-mask" v-if="showConfirmDialog">
       <div class="modal confirm-modal" @click.stop>
         <div :class="['confirm-icon', confirmDialogType]">
           <svg v-if="confirmDialogType === 'error'" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">

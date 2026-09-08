@@ -2265,7 +2265,7 @@ watch(nowTick, () => {
     </div>
 
     <!-- 历史运行详情抽屉 -->
-    <div class="run-drawer-mask" v-if="historyDetail" @click.self="closeRunDetail">
+    <div class="run-drawer-mask" v-if="historyDetail">
       <div class="run-drawer">
         <div class="rd-head">
           <span class="rd-title">运行详情 · {{ historyDetail.id }}</span>
@@ -2350,7 +2350,7 @@ watch(nowTick, () => {
     </div>
 
     <!-- 高级条件规则编辑弹窗 -->
-    <div class="modal-mask" v-if="conditionModalOpen" @click.self="closeConditionModal">
+    <div class="modal-mask" v-if="conditionModalOpen">
       <div class="modal modal-condition">
         <h3>编辑条件规则</h3>
         <div class="m-sub">通过 AND / OR 组合条件，最多支持 5 层嵌套。</div>

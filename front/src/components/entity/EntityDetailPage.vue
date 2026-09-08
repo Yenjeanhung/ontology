@@ -1138,7 +1138,7 @@ onMounted(load)
         </div>
       </div>
 
-      <div class="modal-mask" v-if="previewAsset" @click.self="closePreview">
+      <div class="modal-mask" v-if="previewAsset">
         <div class="preview-modal" @click.stop>
           <div class="preview-head">
             <div>
