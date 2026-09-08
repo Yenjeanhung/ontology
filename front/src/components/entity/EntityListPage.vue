@@ -797,14 +797,15 @@ const sortedEntities = computed(() => {
 .tree-search input::placeholder { color: var(--c-secondary); opacity: 0.7; }
 
 .tree-all { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; font-weight: 600; color: var(--c-secondary); transition: background 120ms; }
-.tree-all:hover { background: var(--c-muted); }
-.tree-all.active { background: var(--c-muted); color: var(--c-fg); }
+.tree-all:hover { background: var(--c-muted-hover); }
+.tree-all.active { background: color-mix(in srgb, var(--c-accent) 18%, transparent); color: var(--c-accent); box-shadow: inset 2px 0 0 var(--c-accent); }
 
 .tree-scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .tree-group { display: flex; flex-direction: column; }
 .tree-cat { display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: var(--radius-sm); cursor: pointer; transition: background 120ms; }
-.tree-cat:hover { background: var(--c-muted); }
-.tree-cat.active { background: var(--c-muted); }
+.tree-cat:hover { background: var(--c-muted-hover); }
+.tree-cat.active { background: color-mix(in srgb, var(--c-accent) 16%, transparent); box-shadow: inset 2px 0 0 var(--c-accent); }
+.tree-cat.active .tree-cat-name { color: var(--c-accent); }
 .expand-btn { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border: 0; background: transparent; color: var(--c-secondary); cursor: pointer; flex-shrink: 0; }
 .expand-btn svg { transition: transform 150ms; }
 .expand-btn svg.rotated { transform: rotate(90deg); }
@@ -813,11 +814,11 @@ const sortedEntities = computed(() => {
 
 .tree-children { padding-left: 16px; display: flex; flex-direction: column; gap: 1px; }
 .tree-ont { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: var(--radius-sm); cursor: pointer; transition: background 120ms; }
-.tree-ont:hover { background: var(--c-muted); }
-.tree-ont.active { background: var(--c-muted); }
+.tree-ont:hover { background: var(--c-muted-hover); }
+.tree-ont.active { background: color-mix(in srgb, var(--c-accent) 16%, transparent); box-shadow: inset 2px 0 0 var(--c-accent); }
 .tree-ont-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .tree-ont-name { font-size: 12px; color: var(--c-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tree-ont.active .tree-ont-name { color: var(--c-fg); font-weight: 600; }
+.tree-ont.active .tree-ont-name { color: var(--c-accent); font-weight: 600; }
 .tree-empty { padding: 6px 10px; font-size: 12px; color: var(--c-secondary); }
 
 .loading-sm { padding: 20px; text-align: center; }

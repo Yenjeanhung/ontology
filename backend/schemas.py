@@ -629,8 +629,6 @@ class SaveFunctionRequest(BaseModel):
     code_text: str = ""
     language: str = "python"
     timeout_seconds: int = 30
-    is_deterministic: bool = True
-    cache_seconds: int = 0
     is_enabled: bool = True
     sort_order: int = 0
 

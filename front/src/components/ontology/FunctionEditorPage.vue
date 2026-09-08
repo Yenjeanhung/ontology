@@ -55,7 +55,7 @@ const searchFn = ref('')
 function emptyFnForm() {
   return {
     id: '', name: '', code: '', description: '',
-    is_deterministic: true, cache_seconds: 300, timeout_seconds: 30, is_enabled: true,
+    timeout_seconds: 30, is_enabled: true,
     language: 'python',
     params_schema: [],
     code_text: 'def run(params, entity, context):\n    """只读函数：返回可 JSON 序列化的结果\n\n    params:  调用参数(dict)\n    entity:  当前实体(dict, 含 properties)\n    context: 运行上下文(dict)\n    """\n    return {"echo": params}\n',
@@ -88,8 +88,6 @@ function selectFn(fn) {
   fnForm.value = {
     id: fn.id,
     name: fn.name, code: fn.code, description: fn.description || '',
-    is_deterministic: fn.is_deterministic !== false,
-    cache_seconds: fn.cache_seconds ?? 300,
     timeout_seconds: fn.timeout_seconds ?? 30,
     is_enabled: fn.is_enabled !== false,
     language: fn.language || 'python',
@@ -122,8 +120,6 @@ async function saveFn() {
     params_schema: f.params_schema.filter(p => p.name),
     code_text: f.code_text, language: f.language || 'python',
     timeout_seconds: Number(f.timeout_seconds) || 30,
-    is_deterministic: !!f.is_deterministic,
-    cache_seconds: Number(f.cache_seconds) || 0,
     is_enabled: !!f.is_enabled,
   }
   fnSaving.value = true
@@ -205,7 +201,7 @@ function emptyDerivedForm() {
   return {
     id: '', name: '', code: '', data_type: 'number',
     source_kind: 'function', function_id: '', graph_metric: 'degree',
-    materialize_mode: 'virtual', is_enabled: true,
+    materialize_mode: 'virtual', is_enabled: true, params: {},
   }
 }
 
@@ -220,8 +216,12 @@ async function loadDerived() {
   }
 }
 
+// 编辑弹窗里关联函数的参数模式（随函数切换动态加载）
+const derivedFnSchema = ref([])
+
 function openDerivedNew() {
   derivedForm.value = emptyDerivedForm()
+  derivedFnSchema.value = []
   showDerivedModal.value = true
 }
 
@@ -232,8 +232,19 @@ function openDerivedEdit(dp) {
     graph_metric: dp.graph_metric || 'degree',
     materialize_mode: dp.materialize_mode === 'materialized' ? 'materialized' : 'virtual',
     is_enabled: dp.is_enabled !== false,
+    params: { ...(dp.params || {}) },
+  }
+  derivedFnSchema.value = []
+  if (derivedForm.value.source_kind === 'function' && derivedForm.value.function_id) {
+    fetchFnSchema(derivedForm.value.function_id).then((s) => { derivedFnSchema.value = s })
   }
   showDerivedModal.value = true
+}
+
+// 切换关联函数后重载参数模式并清空已填参数
+async function onDerivedFnChange() {
+  derivedFnSchema.value = derivedForm.value.function_id ? await fetchFnSchema(derivedForm.value.function_id) : []
+  derivedForm.value.params = {}
 }
 
 async function saveDerived() {
@@ -245,6 +256,7 @@ async function saveDerived() {
     function_id: f.source_kind === 'function' ? f.function_id : '',
     graph_metric: f.source_kind === 'graph_metric' ? f.graph_metric : '',
     materialize_mode: f.materialize_mode, is_enabled: !!f.is_enabled,
+    params: f.source_kind === 'function' ? normalizeParams(derivedFnSchema.value, f.params) : {},
   }
   derivedSaving.value = true
   try {
@@ -291,39 +303,50 @@ function emptyDpTest() {
   return { dp: null, entities: [], entityId: '', search: '', write: true, running: false, loadingEntities: false, result: null, schema: [], params: {} }
 }
 
-// 关联函数的参数模式（跨本体时列表里可能没有，回退到按 id 拉详情）
-async function loadDpFnSchema(dp) {
-  const t = dpTest.value
-  if (dp.source_kind !== 'function' || !dp.function_id) { t.schema = []; return }
-  const local = functions.value.find((f) => f.id === dp.function_id)
-  if (local) { t.schema = (local.params_schema || []).filter((p) => p.name); return }
+// 拉取函数的参数模式（列表里可能没有，回退到按 id 拉详情）
+async function fetchFnSchema(functionId) {
+  if (!functionId) return []
+  const local = functions.value.find((f) => f.id === functionId)
+  if (local) return (local.params_schema || []).filter((p) => p.name)
   try {
-    const fn = await getOntologyFunction(dp.function_id)
-    t.schema = (fn?.params_schema || []).filter((p) => p.name)
+    const fn = await getOntologyFunction(functionId)
+    return (fn?.params_schema || []).filter((p) => p.name)
   } catch {
-    t.schema = []
+    return []
   }
 }
 
-// 按 params_schema 的类型归一化测试入参
-function normalizeDpTestParams() {
+async function loadDpFnSchema(dp) {
   const t = dpTest.value
+  t.schema = dp.source_kind === 'function' ? await fetchFnSchema(dp.function_id) : []
+}
+
+// 按 params_schema 的类型归一化入参（保存运行参数与测试试算共用）
+// skipEmpty=true 时丢弃未填写的键（测试用：留空即回退到派生属性已配的运行参数）
+function normalizeParams(schema, raw, skipEmpty = false) {
+  const src = raw || {}
+  if (!schema?.length) {
+    return skipEmpty
+      ? Object.fromEntries(Object.entries(src).filter(([, v]) => v !== undefined && v !== ''))
+      : { ...src }
+  }
   const out = {}
-  for (const p of t.schema) {
-    const raw = t.params?.[p.name]
-    if (raw === undefined || raw === '') {
+  for (const p of schema) {
+    const v = src[p.name]
+    if (v === undefined || v === '') {
+      if (skipEmpty) continue
       if (p.required) out[p.name] = p.type === 'number' ? 0 : p.type === 'boolean' ? false : ''
       continue
     }
     if (p.type === 'number') {
-      const n = Number(raw)
-      out[p.name] = Number.isFinite(n) ? n : raw
+      const n = Number(v)
+      out[p.name] = Number.isFinite(n) ? n : v
     } else if (p.type === 'boolean') {
-      out[p.name] = raw === true || raw === 'true'
+      out[p.name] = v === true || v === 'true'
     } else if (p.type === 'object') {
-      try { out[p.name] = typeof raw === 'string' ? JSON.parse(raw) : raw } catch { out[p.name] = raw }
+      try { out[p.name] = typeof v === 'string' ? JSON.parse(v) : v } catch { out[p.name] = v }
     } else {
-      out[p.name] = raw
+      out[p.name] = v
     }
   }
   return out
@@ -332,7 +355,6 @@ function normalizeDpTestParams() {
 async function openDpTest(dp) {
   dpTest.value = emptyDpTest()
   dpTest.value.dp = dp
-  dpTest.value.params = { ...(dp.params || {}) }
   showDpTestModal.value = true
   searchDpEntities()
   await loadDpFnSchema(dp)
@@ -358,7 +380,7 @@ async function runDpTest() {
   t.running = true
   t.result = null
   try {
-    t.result = await testDerivedProperty(t.dp.id, t.entityId, t.write, normalizeDpTestParams())
+    t.result = await testDerivedProperty(t.dp.id, t.entityId, t.write, normalizeParams(t.schema, t.params, true))
     toast(
       t.result.ok ? (t.write ? '测试成功，结果已写入实体属性' : '测试成功') : `测试失败：${t.result.error || '未知错误'}`,
       t.result.ok ? 'success' : 'error',
@@ -398,7 +420,7 @@ onMounted(async () => {
     <div class="page-head">
       <div class="page-title-row">
         <h2 class="page-title">函数与派生属性</h2>
-        <span class="page-subtitle">S3 · 只读函数与派生属性管理（确定性分级 / 缓存 / 物化）</span>
+        <span class="page-subtitle">S3 · 只读函数与派生属性管理（计算 / 物化）</span>
       </div>
       <div class="head-controls">
         <select v-model="categoryId" class="ctrl-select">
@@ -429,8 +451,6 @@ onMounted(async () => {
           >
             <div class="fn-item-name">{{ f.name }}</div>
             <div class="fn-item-meta">
-              <span class="tag">{{ f.is_deterministic === false ? '不缓存' : '缓存' }}</span>
-              <span v-if="f.cache_seconds" class="tag soft">缓存 {{ f.cache_seconds }}s</span>
               <span v-if="f.is_enabled === false" class="tag off">停用</span>
             </div>
           </div>
@@ -449,13 +469,6 @@ onMounted(async () => {
         <div class="form-grid">
           <label class="field"><span>名称 *</span><input v-model="fnForm.name" placeholder="如 机龄计算"></label>
           <label class="field"><span>编码 *</span><input v-model="fnForm.code" placeholder="如 compute_age" :disabled="!!fnForm.id" maxlength="64"></label>
-          <label class="field"><span>缓存</span>
-            <select v-model="fnForm.is_deterministic">
-              <option :value="true">缓存</option>
-              <option :value="false">不缓存</option>
-            </select>
-          </label>
-          <label class="field"><span>缓存(秒)</span><input v-model.number="fnForm.cache_seconds" type="number" min="0"></label>
           <label class="field"><span>超时(秒，1-120)</span><input v-model.number="fnForm.timeout_seconds" type="number" min="1" max="120"></label>
           <label class="field"><span>启用</span>
             <select v-model="fnForm.is_enabled"><option :value="true">启用</option><option :value="false">停用</option></select>
@@ -494,11 +507,7 @@ onMounted(async () => {
           </div>
           <button class="primary-btn sm" :disabled="fnTesting" @click="runTest">{{ fnTesting ? '运行中...' : '▶ 运行测试' }}</button>
           <template v-if="fnTestResult">
-            <div class="sec-sub">测试结果
-              <span v-if="fnTestResult.success" class="cache-badge" :class="fnTestResult.cached ? 'hit' : 'fresh'">
-                {{ fnTestResult.cached ? '⚡ 缓存命中（TTL 内重复调用）' : '✓ 实时计算（缓存未命中或已过期）' }}
-              </span>
-            </div>
+            <div class="sec-sub">测试结果</div>
             <pre class="test-result" :class="{ ok: fnTestResult.success, err: !fnTestResult.success }">{{ JSON.stringify(fnTestResult, null, 2) }}</pre>
           </template>
         </div>
@@ -562,7 +571,7 @@ onMounted(async () => {
               </select>
             </label>
             <label v-if="derivedForm.source_kind === 'function'" class="field"><span>关联函数</span>
-              <select v-model="derivedForm.function_id">
+              <select v-model="derivedForm.function_id" @change="onDerivedFnChange">
                 <option value="">请选择</option>
                 <option v-for="f in functions" :key="f.id" :value="f.id">{{ f.name }}（{{ f.code }}）</option>
               </select>
@@ -585,7 +594,21 @@ onMounted(async () => {
               <select v-model="derivedForm.is_enabled"><option :value="true">启用</option><option :value="false">停用</option></select>
             </label>
           </div>
-          <div class="hint" style="margin-top: 10px;">函数入参在"测试"弹窗中动态填写，测试成功后会自动固化为该派生属性的运行参数。</div>
+          <template v-if="derivedForm.source_kind === 'function' && derivedFnSchema.length">
+            <div class="sec-sub" style="margin-top: 12px;">运行参数（物化 / 读时计算均使用此参数）</div>
+            <div class="form-grid">
+              <label v-for="p in derivedFnSchema" :key="p.name" class="field">
+                <span>{{ p.name }}{{ p.required ? ' *' : '' }}（{{ p.type }}）{{ p.description || '' }}</span>
+                <select v-if="p.type === 'boolean'" v-model="derivedForm.params[p.name]">
+                  <option :value="true">true</option><option :value="false">false</option>
+                </select>
+                <textarea v-else-if="p.type === 'object'" v-model="derivedForm.params[p.name]" rows="2" placeholder='JSON，如 {"k": 1}'></textarea>
+                <input v-else-if="p.type === 'number'" v-model="derivedForm.params[p.name]" type="number" :placeholder="p.required ? '必填' : '可选'">
+                <input v-else v-model="derivedForm.params[p.name]" :placeholder="p.required ? '必填' : '可选'">
+              </label>
+            </div>
+          </template>
+          <div class="hint" style="margin-top: 10px;">函数入参（运行参数）在此配置保存；「测试」弹窗可临时改参试算，不会改动这里的配置。</div>
         </div>
         <div class="modal-foot">
           <button class="btn" @click="showDerivedModal = false">取消</button>
@@ -620,7 +643,7 @@ onMounted(async () => {
             </label>
           </div>
           <template v-if="dpTest.dp?.source_kind === 'function' && dpTest.schema.length">
-            <div class="sec-sub" style="margin-top: 12px;">函数入参（动态填写，测试成功后固化为运行参数）</div>
+            <div class="sec-sub" style="margin-top: 12px;">函数入参（留空则使用编辑弹窗中配置的运行参数；此处填写仅对本次试算生效，不会保存）</div>
             <div class="form-grid">
               <label v-for="p in dpTest.schema" :key="p.name" class="field">
                 <span>{{ p.name }}{{ p.required ? ' *' : '' }}（{{ p.type }}）{{ p.description || '' }}</span>
@@ -702,9 +725,6 @@ onMounted(async () => {
 .test-result { margin: 0; padding: 10px 12px; border-radius: var(--radius-sm); font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 .test-result.ok { background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.3); }
 .test-result.err { background: rgba(220,38,38,0.08); color: var(--c-danger); border: 1px solid rgba(220,38,38,0.3); }
-.cache-badge { margin-left: 10px; font-size: 11px; font-weight: normal; padding: 1px 8px; border-radius: 999px; vertical-align: middle; }
-.cache-badge.hit { background: rgba(234,179,8,0.15); color: #eab308; border: 1px solid rgba(234,179,8,0.4); }
-.cache-badge.fresh { background: rgba(34,197,94,0.12); color: #22c55e; border: 1px solid rgba(34,197,94,0.4); }
 
 .derived-layout { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; }
 .derived-toolbar { display: flex; gap: 10px; align-items: center; }

@@ -12,9 +12,7 @@
 """
 from __future__ import annotations
 
-import hashlib
 import json
-import time
 from datetime import datetime
 
 from sqlalchemy import delete, select
@@ -31,10 +29,6 @@ from models import (
 from services.service_runtime import coerce_params, execute_service
 
 RESULT_SNIPPET = 8 * 1024
-
-# 进程内缓存：{function_id}:{entity_id}:{params_hash} -> (expire_ts, result)
-# 仅对 is_deterministic=1 且 cache_seconds>0 的函数生效（重启即失效，属可重建数据）
-_CACHE: dict[str, tuple[float, dict]] = {}
 
 # 图指标 → 图分析任务里的算法名
 _GRAPH_METRIC_ALGO = {
@@ -93,8 +87,6 @@ def _serialize_function(fn: OntologyFunction) -> dict:
         "code_text": fn.code_text or "",
         "language": fn.language,
         "timeout_seconds": fn.timeout_seconds,
-        "is_deterministic": bool(fn.is_deterministic),
-        "cache_seconds": fn.cache_seconds,
         "is_enabled": bool(fn.is_enabled),
         "sort_order": fn.sort_order,
         "created_at": fn.created_at,
@@ -189,8 +181,6 @@ class FunctionService:
             code_text=req.code_text or "",
             language=req.language or "python",
             timeout_seconds=max(1, min(120, req.timeout_seconds or 30)),
-            is_deterministic=int(bool(req.is_deterministic)),
-            cache_seconds=max(0, req.cache_seconds or 0),
             is_enabled=int(bool(req.is_enabled)),
             sort_order=req.sort_order or 0,
             created_at=_now(), updated_at=_now(),
@@ -223,10 +213,6 @@ class FunctionService:
             fn.language = req.language
         if req.timeout_seconds is not None:
             fn.timeout_seconds = max(1, min(120, req.timeout_seconds))
-        if req.is_deterministic is not None:
-            fn.is_deterministic = int(bool(req.is_deterministic))
-        if req.cache_seconds is not None:
-            fn.cache_seconds = max(0, req.cache_seconds)
         if req.is_enabled is not None:
             fn.is_enabled = int(bool(req.is_enabled))
         if req.sort_order is not None:
@@ -234,7 +220,6 @@ class FunctionService:
         fn.updated_at = _now()
         await db.commit()
         await db.refresh(fn)
-        _purge_cache(function_id)
         return _serialize_function(fn), None
 
     @staticmethod
@@ -247,7 +232,6 @@ class FunctionService:
         )
         await db.delete(fn)
         await db.commit()
-        _purge_cache(function_id)
         return True
 
     @staticmethod
@@ -258,18 +242,6 @@ class FunctionService:
         params, perr = coerce_params(_load_json(fn.params_schema, []), params_raw or {})
         if perr:
             return {"success": False, "data": None, "error": perr, "stdout": "", "duration_ms": 0}
-
-        # 确定性 + 有缓存期 → 命中直接返回
-        # key 中纳入代码指纹：代码一变（即使未触发保存清理）旧缓存立即失效
-        cache_key = ""
-        if fn.is_deterministic and fn.cache_seconds > 0:
-            code_fp = hashlib.md5((fn.code_text or "").encode("utf-8")).hexdigest()[:8]
-            cache_key = f"{fn.id}:{entity.id if entity else ''}:{_dump_json(params)}:{code_fp}"
-            hit = _CACHE.get(cache_key)
-            if hit:
-                if hit[0] > time.monotonic():
-                    return {**hit[1], "cached": True}
-                _CACHE.pop(cache_key, None)  # 顺手清理已过期项，防内存滞留
 
         result = await execute_service(
             code_text=fn.code_text,
@@ -284,8 +256,6 @@ class FunctionService:
             },
             timeout_seconds=fn.timeout_seconds,
         )
-        if cache_key and result.get("success"):
-            _CACHE[cache_key] = (time.monotonic() + fn.cache_seconds, result)
         return result
 
     @staticmethod
@@ -341,11 +311,6 @@ class FunctionService:
                 "error": res.get("error"),
             })
         return {"function_id": fn.id, "code": fn.code, "items": items}, None
-
-
-def _purge_cache(function_id: str) -> None:
-    for k in [k for k in _CACHE if k.startswith(f"{function_id}:")]:
-        _CACHE.pop(k, None)
 
 
 class DerivedPropertyService:
@@ -486,7 +451,6 @@ class DerivedPropertyService:
             "ok": bool(res.get("success")),
             "value": res.get("data"),
             "error": res.get("error"),
-            "cached": bool(res.get("cached")),
         }
 
     @staticmethod
@@ -580,7 +544,6 @@ class DerivedPropertyService:
             props[dp.code] = computed.get("value")
             entity.properties = _dump_json(props)
             entity.updated_at = _now()
-            dp.params = _dump_json(merged_params)  # 测试确定的入参固化为该派生属性的运行参数
             await db.commit()
             written = True
         await _log_invocation(
@@ -595,7 +558,6 @@ class DerivedPropertyService:
             "entity_id": entity.id, "entity_name": entity.name,
             "ok": bool(computed.get("ok")), "value": computed.get("value"),
             "stored_before": stored_before, "written": written,
-            "cached": bool(computed.get("cached")),
             "error": computed.get("error"),
         }, None
 
