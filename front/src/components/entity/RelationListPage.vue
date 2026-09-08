@@ -7,7 +7,7 @@ import Pagination from '../common/Pagination.vue'
 const relations = ref([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = ref(20)
+const pageSize = ref(10)
 const loading = ref(false)
 
 const search = ref('')

@@ -41,7 +41,7 @@ const relationType = ref('')
 const viewMode = ref('graph')
 const showChunkList = ref(false)
 const relationPage = ref(1)
-const relationPageSize = ref(20)
+const relationPageSize = ref(10)
 const RELATION_PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 const loading = ref(false)

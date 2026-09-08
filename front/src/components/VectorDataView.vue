@@ -17,7 +17,7 @@ const error = ref('')
 const pageInput = ref('1')
 
 const page = ref(1)
-const pageSize = ref(20)
+const pageSize = ref(10)
 
 const pageOffset = computed(() => (page.value - 1) * pageSize.value)
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))

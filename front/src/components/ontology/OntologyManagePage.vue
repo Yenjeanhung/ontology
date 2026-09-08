@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   fetchOntologyCategories,
   getOntologyCategoryDetail,
@@ -17,6 +18,8 @@ import ObjectViewManager from './ObjectViewManager.vue'
 import VersionManager from './VersionManager.vue'
 import UsageAnalysis from './UsageAnalysis.vue'
 import ModalDialog from '../common/ModalDialog.vue'
+
+const route = useRoute()
 
 const search = ref('')
 const categories = ref([])
@@ -287,7 +290,17 @@ async function confirmDelete() {
   }
 }
 
-onMounted(loadCategories)
+// 支持从「影响分析」弹窗带 ?category=<id>&tab=<tab> 深链过来，直接定位到某个类别的某个 tab
+onMounted(async () => {
+  await loadCategories()
+  const q = route.query
+  if (q.tab) detailTab.value = String(q.tab)
+  const catId = q.category || q.category_id
+  if (catId) {
+    selectedId.value = String(catId)
+    await loadDetail()
+  }
+})
 </script>
 
 <template>

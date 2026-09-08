@@ -272,6 +272,17 @@ class UpdateSharedPropertyRequest(BaseModel):
 class ApplySharedPropertyRequest(BaseModel):
     ontology_ids: list[str]
     overwrite: bool = False
+    delete_manual_ids: list[str] | None = None  # 取消挂载时，用户选择一并删除的手工同名属性所属本体 id
+
+
+class ApplyPreviewRequest(BaseModel):
+    """挂载预览：传入拟挂载的本体 id 列表，返回其中已存在同名属性的本体。"""
+    ontology_ids: list[str]
+
+
+class DetachPreviewRequest(BaseModel):
+    """取消挂载预览：传入拟取消挂载的本体 id 列表，返回其属性来源（生成/手工）。"""
+    detach_ids: list[str]
 
 
 class CreateInterfaceRequest(BaseModel):

@@ -1011,15 +1011,41 @@ export async function deleteSharedProperty(propId) {
   return res.json()
 }
 
-// 把共享属性挂到多个本体（overwrite=true 时同步已有同名属性）
-export async function applySharedProperty(propId, { ontology_ids, overwrite = false }) {
+// 把共享属性挂到多个本体（overwrite=true 时同步已有同名属性；delete_manual_ids 指定取消挂载时一并删除的手工同名属性）
+export async function applySharedProperty(propId, { ontology_ids, overwrite = false, delete_manual_ids = [] }) {
   const res = await fetch(`${API}/api/shared-properties/${propId}/apply`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ontology_ids, overwrite }),
+    body: JSON.stringify({ ontology_ids, overwrite, delete_manual_ids }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
     throw new Error(body?.detail || 'Apply shared property failed')
+  }
+  return res.json()
+}
+
+// 挂载预览：拟挂载本体中已存在同名（手工重复）属性的本体列表
+export async function previewApplySharedProperty(propId, ontology_ids) {
+  const res = await fetch(`${API}/api/shared-properties/${propId}/apply-preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ontology_ids }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Preview apply failed')
+  }
+  return res.json()
+}
+
+// 取消挂载预览：拟取消挂载本体的属性来源（生成/手工）
+export async function previewDetachSharedProperty(propId, detach_ids) {
+  const res = await fetch(`${API}/api/shared-properties/${propId}/detach-preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ detach_ids }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || 'Preview detach failed')
   }
   return res.json()
 }

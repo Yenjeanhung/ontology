@@ -142,7 +142,7 @@ const historyCatId = ref('')
 const historyRuns = ref([])
 const historyLoading = ref(false)
 const historyPage = ref(1)
-const historyPageSize = ref(8)
+const historyPageSize = ref(10)
 const pagedHistoryRuns = computed(() =>
   historyRuns.value.slice((historyPage.value - 1) * historyPageSize.value, historyPage.value * historyPageSize.value)
 )

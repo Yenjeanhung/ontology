@@ -54,7 +54,8 @@ def _load_json(raw, default):
 # ───────────────────────── 共享属性 ─────────────────────────
 
 
-def _sp_to_dict(sp: OntologySharedProperty, usage_count: int = 0) -> dict:
+def _sp_to_dict(sp: OntologySharedProperty, usage_count: int = 0,
+                ontology_ids: list[str] | None = None) -> dict:
     return {
         "id": sp.id,
         "name": sp.name,
@@ -68,6 +69,7 @@ def _sp_to_dict(sp: OntologySharedProperty, usage_count: int = 0) -> dict:
         "format": sp.format or "",
         "is_system": bool(sp.is_system),
         "usage_count": usage_count,
+        "ontology_ids": ontology_ids or [],
         "created_at": sp.created_at,
         "updated_at": sp.updated_at,
     }
@@ -88,7 +90,8 @@ class SharedPropertyService:
         if not rows:
             return []
         usage = await SharedPropertyService._usage_counts(db)
-        return [_sp_to_dict(r, usage.get(r.id, 0)) for r in rows]
+        ont_ids = await SharedPropertyService._usage_ontology_ids(db)
+        return [_sp_to_dict(r, usage.get(r.id, 0), ont_ids.get(r.id, [])) for r in rows]
 
     @staticmethod
     async def _usage_counts(db: AsyncSession) -> dict[str, int]:
@@ -100,12 +103,27 @@ class SharedPropertyService:
         return {row[0]: int(row[1]) for row in rows.all() if row[0]}
 
     @staticmethod
+    async def _usage_ontology_ids(db: AsyncSession) -> dict[str, list[str]]:
+        """共享属性 → 已挂载的本体 id 列表（去重）。"""
+        rows = await db.execute(
+            select(OntologyAttribute.shared_property_id, OntologyAttribute.ontology_id)
+            .where(OntologyAttribute.shared_property_id != "")
+            .distinct()
+        )
+        result: dict[str, list[str]] = {}
+        for sp_id, ont_id in rows.all():
+            if sp_id and ont_id:
+                result.setdefault(sp_id, []).append(ont_id)
+        return result
+
+    @staticmethod
     async def get_property(db: AsyncSession, prop_id: str) -> dict | None:
         sp = await db.get(OntologySharedProperty, prop_id)
         if not sp:
             return None
         usage = await SharedPropertyService._usage_counts(db)
-        return _sp_to_dict(sp, usage.get(sp.id, 0))
+        ont_ids = await SharedPropertyService._usage_ontology_ids(db)
+        return _sp_to_dict(sp, usage.get(sp.id, 0), ont_ids.get(sp.id, []))
 
     @staticmethod
     async def create_property(db: AsyncSession, req) -> dict:
@@ -200,13 +218,36 @@ class SharedPropertyService:
     @staticmethod
     async def apply_to_ontologies(
         db: AsyncSession, prop_id: str, ontology_ids: list[str], overwrite: bool = False,
+        delete_manual_ids: list[str] | None = None,
     ) -> dict:
-        """把共享属性挂到一个或多个本体：本体无同名属性则新建，已有则按 overwrite 决定是否同步。"""
+        """把共享属性挂到一个或多个本体：本体无同名属性则新建，已有则按 overwrite 决定是否同步；
+        未选中的已挂载本体解除引用（生成的属性删除；手工同名属性默认仅解绑，除非在 delete_manual_ids 中指定删除）。"""
         sp = await db.get(OntologySharedProperty, prop_id)
         if not sp:
             raise ValueError("共享属性不存在")
-        created, updated, skipped = 0, 0, 0
-        for ont_id in ontology_ids:
+        ontology_ids_set = set(ontology_ids or [])
+        delete_manual = set(delete_manual_ids or [])
+        created, updated, skipped, detached, bound = 0, 0, 0, 0, 0
+
+        # 1) 处理取消勾选：已挂载但不在 ontology_ids_set 里的本体
+        #    - 由共享属性生成的属性（is_shared_created=1）直接删除
+        #    - 手工同名属性（is_shared_created=0）：默认仅解除引用；若用户在 delete_manual_ids 中显式选择则一并删除
+        detached_rows = (await db.execute(
+            select(OntologyAttribute).where(
+                OntologyAttribute.shared_property_id == prop_id,
+                OntologyAttribute.ontology_id.notin_(list(ontology_ids_set) or ["__none__"]),
+            )
+        )).scalars().all()
+        for attr in detached_rows:
+            if attr.is_shared_created or attr.ontology_id in delete_manual:
+                await db.delete(attr)
+            else:
+                attr.shared_property_id = ""
+            attr.updated_at = _now()
+            detached += 1
+
+        # 2) 处理新增/同步
+        for ont_id in ontology_ids_set:
             ont = await db.get(Ontology, ont_id)
             if not ont:
                 skipped += 1
@@ -218,16 +259,24 @@ class SharedPropertyService:
                 )
             )).scalar_one_or_none()
             if existing:
-                if not overwrite:
+                if existing.shared_property_id == sp.id:
+                    # 已经是该共享属性的引用，无需重复处理
                     skipped += 1
                     continue
-                existing.data_type = sp.data_type
-                existing.is_required = sp.is_required
-                existing.default_value = sp.default_value
-                existing.code = existing.code or sp.code
+                if overwrite:
+                    # 同步已有同名属性并绑定引用
+                    existing.data_type = sp.data_type
+                    existing.is_required = sp.is_required
+                    existing.default_value = sp.default_value
+                    existing.code = existing.code or sp.code
+                    existing.shared_property_id = sp.id
+                    existing.updated_at = _now()
+                    updated += 1
+                    continue
+                # 本体已有同名属性但未勾选「同步已有」：仅绑定引用，保留原属性定义
                 existing.shared_property_id = sp.id
                 existing.updated_at = _now()
-                updated += 1
+                bound += 1
                 continue
             max_order = (await db.execute(
                 select(func.coalesce(func.max(OntologyAttribute.sort_order), 0))
@@ -244,10 +293,67 @@ class SharedPropertyService:
                 sort_order=int(max_order) + 1,
                 is_edit_only=0,
                 shared_property_id=sp.id,
+                is_shared_created=1,
             ))
             created += 1
         await db.commit()
-        return {"created": created, "updated": updated, "skipped": skipped}
+        return {"created": created, "updated": updated, "skipped": skipped, "detached": detached, "bound": bound}
+
+    @staticmethod
+    async def preview_apply(db: AsyncSession, prop_id: str, ontology_ids: list[str]) -> list[dict]:
+        """挂载预览：返回拟挂载本体中已存在同名属性（手工重复）的本体列表。"""
+        sp = await db.get(OntologySharedProperty, prop_id)
+        if not sp:
+            raise ValueError("共享属性不存在")
+        ids = list(ontology_ids or [])
+        if not ids:
+            return []
+        rows = (await db.execute(
+            select(OntologyAttribute).where(
+                OntologyAttribute.ontology_id.in_(ids),
+                OntologyAttribute.name == sp.name,
+            )
+        )).scalars().all()
+        # 已绑定到本共享属性的不算重复（只是已挂载）
+        dup_ont_ids = {a.ontology_id for a in rows if a.shared_property_id != prop_id}
+        onts = (await db.execute(
+            select(Ontology).where(Ontology.id.in_(ids))
+        )).scalars().all()
+        name_map = {o.id: o.name for o in onts}
+        result = []
+        for oid in ids:
+            if oid in dup_ont_ids:
+                result.append({"ontology_id": oid, "ontology_name": name_map.get(oid, oid)})
+        return result
+
+    @staticmethod
+    async def preview_detach(db: AsyncSession, prop_id: str, detach_ids: list[str]) -> list[dict]:
+        """取消挂载预览：返回拟取消挂载本体的属性来源（生成/手工），供用户选择删除或保留。"""
+        sp = await db.get(OntologySharedProperty, prop_id)
+        if not sp:
+            raise ValueError("共享属性不存在")
+        ids = list(detach_ids or [])
+        if not ids:
+            return []
+        rows = (await db.execute(
+            select(OntologyAttribute).where(
+                OntologyAttribute.shared_property_id == prop_id,
+                OntologyAttribute.ontology_id.in_(ids),
+            )
+        )).scalars().all()
+        flag_map = {a.ontology_id: bool(a.is_shared_created) for a in rows}
+        onts = (await db.execute(
+            select(Ontology).where(Ontology.id.in_(ids))
+        )).scalars().all()
+        name_map = {o.id: o.name for o in onts}
+        return [
+            {
+                "ontology_id": oid,
+                "ontology_name": name_map.get(oid, oid),
+                "is_shared_created": flag_map.get(oid, False),
+            }
+            for oid in ids
+        ]
 
 
 # ───────────────────────── 本体接口 ─────────────────────────

@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS ontology_attributes (
     format VARCHAR(100) DEFAULT '',
     unit VARCHAR(32) DEFAULT '',
     shared_property_id VARCHAR DEFAULT '',
+    is_shared_created INTEGER NOT NULL DEFAULT 0,
     created_at VARCHAR,
     updated_at VARCHAR,
     UNIQUE(ontology_id, name)

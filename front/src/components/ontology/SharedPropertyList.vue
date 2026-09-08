@@ -6,11 +6,16 @@ import {
   updateSharedProperty,
   deleteSharedProperty,
   applySharedProperty,
+  previewApplySharedProperty,
+  previewDetachSharedProperty,
   fetchOntologyCategories,
   fetchOntologies,
 } from '../../api'
+import { useToast } from '../../composables/useToast'
 import ModalDialog from '../common/ModalDialog.vue'
 import Pagination from '../common/Pagination.vue'
+
+const { success: showSuccess, error: showError } = useToast()
 
 const DATA_TYPES = ['string', 'number', 'boolean', 'date', 'datetime', 'text', 'enum']
 
@@ -42,7 +47,7 @@ async function load() {
   try {
     props.value = await fetchSharedProperties()
   } catch (e) {
-    alert('加载失败：' + e.message)
+    showError('加载失败：' + e.message)
     props.value = []
   } finally {
     loading.value = false
@@ -105,7 +110,7 @@ async function submitForm() {
     showForm.value = false
     await load()
   } catch (e) {
-    alert('保存失败：' + e.message)
+    showError('保存失败：' + e.message)
   } finally {
     saving.value = false
   }
@@ -129,7 +134,7 @@ async function confirmDelete() {
     showDelete.value = false
     await load()
   } catch (e) {
-    alert('删除失败：' + e.message)
+    showError('删除失败：' + e.message)
   } finally {
     deleting.value = false
   }
@@ -140,13 +145,18 @@ const showApply = ref(false)
 const applyTarget = ref(null)
 const applying = ref(false)
 const overwrite = ref(false)
+const showApplyConfirm = ref(false)   // 挂载/取消挂载前的核对与选择弹窗
+const dupList = ref([])               // 挂载时存在同名手工属性的本体
+const detachPreview = ref([])         // 取消挂载时各本体的属性来源与选择
+const previewing = ref(false)
 const ontologyTree = ref([])      // [{ category, ontologies: [...] }]
 const checkedOnts = ref(new Set())
 const treeLoading = ref(false)
 
 function askApply(p) {
   applyTarget.value = p
-  checkedOnts.value = new Set()
+  // 回显：已挂载该共享属性的本体默认勾选
+  checkedOnts.value = new Set(p.ontology_ids || [])
   overwrite.value = false
   showApply.value = true
   loadOntologyTree()
@@ -184,21 +194,64 @@ function toggleCategory(group) {
 }
 
 async function confirmApply() {
-  if (!applyTarget.value || !checkedOnts.value.size) return
+  if (!applyTarget.value) return
+  const selectedIds = Array.from(checkedOnts.value)
+  const toDetach = (applyTarget.value.ontology_ids || [])
+    .filter(id => !checkedOnts.value.has(id))
+  // 无新增/无重复/无取消项则直接应用
+  if (!selectedIds.length && !toDetach.length) {
+    await doApply([])
+    return
+  }
+  previewing.value = true
+  try {
+    const [dups, det] = await Promise.all([
+      selectedIds.length
+        ? previewApplySharedProperty(applyTarget.value.id, selectedIds)
+        : Promise.resolve([]),
+      toDetach.length
+        ? previewDetachSharedProperty(applyTarget.value.id, toDetach)
+        : Promise.resolve([]),
+    ])
+    dupList.value = dups
+    // 生成类属性默认删除；手工同名属性默认保留（由用户勾选决定删除）
+    detachPreview.value = det.map(d => ({ ...d, delete: false }))
+    showApplyConfirm.value = true
+  } catch (e) {
+    showError('预览失败：' + e.message)
+  } finally {
+    previewing.value = false
+  }
+}
+
+async function confirmApplyDialog() {
+  showApplyConfirm.value = false
+  const deleteManualIds = detachPreview.value
+    .filter(d => !d.is_shared_created && d.delete)
+    .map(d => d.ontology_id)
+  await doApply(deleteManualIds)
+}
+
+async function doApply(deleteManualIds = []) {
+  if (!applyTarget.value) return
   applying.value = true
   try {
     const res = await applySharedProperty(applyTarget.value.id, {
       ontology_ids: Array.from(checkedOnts.value),
       overwrite: overwrite.value,
+      delete_manual_ids: deleteManualIds,
     })
-    const msg = res.created ? `新建属性 ${res.created} 处` : ''
-      + (res.updated ? `${res.updated} 处已同步` : '')
-      + (res.skipped ? `，${res.skipped} 处跳过` : '')
-    alert('应用完成：' + (msg || '无变更'))
+    const created = res.created ? `新建属性 ${res.created} 处` : ''
+    const updated = res.updated ? `${res.updated} 处已同步` : ''
+    const bound = res.bound ? `${res.bound} 处已绑定` : ''
+    const skipped = res.skipped ? `${res.skipped} 处跳过` : ''
+    const detached = res.detached ? `${res.detached} 处已取消挂载` : ''
+    const msg = [created, updated, bound, skipped, detached].filter(Boolean).join('，') || '无变更'
+    showSuccess('应用完成：' + msg)
     showApply.value = false
     await load()
   } catch (e) {
-    alert('应用失败：' + e.message)
+    showError('应用失败：' + e.message)
   } finally {
     applying.value = false
   }
@@ -335,7 +388,7 @@ onMounted(load)
 
     <!-- 挂到本体 -->
     <ModalDialog v-model="showApply" title="挂到本体" confirmText="应用" size="lg"
-      :confirmLoading="applying" :confirmDisabled="!checkedOnts.size" @confirm="confirmApply">
+      :confirmLoading="previewing || applying" @confirm="confirmApply">
       <p class="dialog-text">
         把「{{ applyTarget?.name }}」挂到选中的本体：本体无同名属性则新建（自动绑定引用）；勾选「同步已有」时会用共享定义覆盖已存在的同名属性。
       </p>
@@ -354,6 +407,7 @@ onMounted(load)
             <label v-for="o in group.ontologies" :key="o.id" class="tree-ont">
               <input type="checkbox" :checked="checkedOnts.has(o.id)" @change="toggleOnt(o.id)">
               {{ o.name }}
+              <span v-if="checkedOnts.has(o.id)" class="tree-ont-applied">已挂载</span>
             </label>
           </div>
         </div>
@@ -361,6 +415,40 @@ onMounted(load)
       <label class="check-label apply-overwrite">
         <input type="checkbox" v-model="overwrite"> 同步已有同名属性（覆盖类型/必填/默认值并绑定引用）
       </label>
+    </ModalDialog>
+
+    <!-- 挂载/取消挂载 核对与选择 -->
+    <ModalDialog v-model="showApplyConfirm" title="确认挂载 / 取消挂载" confirmText="确认应用"
+      :confirmLoading="applying" @confirm="confirmApplyDialog">
+      <div v-if="dupList.length" class="confirm-block">
+        <p class="confirm-title warn">以下本体已存在同名手工属性（挂载时仅绑定引用，不覆盖其定义）：</p>
+        <ul class="confirm-list">
+          <li v-for="d in dupList" :key="d.ontology_id">{{ d.ontology_name }}</li>
+        </ul>
+      </div>
+
+      <div v-if="detachPreview.length" class="confirm-block">
+        <p class="confirm-title danger">以下本体将取消挂载，请选择是否删除其属性：</p>
+        <ul class="confirm-list">
+          <li v-for="d in detachPreview" :key="d.ontology_id" class="confirm-item">
+            <span class="confirm-name">{{ d.ontology_name }}</span>
+            <span class="confirm-tag" :class="d.is_shared_created ? 'gen' : 'manual'">
+              {{ d.is_shared_created ? '由共享属性生成' : '手工创建同名' }}
+            </span>
+            <template v-if="!d.is_shared_created">
+              <label class="check-label confirm-del">
+                <input type="checkbox" v-model="d.delete"> 同时删除该属性
+              </label>
+            </template>
+            <span v-else class="confirm-note">将删除</span>
+          </li>
+        </ul>
+        <p class="confirm-hint">说明：由共享属性生成的属性取消挂载时默认删除；手工创建的同名属性默认仅解绑保留，勾选后可一并删除。</p>
+      </div>
+
+      <p v-if="!dupList.length && !detachPreview.length" class="dialog-text">
+        没有需要特别核对的项目，确认应用即可。
+      </p>
     </ModalDialog>
   </div>
 </template>
@@ -432,4 +520,19 @@ onMounted(load)
 .tree-cat-count { font-size: 12px; color: var(--c-secondary); }
 .tree-onts { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 6px 0 2px 24px; }
 .tree-ont { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--c-fg); cursor: pointer; }
+.tree-ont-applied { font-size: 11px; color: var(--c-accent, #14b8a6); border: 1px solid currentColor; border-radius: 8px; padding: 0 6px; }
+
+.confirm-block { margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-muted); }
+.confirm-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.confirm-title.warn { color: #f59e0b; }
+.confirm-title.danger { color: var(--c-danger); }
+.confirm-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.confirm-item { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--c-fg); flex-wrap: wrap; }
+.confirm-name { font-weight: 600; }
+.confirm-tag { font-size: 11px; padding: 1px 7px; border-radius: 8px; border: 1px solid currentColor; }
+.confirm-tag.gen { color: var(--c-accent, #14b8a6); }
+.confirm-tag.manual { color: #f59e0b; }
+.confirm-note { font-size: 12px; color: var(--c-secondary); }
+.confirm-del { margin-left: auto; }
+.confirm-hint { font-size: 12px; color: var(--c-secondary); margin-top: 8px; line-height: 1.5; }
 </style>

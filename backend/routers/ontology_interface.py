@@ -13,11 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from schemas import (
+    ApplyPreviewRequest,
     ApplySharedPropertyRequest,
     CreateInterfaceLinkRequest,
     CreateInterfacePropertyRequest,
     CreateInterfaceRequest,
     CreateSharedPropertyRequest,
+    DetachPreviewRequest,
     ImplementInterfaceRequest,
     UpdateInterfaceRequest,
     UpdateSharedPropertyRequest,
@@ -90,7 +92,26 @@ async def apply_shared_property(prop_id: str, req: ApplySharedPropertyRequest, d
     try:
         return await SharedPropertyService.apply_to_ontologies(
             db, prop_id, req.ontology_ids, overwrite=req.overwrite,
+            delete_manual_ids=req.delete_manual_ids,
         )
+    except ValueError as e:
+        raise _bad_request(str(e))
+
+
+@router.post("/shared-properties/{prop_id}/apply-preview")
+async def preview_apply_shared_property(prop_id: str, req: ApplyPreviewRequest, db: AsyncSession = Depends(get_db)):
+    """挂载预览：返回拟挂载本体中已存在同名（手工重复）属性的本体。"""
+    try:
+        return await SharedPropertyService.preview_apply(db, prop_id, req.ontology_ids)
+    except ValueError as e:
+        raise _bad_request(str(e))
+
+
+@router.post("/shared-properties/{prop_id}/detach-preview")
+async def preview_detach_shared_property(prop_id: str, req: DetachPreviewRequest, db: AsyncSession = Depends(get_db)):
+    """取消挂载预览：返回拟取消挂载本体的属性来源（生成/手工），供用户选择删除或保留。"""
+    try:
+        return await SharedPropertyService.preview_detach(db, prop_id, req.detach_ids)
     except ValueError as e:
         raise _bad_request(str(e))
 

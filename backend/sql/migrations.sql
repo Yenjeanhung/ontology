@@ -434,3 +434,8 @@ ALTER TABLE ontology_suggestions ADD COLUMN base_version INTEGER DEFAULT 0;
 ALTER TABLE ontology_suggestions ADD COLUMN diff TEXT DEFAULT NULL;
 ALTER TABLE ontology_suggestions ADD COLUMN reviewers VARCHAR DEFAULT '';
 ALTER TABLE ontology_suggestions ADD COLUMN merged_version_id VARCHAR DEFAULT '';
+
+-- migration_026: 共享属性挂载来源标记（取消挂载时仅删除由共享属性生成的属性）
+-- 注意：只加列、不回填历史数据。历史已挂载属性默认 is_shared_created=0（视为手工/绑定属性），
+-- 取消挂载时只解绑、不删除，避免误删用户手工创建的属性。新挂载（apply 新建）会显式置 1。
+ALTER TABLE ontology_attributes ADD COLUMN is_shared_created INTEGER NOT NULL DEFAULT 0;

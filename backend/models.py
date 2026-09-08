@@ -166,6 +166,7 @@ class OntologyAttribute(Base):
     format = Column(String, default="")                         # 值格式化，如 #,##0.00 / YYYY-MM-DD
     unit = Column(String, default="")                           # 单位
     shared_property_id = Column(String, default="")             # 绑定的共享属性（可空）
+    is_shared_created = Column(Integer, nullable=False, default=0)  # 由共享属性挂载生成（取消挂载时删除）
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
