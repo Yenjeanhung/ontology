@@ -705,8 +705,8 @@ onMounted(loadCategories)
 }
 .detail-tab:hover { background: var(--c-muted); color: var(--c-fg); }
 .detail-tab.active { background: var(--c-fg); color: var(--c-panel); }
-.cat-item { display: flex; align-items: center; gap: 10px; padding: 10px 10px; border-radius: var(--radius-sm); cursor: pointer; transition: background 120ms; }.cat-item:hover { background: var(--c-muted); }
-.cat-item.active { background: var(--c-muted); }
+.cat-item { display: flex; align-items: center; gap: 10px; padding: 10px 10px; border-radius: var(--radius-sm); cursor: pointer; transition: background 120ms, border-color 120ms, box-shadow 120ms; border: 1px solid transparent; box-shadow: 0 0 0 0 transparent; }.cat-item:hover { background: var(--c-muted); }
+.cat-item.active { background: rgba(14, 116, 144, 0.12); border-color: var(--c-accent); box-shadow: 0 0 0 1px var(--c-accent); }
 .cat-item.active .cat-item-title { color: var(--c-fg); font-weight: 700; }
 .cat-item-icon { flex-shrink: 0; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); background: var(--c-muted); color: var(--c-accent); }
 .cat-item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }

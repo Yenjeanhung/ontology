@@ -5,6 +5,7 @@ import {
   createOntology, updateOntology, deleteOntology,
   replaceOntologyAttributes,
   fetchAttributeTemplates,
+  getAttributeTemplate,
   fetchOntologies,
   getOntologyDetail,
   setOntologyTemplates,
@@ -106,6 +107,10 @@ const templates = ref([])
 const merged = ref(null)
 const mergedVisible = ref(false)
 
+// 模板继承的属性（只读展示用）：从每个已绑定模板的完整属性里聚合
+// 按 code 去重；绑定模板变化时由 saveTpl / loadDetail 重新拉取
+const inheritedAttrs = ref([])
+
 // 本体服务（仅当前本体）
 const services = ref([])
 const svcLoading = ref(false)
@@ -170,6 +175,26 @@ async function loadDetail(ontId) {
     editingInfo.value = false
     mergedVisible.value = false
     merged.value = null
+    inheritedAttrs.value = []
+    // 后台拉取每个已绑定模板的完整属性，组装成「继承」只读列表
+    const tplIds = tplBinding.value
+    if (tplIds.length) {
+      Promise.all(tplIds.map(id => getAttributeTemplate(id).catch(() => null)))
+        .then(list => {
+          const seen = new Set()
+          const out = []
+          for (const tpl of list) {
+            if (!tpl) continue
+            for (const a of (tpl.attributes || [])) {
+              const key = a.code || a.name
+              if (!key || seen.has(key)) continue
+              seen.add(key)
+              out.push({ ...a, _templateId: tpl.id, _templateName: tpl.name })
+            }
+          }
+          inheritedAttrs.value = out
+        })
+    }
     if (!interfaces.length) loadInterfaces()
   } catch (e) {
     detailError.value = '加载失败：' + e.message
@@ -320,6 +345,24 @@ async function saveTplBindings() {
       template_ids: tplBinding.value || [],
     })
     tplDirty.value = false
+    // 模板绑定变化后，重新拉取每个模板的完整属性以更新「继承」列表
+    const tplIds = tplBinding.value
+    inheritedAttrs.value = []
+    if (tplIds.length) {
+      const list = await Promise.all(tplIds.map(id => getAttributeTemplate(id).catch(() => null)))
+      const seen = new Set()
+      const out = []
+      for (const tpl of list) {
+        if (!tpl) continue
+        for (const a of (tpl.attributes || [])) {
+          const key = a.code || a.name
+          if (!key || seen.has(key)) continue
+          seen.add(key)
+          out.push({ ...a, _templateId: tpl.id, _templateName: tpl.name })
+        }
+      }
+      inheritedAttrs.value = out
+    }
     await loadMerged()
     await refreshAfterChange()
   } catch (e) {
@@ -729,6 +772,7 @@ onActivated(() => { onSvcSaved() })
                 :builtins="BUILTIN_ATTRS"
                 :save-fn="saveAttributes"
                 :shared-properties="sharedProps"
+                :inherited-attributes="inheritedAttrs"
                 @saved="() => {}"
               />
             </div>

@@ -31,6 +31,12 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  // 继承自属性模板的属性（只读展示，带「继承」标记，不参与保存）：
+  // [{ code, name, data_type, source: 'template:<id>' }]
+  inheritedAttributes: {
+    type: Array,
+    default: () => [],
+  },
 })
 
 const emit = defineEmits(['saved', 'change'])
@@ -83,6 +89,9 @@ function syncFromProps() {
       unit: a.unit || '',
       format: a.format || '',
       shared_property_id: a.shared_property_id || '',
+      // 来源：'own' 本体自有；'template:xxx' 继承自模板（不可删除；改动只作为自有覆盖）
+      _source: a.source || 'own',
+      _templateId: (a.source && a.source.startsWith('template:')) ? a.source.slice('template:'.length) : '',
       _dirty: false,
       _isNew: false,
     }))
@@ -283,6 +292,25 @@ function sharedPropOf(attr) {
           <span v-if="b.description" class="ae-builtin-desc">{{ b.description }}</span>
         </div>
       </div>
+      <!-- 继承自属性模板的属性：只读展示，带「继承」标记，不参与保存 -->
+      <div
+        v-for="t in inheritedAttributes"
+        :key="'tpl-' + (t.code || t.name)"
+        class="ae-card inherited"
+      >
+        <div class="ae-card-head">
+          <span class="ae-lock" title="继承自属性模板，需到「属性模板」里修改">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </span>
+          <span v-if="t.code" class="ae-code-tag">{{ t.code }}</span>
+          <span class="ae-name">{{ t.name || '未命名属性' }}</span>
+          <span class="ae-type-tag">{{ typeLabel(t.data_type) }}</span>
+          <span v-if="t.is_required" class="ae-req-tag">必填</span>
+          <span class="ae-tpl-tag" title="继承自属性模板，本体自有同名属性会覆盖它">继承</span>
+          <span class="ae-spacer"></span>
+          <span v-if="t.description" class="ae-builtin-desc">{{ t.description }}</span>
+        </div>
+      </div>
       <!-- 可编辑属性 -->
       <div
         v-for="(attr, idx) in list"
@@ -304,11 +332,15 @@ function sharedPropOf(attr) {
           <span class="ae-type-tag">{{ typeLabel(attr.data_type) }}</span>
           <span v-if="attr.is_required" class="ae-req-tag">必填</span>
           <span v-if="attr.is_edit_only" class="ae-editonly-tag" title="仅人工编辑，不参与抽取">仅编辑</span>
+          <span v-if="attr._source && attr._source.startsWith('template:')" class="ae-tpl-tag" title="继承自属性模板（在此编辑只作为自有覆盖）">继承</span>
           <span v-if="attr.shared_property_id && sharedPropOf(attr)" class="ae-shared-tag" title="已绑定共享属性">共享</span>
           <span v-if="attr._dirty || attr._isNew" class="ae-dirty-dot" title="未保存"></span>
           <span class="ae-spacer"></span>
           <span v-if="editable" class="ae-actions">
-            <template v-if="pendingDeleteIdx === idx">
+            <template v-if="attr._source && attr._source.startsWith('template:')">
+              <span class="ae-locked-tip" title="继承自模板的属性不能在此删除，请到「属性模板」里调整">不可删</span>
+            </template>
+            <template v-else-if="pendingDeleteIdx === idx">
               <span class="ae-del-ask">确认删除？</span>
               <button class="btn xs danger" @click.stop="confirmRemoveAttribute">删除</button>
               <button class="btn xs" @click.stop="cancelRemoveAttribute">取消</button>
@@ -424,6 +456,9 @@ function sharedPropOf(attr) {
 .ae-card.builtin { border-style: dashed; background: var(--c-muted); }
 .ae-card.builtin .ae-card-head { cursor: default; background: transparent; }
 .ae-card.builtin .ae-card-head:hover { background: transparent; }
+.ae-card.inherited { border-style: dashed; background: var(--c-muted); }
+.ae-card.inherited .ae-card-head { cursor: default; background: transparent; }
+.ae-card.inherited .ae-card-head:hover { background: transparent; }
 .ae-lock { color: var(--c-secondary); flex-shrink: 0; display: inline-flex; align-items: center; }
 .ae-builtin-tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: rgba(22, 163, 74, 0.12); color: var(--c-success); flex-shrink: 0; }
 .ae-builtin-desc { font-size: 11px; color: var(--c-secondary); font-style: italic; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -454,6 +489,8 @@ function sharedPropOf(attr) {
 .ae-req-tag { background: rgba(220, 38, 38, 0.1); color: var(--c-danger); }
 .ae-editonly-tag { background: rgba(147, 51, 234, 0.12); color: #9333EA; }
 .ae-shared-tag { background: rgba(14, 116, 144, 0.12); color: var(--c-accent); }
+.ae-tpl-tag { background: rgba(245, 158, 11, 0.14); color: #B45309; }
+.ae-locked-tip { font-size: 11px; color: var(--c-secondary); font-style: italic; }
 .ae-hint-label {
   display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 500;
   color: var(--c-accent); padding-top: 4px; line-height: 1.4;
