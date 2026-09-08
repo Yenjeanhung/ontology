@@ -70,6 +70,9 @@
                   </button>
                 </div>
               </div>
+              <p class="if-hint">
+                把接口属性挂到共享属性后，本体实现该接口时若其属性也引用同一共享属性，系统会自动建立映射，无需逐本体手动配置。
+              </p>
               <table v-if="propRows.length" class="if-table">
                 <thead>
                   <tr><th>属性名</th><th>编码</th><th>类型</th><th>必填</th><th>共享属性</th><th></th></tr>
@@ -112,6 +115,9 @@
                 </div>
               </div>
               <p v-else class="if-text muted">暂无本体实现该接口。</p>
+              <p v-if="hasStaleImplementations" class="if-error sm">
+                部分实现映射中的接口属性编码已不存在（接口属性已更名），这些属性不再参与多态查询，请到对应本体重新调整映射。
+              </p>
 
               <div v-if="addingImpl" class="if-impl-form">
                 <div class="if-grid3">
@@ -194,7 +200,9 @@
               <tr v-for="(r, i) in polyRows" :key="r.id || i">
                 <td><span class="if-mini-code">{{ r._ontology }}</span></td>
                 <td>{{ r.name }}</td>
-                <td v-for="p in detail.properties" :key="p.code">{{ r.properties?.[p.code] ?? '—' }}</td>
+                <td v-for="p in detail.properties" :key="p.code">
+                  {{ polyPropMapped(r.ontology_id, p.code) ? (r.properties?.[p.code] ?? '—') : '—' }}
+                </td>
               </tr>
             </tbody>
           </table>
@@ -236,7 +244,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import Pagination from '../common/Pagination.vue'
 import {
   fetchInterfaces, createInterface, getInterfaceDetail, updateInterface, deleteInterface,
@@ -273,6 +281,13 @@ const implOntId = ref('')
 const implOntAttrs = ref([])   // [{value: 属性编码, label: 名称(编码)}]
 const implMapping = ref({})
 const implSaving = ref(false)
+
+const hasStaleImplementations = computed(() => {
+  const propCodes = new Set((detail.value?.properties || []).map(p => p.code))
+  return (detail.value?.implementations || []).some(impl =>
+    Object.keys(impl.property_mapping || {}).some(k => !propCodes.has(k))
+  )
+})
 
 // 多态预览
 const polyRows = ref([]); const polyLoading = ref(false); const polyError = ref(''); const polyQueried = ref(false)
@@ -362,7 +377,33 @@ function addPropRow() {
 async function saveProps() {
   propsSaving.value = true
   try {
+    // 旧接口属性编码集合：保存后属性被改名/删除时，对应实现映射会变成"已失效"
+    const oldCodes = new Set((detail.value?.properties || []).map(p => p.code))
+    const newCodes = new Set(propRows.value.filter(p => p.code).map(p => p.code))
+    const removedOrRenamed = [...oldCodes].filter(c => !newCodes.has(c))
     await setInterfaceProperties(detail.value.id, propRows.value)
+    // 实现映射存于接口实现表的 property_mapping（JSON）：键为接口属性 code，值为本体属性 code。
+    // 接口属性 code 被改/删后，原 key 变成无效项，这里主动从所有实现映射里剔除，避免堆积失效映射。
+    if (removedOrRenamed.length) {
+      const impls = detail.value?.implementations || []
+      for (const impl of impls) {
+        const mapping = impl.property_mapping || {}
+        const cleaned = {}
+        let changed = false
+        for (const k of Object.keys(mapping)) {
+          if (newCodes.has(k)) cleaned[k] = mapping[k]
+          else changed = true
+        }
+        if (changed) {
+          try {
+            await implementInterface(detail.value.id, {
+              ontology_id: impl.ontology_id,
+              property_mapping: cleaned,
+            })
+          } catch (e) { /* 单条失败不阻断其它 */ }
+        }
+      }
+    }
     await load()
     await loadDetail(detail.value.id)
   } catch (e) {
@@ -375,7 +416,11 @@ async function saveProps() {
 function mapSummary(mapping) {
   const keys = Object.keys(mapping || {})
   if (!keys.length) return '空映射'
-  return keys.map(k => `${k}→${mapping[k] || '∅'}`).join('，')
+  const propCodes = new Set((detail.value?.properties || []).map(p => p.code))
+  return keys.map(k => {
+    const stale = !propCodes.has(k)
+    return `${k}→${mapping[k] || '∅'}${stale ? '（已失效）' : ''}`
+  }).join('，')
 }
 
 function openAddImpl() {
@@ -395,13 +440,9 @@ async function loadImplOntAttrs() {
         value: a.code || a.name,
         label: a.code && a.code !== a.name ? `${a.name} (${a.code})` : a.name,
       }))
-    // 同编码/同名预填（映射值用编码，与实体 properties 键一致）
+    // 不自动匹配：映射必须由用户显式建立
     const draft = {}
-    for (const p of detail.value.properties || []) {
-      const hit = attrs.find(a => (a.code || a.name) === p.code)
-        || attrs.find(a => a.name === p.name)
-      draft[p.code] = hit ? (hit.code || hit.name) : ''
-    }
+    for (const p of detail.value.properties || []) draft[p.code] = ''
     implMapping.value = draft
   } catch { /* 忽略，用户可手动选 */ }
 }
@@ -468,6 +509,11 @@ async function runPolyQuery(page = polyPage.value) {
   }
 }
 
+function polyPropMapped(ontologyId, propCode) {
+  const impl = (detail.value?.implementations || []).find(i => i.ontology_id === ontologyId)
+  return !!(impl?.property_mapping?.[propCode])
+}
+
 function applyFilters() {
   polyPage.value = 1
   runPolyQuery(1)
@@ -521,6 +567,7 @@ defineExpose({ reload: load })
 .if-sub { font-size: 12px; color: var(--c-secondary); }
 .if-loading, .if-empty { padding: 28px; text-align: center; color: var(--c-secondary); font-size: 13px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); }
 .if-error { font-size: 12px; color: var(--c-danger); }
+.if-error.sm { font-size: 11px; margin-top: 6px; }
 
 .if-list { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; overflow-y: auto; }
 .if-item { border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); overflow: hidden; flex-shrink: 0; }
@@ -547,6 +594,7 @@ defineExpose({ reload: load })
 .if-sec-ops { display: flex; gap: 8px; }
 .if-text { font-size: 12.5px; color: var(--c-secondary); margin: 0; }
 .if-text.muted { font-style: italic; }
+.if-hint { font-size: 11px; color: var(--c-secondary); margin: 0; line-height: 1.5; }
 
 .if-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .if-field { display: flex; flex-direction: column; gap: 4px; }

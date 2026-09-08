@@ -23,11 +23,14 @@ import AttributeEditor from '../common/AttributeEditor.vue'
 import SearchableSelect from '../common/SearchableSelect.vue'
 import Pagination from '../common/Pagination.vue'
 import ModalDialog from '../common/ModalDialog.vue'
+import { useToast } from '../../composables/useToast'
 
 const props = defineProps({
   categoryId: { type: String, required: true },
 })
 const emit = defineEmits(['changed'])
+
+const toast = useToast()
 
 const COLOR_PRESETS = ['#A16207', '#2563EB', '#16A34A', '#DC2626', '#9333EA', '#0891B2', '#DB2777', '#475569']
 
@@ -388,22 +391,35 @@ async function getIfaceDetail(ifaceId) {
   return ifaceDetailCache.value[ifaceId]
 }
 
-// 本体属性名选项（固有 name + 自有属性）
-const ownAttrNames = computed(() => [
-  'name', ...(detail.value?.attributes || []).map(a => a.name).filter(Boolean),
+// 本体属性选项（value 用 code，label 显示 name + code；与实体 properties 的键一致）
+const ownAttrs = computed(() => [
+  { code: 'name', name: '名称' },
+  ...(detail.value?.attributes || []).map(a => ({
+    code: a.code || a.name,
+    name: a.name || a.code,
+    shared_property_id: a.shared_property_id || '',
+  })),
 ])
+const ownAttrOptions = computed(() => ownAttrs.value.map(a => ({
+  value: a.code,
+  label: a.code && a.code !== a.name ? `${a.name} (${a.code})` : a.name,
+})))
+function ownAttrCodeByName(name) { return ownAttrs.value.find(a => a.name === name)?.code || '' }
+function ownAttrNameByCode(code) { return ownAttrs.value.find(a => a.code === code)?.name || code }
 
 async function openMapping(iface) {
   const d = await getIfaceDetail(iface.id)
   if (!d) { alert('加载接口属性失败'); return }
   if (mappingIfaceId.value === iface.id) { mappingIfaceId.value = ''; return }
   mappingIfaceId.value = iface.id
-  // 预填：已有映射沿用；缺失的按同名属性自动匹配
+  // 只沿用已有映射；不做任何自动匹配，映射必须由用户显式建立
   const existing = implInterfaces.value.find(i => i.interface_id === iface.id)?.property_mapping || {}
   const draft = {}
   for (const p of d.properties || []) {
-    if (existing[p.code]) draft[p.code] = existing[p.code]
-    else draft[p.code] = ownAttrNames.value.includes(p.name) ? p.name : ''
+    const ex = existing[p.code]
+    // 兼容旧数据：若之前存的是属性名，转换为 code 展示
+    draft[p.code] = ex && ownAttrs.value.some(a => a.code === ex) ? ex
+      : (ex ? (ownAttrCodeByName(ex) || '') : '')
   }
   mappingDraft.value = draft
 }
@@ -417,14 +433,28 @@ async function saveImplement(iface) {
       property_mapping: { ...mappingDraft.value },
     })
     if (res.status === 'partial') {
-      const miss = (res.missing || []).join('、')
-      const bad = (res.type_mismatch || []).map(m => `${m.interface_property}→${m.ontology_property}`).join('、')
-      alert(`已保存，但映射不完整：${miss ? `缺失 ${miss}；` : ''}${bad ? `类型不匹配 ${bad}` : ''}`)
+      const props = ifaceDetailCache[iface.id]?.properties || []
+      const resMissing = res.missing || []
+      const missingNames = resMissing.length
+        ? resMissing.map(code => props.find(p => p.code === code)?.name || code)
+        : Object.entries(mappingDraft.value)
+            .filter(([, v]) => !v)
+            .map(([code]) => `${props.find(p => p.code === code)?.name || code}(${code})`)
+      const bad = (res.type_mismatch || []).map(m =>
+        `${m.interface_property}(${m.interface_property_code || m.interface_property})→${m.ontology_property || m.ontology_property_code}`
+      ).join('、')
+      const reason = [
+        missingNames.length ? `未映射：${missingNames.join('、')}` : '',
+        bad ? `类型不匹配：${bad}` : '',
+      ].filter(Boolean).join('；')
+      toast.warn(`已保存，但映射不完整。${reason || '请检查是否还有接口属性未选择对应的本体属性。'}`, 6000)
+    } else {
+      toast.success('接口实现已保存')
     }
     mappingIfaceId.value = ''
     implInterfaces.value = await fetchOntologyInterfaces(detail.value.id)
   } catch (e) {
-    alert('保存实现失败：' + e.message)
+    toast.error('保存实现失败：' + e.message)
   } finally {
     implSaving.value = false
   }
@@ -727,6 +757,9 @@ onActivated(() => { onSvcSaved() })
                     </template>
                   </div>
                   <div v-if="mappingIfaceId === iface.id" class="oe-iface-mapping">
+                    <div class="oe-mapping-hint">
+                      将接口的每个属性映射到当前本体的对应属性；未映射的属性不参与多态查询，必填属性未映射会被标记为“映射不完整”。
+                    </div>
                     <table class="oe-mapping-table">
                       <thead>
                         <tr><th>接口属性</th><th>类型</th><th>必填</th><th>映射到本体属性</th></tr>
@@ -739,7 +772,7 @@ onActivated(() => { onSvcSaved() })
                           <td>
                             <select v-model="mappingDraft[p.code]">
                               <option value="">未映射</option>
-                              <option v-for="n in ownAttrNames" :key="n" :value="n">{{ n }}</option>
+                              <option v-for="opt in ownAttrOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
                             </select>
                           </td>
                         </tr>
@@ -996,6 +1029,7 @@ onActivated(() => { onSvcSaved() })
 .oe-iface-row .btn { margin-left: auto; }
 .oe-iface-row .btn + .btn { margin-left: 0; }
 .oe-iface-mapping { margin-top: 8px; border-top: 1px dashed var(--c-border); padding-top: 8px; }
+.oe-mapping-hint { font-size: 11px; color: var(--c-secondary); margin-bottom: 8px; line-height: 1.5; }
 .oe-mapping-table { width: 100%; font-size: 12px; border-collapse: collapse; }
 .oe-mapping-table th, .oe-mapping-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--c-border); }
 .oe-mapping-table th { color: var(--c-secondary); font-weight: 500; }

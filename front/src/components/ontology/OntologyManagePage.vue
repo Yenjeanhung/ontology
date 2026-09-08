@@ -441,7 +441,7 @@ onMounted(loadCategories)
           <div class="empty-desc">选择类别后可编辑本体定义与属性</div>
         </div>
 
-        <template v-else-if="detail">
+        <div v-else-if="detail" class="detail-body">
           <!-- 基本信息 -->
           <div class="info-card">
             <div class="info-row">
@@ -489,7 +489,7 @@ onMounted(loadCategories)
           </div>
 
           <!-- 本体编辑器（列表+详情按需加载，自身管理数据） -->
-          <OntologyEditor v-show="detailTab === 'ont'" class="detail-editor" :category-id="selectedId" @changed="onSubChanged" />
+          <OntologyEditor v-if="detailTab === 'ont'" class="detail-editor" :category-id="selectedId" @changed="onSubChanged" />
 
           <!-- 接口管理（属性契约 + 实现 + 多态查询） -->
           <InterfaceEditor v-if="detailTab === 'iface'" class="detail-editor" :category-id="selectedId" />
@@ -502,7 +502,7 @@ onMounted(loadCategories)
 
           <!-- S7：影响分析（Usages） -->
           <UsageAnalysis v-if="detailTab === 'usage' && selectedId" :category-id="selectedId" />
-        </template>
+        </div>
       </div>
     </div>
 
@@ -730,6 +730,7 @@ onMounted(loadCategories)
 .detail-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
 
 .detail-editor { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.detail-body { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 10px; overflow: hidden; }
 
 .info-card { border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); padding: 10px 16px; }
 .info-row { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--c-border); }

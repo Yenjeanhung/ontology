@@ -3,7 +3,7 @@ import { useToast } from '../composables/useToast'
 
 const { toasts, dismiss } = useToast()
 
-const ICONS = { success: '✓', error: '!', info: 'i' }
+const ICONS = { success: '✓', error: '!', info: 'i', warn: '!' }
 </script>
 
 <template>
@@ -67,7 +67,9 @@ const ICONS = { success: '✓', error: '!', info: 'i' }
 .toast-success .toast-icon { background: var(--c-success); }
 .toast-error .toast-icon { background: var(--c-danger); }
 .toast-info .toast-icon { background: var(--c-accent); }
+.toast-warn .toast-icon { background: #f59e0b; }
 .toast-error { border-color: var(--c-danger); }
+.toast-warn { border-color: rgba(245, 158, 11, 0.5); }
 
 .toast-enter-active,
 .toast-leave-active {

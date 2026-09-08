@@ -24,6 +24,7 @@ export function useToast() {
     success: (text, d) => show('success', text, d),
     error: (text, d) => show('error', text, d ?? 5000),
     info: (text, d) => show('info', text, d),
+    warn: (text, d) => show('warn', text, d ?? 4500),
     dismiss,
   }
 }
