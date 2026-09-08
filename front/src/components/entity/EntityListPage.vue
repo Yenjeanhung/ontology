@@ -412,6 +412,14 @@ async function runBatchInvoke() {
 onMounted(async () => {
   try { kbs.value = await fetchKbs() } catch {}
   await loadTree()
+  // 支持从「影响分析」带 ?ontology_id= / ?category_id= 跳转过来时自动应用筛选
+  const q = router.currentRoute.value.query
+  if (q.ontology_id) {
+    selectedOntologyId.value = String(q.ontology_id)
+    loadOntAttributes(selectedOntologyId.value)
+  } else if (q.category_id) {
+    selectedCategoryId.value = String(q.category_id)
+  }
   await load()
 })
 
