@@ -24,6 +24,21 @@ const treeSearch = ref('')
 const expandedCats = ref(new Set())
 const loadingTree = ref(false)
 
+const TREE_EXPAND_KEY = 'entityList.expandedCats'
+function loadExpandedCats() {
+  try {
+    const raw = localStorage.getItem(TREE_EXPAND_KEY)
+    if (raw) {
+      const arr = JSON.parse(raw)
+      if (Array.isArray(arr)) return new Set(arr.filter((x) => typeof x === 'string'))
+    }
+  } catch {}
+  return new Set()
+}
+function saveExpandedCats() {
+  try { localStorage.setItem(TREE_EXPAND_KEY, JSON.stringify([...expandedCats.value])) } catch {}
+}
+
 let searchTimer = null
 let treeSearchTimer = null
 
@@ -152,8 +167,13 @@ async function loadTree() {
       detailLoaded: false,
       detailLoading: false,
     }))
-    // 默认全部收起，点击/双击展开时再按需加载，避免初始 N 次 detail 请求拖慢页面
-    expandedCats.value = new Set()
+    // 恢复本地记忆的展开状态（跨详情页返回/刷新都保持）
+    expandedCats.value = loadExpandedCats()
+    // 如果有分类被恢复为展开态，补齐该分类的本体明细
+    for (const catId of expandedCats.value) {
+      const g = ontologyTree.value.find((x) => x.category.id === catId)
+      if (g) ensureCategoryDetail(g)
+    }
   } catch (e) {
     console.error('load ontology tree failed', e)
     ontologyTree.value = []
@@ -239,12 +259,15 @@ function clearFilter() {
 function toggleExpand(catId) {
   if (expandedCats.value.has(catId)) {
     expandedCats.value.delete(catId)
-    return
+  } else {
+    expandedCats.value.add(catId)
+    // 展开时才计算/加载该分类下各本体的实体数量
+    const g = ontologyTree.value.find(x => x.category.id === catId)
+    if (g) ensureCategoryDetail(g)
   }
-  expandedCats.value.add(catId)
-  // 展开时才计算/加载该分类下各本体的实体数量
-  const g = ontologyTree.value.find(x => x.category.id === catId)
-  if (g) ensureCategoryDetail(g)
+  // 触发 Set 的响应式更新并持久化
+  expandedCats.value = new Set(expandedCats.value)
+  saveExpandedCats()
 }
 
 async function load() {
@@ -402,6 +425,29 @@ onActivated(() => {
   }
   load()
 })
+
+// ===== 客户端排序（属性/关系/服务三列可点击表头）=====
+const sortKey = ref('') // '' | 'property_count' | 'relation_count' | 'service_count'
+const sortDir = ref('desc') // 'desc' | 'asc'
+function toggleSort(key) {
+  if (sortKey.value === key) {
+    sortDir.value = sortDir.value === 'desc' ? 'asc' : 'desc'
+  } else {
+    sortKey.value = key
+    sortDir.value = 'desc'
+  }
+}
+const sortedEntities = computed(() => {
+  if (!sortKey.value) return entities.value
+  const key = sortKey.value
+  const sign = sortDir.value === 'desc' ? -1 : 1
+  return [...entities.value].sort((a, b) => {
+    const av = a[key] ?? 0
+    const bv = b[key] ?? 0
+    if (av === bv) return 0
+    return av < bv ? sign : -sign
+  })
+})
 </script>
 
 <template>
@@ -504,7 +550,7 @@ onActivated(() => {
 
         <div v-if="loading && !entities.length" class="loading-state"><span class="spinner"></span> 加载中...</div>
 
-        <div v-else-if="entities.length" class="ent-table">
+        <div v-else-if="sortedEntities.length" class="ent-table">
           <!-- 选中具体本体：表头展示该本体全部属性列 -->
           <template v-if="ontAttributes.length">
             <div class="ent-row ent-row-head">
@@ -512,11 +558,15 @@ onActivated(() => {
               <span class="col-name">实体名称</span>
               <span class="col-type">本体类型</span>
               <span v-for="a in ontAttributes" :key="a.code" class="col-attr head" :title="a.name + (a.data_type ? ` · ${a.data_type}` : '')">{{ a.name }}</span>
-              <span class="col-mini head">属性 / 关系 / 服务</span>
+              <span class="col-metric-head">
+                <button :class="['metric-head-btn','metric-attr',{active:sortKey==='property_count'}]" @click="toggleSort('property_count')" title="按属性数排序">属性<span class="arr" v-if="sortKey==='property_count'">{{ sortDir==='desc'?'↓':'↑' }}</span></button>
+                <button :class="['metric-head-btn','metric-rel',{active:sortKey==='relation_count'}]" @click="toggleSort('relation_count')" title="按关系数排序">关系<span class="arr" v-if="sortKey==='relation_count'">{{ sortDir==='desc'?'↓':'↑' }}</span></button>
+                <button :class="['metric-head-btn','metric-svc',{active:sortKey==='service_count'}]" @click="toggleSort('service_count')" title="按服务数排序">服务<span class="arr" v-if="sortKey==='service_count'">{{ sortDir==='desc'?'↓':'↑' }}</span></button>
+              </span>
               <span class="col-actions"></span>
             </div>
             <div
-              v-for="ent in entities"
+              v-for="ent in sortedEntities"
               :key="ent.id"
               class="ent-row"
               @click="goDetail(ent.id)"
@@ -530,10 +580,16 @@ onActivated(() => {
                 <span class="type-tag">{{ ent.entity_type || ent.ontology_name || '—' }}</span>
               </span>
               <span v-for="a in ontAttributes" :key="a.code" class="col-attr" :title="formatAttr(ent.properties?.[a.code])">{{ formatAttr(ent.properties?.[a.code]) }}</span>
-              <span class="col-mini">
-                <span class="mini-item"><span class="mini-num">{{ ent.property_count ?? 0 }}</span><span class="mini-label">属性</span></span>
-                <span class="mini-item"><span class="mini-num">{{ ent.relation_count ?? 0 }}</span><span class="mini-label">关系</span></span>
-                <span class="mini-item"><span class="mini-num">{{ ent.service_count ?? 0 }}</span><span class="mini-label">服务</span></span>
+              <span class="col-metric">
+                <button :class="['metric-pill','metric-attr',{active:sortKey==='property_count'}]" @click.stop="toggleSort('property_count')" title="按属性数排序">
+                  <span class="metric-pill-num">{{ ent.property_count ?? 0 }}</span><span class="metric-pill-label">属性</span>
+                </button>
+                <button :class="['metric-pill','metric-rel',{active:sortKey==='relation_count'}]" @click.stop="toggleSort('relation_count')" title="按关系数排序">
+                  <span class="metric-pill-num">{{ ent.relation_count ?? 0 }}</span><span class="metric-pill-label">关系</span>
+                </button>
+                <button :class="['metric-pill','metric-svc',{active:sortKey==='service_count'}]" @click.stop="toggleSort('service_count')" title="按服务数排序">
+                  <span class="metric-pill-num">{{ ent.service_count ?? 0 }}</span><span class="metric-pill-label">服务</span>
+                </button>
               </span>
               <span class="col-actions">
                 <button class="rm-btn sm" @click="remove(ent, $event)" title="删除">
@@ -549,14 +605,16 @@ onActivated(() => {
               <span class="col-check"><input type="checkbox" :checked="allChecked" @change="toggleCheckAll" @click.stop></span>
               <span class="col-name">实体名称</span>
               <span class="col-type">本体类型</span>
-              <span class="col-stat">属性</span>
-              <span class="col-num">关系</span>
-              <span class="col-stat">服务</span>
+              <span class="col-metric-head">
+                <button :class="['metric-head-btn','metric-attr',{active:sortKey==='property_count'}]" @click="toggleSort('property_count')" title="按属性数排序">属性<span class="arr" v-if="sortKey==='property_count'">{{ sortDir==='desc'?'↓':'↑' }}</span></button>
+                <button :class="['metric-head-btn','metric-rel',{active:sortKey==='relation_count'}]" @click="toggleSort('relation_count')" title="按关系数排序">关系<span class="arr" v-if="sortKey==='relation_count'">{{ sortDir==='desc'?'↓':'↑' }}</span></button>
+                <button :class="['metric-head-btn','metric-svc',{active:sortKey==='service_count'}]" @click="toggleSort('service_count')" title="按服务数排序">服务<span class="arr" v-if="sortKey==='service_count'">{{ sortDir==='desc'?'↓':'↑' }}</span></button>
+              </span>
               <span class="col-props">属性概要</span>
               <span class="col-actions"></span>
             </div>
             <div
-              v-for="ent in entities"
+              v-for="ent in sortedEntities"
               :key="ent.id"
               class="ent-row"
               @click="goDetail(ent.id)"
@@ -569,14 +627,16 @@ onActivated(() => {
               <span class="col-type">
                 <span class="type-tag">{{ ent.entity_type || ent.ontology_name || '—' }}</span>
               </span>
-              <span class="col-stat">
-                <span class="stat-total">{{ ent.property_count ?? 0 }}</span>
-                <span class="stat-split">继承{{ ent.property_inherited_count ?? 0 }} · 自定义{{ ent.property_custom_count ?? 0 }}</span>
-              </span>
-              <span class="col-num">{{ ent.relation_count ?? 0 }}</span>
-              <span class="col-stat">
-                <span class="stat-total">{{ ent.service_count ?? 0 }}</span>
-                <span class="stat-split">继承{{ ent.service_inherited_count ?? 0 }} · 自定义{{ ent.service_custom_count ?? 0 }}</span>
+              <span class="col-metric">
+                <button :class="['metric-pill','metric-attr',{active:sortKey==='property_count'}]" @click.stop="toggleSort('property_count')" title="按属性数排序">
+                  <span class="metric-pill-num">{{ ent.property_count ?? 0 }}</span><span class="metric-pill-label">属性</span>
+                </button>
+                <button :class="['metric-pill','metric-rel',{active:sortKey==='relation_count'}]" @click.stop="toggleSort('relation_count')" title="按关系数排序">
+                  <span class="metric-pill-num">{{ ent.relation_count ?? 0 }}</span><span class="metric-pill-label">关系</span>
+                </button>
+                <button :class="['metric-pill','metric-svc',{active:sortKey==='service_count'}]" @click.stop="toggleSort('service_count')" title="按服务数排序">
+                  <span class="metric-pill-num">{{ ent.service_count ?? 0 }}</span><span class="metric-pill-label">服务</span>
+                </button>
               </span>
               <span class="col-props">{{ ent.property_preview || '—' }}</span>
               <span class="col-actions">
@@ -782,17 +842,43 @@ onActivated(() => {
 .col-name { flex: 1.5; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-type { flex: 0 0 130px; min-width: 0; }
 .col-num { flex: 0 0 56px; min-width: 0; text-align: center; font-size: 12px; color: var(--c-secondary); font-variant-numeric: tabular-nums; }
-.col-stat { flex: 0 0 118px; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 1px; }
-.stat-total { font-size: 13px; font-weight: 600; color: var(--c-fg); font-variant-numeric: tabular-nums; }
-.stat-split { font-size: 10px; color: var(--c-secondary); white-space: nowrap; }
 .col-props { flex: 2; min-width: 0; font-size: 12px; color: var(--c-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-attr { flex: 1 1 0; min-width: 0; font-size: 12px; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-attr.head { color: var(--c-secondary); font-weight: 600; text-transform: none; letter-spacing: 0; }
-.col-mini { flex: 0 0 150px; min-width: 0; display: flex; align-items: center; justify-content: space-around; gap: 6px; }
-.col-mini.head { font-size: 12px; font-weight: 600; color: var(--c-secondary); justify-content: center; }
-.mini-item { display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 0; }
-.mini-num { font-size: 13px; font-weight: 600; color: var(--c-fg); font-variant-numeric: tabular-nums; }
-.mini-label { font-size: 10px; color: var(--c-secondary); white-space: nowrap; }
+
+/* 属性 / 关系 / 服务 三列：metric pill 风格 + 点击排序 */
+.col-metric, .col-metric-head { flex: 0 0 220px; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.col-metric-head { justify-content: flex-start; }
+.metric-head-btn, .metric-pill {
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px; min-width: 56px; padding: 4px 8px;
+  border: 1px solid transparent; border-radius: 8px;
+  background: transparent; cursor: pointer; transition: all 150ms;
+  font-family: var(--font);
+}
+.metric-head-btn { padding: 5px 10px; border-color: var(--c-border); background: var(--c-panel); color: var(--c-secondary); font-size: 12px; font-weight: 600; }
+.metric-head-btn:hover { color: var(--c-fg); border-color: var(--c-fg); }
+.metric-head-btn .arr { margin-left: 3px; font-size: 10px; opacity: 0.8; }
+
+.metric-pill { padding: 5px 9px; }
+.metric-pill-num { font-size: 14px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.metric-pill-label { font-size: 10px; line-height: 1; }
+
+.metric-attr { color: #16a34a; background: rgba(22, 163, 74, 0.08); }
+.metric-attr:hover { background: rgba(22, 163, 74, 0.18); }
+.metric-attr.active { background: rgba(22, 163, 74, 0.22); box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.45); }
+
+.metric-rel { color: #2563eb; background: rgba(37, 99, 235, 0.08); }
+.metric-rel:hover { background: rgba(37, 99, 235, 0.18); }
+.metric-rel.active { background: rgba(37, 99, 235, 0.22); box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.45); }
+
+.metric-svc { color: #9333ea; background: rgba(147, 51, 234, 0.08); }
+.metric-svc:hover { background: rgba(147, 51, 234, 0.18); }
+.metric-svc.active { background: rgba(147, 51, 234, 0.22); box-shadow: 0 0 0 2px rgba(147, 51, 234, 0.45); }
+
+.metric-head-btn.metric-attr.active, .metric-head-btn.metric-attr:hover { color: #16a34a; }
+.metric-head-btn.metric-rel.active, .metric-head-btn.metric-rel:hover { color: #2563eb; }
+.metric-head-btn.metric-svc.active, .metric-head-btn.metric-svc:hover { color: #9333ea; }
 .col-actions { flex: 0 0 40px; display: flex; justify-content: flex-end; }
 .ent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .type-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--c-muted); color: var(--c-secondary); }

@@ -1,7 +1,8 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import {
   fetchObjectViews, createObjectView, updateObjectView, deleteObjectView, setDefaultObjectView,
+  getOntologyCategoryDetail, getOntologyDetail,
 } from '../../api'
 
 const props = defineProps({
@@ -17,6 +18,16 @@ const editorMode = ref('visual') // 'visual' | 'json'
 
 const form = ref(emptyForm())
 const layoutModel = ref({ tabs: [] })
+
+// 当前视图可选的属性列表：绑定到具体本体时只取该本体属性，否则取分类下全部属性去重
+const ontAttrs = ref([])
+const attributeOptions = computed(() =>
+  ontAttrs.value.map((a) => ({
+    value: a.code,
+    label: `${a.name || a.code} (${a.code})`,
+    data_type: a.data_type || '',
+  }))
+)
 
 const drag = ref({ type: '', from: null, to: null })
 
@@ -42,7 +53,7 @@ function emptyLayout() {
           ] },
           { title: '基本信息', columns: 2, widgets: [
             { kind: 'properties', title: '属性', span: 1, config: {} },
-            { kind: 'chart', title: '属性图表', span: 1, config: { chartType: 'bar', source: 'self', labelField: '', valueField: '' } },
+            { kind: 'chart', title: '属性图表', span: 1, config: { chartType: 'bar', source: 'peers', labelField: '', valueField: '' } },
           ] },
           { title: '关联', columns: 1, widgets: [
             { kind: 'relations', title: '关系', span: 1, config: {} },
@@ -78,7 +89,7 @@ const DEFAULT_CONFIGS = {
   actions: () => ({}),
   derived: () => ({}),
   timeline: () => ({}),
-  chart: () => ({ chartType: 'bar', source: 'self', labelField: '', valueField: '' }),
+  chart: () => ({ chartType: 'bar', source: 'peers', labelField: '', valueField: '' }),
   stats: () => ({ items: [], labelOverrides: {} }),
   table: () => ({ columns: [], labelOverrides: {} }),
   note: () => ({ text: '' }),
@@ -280,6 +291,7 @@ function openNew() {
   editorMode.value = 'visual'
   editingId.value = ''
   showEditor.value = true
+  loadOntologyAttrs()
 }
 
 function openEdit(v) {
@@ -296,6 +308,7 @@ function openEdit(v) {
   editorMode.value = 'visual'
   editingId.value = v.id
   showEditor.value = true
+  loadOntologyAttrs()
 }
 
 function stripInternal(layout) {
@@ -370,7 +383,32 @@ async function setDefault(v) {
   }
 }
 
+async function loadOntologyAttrs() {
+  if (!props.categoryId) { ontAttrs.value = []; return }
+  try {
+    const boundOntologyId = form.value.ontology_id?.trim()
+    let attrs = []
+    if (boundOntologyId) {
+      const ont = await getOntologyDetail(props.categoryId, boundOntologyId)
+      attrs = ont?.attributes || []
+    } else {
+      const detail = await getOntologyCategoryDetail(props.categoryId)
+      const map = new Map()
+      for (const ont of detail?.ontologies || []) {
+        for (const a of ont.attributes || []) {
+          if (a?.code && !map.has(a.code)) map.set(a.code, a)
+        }
+      }
+      attrs = [...map.values()]
+    }
+    ontAttrs.value = attrs
+  } catch {
+    ontAttrs.value = []
+  }
+}
+
 watch(() => props.categoryId, load)
+watch(() => form.value.ontology_id, () => { loadOntologyAttrs() })
 onMounted(load)
 </script>
 
@@ -432,6 +470,9 @@ onMounted(load)
               <input type="text" v-model="form.interface_code" placeholder="留空=类别缺省">
             </div>
           </div>
+          <div class="ovm-hint">
+            提示：绑定到具体本体后，图表/表格/指标卡的字段下拉仅显示该本体属性；作为类别缺省视图时，下拉会列出分类下全部属性（此时建议字段留空由系统自动探测）。
+          </div>
 
           <div class="ovm-field">
             <div class="ovm-mode-bar">
@@ -453,6 +494,7 @@ onMounted(load)
                   :key="`tab-${tIdx}`"
                   :class="['ovm-tab-item', { active: tab._active, 'drag-target': isDragTarget('tab', [tIdx]) }]"
                   draggable="true"
+                  @click.self="setActiveTab(tIdx)"
                   @dragstart="onDragStart('tab', [tIdx], $event)"
                   @dragover.prevent="onDragOver('tab', [tIdx])"
                   @drop.prevent="onDrop('tab')"
@@ -516,25 +558,36 @@ onMounted(load)
                           <button class="ovm-icon-btn ovm-sort-btn" :disabled="wIdx === section.widgets.length - 1" @click="moveWidgetDown(tIdx, sIdx, wIdx)" title="下移">↓</button>
                           <button class="ovm-icon-btn" @click="removeWidget(tIdx, sIdx, wIdx)" title="删除微件">×</button>
                         </div>
-                        <div v-if="widget.kind === 'chart'" class="ovm-widget-cfg">
-                          <label class="ovm-mini-label">图型</label>
-                          <select :value="widget.config.chartType || 'bar'" @change="widget.config.chartType = $event.target.value; syncLayoutText()">
-                            <option value="bar">柱状图</option>
-                            <option value="line">折线图</option>
-                            <option value="pie">饼图</option>
-                          </select>
-                          <label class="ovm-mini-label">数据源</label>
-                          <select :value="widget.config.source || 'self'" @change="widget.config.source = $event.target.value; syncLayoutText()">
-                            <option value="self">本实体数值属性</option>
-                            <option value="relations">关联实体</option>
-                            <option value="peers">同类实体对比</option>
-                          </select>
-                          <template v-if="(widget.config.source || 'self') !== 'self'">
-                            <label class="ovm-mini-label">标签字段</label>
-                            <input v-model="widget.config.labelField" @input="syncLayoutText" class="ovm-cfg-input" placeholder="如 name">
-                            <label class="ovm-mini-label">数值字段</label>
-                            <input v-model="widget.config.valueField" @input="syncLayoutText" class="ovm-cfg-input" placeholder="留空自动探测">
-                          </template>
+                        <div v-if="widget.kind === 'chart'" class="ovm-widget-cfg ovm-chart-cfg">
+                          <div class="ovm-cfg-row">
+                            <label class="ovm-cfg-label">图型</label>
+                            <select :value="widget.config.chartType || 'bar'" @change="widget.config.chartType = $event.target.value; syncLayoutText()">
+                              <option value="bar">柱状图</option>
+                              <option value="line">折线图</option>
+                              <option value="pie">饼图</option>
+                            </select>
+                          </div>
+                          <div class="ovm-cfg-row">
+                            <label class="ovm-cfg-label">数据源</label>
+                            <select :value="widget.config.source || 'peers'" @change="widget.config.source = $event.target.value; syncLayoutText()">
+                              <option value="relations">关联实体（按关系出边）</option>
+                              <option value="peers">同类实体对比（按 category_id 同源）</option>
+                            </select>
+                          </div>
+                          <div class="ovm-cfg-row">
+                            <label class="ovm-cfg-label">标签字段</label>
+                            <select :value="widget.config.labelField || ''" @change="widget.config.labelField = $event.target.value; syncLayoutText()">
+                              <option value="">实体名称（name）</option>
+                              <option v-for="a in attributeOptions" :key="a.value" :value="a.value">{{ a.label }}</option>
+                            </select>
+                          </div>
+                          <div class="ovm-cfg-row">
+                            <label class="ovm-cfg-label">数值字段</label>
+                            <select :value="widget.config.valueField || ''" @change="widget.config.valueField = $event.target.value; syncLayoutText()">
+                              <option value="">自动探测第一个数值属性</option>
+                              <option v-for="a in attributeOptions" :key="a.value" :value="a.value">{{ a.label }}</option>
+                            </select>
+                          </div>
                         </div>
                         <div v-else-if="widget.kind === 'stats'" class="ovm-widget-cfg ovm-stats-cfg">
                           <div v-for="(it, ii) in (widget.config.items || [])" :key="ii" class="ovm-stats-row">
@@ -565,7 +618,7 @@ onMounted(load)
             </div>
 
             <div class="ovm-hint">
-              微件：<code>properties</code> 属性 · <code>relations</code> 关系 · <code>actions</code> 动作 · <code>derived</code> 派生 · <code>timeline</code> 时间线 · <code>chart</code> 图表（柱/折/饼，可取本实体 / 关联实体 / 同类实体数据）· <code>stats</code> 指标卡 · <code>table</code> 关联表格 · <code>note</code> 说明。分区可选 1-3 列网格，微件可跨列。
+              微件：<code>properties</code> 属性 · <code>relations</code> 关系 · <code>actions</code> 动作 · <code>derived</code> 派生 · <code>timeline</code> 时间线 · <code>chart</code> 图表（柱/折/饼，关联实体 / 同类实体对比）· <code>stats</code> 指标卡 · <code>table</code> 关联表格 · <code>note</code> 说明。分区可选 1-3 列网格，微件可跨列。
             </div>
           </div>
           <label class="ovm-check"><input type="checkbox" v-model="form.is_default"> 设为该本体/类别的默认视图</label>
@@ -623,19 +676,21 @@ onMounted(load)
 .ovm-mode-btn.active { background: var(--c-muted); color: var(--c-fg); font-weight: 600; }
 .ovm-mode-btn:not(.active):hover { background: var(--c-muted); color: var(--c-fg); }
 
-.ovm-builder { border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); display: flex; flex-direction: column; min-height: 220px; }
-.ovm-tabs-bar { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid var(--c-border); overflow-x: auto; }
-.ovm-tab-item { display: flex; align-items: center; gap: 4px; padding: 5px 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-muted); cursor: grab; }
-.ovm-tab-item.active { border-color: var(--c-fg); background: var(--c-panel); }
-.ovm-tab-name { width: 90px; border: 0; background: transparent; padding: 2px 4px; font-size: 13px; color: var(--c-fg); }
-.ovm-tab-name:focus { outline: 1px solid var(--c-fg); border-radius: 3px; }
-.ovm-add-tab { flex-shrink: 0; padding: 5px 10px; font-size: 12px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); cursor: pointer; }
+.ovm-builder { border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); display: flex; flex-direction: column; min-height: 220px; }
+.ovm-tabs-bar { display: flex; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--c-border); background: var(--c-panel); overflow-x: auto; }
+.ovm-tab-item { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-muted); cursor: grab; box-shadow: 0 1px 2px rgba(0,0,0,0.06); transition: background 120ms, border-color 120ms, box-shadow 120ms; }
+.ovm-tab-item:hover { background: var(--c-panel); }
+.ovm-tab-item.active { border-color: var(--c-fg); background: var(--c-panel); box-shadow: 0 2px 6px rgba(0,0,0,0.12); font-weight: 600; }
+.ovm-tab-item.active .ovm-tab-name { font-weight: 600; }
+.ovm-tab-name { width: 90px; border: 0; background: transparent; padding: 2px 4px; font-size: 13px; color: var(--c-fg); cursor: text; }
+.ovm-tab-name:focus { outline: 1px solid var(--c-fg); border-radius: 3px; font-weight: normal; }
+.ovm-add-tab { flex-shrink: 0; padding: 6px 10px; font-size: 12px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); cursor: pointer; }
 .ovm-add-tab:hover { border-color: var(--c-fg); color: var(--c-fg); }
 
-.ovm-tab-content { padding: 12px; }
-.ovm-tab-pane { display: flex; flex-direction: column; gap: 10px; }
-.ovm-section { border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 10px; background: var(--c-panel); cursor: grab; }
-.ovm-section-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.ovm-tab-content { padding: 14px; background: var(--c-bg); }
+.ovm-tab-pane { display: flex; flex-direction: column; gap: 14px; }
+.ovm-section { border: 1px solid var(--c-border); border-radius: var(--radius); padding: 12px; background: var(--c-panel); cursor: grab; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.ovm-section-head { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--c-border); }
 .ovm-section-title { flex: 1; border: 0; background: transparent; padding: 3px 6px; font-size: 13px; font-weight: 600; color: var(--c-fg); }
 .ovm-section-title:focus { outline: 1px solid var(--c-fg); border-radius: 3px; }
 
@@ -649,6 +704,10 @@ onMounted(load)
 
 .ovm-widget-cfg { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; margin-left: 18px; padding: 6px 8px; border-left: 2px solid var(--c-accent); background: var(--c-muted); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
 .ovm-widget-cfg select { padding: 4px 6px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; }
+.ovm-chart-cfg { align-items: stretch; }
+.ovm-cfg-row { display: flex; align-items: center; gap: 6px; }
+.ovm-cfg-label { font-size: 11px; color: var(--c-secondary); white-space: nowrap; min-width: 52px; text-align: right; }
+.ovm-cfg-row select { min-width: 110px; max-width: 180px; }
 .ovm-cfg-input { padding: 4px 6px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; width: 120px; }
 .ovm-cfg-wide { flex: 1; min-width: 220px; width: auto; }
 .ovm-note-input { width: 100%; padding: 4px 6px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; resize: vertical; box-sizing: border-box; }

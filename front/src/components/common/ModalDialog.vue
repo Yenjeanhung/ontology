@@ -10,7 +10,7 @@ const props = defineProps({
     type: String,
     default: '',
   },
-  // 'sm' | 'md' | 'lg'
+  // 'sm' | 'md' | 'lg' | 'xl'
   size: {
     type: String,
     default: 'md',
@@ -161,6 +161,7 @@ onBeforeUnmount(() => {
 .md-dialog.size-sm { max-width: 380px; }
 .md-dialog.size-md { max-width: 560px; }
 .md-dialog.size-lg { max-width: 760px; }
+.md-dialog.size-xl { max-width: 1100px; }
 
 .md-header {
   display: flex;

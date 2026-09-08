@@ -22,6 +22,7 @@ import {
 import AttributeEditor from '../common/AttributeEditor.vue'
 import SearchableSelect from '../common/SearchableSelect.vue'
 import Pagination from '../common/Pagination.vue'
+import ModalDialog from '../common/ModalDialog.vue'
 
 const props = defineProps({
   categoryId: { type: String, required: true },
@@ -559,23 +560,25 @@ onActivated(() => { onSvcSaved() })
       <Pagination v-if="list.length" v-model:page="page" v-model:page-size="pageSize" :total="list.length" />
     </div>
 
-    <!-- 详情抽屉 -->
-    <div v-if="drawerOpen" class="oe-drawer-mask" @click.self="closeDetail">
-      <div class="oe-drawer">
-        <div class="oe-drawer-head">
-          <span class="oe-color-dot lg" :style="{ background: (detail || currentRow)?.color || '#A16207' }"></span>
-          <div class="oe-drawer-title">
-            <span class="oe-drawer-name">{{ (detail || currentRow)?.name }}</span>
-            <span v-if="detail" class="oe-drawer-meta">
-              {{ detail.entity_count }} 实体 · {{ detail.attribute_count }} 属性 · {{ detail.template_count }} 模板 · {{ detail.service_count }} 服务
-            </span>
-          </div>
-          <button class="oe-close-btn" @click="closeDetail" aria-label="关闭">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
+    <!-- 本体详情弹窗 -->
+    <ModalDialog
+      v-model="drawerOpen"
+      :title="(detail || currentRow)?.name || '本体详情'"
+      size="xl"
+      close-on-esc
+      @close="editingInfo = false"
+    >
+      <div class="oe-detail-head">
+        <span class="oe-color-dot lg" :style="{ background: (detail || currentRow)?.color || '#A16207' }"></span>
+        <div class="oe-detail-title">
+          <span class="oe-detail-name">{{ (detail || currentRow)?.name }}</span>
+          <span v-if="detail" class="oe-detail-meta">
+            {{ detail.entity_count }} 实体 · {{ detail.attribute_count }} 属性 · {{ detail.template_count }} 模板 · {{ detail.service_count }} 服务
+          </span>
         </div>
+      </div>
 
-        <div class="oe-drawer-body">
+      <div class="oe-detail-modal-body">
           <div v-if="detailLoading" class="oe-loading"><span class="spinner"></span> 加载详情...</div>
           <div v-else-if="detailError" class="oe-merged-error">{{ detailError }}</div>
 
@@ -826,8 +829,7 @@ onActivated(() => { onSvcSaved() })
             </div>
           </template>
         </div>
-      </div>
-    </div>
+    </ModalDialog>
 
     <!-- 新建本体弹窗 -->
     <div v-if="showCreate" class="oe-modal-mask" @click.self="showCreate = false">
@@ -907,26 +909,12 @@ onActivated(() => { onSvcSaved() })
 .oe-link-btn:hover { background: var(--c-muted-hover); }
 .oe-link-btn.danger { color: var(--c-danger); }
 
-/* ─── 抽屉 ─── */
-.oe-drawer-mask { position: fixed; inset: 0; background: var(--c-overlay); z-index: 90; display: flex; justify-content: flex-end; }
-.oe-drawer {
-  width: min(680px, 92vw); height: 100%;
-  background: var(--c-panel); border-left: 1px solid var(--c-border);
-  display: flex; flex-direction: column;
-  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.14);
-  animation: oe-drawer-in 180ms ease;
-}
-@keyframes oe-drawer-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
-.oe-drawer-head {
-  display: flex; align-items: center; gap: 10px;
-  padding: 14px 20px; border-bottom: 1px solid var(--c-border); flex-shrink: 0;
-}
-.oe-drawer-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-.oe-drawer-name { font-size: 15px; font-weight: 700; color: var(--c-fg); }
-.oe-drawer-meta { font-size: 11.5px; color: var(--c-secondary); }
-.oe-close-btn { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); cursor: pointer; flex-shrink: 0; }
-.oe-close-btn:hover { background: var(--c-muted); color: var(--c-fg); }
-.oe-drawer-body { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 20px; }
+/* ─── 本体详情弹窗 ─── */
+.oe-detail-head { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; margin-bottom: 14px; border-bottom: 1px solid var(--c-border); }
+.oe-detail-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.oe-detail-name { font-size: 15px; font-weight: 700; color: var(--c-fg); }
+.oe-detail-meta { font-size: 11.5px; color: var(--c-secondary); }
+.oe-detail-modal-body { display: flex; flex-direction: column; gap: 20px; }
 
 .oe-section { display: flex; flex-direction: column; gap: 8px; }
 .oe-section-head { display: flex; align-items: center; justify-content: space-between; }

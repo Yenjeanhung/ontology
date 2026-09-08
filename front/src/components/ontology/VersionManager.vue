@@ -58,7 +58,7 @@ onMounted(load)
 <template>
   <div class="vm-root">
     <div class="vm-head">
-      <span class="vm-tip">版本快照：每次发布保存定义层不可变快照，可随时回滚（保留实体引用）。</span>
+      <span class="vm-tip">版本快照：发布的是整个「本体类别定义层」（含本体/属性/关系、接口、对象视图、服务/函数等）的不可变快照，并非单个对象视图的发布版本；可随时回滚，回滚只还原定义层、保留已录入的实体数据。</span>
       <div class="vm-create">
         <input type="text" v-model="note" placeholder="版本说明（可选）" @keydown.enter="create">
         <button class="btn primary sm" :disabled="creating || !categoryId" @click="create">
@@ -68,7 +68,7 @@ onMounted(load)
     </div>
 
     <div v-if="loading" class="vm-hint">加载中...</div>
-    <div v-else-if="!versions.length" class="vm-empty">暂无版本。点击「发布版本」保存当前本体类别定义。</div>
+    <div v-else-if="!versions.length" class="vm-empty">暂无版本。点击「发布版本」保存当前整个本体类别定义层的快照。</div>
 
     <div v-else class="vm-list">
       <div v-for="v in versions" :key="v.id" class="vm-card">
@@ -79,6 +79,7 @@ onMounted(load)
             <span class="vm-time">{{ (v.created_at || '').replace('T', ' ') }}</span>
           </div>
           <div class="vm-stats" v-if="v.counts">
+            <span class="vm-stats-label">包含：</span>
             <span v-for="(n, k) in v.counts" :key="k" class="vm-stat">{{ k }}: {{ n }}</span>
           </div>
         </div>
@@ -110,6 +111,7 @@ onMounted(load)
 .vm-meta { display: flex; gap: 12px; font-size: 12px; color: var(--c-secondary); margin-top: 3px; flex-wrap: wrap; }
 .vm-time { font-family: ui-monospace, Consolas, monospace; }
 .vm-stats { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 5px; }
+.vm-stats-label { font-size: 11px; color: var(--c-primary); font-weight: 600; }
 .vm-stat { font-size: 11px; color: var(--c-secondary); background: var(--c-muted); padding: 1px 7px; border-radius: 9px; }
 .vm-actions { flex-shrink: 0; }
 </style>

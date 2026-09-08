@@ -35,6 +35,8 @@ const props = defineProps({
 
 const emit = defineEmits(['saved', 'change'])
 
+const pendingDeleteIdx = ref(-1)
+
 const DATA_TYPES = [
   { value: 'string', label: '文本 (string)' },
   { value: 'text', label: '长文本 (text)' },
@@ -131,11 +133,21 @@ function addAttribute() {
   emit('change')
 }
 
-function removeAttribute(idx) {
-  if (!confirm(`确认删除属性「${list.value[idx].name || '未命名'}」？`)) return
+function askRemoveAttribute(idx) {
+  pendingDeleteIdx.value = idx
+}
+
+function cancelRemoveAttribute() {
+  pendingDeleteIdx.value = -1
+}
+
+function confirmRemoveAttribute() {
+  const idx = pendingDeleteIdx.value
+  if (idx < 0 || idx >= list.value.length) return
   list.value.splice(idx, 1)
   // 重新排序
   list.value.forEach((a, i) => { a.sort_order = i; a._dirty = true })
+  pendingDeleteIdx.value = -1
   emit('change')
 }
 
@@ -296,9 +308,16 @@ function sharedPropOf(attr) {
           <span v-if="attr._dirty || attr._isNew" class="ae-dirty-dot" title="未保存"></span>
           <span class="ae-spacer"></span>
           <span v-if="editable" class="ae-actions">
-            <button class="rm-btn" @click.stop="removeAttribute(idx)" title="删除">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-            </button>
+            <template v-if="pendingDeleteIdx === idx">
+              <span class="ae-del-ask">确认删除？</span>
+              <button class="btn xs danger" @click.stop="confirmRemoveAttribute">删除</button>
+              <button class="btn xs" @click.stop="cancelRemoveAttribute">取消</button>
+            </template>
+            <template v-else>
+              <button class="rm-btn" @click.stop="askRemoveAttribute(idx)" title="删除">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </template>
           </span>
           <svg class="ae-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
@@ -441,7 +460,10 @@ function sharedPropOf(attr) {
 }
 .ae-dirty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c-accent); flex-shrink: 0; }
 .ae-spacer { flex: 1; }
-.ae-actions { display: inline-flex; gap: 4px; }
+.ae-actions { display: inline-flex; align-items: center; gap: 4px; }
+.ae-del-ask { font-size: 11px; color: var(--c-danger, #ef4444); margin-right: 2px; }
+.ae-actions .btn.xs { padding: 2px 8px; font-size: 11px; }
+.ae-actions .btn.xs.danger { background: var(--c-danger, #ef4444); color: #fff; border-color: var(--c-danger, #ef4444); }
 .rm-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; border: 0; border-radius: var(--radius-sm);

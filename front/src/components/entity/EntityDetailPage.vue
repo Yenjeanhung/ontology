@@ -56,10 +56,12 @@ const ovTab = ref(0)
 const ovLoading = ref(false)
 const WIDGET_LABELS = { properties: '属性', relations: '关系', actions: '动作', derived: '派生属性', timeline: '时间线', chart: '图表', stats: '指标卡', table: '关联表格', note: '说明' }
 
-// 图表数据源缓存：关联实体详情 / 同类实体列表
+// 图表数据源缓存：关联实体详情 / 同类实体分页
 const relatedEntityMap = ref({}) // id -> entity detail
-const peerEntities = ref(null) // 同类实体数组
+// 同类实体分页懒加载：items=已加载实体数组, total=同类总数, page=已加载页, hasMore/loading
+const peersState = ref({ items: [], total: 0, page: 0, hasMore: false, loading: false, categoryId: '' })
 const chartSourcesLoading = ref(false)
+const PEERS_PAGE_SIZE = 30
 
 function currentViewTab() {
   const tabs = objectView.value?.layout?.tabs
@@ -89,8 +91,8 @@ async function loadObjectView() {
 async function loadChartSources() {
   const layout = objectView.value?.layout
   if (!layout?.tabs) return
-  const needsRelated = layout.tabs.some((t) => (t.sections || []).some((s) => (s.widgets || []).some((w) => w.kind === 'chart' || w.kind === 'table')))
-  const needsPeers = layout.tabs.some((t) => (t.sections || []).some((s) => (s.widgets || []).some((w) => w.kind === 'chart' && (w.config?.source === 'peers'))))
+  const needsRelated = layout.tabs.some((t) => (t.sections || []).some((s) => (s.widgets || []).some((w) => (w.kind === 'chart' && (w.config?.source || 'peers') === 'relations') || w.kind === 'table')))
+  const needsPeers = layout.tabs.some((t) => (t.sections || []).some((s) => (s.widgets || []).some((w) => w.kind === 'chart' && (w.config?.source || 'peers') === 'peers')))
   if (!needsRelated && !needsPeers) return
   chartSourcesLoading.value = true
   try {
@@ -104,14 +106,42 @@ async function loadChartSources() {
       ids.forEach((id, i) => { if (details[i]) map[id] = details[i] })
       relatedEntityMap.value = map
     }
-    if (needsPeers && peerEntities.value === null && entity.value?.category_id) {
-      const res = await fetchEntities({ category_id: entity.value.category_id, page: 1, page_size: 50 })
-      peerEntities.value = Array.isArray(res) ? res : (res?.items || [])
+    // 同类实体：分类变化时重置；同分类复用已加载页（避免重复请求）
+    if (needsPeers && entity.value?.category_id && peersState.value.categoryId !== entity.value.category_id) {
+      await loadPeers(true)
     }
   } catch {
     // 数据源加载失败时图表显示空态
   } finally {
     chartSourcesLoading.value = false
+  }
+}
+
+async function loadPeers(reset) {
+  const cat = entity.value?.category_id
+  if (!cat) return
+  if (peersState.value.loading) return
+  if (!reset && !peersState.value.hasMore) return
+  peersState.value = { ...peersState.value, loading: true }
+  try {
+    const nextPage = reset ? 1 : peersState.value.page + 1
+    const res = await fetchEntities({ category_id: cat, page: nextPage, page_size: PEERS_PAGE_SIZE })
+    const items = Array.isArray(res) ? res : (res?.items || [])
+    const total = res?.total || items.length
+    if (reset) {
+      peersState.value = { items, total, page: 1, hasMore: items.length < total, loading: false, categoryId: cat }
+    } else {
+      peersState.value = {
+        ...peersState.value,
+        items: [...peersState.value.items, ...items],
+        page: nextPage,
+        hasMore: peersState.value.items.length + items.length < total,
+        loading: false,
+        categoryId: cat,
+      }
+    }
+  } catch {
+    peersState.value = { ...peersState.value, loading: false }
   }
 }
 
@@ -133,39 +163,64 @@ function toNumber(v) {
 // 图表数据：{ points: [{ label, value }], empty: reason }
 function chartData(w) {
   const cfg = w.config || {}
-  const source = cfg.source || 'self'
-  if (source === 'self') {
-    const points = Object.entries(parsedProperties.value)
-      .map(([k, v]) => ({ label: k, value: toNumber(v) }))
-      .filter((d) => !isNaN(d.value) && isFinite(d.value))
-    return { points, empty: points.length ? '' : '本实体无可绘图的数值属性，可切换数据源为「关联实体」或「同类实体」' }
-  }
+  const source = cfg.source || 'peers'
   let list = []
   if (source === 'relations') {
     list = (entity.value?.relations || [])
       .map((r) => relatedEntityMap.value[r.role === 'source' ? r.target_entity_id : r.source_entity_id])
       .filter(Boolean)
   } else {
-    list = peerEntities.value || []
+    list = peersState.value.items || []
   }
   const labelField = (cfg.labelField || '').trim()
   const valueField = (cfg.valueField || '').trim()
-  const points = []
-  for (const e of list) {
-    const p = entityProps(e)
-    const label = String(labelField ? (p[labelField] ?? '') : (e.name || '')) || '—'
-    let value
-    if (valueField) value = toNumber(p[valueField])
-    else {
-      const firstNum = Object.entries(p).find(([, v]) => !isNaN(toNumber(v)) && isFinite(toNumber(v)))
-      value = firstNum ? toNumber(firstNum[1]) : NaN
+
+  function buildPoints(vf) {
+    const pts = []
+    for (const e of list) {
+      const p = entityProps(e)
+      const label = String(labelField ? (p[labelField] ?? '') : (e.name || '')) || '—'
+      let value
+      if (vf) value = toNumber(p[vf])
+      else {
+        const firstNum = Object.entries(p).find(([, v]) => !isNaN(toNumber(v)) && isFinite(toNumber(v)))
+        value = firstNum ? toNumber(firstNum[1]) : NaN
+      }
+      if (!isNaN(value) && isFinite(value)) pts.push({ label, value })
     }
-    if (!isNaN(value) && isFinite(value)) points.push({ label, value })
+    return pts
   }
-  const emptyReason = chartSourcesLoading.value ? '图表数据加载中...'
-    : (source === 'relations' && !(entity.value?.relations || []).length ? '暂无关联实体'
-      : points.length ? '' : '所选数据源暂无匹配的数值数据，请检查标签/数值字段配置')
-  return { points, empty: emptyReason }
+
+  let points = buildPoints(valueField)
+  // 若指定数值字段无数据（如类别缺省视图应用到不同本体），自动探测第一个数值属性兜底
+  const usedAutoFallback = !points.length && valueField
+  if (usedAutoFallback) points = buildPoints('')
+
+  const emptyReason = (source === 'peers' && peersState.value.loading && !points.length) ? '图表数据加载中...'
+    : (source === 'relations' && chartSourcesLoading.value && !points.length) ? '关联数据加载中...'
+    : (source === 'relations' && !(entity.value?.relations || []).length) ? '暂无关联实体'
+    : points.length ? '' : '所选数据源暂无匹配的数值数据，请检查标签/数值字段配置'
+  return { points, empty: emptyReason, fallback: usedAutoFallback }
+}
+
+// 图表分页进度（仅 peers 模式有）
+function chartProgress(w) {
+  if ((w.config?.source || 'peers') !== 'peers') return null
+  return {
+    loaded: peersState.value.items.length,
+    total: peersState.value.total,
+    hasMore: peersState.value.hasMore,
+    loading: peersState.value.loading,
+  }
+}
+
+// 图表容器横向滚动触底：自动加载下一页
+function onChartScroll(ev) {
+  if (peersState.value.loading || !peersState.value.hasMore) return
+  const el = ev.target
+  if (el.scrollWidth - el.scrollLeft - el.clientWidth < 120) {
+    loadPeers(false)
+  }
 }
 
 const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#84cc16', '#ec4899', '#64748b']
@@ -185,21 +240,6 @@ function pieGeom(points) {
   })
 }
 
-function linePath(points, yMax) {
-  const n = points.length
-  if (!n) return ''
-  const max = yMax || niceMax(Math.max(...points.map((d) => d.value), 0))
-  const step = 530 / Math.max(n - 1, 1)
-  return points
-    .map((d, i) => `${i === 0 ? 'M' : 'L'} ${(50 + i * step).toFixed(1)} ${(190 - (d.value / max) * 160).toFixed(1)}`)
-    .join(' ')
-}
-
-function linePointY(points, i, yMax) {
-  const max = yMax || niceMax(Math.max(...points.map((d) => d.value), 0))
-  return 190 - (points[i].value / max) * 160
-}
-
 // 图表坐标轴与刻度（柱/折线共用）
 function niceMax(v) {
   if (v <= 0) return 1
@@ -215,23 +255,33 @@ function niceMax(v) {
 }
 function chartLayout(w, data) {
   const cfg = w.config || {}
-  const source = cfg.source || 'self'
   const pts = data?.points || []
+  const n = pts.length
+  // 数据点 >20 时按每点 28px 加宽 SVG，外层 chart-wrap 提供横向滚动
+  const W = Math.max(600, 40 + n * 28)
+  const x0 = 50, x1 = W - 30
+  const y0 = 30, y1 = 190
   const max = niceMax(pts.reduce((s, d) => Math.max(s, d.value), 0))
   const yTicks = [0, max * 0.25, max * 0.5, max * 0.75, max]
-  const xTitle = cfg.titleX || (source === 'self' ? '属性' : (cfg.labelField ? attrName(cfg.labelField) : '类别'))
-  const yTitle = cfg.titleY || (source === 'self' ? '属性值' : (cfg.valueField ? attrName(cfg.valueField) : '数值'))
-  return { xTitle, yTitle, yTicks, yMax: max }
+  const xTitle = cfg.titleX || (cfg.labelField ? attrName(cfg.labelField) : '类别')
+  const yTitle = cfg.titleY || (cfg.valueField ? attrName(cfg.valueField) : '数值')
+  return { xTitle, yTitle, yTicks, yMax: max, W, x0, x1, y0, y1, n }
 }
 
-// self 模式语义提示：跨字段拼图无意义
-function selfHint(w, data) {
-  if ((w.config?.source || 'self') !== 'self') return ''
-  const pts = data?.points || []
-  if (pts.length === 0) return ''
-  if (pts.length === 1) return '提示：仅 1 个数值属性，柱状/折线图意义不大，建议改用「指标卡」微件。'
-  if (pts.length >= 3) return '提示：当前将本实体各属性拼到 X 轴上，量纲可能不同。推荐改用数据源「关联实体」或「同类实体对比」作真正的对比图。'
-  return ''
+function linePath(points, layout) {
+  const n = points.length
+  if (!n) return ''
+  const { x0, x1, y1, y0, yMax } = layout
+  const step = (x1 - x0) / Math.max(n - 1, 1)
+  return points
+    .map((d, i) => `${i === 0 ? 'M' : 'L'} ${(x0 + i * step).toFixed(1)} ${(y1 - (d.value / yMax) * (y1 - y0)).toFixed(1)}`)
+    .join(' ')
+}
+
+function linePointY(layout, points, i) {
+  const { y0, y1, yMax } = layout
+  const value = points[i]?.value ?? 0
+  return y1 - (value / Math.max(yMax, 1)) * (y1 - y0)
 }
 
 // stats 指标卡数据
@@ -379,14 +429,6 @@ const derivedEntries = computed(() => {
     try { return Object.entries(JSON.parse(raw)) } catch { return [] }
   }
   return Object.entries(raw)
-})
-
-const numericChartData = computed(() => {
-  const entries = Object.entries(parsedProperties.value)
-    .map(([k, v]) => ({ key: k, value: Number(v) }))
-    .filter((d) => !isNaN(d.value) && isFinite(d.value))
-  const max = Math.max(...entries.map((d) => d.value), 0)
-  return { entries, max }
 })
 
 function chartMax(data) {
@@ -880,54 +922,57 @@ onMounted(load)
                     </div>
                     <div v-if="!timelineEvents.length" class="props-empty">无时间线数据</div>
                   </div>
-                  <div v-else-if="w.kind === 'chart'" class="chart-wrap">
-                    <div v-if="selfHint(w, chartData(w))" class="chart-hint">{{ selfHint(w, chartData(w)) }}</div>
+                  <div v-else-if="w.kind === 'chart'">
+                    <div v-if="chartData(w).fallback" class="chart-fallback-hint">
+                      数值字段「{{ w.config?.valueField }}」在当前数据中不存在，已自动探测第一个数值属性
+                    </div>
+                    <div class="chart-wrap" @scroll="onChartScroll">
                     <template v-if="chartData(w).points.length">
                       <!-- 柱状图 -->
-                      <svg v-if="(w.config?.chartType || 'bar') === 'bar'" viewBox="0 0 600 240" preserveAspectRatio="xMidYMid meet" class="chart-svg">
+                      <svg v-if="(w.config?.chartType || 'bar') === 'bar'" :viewBox="`0 0 ${chartLayout(w, chartData(w)).W} 240`" :width="chartLayout(w, chartData(w)).W" preserveAspectRatio="xMinYMin meet" class="chart-svg">
                         <!-- Y 轴刻度 -->
                         <g class="axis-y">
-                          <line v-for="(t, i) in chartLayout(w, chartData(w)).yTicks" :key="'y'+i" x1="50" :y1="190 - t / chartLayout(w, chartData(w)).yMax * 160" x2="580" :y2="190 - t / chartLayout(w, chartData(w)).yMax * 160" stroke="var(--c-border)" stroke-dasharray="2 3" />
-                          <text v-for="(t, i) in chartLayout(w, chartData(w)).yTicks" :key="'yt'+i" x="46" :y="193 - t / chartLayout(w, chartData(w)).yMax * 160" text-anchor="end" font-size="10" fill="var(--c-secondary)">{{ Number.isInteger(t) ? t : t.toFixed(2) }}</text>
-                          <line x1="50" y1="30" x2="50" y2="190" stroke="var(--c-secondary)" />
-                          <line x1="50" y1="190" x2="580" y2="190" stroke="var(--c-secondary)" />
+                          <line v-for="(t, i) in chartLayout(w, chartData(w)).yTicks" :key="'y'+i" :x1="chartLayout(w, chartData(w)).x0" :y1="chartLayout(w, chartData(w)).y1 - t / chartLayout(w, chartData(w)).yMax * (chartLayout(w, chartData(w)).y1 - chartLayout(w, chartData(w)).y0)" :x2="chartLayout(w, chartData(w)).x1" :y2="chartLayout(w, chartData(w)).y1 - t / chartLayout(w, chartData(w)).yMax * (chartLayout(w, chartData(w)).y1 - chartLayout(w, chartData(w)).y0)" stroke="var(--c-border)" stroke-dasharray="2 3" />
+                          <text v-for="(t, i) in chartLayout(w, chartData(w)).yTicks" :key="'yt'+i" :x="chartLayout(w, chartData(w)).x0 - 4" :y="chartLayout(w, chartData(w)).y1 - t / chartLayout(w, chartData(w)).yMax * (chartLayout(w, chartData(w)).y1 - chartLayout(w, chartData(w)).y0) + 3" text-anchor="end" font-size="10" fill="var(--c-secondary)">{{ Number.isInteger(t) ? t : t.toFixed(2) }}</text>
+                          <line :x1="chartLayout(w, chartData(w)).x0" :y1="chartLayout(w, chartData(w)).y0" :x2="chartLayout(w, chartData(w)).x0" :y2="chartLayout(w, chartData(w)).y1" stroke="var(--c-secondary)" />
+                          <line :x1="chartLayout(w, chartData(w)).x0" :y1="chartLayout(w, chartData(w)).y1" :x2="chartLayout(w, chartData(w)).x1" :y2="chartLayout(w, chartData(w)).y1" stroke="var(--c-secondary)" />
                           <text x="20" y="110" :transform="'rotate(-90 20 110)'" text-anchor="middle" font-size="11" fill="var(--c-secondary)">{{ chartLayout(w, chartData(w)).yTitle }}</text>
                         </g>
                         <!-- 柱与 X 标签 -->
                         <g v-for="(d, i) in chartData(w).points" :key="i">
                           <rect
-                            :x="60 + i * ((520 - 60) / Math.max(chartData(w).points.length, 1)) + 4"
-                            :y="190 - (d.value / Math.max(chartLayout(w, chartData(w)).yMax, 1)) * 160"
-                            :width="((520 - 60) / Math.max(chartData(w).points.length, 1)) - 8"
-                            :height="(d.value / Math.max(chartLayout(w, chartData(w)).yMax, 1)) * 160"
+                            :x="chartLayout(w, chartData(w)).x0 + i * ((chartLayout(w, chartData(w)).x1 - chartLayout(w, chartData(w)).x0) / Math.max(chartLayout(w, chartData(w)).n, 1)) + 4"
+                            :y="chartLayout(w, chartData(w)).y1 - (d.value / Math.max(chartLayout(w, chartData(w)).yMax, 1)) * (chartLayout(w, chartData(w)).y1 - chartLayout(w, chartData(w)).y0)"
+                            :width="((chartLayout(w, chartData(w)).x1 - chartLayout(w, chartData(w)).x0) / Math.max(chartLayout(w, chartData(w)).n, 1)) - 8"
+                            :height="(d.value / Math.max(chartLayout(w, chartData(w)).yMax, 1)) * (chartLayout(w, chartData(w)).y1 - chartLayout(w, chartData(w)).y0)"
                             fill="var(--c-accent)"
                             rx="3"
                           />
                           <text
-                            :x="60 + i * ((520 - 60) / Math.max(chartData(w).points.length, 1)) + ((520 - 60) / Math.max(chartData(w).points.length, 1)) / 2"
+                            :x="chartLayout(w, chartData(w)).x0 + i * ((chartLayout(w, chartData(w)).x1 - chartLayout(w, chartData(w)).x0) / Math.max(chartLayout(w, chartData(w)).n, 1)) + ((chartLayout(w, chartData(w)).x1 - chartLayout(w, chartData(w)).x0) / Math.max(chartLayout(w, chartData(w)).n, 1)) / 2"
                             y="205"
                             text-anchor="middle"
                             font-size="10"
                             fill="var(--c-secondary)"
                           >{{ d.label }}</text>
                         </g>
-                        <text :x="(50 + 580) / 2" y="232" text-anchor="middle" font-size="11" fill="var(--c-secondary)">{{ chartLayout(w, chartData(w)).xTitle }}</text>
+                        <text :x="(chartLayout(w, chartData(w)).x0 + chartLayout(w, chartData(w)).x1) / 2" y="232" text-anchor="middle" font-size="11" fill="var(--c-secondary)">{{ chartLayout(w, chartData(w)).xTitle }}</text>
                       </svg>
                       <!-- 折线图 -->
-                      <svg v-else-if="(w.config?.chartType) === 'line'" viewBox="0 0 600 240" preserveAspectRatio="xMidYMid meet" class="chart-svg">
+                      <svg v-else-if="(w.config?.chartType) === 'line'" :viewBox="`0 0 ${chartLayout(w, chartData(w)).W} 240`" :width="chartLayout(w, chartData(w)).W" preserveAspectRatio="xMinYMin meet" class="chart-svg">
                         <g class="axis-y">
-                          <line v-for="(t, i) in chartLayout(w, chartData(w)).yTicks" :key="'y'+i" x1="50" :y1="190 - t / chartLayout(w, chartData(w)).yMax * 160" x2="580" :y2="190 - t / chartLayout(w, chartData(w)).yMax * 160" stroke="var(--c-border)" stroke-dasharray="2 3" />
-                          <text v-for="(t, i) in chartLayout(w, chartData(w)).yTicks" :key="'yt'+i" x="46" :y="193 - t / chartLayout(w, chartData(w)).yMax * 160" text-anchor="end" font-size="10" fill="var(--c-secondary)">{{ Number.isInteger(t) ? t : t.toFixed(2) }}</text>
-                          <line x1="50" y1="30" x2="50" y2="190" stroke="var(--c-secondary)" />
-                          <line x1="50" y1="190" x2="580" y2="190" stroke="var(--c-secondary)" />
+                          <line v-for="(t, i) in chartLayout(w, chartData(w)).yTicks" :key="'y'+i" :x1="chartLayout(w, chartData(w)).x0" :y1="chartLayout(w, chartData(w)).y1 - t / chartLayout(w, chartData(w)).yMax * (chartLayout(w, chartData(w)).y1 - chartLayout(w, chartData(w)).y0)" :x2="chartLayout(w, chartData(w)).x1" :y2="chartLayout(w, chartData(w)).y1 - t / chartLayout(w, chartData(w)).yMax * (chartLayout(w, chartData(w)).y1 - chartLayout(w, chartData(w)).y0)" stroke="var(--c-border)" stroke-dasharray="2 3" />
+                          <text v-for="(t, i) in chartLayout(w, chartData(w)).yTicks" :key="'yt'+i" :x="chartLayout(w, chartData(w)).x0 - 4" :y="chartLayout(w, chartData(w)).y1 - t / chartLayout(w, chartData(w)).yMax * (chartLayout(w, chartData(w)).y1 - chartLayout(w, chartData(w)).y0) + 3" text-anchor="end" font-size="10" fill="var(--c-secondary)">{{ Number.isInteger(t) ? t : t.toFixed(2) }}</text>
+                          <line :x1="chartLayout(w, chartData(w)).x0" :y1="chartLayout(w, chartData(w)).y0" :x2="chartLayout(w, chartData(w)).x0" :y2="chartLayout(w, chartData(w)).y1" stroke="var(--c-secondary)" />
+                          <line :x1="chartLayout(w, chartData(w)).x0" :y1="chartLayout(w, chartData(w)).y1" :x2="chartLayout(w, chartData(w)).x1" :y2="chartLayout(w, chartData(w)).y1" stroke="var(--c-secondary)" />
                           <text x="20" y="110" :transform="'rotate(-90 20 110)'" text-anchor="middle" font-size="11" fill="var(--c-secondary)">{{ chartLayout(w, chartData(w)).yTitle }}</text>
                         </g>
-                        <path :d="linePath(chartData(w).points, chartLayout(w, chartData(w)).yMax)" fill="none" stroke="var(--c-accent)" stroke-width="2" />
+                        <path :d="linePath(chartData(w).points, chartLayout(w, chartData(w)))" fill="none" stroke="var(--c-accent)" stroke-width="2" />
                         <g v-for="(d, i) in chartData(w).points" :key="i">
-                          <circle :cx="50 + i * (530 / Math.max(chartData(w).points.length - 1, 1))" :cy="linePointY(chartData(w).points, i, chartLayout(w, chartData(w)).yMax)" r="3.5" fill="var(--c-accent)" />
-                          <text :x="50 + i * (530 / Math.max(chartData(w).points.length - 1, 1))" y="205" text-anchor="middle" font-size="10" fill="var(--c-secondary)">{{ d.label }}</text>
+                          <circle :cx="chartLayout(w, chartData(w)).x0 + i * ((chartLayout(w, chartData(w)).x1 - chartLayout(w, chartData(w)).x0) / Math.max(chartLayout(w, chartData(w)).n - 1, 1))" :cy="linePointY(chartLayout(w, chartData(w)), chartData(w).points, i)" r="3.5" fill="var(--c-accent)" />
+                          <text :x="chartLayout(w, chartData(w)).x0 + i * ((chartLayout(w, chartData(w)).x1 - chartLayout(w, chartData(w)).x0) / Math.max(chartLayout(w, chartData(w)).n - 1, 1))" y="205" text-anchor="middle" font-size="10" fill="var(--c-secondary)">{{ d.label }}</text>
                         </g>
-                        <text :x="(50 + 580) / 2" y="232" text-anchor="middle" font-size="11" fill="var(--c-secondary)">{{ chartLayout(w, chartData(w)).xTitle }}</text>
+                        <text :x="(chartLayout(w, chartData(w)).x0 + chartLayout(w, chartData(w)).x1) / 2" y="232" text-anchor="middle" font-size="11" fill="var(--c-secondary)">{{ chartLayout(w, chartData(w)).xTitle }}</text>
                       </svg>
                       <!-- 饼图 -->
                       <div v-else class="pie-flex">
@@ -945,6 +990,12 @@ onMounted(load)
                     </template>
                     <div v-else-if="chartData(w).empty" class="props-empty">{{ chartData(w).empty }}</div>
                     <div v-else class="props-empty">无数据</div>
+                    </div>
+                    <div v-if="chartProgress(w)" class="chart-progress">
+                      <span v-if="chartProgress(w).loading">加载中...</span>
+                      <span v-else-if="chartProgress(w).hasMore">已加载 {{ chartProgress(w).loaded }} / {{ chartProgress(w).total || '?' }} · 向右滑动到底自动加载更多</span>
+                      <span v-else-if="chartProgress(w).total">共 {{ chartProgress(w).total }} 个同类实体</span>
+                    </div>
                   </div>
                   <div v-else-if="w.kind === 'stats'" class="stats-grid">
                     <div v-for="(it, i) in statItems(w)" :key="i" class="stat-card">
@@ -955,14 +1006,16 @@ onMounted(load)
                     </div>
                     <div v-if="!statItems(w).length" class="props-empty">无匹配指标，可在视图中配置指标字段</div>
                   </div>
-                  <div v-else-if="w.kind === 'table'" class="ov-table-wrap">
-                    <table v-if="tableData(w).rows.length" class="ov-table">
-                      <thead>
-                        <tr>
-                          <th>名称</th>
-                          <th v-for="c in tableData(w).cols" :key="c">{{ attrLabel(c, w) }}<span class="ov-table-th-code" v-if="isFriendlyLabel(c, attrLabel(c, w), w) && attrLabel(c, w) !== c">({{ c }})</span></th>
-                        </tr>
-                      </thead>
+                  <div v-else-if="w.kind === 'table'" class="ov-table-widget">
+                    <div class="ov-table-hint">关联实体明细：可在对象视图编辑器配置要展示的属性列</div>
+                    <div class="ov-table-wrap">
+                      <table v-if="tableData(w).rows.length" class="ov-table">
+                        <thead>
+                          <tr>
+                            <th>关联实体名称</th>
+                            <th v-for="c in tableData(w).cols" :key="c">{{ attrLabel(c, w) }}<span class="ov-table-th-code" v-if="isFriendlyLabel(c, attrLabel(c, w), w) && attrLabel(c, w) !== c">({{ c }})</span></th>
+                          </tr>
+                        </thead>
                       <tbody>
                         <tr v-for="row in tableData(w).rows" :key="row.ent.id">
                           <td class="ov-table-name">
@@ -974,6 +1027,7 @@ onMounted(load)
                       </tbody>
                     </table>
                     <div v-else class="props-empty">{{ chartSourcesLoading ? '关联数据加载中...' : '暂无关联实体' }}</div>
+                  </div>
                   </div>
                   <div v-else-if="w.kind === 'note'" class="ov-note" v-html="renderNote(w.config?.text)"></div>
                   <div v-else class="ov-placeholder">微件类型 <code>{{ w.kind }}</code>（暂以默认详情页渲染）</div>
@@ -1145,7 +1199,7 @@ onMounted(load)
 .rm-btn.sm { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); cursor: pointer; flex-shrink: 0; }
 .rm-btn.sm:hover { background: rgba(220, 38, 38, 0.1); color: var(--c-danger); }
 
-.props-view { display: flex; flex-direction: column; gap: 6px; }
+.props-view { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
 .prop-view-row { display: flex; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--c-border); }
 .prop-view-row:last-child { border-bottom: 0; }
 .prop-view-key { flex: 0 0 200px; font-size: 13px; font-weight: 600; color: var(--c-secondary); }
@@ -1163,9 +1217,15 @@ onMounted(load)
 .prop-view-val { flex: 1; font-size: 13px; color: var(--c-fg); word-break: break-word; }
 .props-empty { padding: 16px; text-align: center; color: var(--c-secondary); font-size: 13px; }
 
+/* 美化滚动条（webkit） */
+.props-view::-webkit-scrollbar, .rel-list::-webkit-scrollbar, .svc-list::-webkit-scrollbar, .timeline-list::-webkit-scrollbar, .chart-wrap::-webkit-scrollbar, .ov-table-wrap::-webkit-scrollbar { width: 8px; height: 8px; }
+.props-view::-webkit-scrollbar-thumb, .rel-list::-webkit-scrollbar-thumb, .svc-list::-webkit-scrollbar-thumb, .timeline-list::-webkit-scrollbar-thumb, .chart-wrap::-webkit-scrollbar-thumb, .ov-table-wrap::-webkit-scrollbar-thumb { background: var(--c-border); border-radius: 4px; }
+.props-view::-webkit-scrollbar-thumb:hover, .rel-list::-webkit-scrollbar-thumb:hover, .svc-list::-webkit-scrollbar-thumb:hover, .timeline-list::-webkit-scrollbar-thumb:hover, .chart-wrap::-webkit-scrollbar-thumb:hover, .ov-table-wrap::-webkit-scrollbar-thumb:hover { background: var(--c-secondary); }
+.props-view::-webkit-scrollbar-track, .rel-list::-webkit-scrollbar-track, .svc-list::-webkit-scrollbar-track, .timeline-list::-webkit-scrollbar-track, .chart-wrap::-webkit-scrollbar-track, .ov-table-wrap::-webkit-scrollbar-track { background: transparent; }
+
 .svc-group-title { font-size: 12px; font-weight: 700; color: var(--c-secondary); margin: 4px 0 8px; letter-spacing: 0.02em; }
 .svc-group-title.custom { color: #8b5cf6; }
-.svc-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.svc-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; max-height: 420px; overflow-y: auto; padding-right: 4px; }
 .svc-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-muted); font-size: 13px; min-height: 40px; }
 .svc-status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--c-secondary); }
 .svc-status.on { background: var(--c-success); }
@@ -1176,7 +1236,7 @@ onMounted(load)
 .svc-spacer { flex: 1; }
 .svc-override-tag { font-size: 11px; color: #8b5cf6; border: 1px solid rgba(139, 92, 246, 0.4); border-radius: 4px; padding: 0 6px; white-space: nowrap; }
 
-.rel-list { display: flex; flex-direction: column; gap: 6px; }
+.rel-list { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; padding-right: 4px; }
 .rel-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-muted); font-size: 13px; }
 .rel-role { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; font-size: 11px; font-weight: 700; flex-shrink: 0; }
 .rel-role.source { background: rgba(22, 163, 74, 0.15); color: var(--c-success); }
@@ -1207,7 +1267,9 @@ onMounted(load)
 .stat-label { font-size: 12px; color: var(--c-secondary); margin-top: 4px; }
 .stat-code { opacity: 0.7; font-weight: 400; margin-left: 3px; }
 
-.ov-table-wrap { overflow-x: auto; }
+.ov-table-widget { display: flex; flex-direction: column; gap: 6px; }
+.ov-table-hint { font-size: 11px; color: var(--c-secondary); }
+.ov-table-wrap { overflow-x: auto; overflow-y: auto; max-height: 320px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); }
 .ov-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .ov-table th { text-align: left; padding: 6px 10px; color: var(--c-secondary); font-weight: 600; border-bottom: 1px solid var(--c-border); white-space: nowrap; }
 .ov-table-th-code { opacity: 0.6; font-weight: 400; margin-left: 3px; }
@@ -1228,16 +1290,18 @@ onMounted(load)
 .ov-note :first-child { margin-top: 0; }
 .ov-note :last-child { margin-bottom: 0; }
 
-.timeline-list { display: flex; flex-direction: column; gap: 0; padding-left: 8px; }
+.timeline-list { display: flex; flex-direction: column; gap: 0; padding-left: 8px; max-height: 420px; overflow-y: auto; }
 .timeline-item { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; position: relative; }
 .timeline-item:not(:last-child) { border-bottom: 1px solid var(--c-border); }
 .timeline-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c-accent); margin-top: 4px; flex-shrink: 0; }
 .timeline-label { font-size: 13px; font-weight: 600; color: var(--c-fg); }
 .timeline-time { font-size: 12px; color: var(--c-secondary); }
 
-.chart-wrap { width: 100%; }
-.chart-svg { width: 100%; height: auto; max-height: 280px; }
+.chart-wrap { width: 100%; overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; }
+.chart-svg { display: block; height: auto; max-height: 280px; min-width: 600px; }
 .chart-hint { background: rgba(245, 158, 11, 0.1); color: #b45309; border-left: 3px solid #f59e0b; padding: 6px 10px; border-radius: 4px; font-size: 12px; margin-bottom: 8px; line-height: 1.5; }
+.chart-progress { font-size: 11px; color: var(--c-secondary); padding: 6px 4px 2px; text-align: right; }
+.chart-fallback-hint { font-size: 11px; color: #f59e0b; margin-bottom: 6px; }
 
   .modal-mask { position: fixed; inset: 0; z-index: 999; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.45); padding: 20px; }
   .preview-modal { width: min(940px, 100%); max-height: min(90vh, 800px); border-radius: 16px; background: var(--c-panel); overflow: hidden; box-shadow: 0 18px 60px rgba(0,0,0,0.22); display: flex; flex-direction: column; }
