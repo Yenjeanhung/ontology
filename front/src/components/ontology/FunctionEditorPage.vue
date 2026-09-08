@@ -3,7 +3,8 @@ import { ref, computed, watch, onMounted } from 'vue'
 import {
   fetchOntologyCategories, getOntologyCategoryDetail,
   fetchOntologyFunctions, createOntologyFunction, updateOntologyFunction, deleteOntologyFunction, testOntologyFunction,
-  fetchDerivedProperties, createDerivedProperty, updateDerivedProperty, deleteDerivedProperty, materializeDerivedProperty,
+  fetchAllDerivedProperties, createDerivedProperty, updateDerivedProperty, deleteDerivedProperty, materializeDerivedProperty,
+  fetchEntities, testDerivedProperty, getOntologyFunction,
 } from '../../api'
 import PythonEditor from '../workflow/PythonEditor.vue'
 import { useToast } from '../../composables/useToast'
@@ -38,7 +39,6 @@ async function loadOntologies() {
 }
 
 watch(categoryId, () => { loadOntologies().then(loadAll) })
-watch(ontologyId, () => { if (tab.value === 'derived') loadDerived() })
 
 // ── 函数管理 ──
 const functions = ref([])
@@ -178,13 +178,28 @@ async function runTest() {
   }
 }
 
-// ── 派生属性管理 ──
-const derived = ref([])
+// ── 派生属性管理（进入即加载全部，本体作为筛选条件）──
+const allDerived = ref([])
 const loadingDerived = ref(false)
 const showDerivedModal = ref(false)
 const derivedForm = ref(emptyDerivedForm())
 const derivedSaving = ref(false)
 const materializingId = ref('')
+
+const derived = computed(() => {
+  if (!ontologyId.value) return allDerived.value
+  return allDerived.value.filter((d) => d.ontology_id === ontologyId.value)
+})
+
+// 筛选下拉选项：当前分类的全部本体 + 全量数据中出现过的其他本体
+const ontologyOptions = computed(() => {
+  const m = new Map()
+  for (const o of ontologies.value) if (o.id && !m.has(o.id)) m.set(o.id, o.name)
+  for (const d of allDerived.value) {
+    if (d.ontology_id && !m.has(d.ontology_id)) m.set(d.ontology_id, d.ontology_name || d.ontology_id)
+  }
+  return [...m].map(([id, name]) => ({ id, name }))
+})
 
 function emptyDerivedForm() {
   return {
@@ -195,12 +210,11 @@ function emptyDerivedForm() {
 }
 
 async function loadDerived() {
-  if (!categoryId.value || !ontologyId.value) { derived.value = []; return }
   loadingDerived.value = true
   try {
-    derived.value = await fetchDerivedProperties(categoryId.value, ontologyId.value)
+    allDerived.value = (await fetchAllDerivedProperties()) || []
   } catch (e) {
-    derived.value = []
+    allDerived.value = []
   } finally {
     loadingDerived.value = false
   }
@@ -266,6 +280,93 @@ async function materialize(dp) {
     toast(e.message, 'error')
   } finally {
     materializingId.value = ''
+  }
+}
+
+// ── 派生属性测试：选一个真实实体试算，可选把结果写入实体属性；入参在测试时动态填写 ──
+const showDpTestModal = ref(false)
+const dpTest = ref(emptyDpTest())
+
+function emptyDpTest() {
+  return { dp: null, entities: [], entityId: '', search: '', write: true, running: false, loadingEntities: false, result: null, schema: [], params: {} }
+}
+
+// 关联函数的参数模式（跨本体时列表里可能没有，回退到按 id 拉详情）
+async function loadDpFnSchema(dp) {
+  const t = dpTest.value
+  if (dp.source_kind !== 'function' || !dp.function_id) { t.schema = []; return }
+  const local = functions.value.find((f) => f.id === dp.function_id)
+  if (local) { t.schema = (local.params_schema || []).filter((p) => p.name); return }
+  try {
+    const fn = await getOntologyFunction(dp.function_id)
+    t.schema = (fn?.params_schema || []).filter((p) => p.name)
+  } catch {
+    t.schema = []
+  }
+}
+
+// 按 params_schema 的类型归一化测试入参
+function normalizeDpTestParams() {
+  const t = dpTest.value
+  const out = {}
+  for (const p of t.schema) {
+    const raw = t.params?.[p.name]
+    if (raw === undefined || raw === '') {
+      if (p.required) out[p.name] = p.type === 'number' ? 0 : p.type === 'boolean' ? false : ''
+      continue
+    }
+    if (p.type === 'number') {
+      const n = Number(raw)
+      out[p.name] = Number.isFinite(n) ? n : raw
+    } else if (p.type === 'boolean') {
+      out[p.name] = raw === true || raw === 'true'
+    } else if (p.type === 'object') {
+      try { out[p.name] = typeof raw === 'string' ? JSON.parse(raw) : raw } catch { out[p.name] = raw }
+    } else {
+      out[p.name] = raw
+    }
+  }
+  return out
+}
+
+async function openDpTest(dp) {
+  dpTest.value = emptyDpTest()
+  dpTest.value.dp = dp
+  dpTest.value.params = { ...(dp.params || {}) }
+  showDpTestModal.value = true
+  searchDpEntities()
+  await loadDpFnSchema(dp)
+}
+
+async function searchDpEntities() {
+  const t = dpTest.value
+  if (!t.dp) return
+  t.loadingEntities = true
+  try {
+    const res = await fetchEntities({ ontology_id: t.dp.ontology_id, q: t.search, page: 1, page_size: 50 })
+    t.entities = res?.items || res || []
+  } catch {
+    t.entities = []
+  } finally {
+    t.loadingEntities = false
+  }
+}
+
+async function runDpTest() {
+  const t = dpTest.value
+  if (!t.entityId) { toast('请先选择测试实体', 'error'); return }
+  t.running = true
+  t.result = null
+  try {
+    t.result = await testDerivedProperty(t.dp.id, t.entityId, t.write, normalizeDpTestParams())
+    toast(
+      t.result.ok ? (t.write ? '测试成功，结果已写入实体属性' : '测试成功') : `测试失败：${t.result.error || '未知错误'}`,
+      t.result.ok ? 'success' : 'error',
+    )
+  } catch (e) {
+    toast(e.message, 'error')
+  } finally {
+    t.running = false
   }
 }
 
@@ -392,7 +493,14 @@ onMounted(async () => {
             </label>
           </div>
           <button class="primary-btn sm" :disabled="fnTesting" @click="runTest">{{ fnTesting ? '运行中...' : '▶ 运行测试' }}</button>
-          <pre v-if="fnTestResult" class="test-result" :class="{ ok: fnTestResult.success, err: !fnTestResult.success }">{{ JSON.stringify(fnTestResult, null, 2) }}</pre>
+          <template v-if="fnTestResult">
+            <div class="sec-sub">测试结果
+              <span v-if="fnTestResult.success" class="cache-badge" :class="fnTestResult.cached ? 'hit' : 'fresh'">
+                {{ fnTestResult.cached ? '⚡ 缓存命中（TTL 内重复调用）' : '✓ 实时计算（缓存未命中或已过期）' }}
+              </span>
+            </div>
+            <pre class="test-result" :class="{ ok: fnTestResult.success, err: !fnTestResult.success }">{{ JSON.stringify(fnTestResult, null, 2) }}</pre>
+          </template>
         </div>
       </div>
     </div>
@@ -401,22 +509,22 @@ onMounted(async () => {
     <div v-else class="derived-layout">
       <div class="derived-toolbar">
         <select v-model="ontologyId" class="ctrl-select">
-          <option value="" disabled>选择本体</option>
-          <option v-for="o in ontologies" :key="o.id" :value="o.id">{{ o.name }}</option>
+          <option value="">全部本体</option>
+          <option v-for="o in ontologyOptions" :key="o.id" :value="o.id">{{ o.name }}</option>
         </select>
         <button class="primary-btn sm" :disabled="!ontologyId" @click="openDerivedNew">+ 新建派生属性</button>
       </div>
 
-      <div v-if="!ontologyId" class="hint pad">请先选择本体</div>
-      <div v-else-if="loadingDerived" class="hint pad">加载中...</div>
-      <div v-else-if="!derived.length" class="hint pad">该本体暂无派生属性</div>
+      <div v-if="loadingDerived" class="hint pad">加载中...</div>
+      <div v-else-if="!derived.length" class="hint pad">暂无派生属性</div>
       <div v-else class="dp-table">
         <div class="dp-row dp-head">
-          <span>名称</span><span>编码</span><span>类型</span><span>来源</span><span>定义</span><span>刷新</span><span>状态</span><span></span>
+          <span>名称</span><span>编码</span><span>所属本体</span><span>类型</span><span>来源</span><span>定义</span><span>刷新</span><span>状态</span><span></span>
         </div>
         <div v-for="dp in derived" :key="dp.id" class="dp-row">
           <span class="dp-name">{{ dp.name }}</span>
           <span class="mono">{{ dp.code }}</span>
+          <span class="dp-onto" :title="dp.ontology_name">{{ dp.ontology_name || '—' }}</span>
           <span>{{ dp.data_type }}</span>
           <span><span class="tag">{{ sourceLabel[dp.source_kind] || dp.source_kind }}</span></span>
           <span class="dp-def" :title="dp.source_kind === 'function' ? (funcNameMap[dp.function_id] || dp.function_id) : (metricLabel[dp.graph_metric] || dp.graph_metric)">
@@ -425,6 +533,7 @@ onMounted(async () => {
           <span>{{ dp.materialize_mode === 'materialized' ? '物化' : '读时' }}</span>
           <span><span v-if="dp.is_enabled !== false" class="tag">启用</span><span v-else class="tag off">停用</span></span>
           <span class="dp-ops">
+            <button class="btn sm" @click="openDpTest(dp)">测试</button>
             <button v-if="dp.materialize_mode === 'materialized'" class="btn sm" :disabled="materializingId === dp.id" @click="materialize(dp)">
               {{ materializingId === dp.id ? '物化中...' : '物化' }}
             </button>
@@ -476,10 +585,64 @@ onMounted(async () => {
               <select v-model="derivedForm.is_enabled"><option :value="true">启用</option><option :value="false">停用</option></select>
             </label>
           </div>
+          <div class="hint" style="margin-top: 10px;">函数入参在"测试"弹窗中动态填写，测试成功后会自动固化为该派生属性的运行参数。</div>
         </div>
         <div class="modal-foot">
           <button class="btn" @click="showDerivedModal = false">取消</button>
           <button class="primary-btn" :disabled="derivedSaving" @click="saveDerived">{{ derivedSaving ? '保存中...' : '保存' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 派生属性测试弹窗 -->
+    <div v-if="showDpTestModal" class="modal-overlay" @click.self="showDpTestModal = false">
+      <div class="modal-card">
+        <div class="modal-head"><h3>测试派生属性：{{ dpTest.dp?.name }}</h3><button class="close-btn" @click="showDpTestModal = false">✕</button></div>
+        <div class="modal-body">
+          <div class="hint" style="margin-bottom: 10px;">
+            选择该本体下的一个真实实体进行试算；选择"写入"后，计算结果会写入该实体的属性（键 = 编码 <b class="mono">{{ dpTest.dp?.code }}</b>），相当于调用一次接口落库。
+          </div>
+          <div class="form-grid">
+            <label class="field"><span>搜索实体</span>
+              <input v-model="dpTest.search" placeholder="名称关键字，回车搜索" @keyup.enter="searchDpEntities">
+            </label>
+            <label class="field"><span>测试实体 *</span>
+              <select v-model="dpTest.entityId">
+                <option value="">{{ dpTest.loadingEntities ? '加载中...' : '请选择' }}</option>
+                <option v-for="e in dpTest.entities" :key="e.id" :value="e.id">{{ e.name }}（{{ e.id }}）</option>
+              </select>
+            </label>
+            <label class="field"><span>写入结果</span>
+              <select v-model="dpTest.write">
+                <option :value="true">写入实体属性</option>
+                <option :value="false">仅试算，不写入</option>
+              </select>
+            </label>
+          </div>
+          <template v-if="dpTest.dp?.source_kind === 'function' && dpTest.schema.length">
+            <div class="sec-sub" style="margin-top: 12px;">函数入参（动态填写，测试成功后固化为运行参数）</div>
+            <div class="form-grid">
+              <label v-for="p in dpTest.schema" :key="p.name" class="field">
+                <span>{{ p.name }}{{ p.required ? ' *' : '' }}（{{ p.type }}）{{ p.description || '' }}</span>
+                <select v-if="p.type === 'boolean'" v-model="dpTest.params[p.name]">
+                  <option :value="true">true</option><option :value="false">false</option>
+                </select>
+                <textarea v-else-if="p.type === 'object'" v-model="dpTest.params[p.name]" rows="2" placeholder='JSON，如 {"k": 1}'></textarea>
+                <input v-else-if="p.type === 'number'" v-model="dpTest.params[p.name]" type="number" :placeholder="p.required ? '必填' : '可选'">
+                <input v-else v-model="dpTest.params[p.name]" :placeholder="p.required ? '必填' : '可选'">
+              </label>
+            </div>
+          </template>
+          <button class="primary-btn" style="margin-top: 10px;" :disabled="dpTest.running || !dpTest.entityId" @click="runDpTest">
+            {{ dpTest.running ? '运行中...' : '▶ 运行测试' }}
+          </button>
+          <template v-if="dpTest.result">
+            <div class="sec-sub" style="margin-top: 12px;">测试结果</div>
+            <pre class="test-result" :class="{ ok: dpTest.result.ok, err: !dpTest.result.ok }">{{ JSON.stringify(dpTest.result, null, 2) }}</pre>
+          </template>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" @click="showDpTestModal = false">关闭</button>
         </div>
       </div>
     </div>
@@ -539,6 +702,9 @@ onMounted(async () => {
 .test-result { margin: 0; padding: 10px 12px; border-radius: var(--radius-sm); font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 .test-result.ok { background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.3); }
 .test-result.err { background: rgba(220,38,38,0.08); color: var(--c-danger); border: 1px solid rgba(220,38,38,0.3); }
+.cache-badge { margin-left: 10px; font-size: 11px; font-weight: normal; padding: 1px 8px; border-radius: 999px; vertical-align: middle; }
+.cache-badge.hit { background: rgba(234,179,8,0.15); color: #eab308; border: 1px solid rgba(234,179,8,0.4); }
+.cache-badge.fresh { background: rgba(34,197,94,0.12); color: #22c55e; border: 1px solid rgba(34,197,94,0.4); }
 
 .derived-layout { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; }
 .derived-toolbar { display: flex; gap: 10px; align-items: center; }
@@ -546,7 +712,8 @@ onMounted(async () => {
 .hint.pad { padding: 30px; text-align: center; font-size: 13px; }
 
 .dp-table { border: 1px solid var(--c-border); border-radius: var(--radius); overflow: hidden; background: var(--c-panel); }
-.dp-row { display: grid; grid-template-columns: 1.2fr 1fr 70px 80px 2fr 70px 64px 210px; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--c-border); font-size: 12px; color: var(--c-fg); }
+.dp-row { display: grid; grid-template-columns: 1.1fr 0.9fr 110px 60px 70px 1.6fr 60px 56px 190px; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--c-border); font-size: 12px; color: var(--c-fg); }
+.dp-onto { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--c-secondary); }
 .dp-row:last-child { border-bottom: 0; }
 .dp-head { background: var(--c-muted); font-size: 11px; font-weight: 700; color: var(--c-secondary); }
 .dp-name { font-weight: 600; }

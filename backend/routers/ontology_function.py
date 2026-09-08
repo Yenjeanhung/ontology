@@ -14,6 +14,7 @@ from schemas import (
     ResolveFunctionsRequest,
     SaveDerivedPropertyRequest,
     SaveFunctionRequest,
+    TestDerivedPropertyRequest,
     TestFunctionRequest,
 )
 from services.ontology_function_service import (
@@ -122,6 +123,14 @@ async def list_derived_properties(
     return await DerivedPropertyService.list_for_ontology(db, ontology_id)
 
 
+@router.get("/derived-properties")
+async def list_all_derived_properties(
+    ontology_id: str = "", db: AsyncSession = Depends(get_db)
+):
+    """全局派生属性列表（可选按本体过滤），附带本体名称。"""
+    return await DerivedPropertyService.list_all(db, ontology_id)
+
+
 @router.post("/ontology-categories/{category_id}/ontologies/{ontology_id}/derived-properties")
 async def create_derived_property(
     category_id: str,
@@ -154,10 +163,10 @@ async def delete_derived_property(prop_id: str, db: AsyncSession = Depends(get_d
 
 @router.get("/entities/{entity_id}/derived-properties")
 async def resolve_entity_derived_properties(
-    entity_id: str, db: AsyncSession = Depends(get_db)
+    entity_id: str, refresh: bool = False, db: AsyncSession = Depends(get_db)
 ):
-    """实体详情页用：该实体所属本体的派生属性及当前值。"""
-    return await DerivedPropertyService.resolve_for_entity(db, entity_id)
+    """实体详情页用：该实体所属本体的派生属性及当前值（默认读存储值，refresh=true 实时计算）。"""
+    return await DerivedPropertyService.resolve_for_entity(db, entity_id, refresh)
 
 
 @router.post("/derived-properties/{prop_id}/materialize")
@@ -165,6 +174,17 @@ async def materialize_derived_property(
     prop_id: str, limit: int = 1000, db: AsyncSession = Depends(get_db)
 ):
     res, err = await DerivedPropertyService.materialize(db, prop_id, limit)
+    if err:
+        raise _nf(err)
+    return res
+
+
+@router.post("/derived-properties/{prop_id}/test")
+async def test_derived_property(
+    prop_id: str, req: TestDerivedPropertyRequest, db: AsyncSession = Depends(get_db)
+):
+    """测试派生属性：对单个实体试算并（可选）写入实体属性。"""
+    res, err = await DerivedPropertyService.test_run(db, prop_id, req)
     if err:
         raise _nf(err)
     return res

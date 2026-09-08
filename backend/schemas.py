@@ -661,10 +661,17 @@ class SaveDerivedPropertyRequest(BaseModel):
     source_kind: str = "function"        # function / graph_metric
     function_id: str = ""
     graph_metric: str = ""               # pagerank / betweenness / community / degree
-    params: dict = {}
+    params: dict | None = None               # 运行参数（由测试时动态写入维护，编辑保存不传则不动）
     materialize_mode: str = "virtual"    # virtual / materialized
     is_enabled: bool = True
     sort_order: int = 0
+
+
+class TestDerivedPropertyRequest(BaseModel):
+    """派生属性测试：对单个实体试算，可选把结果写入实体属性。"""
+    entity_id: str
+    write: bool = True
+    params: dict = {}                    # 动态入参（覆盖派生属性已存参数）
 
 
 # ===== S4（P1-1）：动作规则 / 副作用 / 撤销 / 批量 =====

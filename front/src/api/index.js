@@ -1597,6 +1597,13 @@ export async function fetchDerivedProperties(categoryId, ontologyId) {
   return res.json()
 }
 
+export async function fetchAllDerivedProperties(ontologyId = '') {
+  const qs = ontologyId ? `?ontology_id=${encodeURIComponent(ontologyId)}` : ''
+  const res = await fetch(`${API}/api/derived-properties${qs}`)
+  if (!res.ok) throw new Error('获取派生属性失败')
+  return res.json()
+}
+
 export async function createDerivedProperty(categoryId, ontologyId, data) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/ontologies/${ontologyId}/derived-properties`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1635,6 +1642,18 @@ export async function materializeDerivedProperty(propId, limit = 1000) {
   if (!res.ok) {
     const body = await res.json().catch(() => null)
     throw new Error(body?.detail || '物化失败')
+  }
+  return res.json()
+}
+
+export async function testDerivedProperty(propId, entityId, write = true, params = {}) {
+  const res = await fetch(`${API}/api/derived-properties/${propId}/test`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_id: entityId, write, params }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '测试失败')
   }
   return res.json()
 }
@@ -1760,6 +1779,12 @@ export async function fetchEntities({ kb_id = '', ontology_id = '', category_id 
 export async function getEntityDetail(entityId) {
   const res = await fetch(`${API}/api/entities/${entityId}`)
   if (!res.ok) throw new Error('Get entity detail failed')
+  return res.json()
+}
+
+export async function fetchEntityDerivedProperties(entityId, refresh = false) {
+  const res = await fetch(`${API}/api/entities/${entityId}/derived-properties${refresh ? '?refresh=true' : ''}`)
+  if (!res.ok) throw new Error('Fetch derived properties failed')
   return res.json()
 }
 

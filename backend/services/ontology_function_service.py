@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from datetime import datetime
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models import (
     Entity,
     GraphAnalysisTask,
+    Ontology,
     OntologyDerivedProperty,
     OntologyFunction,
     OntologyRuntimeInvocation,
@@ -129,14 +131,21 @@ async def _log_invocation(
     params: dict | None = None, result=None, status: str = "success",
     error: str | None = None, duration_ms: int = 0, triggered_by: str = "",
 ) -> None:
-    db.add(OntologyRuntimeInvocation(
-        kind=kind, ref_id=ref_id, entity_id=entity_id,
-        params=_dump_json(params or {}),
-        result=_dump_json(result)[:RESULT_SNIPPET] if result is not None else None,
-        status=status, error=(error or "")[:4000] or None,
-        duration_ms=duration_ms, triggered_by=triggered_by, created_at=_now(),
-    ))
-    await db.commit()
+    try:
+        db.add(OntologyRuntimeInvocation(
+            kind=kind, ref_id=ref_id, entity_id=entity_id,
+            params=_dump_json(params or {}),
+            result=_dump_json(result)[:RESULT_SNIPPET] if result is not None else None,
+            status=status, error=(error or "")[:4000] or None,
+            duration_ms=duration_ms, triggered_by=triggered_by, created_at=_now(),
+        ))
+        await db.commit()
+    except BaseException as e:  # 审计日志失败不影响业务主流程
+        try:
+            await db.rollback()
+        except BaseException:
+            pass
+        print(f"[invocation-log] 写入调用日志失败: {e}")
 
 
 class FunctionService:
@@ -251,12 +260,16 @@ class FunctionService:
             return {"success": False, "data": None, "error": perr, "stdout": "", "duration_ms": 0}
 
         # 确定性 + 有缓存期 → 命中直接返回
+        # key 中纳入代码指纹：代码一变（即使未触发保存清理）旧缓存立即失效
         cache_key = ""
         if fn.is_deterministic and fn.cache_seconds > 0:
-            cache_key = f"{fn.id}:{entity.id if entity else ''}:{_dump_json(params)}"
+            code_fp = hashlib.md5((fn.code_text or "").encode("utf-8")).hexdigest()[:8]
+            cache_key = f"{fn.id}:{entity.id if entity else ''}:{_dump_json(params)}:{code_fp}"
             hit = _CACHE.get(cache_key)
-            if hit and hit[0] > time.monotonic():
-                return {**hit[1], "cached": True}
+            if hit:
+                if hit[0] > time.monotonic():
+                    return {**hit[1], "cached": True}
+                _CACHE.pop(cache_key, None)  # 顺手清理已过期项，防内存滞留
 
         result = await execute_service(
             code_text=fn.code_text,
@@ -346,6 +359,21 @@ class DerivedPropertyService:
             .order_by(OntologyDerivedProperty.sort_order, OntologyDerivedProperty.name)
         )).scalars().all()
         return [_serialize_derived(d) for d in rows]
+
+    @staticmethod
+    async def list_all(db: AsyncSession, ontology_id: str = "") -> list[dict]:
+        """跨本体列出派生属性（可选按本体过滤），附带本体名称，供全局列表页使用。"""
+        stmt = select(OntologyDerivedProperty, Ontology.name).join(
+            Ontology, Ontology.id == OntologyDerivedProperty.ontology_id, isouter=True
+        )
+        if ontology_id:
+            stmt = stmt.where(OntologyDerivedProperty.ontology_id == ontology_id)
+        stmt = stmt.order_by(
+            Ontology.name, OntologyDerivedProperty.sort_order, OntologyDerivedProperty.name
+        )
+        
+        rows = (await db.execute(stmt)).all()
+        return [{**_serialize_derived(dp), "ontology_name": onto_name or ""} for dp, onto_name in rows]
 
     @staticmethod
     async def create(db: AsyncSession, ontology_id: str, req) -> tuple[dict | None, str | None]:
@@ -440,6 +468,7 @@ class DerivedPropertyService:
     @staticmethod
     async def resolve_value(
         db: AsyncSession, dp: OntologyDerivedProperty, entity: Entity,
+        params_override: dict | None = None,
     ) -> dict:
         """计算实体上某个派生属性的当前值。"""
         if not dp.is_enabled:
@@ -451,16 +480,24 @@ class DerivedPropertyService:
         fn = await db.get(OntologyFunction, dp.function_id)
         if not fn:
             return {"ok": False, "value": None, "error": "关联函数不存在"}
-        res = await FunctionService._run(db, fn, entity, _load_json(dp.params, {}), None, "derived")
+        params = params_override if params_override is not None else _load_json(dp.params, {})
+        res = await FunctionService._run(db, fn, entity, params, None, "derived")
         return {
             "ok": bool(res.get("success")),
             "value": res.get("data"),
             "error": res.get("error"),
+            "cached": bool(res.get("cached")),
         }
 
     @staticmethod
-    async def resolve_for_entity(db: AsyncSession, entity_id: str) -> list[dict]:
-        """实体详情页：列出该实体所属本体的全部派生属性及当前值。"""
+    async def resolve_for_entity(
+        db: AsyncSession, entity_id: str, refresh: bool = False
+    ) -> list[dict]:
+        """实体详情页：列出该实体所属本体的全部派生属性及当前值。
+
+        默认（refresh=False）只读 entities.properties 里的存储值（物化/测试写入的结果），
+        不触发函数执行；refresh=True 时逐项实时计算，并返回 stored/stale 供前端对比标注。
+        """
         entity = await db.get(Entity, entity_id)
         if not entity:
             return []
@@ -469,15 +506,29 @@ class DerivedPropertyService:
             .where(OntologyDerivedProperty.ontology_id == entity.ontology_id)
             .order_by(OntologyDerivedProperty.sort_order)
         )).scalars().all()
+        props = _load_json(entity.properties, {}) or {}
         out = []
         for dp in rows:
+            stored = props.get(dp.code)
+            if not refresh:
+                out.append({
+                    **_serialize_derived(dp),
+                    "value": stored,
+                    "ok": stored is not None,
+                    "error": None if stored is not None else "尚未写入存储值，可点击「刷新计算」实时试算",
+                    "source": "stored",
+                })
+                continue
             computed = await DerivedPropertyService.resolve_value(db, dp, entity)
-            stored = (_load_json(entity.properties, {}) or {}).get(dp.code)
+            val = computed.get("value")
             out.append({
                 **_serialize_derived(dp),
-                "value": computed.get("value") if computed.get("ok") else stored,
-                "ok": computed.get("ok"),
+                "value": val if computed.get("ok") else stored,
+                "ok": bool(computed.get("ok")) or stored is not None,
                 "error": computed.get("error"),
+                "stored": stored,
+                "stale": bool(computed.get("ok")) and val != stored,
+                "source": "computed",
             })
         return out
 
@@ -506,6 +557,47 @@ class DerivedPropertyService:
         await db.commit()
         return {"property_id": dp.id, "updated": ok, "failed": fail,
                 "last_materialized_at": dp.last_materialized_at}, None
+
+    @staticmethod
+    async def test_run(db: AsyncSession, prop_id: str, req) -> tuple[dict | None, str | None]:
+        """测试派生属性：对单个真实实体试算，可选把结果写入实体属性（相当于调用一次接口）。"""
+        dp = await db.get(OntologyDerivedProperty, prop_id)
+        if not dp:
+            return None, "派生属性不存在"
+        entity = await db.get(Entity, req.entity_id)
+        if not entity:
+            return None, "实体不存在"
+        if entity.ontology_id != dp.ontology_id:
+            return None, "该实体不属于派生属性所在本体，请重新选择"
+
+        stored_before = (_load_json(entity.properties, {}) or {}).get(dp.code)
+        # 入参：派生属性已存参数为底，测试时动态填写的参数覆盖
+        merged_params = {**_load_json(dp.params, {}), **(req.params or {})}
+        computed = await DerivedPropertyService.resolve_value(db, dp, entity, merged_params)
+        written = False
+        if req.write and computed.get("ok"):
+            props = _load_json(entity.properties, {}) or {}
+            props[dp.code] = computed.get("value")
+            entity.properties = _dump_json(props)
+            entity.updated_at = _now()
+            dp.params = _dump_json(merged_params)  # 测试确定的入参固化为该派生属性的运行参数
+            await db.commit()
+            written = True
+        await _log_invocation(
+            db, kind="dp_test", ref_id=dp.id, entity_id=entity.id,
+            params=merged_params,
+            result={"value": computed.get("value"), "written": written},
+            status="success" if computed.get("ok") else "failed",
+            error=computed.get("error"), triggered_by="manual",
+        )
+        return {
+            "property_id": dp.id, "property_name": dp.name, "code": dp.code,
+            "entity_id": entity.id, "entity_name": entity.name,
+            "ok": bool(computed.get("ok")), "value": computed.get("value"),
+            "stored_before": stored_before, "written": written,
+            "cached": bool(computed.get("cached")),
+            "error": computed.get("error"),
+        }, None
 
 
 async def _entity_category(db: AsyncSession, entity: Entity) -> str:

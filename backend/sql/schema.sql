@@ -611,7 +611,7 @@ CREATE TABLE IF NOT EXISTS ontology_derived_properties (
 
 CREATE TABLE IF NOT EXISTS ontology_runtime_invocations (
     id VARCHAR PRIMARY KEY,
-    kind VARCHAR(10) NOT NULL,
+    kind VARCHAR(20) NOT NULL,
     ref_id VARCHAR NOT NULL,
     entity_id VARCHAR DEFAULT '',
     params TEXT DEFAULT NULL,

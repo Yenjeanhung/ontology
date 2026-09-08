@@ -469,7 +469,7 @@ class OntologyRuntimeInvocation(Base):
     __tablename__ = "ontology_runtime_invocations"
 
     id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
-    kind = Column(String(10), nullable=False)          # function / action
+    kind = Column(String(20), nullable=False)          # function / action / dp_test
     ref_id = Column(String, nullable=False)            # function_id / service_id
     entity_id = Column(String, default="")
     params = Column(Text)

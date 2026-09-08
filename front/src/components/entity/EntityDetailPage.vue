@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch, nextTick, onActivated } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl, fetchEntityServices, copyServiceToEntity, deleteOntologyService, resolveObjectView, fetchEntities, getMergedAttributes } from '../../api'
+import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl, fetchEntityServices, copyServiceToEntity, deleteOntologyService, resolveObjectView, fetchEntities, getMergedAttributes, fetchEntityDerivedProperties } from '../../api'
 import { marked } from 'marked'
 import ServiceInvokeDialog from './ServiceInvokeDialog.vue'
 
@@ -421,14 +421,31 @@ function isFriendlyLabel(code, label, widget) {
   return label !== humanize(code)
 }
 
-const derivedEntries = computed(() => {
-  if (!entity.value) return []
-  const raw = entity.value.derived_properties || entity.value.derived_results
-  if (!raw) return []
-  if (typeof raw === 'string') {
-    try { return Object.entries(JSON.parse(raw)) } catch { return [] }
+// ===== S3：派生属性（默认读存储值；点击「刷新计算」实时试算并标注差异）=====
+const derivedRows = ref([])
+const derivedLoading = ref(false)
+
+async function loadDerivedProperties(refresh = false) {
+  if (!props.entityId) return
+  derivedLoading.value = true
+  try {
+    derivedRows.value = (await fetchEntityDerivedProperties(props.entityId, refresh)) || []
+  } catch {
+    derivedRows.value = []
+  } finally {
+    derivedLoading.value = false
   }
-  return Object.entries(raw)
+}
+
+const derivedEntries = computed(() => {
+  return (derivedRows.value || []).map((row) => ({
+    key: row.name || row.code,
+    value: row.value,
+    ok: !!row.ok,
+    error: row.error || '',
+    source: row.source || 'stored',
+    stale: !!row.stale,
+  }))
 })
 
 function chartMax(data) {
@@ -529,6 +546,7 @@ async function load() {
       loadServices()
       loadObjectView()
       loadAttrDefs()
+      loadDerivedProperties()
     }
   } catch (e) {
     loadError.value = '加载失败：' + e.message
@@ -906,11 +924,20 @@ onMounted(load)
                     <div v-if="!inheritedServices.length && !customServices.length" class="props-empty">无可用动作</div>
                   </div>
                   <div v-else-if="w.kind === 'derived'" class="props-view">
-                    <div v-for="([k, v]) in derivedEntries" :key="k" class="prop-view-row">
-                      <span class="prop-view-key">{{ k }}</span>
-                      <span class="prop-view-val">{{ v }}</span>
+                    <div style="display: flex; justify-content: flex-end; margin-bottom: 4px;">
+                      <button class="btn sm" :disabled="derivedLoading" @click="loadDerivedProperties(true)">刷新计算</button>
                     </div>
-                    <div v-if="!derivedEntries.length" class="props-empty">暂无派生属性计算结果</div>
+                    <div v-for="(d, di) in derivedEntries" :key="d.key + '-' + di" class="prop-view-row">
+                      <span class="prop-view-key">{{ d.key }}</span>
+                      <span v-if="d.ok" class="prop-view-val">
+                        {{ d.value }}
+                        <span v-if="d.stale" style="color: var(--warning, #f5a623); font-size: 12px; margin-left: 6px;">实时值（未写入存储）</span>
+                        <span v-else-if="d.error" style="color: var(--warning, #f5a623); font-size: 12px; margin-left: 6px;">实时计算失败，显示存储值</span>
+                      </span>
+                      <span v-else-if="d.source === 'stored'" class="prop-view-val" style="color: var(--text-tertiary, #8a8f98);">未写入存储（点击「刷新计算」实时试算）</span>
+                      <span v-else class="prop-view-val" style="color: var(--danger, #e5484d);">计算失败：{{ d.error || '未知错误' }}</span>
+                    </div>
+                    <div v-if="!derivedEntries.length" class="props-empty">{{ derivedLoading ? '派生属性加载中…' : '暂无派生属性（可到「函数与派生属性」为本体添加）' }}</div>
                   </div>
                   <div v-else-if="w.kind === 'timeline'" class="timeline-list">
                     <div v-for="(ev, ei) in timelineEvents" :key="ei" class="timeline-item">
