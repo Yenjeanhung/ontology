@@ -9,7 +9,6 @@ import {
   fetchOntologies,
   getOntologyDetail,
   setOntologyTemplates,
-  getMergedAttributes,
   fetchOntologyServices,
   deleteOntologyService,
   updateOntologyService,
@@ -24,6 +23,7 @@ import AttributeEditor from '../common/AttributeEditor.vue'
 import SearchableSelect from '../common/SearchableSelect.vue'
 import Pagination from '../common/Pagination.vue'
 import ModalDialog from '../common/ModalDialog.vue'
+import TabNav from '../common/TabNav.vue'
 import { useToast } from '../../composables/useToast'
 
 const props = defineProps({
@@ -103,10 +103,6 @@ const tplDirty = ref(false)
 const savingTpl = ref(false)
 const templates = ref([])
 
-// 合并属性预览（仅当前本体，按需加载）
-const merged = ref(null)
-const mergedVisible = ref(false)
-
 // 模板继承的属性（只读展示用）：从每个已绑定模板的完整属性里聚合
 // 按 code 去重；绑定模板变化时由 saveTpl / loadDetail 重新拉取
 const inheritedAttrs = ref([])
@@ -126,6 +122,15 @@ const creating = ref(false)
 const templateOptions = computed(() =>
   templates.value.map(t => ({ value: t.id, label: t.name, meta: `${t.attribute_count} 个属性` }))
 )
+
+const activeTab = ref('info')
+
+const detailTabs = computed(() => [
+  { key: 'info', label: '基础信息' },
+  { key: 'attributes', label: '本体属性', badge: ((detail.value?.attributes?.length || 0) + (inheritedAttrs.value?.length || 0)) || undefined },
+  { key: 'interfaces', label: '实现接口', badge: implInterfaces.value.length || undefined },
+  { key: 'services', label: '服务', badge: services.value.length || undefined },
+].filter(t => t.key !== 'interfaces' || interfaces.value.length))
 
 const currentRow = computed(() => list.value.find(o => o.id === currentId.value) || null)
 
@@ -173,9 +178,8 @@ async function loadDetail(ontId) {
     tplBinding.value = [...(d.template_ids || [])]
     tplDirty.value = false
     editingInfo.value = false
-    mergedVisible.value = false
-    merged.value = null
     inheritedAttrs.value = []
+    activeTab.value = 'info'
     // 后台拉取每个已绑定模板的完整属性，组装成「继承」只读列表
     const tplIds = tplBinding.value
     if (tplIds.length) {
@@ -363,7 +367,6 @@ async function saveTplBindings() {
       }
       inheritedAttrs.value = out
     }
-    await loadMerged()
     await refreshAfterChange()
   } catch (e) {
     alert('保存模板绑定失败：' + e.message)
@@ -376,35 +379,8 @@ async function saveTplBindings() {
 
 async function saveAttributes(payload) {
   const result = await replaceOntologyAttributes(props.categoryId, detail.value.id, payload)
-  if (merged.value) await loadMerged()
   await refreshAfterChange()
   return result
-}
-
-// ── 合并属性预览 ──
-
-async function loadMerged() {
-  merged.value = { loading: true }
-  try {
-    merged.value = await getMergedAttributes(props.categoryId, detail.value.id)
-  } catch (e) {
-    merged.value = { error: e.message }
-  }
-}
-
-function toggleMerged() {
-  if (mergedVisible.value) {
-    mergedVisible.value = false
-  } else {
-    mergedVisible.value = true
-    if (!merged.value) loadMerged()
-  }
-}
-
-function attrSourceLabel(source) {
-  if (source === 'own') return '自有'
-  if (source && source.startsWith('template:')) return '模板'
-  return source || ''
 }
 
 // ── 本体服务（动作） ──
@@ -656,7 +632,10 @@ onActivated(() => { onSvcSaved() })
           <div v-else-if="detailError" class="oe-merged-error">{{ detailError }}</div>
 
           <template v-else-if="detail">
-            <!-- 基础信息 -->
+            <TabNav v-model="activeTab" :tabs="detailTabs" variant="underline" />
+            <div class="oe-tab-panels">
+              <!-- 基础信息 -->
+              <div v-show="activeTab === 'info'" class="oe-tab-panel">
             <div class="oe-section">
               <div class="oe-section-head">
                 <span class="oe-section-title">基础信息</span>
@@ -739,46 +718,48 @@ onActivated(() => { onSvcSaved() })
                 </div>
               </template>
             </div>
-
-            <!-- 属性模板引用 -->
-            <div class="oe-section">
-              <div class="oe-section-head">
-                <span class="oe-section-title">引用属性模板</span>
-                <button
-                  v-if="tplDirty"
-                  class="btn primary sm"
-                  @click="saveTplBindings"
-                  :disabled="savingTpl"
-                >
-                  <span v-if="savingTpl" class="spinner"></span> 保存绑定
-                </button>
-              </div>
-              <SearchableSelect
-                :model-value="tplBinding"
-                :options="templateOptions"
-                multiple
-                placeholder="选择要引用的属性模板（可多选）..."
-                @change="onTplChange"
-              />
             </div>
 
-            <!-- 本体自有属性 -->
-            <div class="oe-section">
-              <div class="oe-section-head">
-                <span class="oe-section-title">本体属性</span>
+            <!-- 本体属性 -->
+            <div v-show="activeTab === 'attributes'" class="oe-tab-panel">
+              <div class="oe-section">
+                <div class="oe-section-head">
+                  <span class="oe-section-title">引用属性模板</span>
+                  <button
+                    v-if="tplDirty"
+                    class="btn primary sm"
+                    @click="saveTplBindings"
+                    :disabled="savingTpl"
+                  >
+                    <span v-if="savingTpl" class="spinner"></span> 保存绑定
+                  </button>
+                </div>
+                <SearchableSelect
+                  :model-value="tplBinding"
+                  :options="templateOptions"
+                  multiple
+                  placeholder="选择要引用的属性模板（可多选）..."
+                  @change="onTplChange"
+                />
               </div>
-              <AttributeEditor
-                :attributes="detail.attributes"
-                :builtins="BUILTIN_ATTRS"
-                :save-fn="saveAttributes"
-                :shared-properties="sharedProps"
-                :inherited-attributes="inheritedAttrs"
-                @saved="() => {}"
-              />
+              <div class="oe-section">
+                <div class="oe-section-head">
+                  <span class="oe-section-title">本体属性</span>
+                </div>
+                <AttributeEditor
+                  :attributes="detail.attributes"
+                  :builtins="BUILTIN_ATTRS"
+                  :save-fn="saveAttributes"
+                  :shared-properties="sharedProps"
+                  :inherited-attributes="inheritedAttrs"
+                  @saved="() => {}"
+                />
+              </div>
             </div>
 
             <!-- 实现的接口 -->
-            <div v-if="interfaces.length" class="oe-section">
+            <div v-if="interfaces.length" v-show="activeTab === 'interfaces'" class="oe-tab-panel">
+              <div class="oe-section">
               <div class="oe-section-head">
                 <span class="oe-section-title">实现的接口</span>
                 <span class="oe-section-tip">勾选接口并映射属性，即可参与多态查询</span>
@@ -832,47 +813,11 @@ onActivated(() => { onSvcSaved() })
                 </div>
               </div>
             </div>
-
-            <!-- 合并属性预览 -->
-            <div class="oe-section">
-              <div class="oe-section-head">
-                <span class="oe-section-title">合并属性预览</span>
-                <button class="btn sm" @click="toggleMerged">
-                  {{ mergedVisible ? '收起' : '查看' }}
-                </button>
-              </div>
-              <div v-if="mergedVisible && merged" class="oe-merged">
-                <div v-if="merged.loading" class="oe-merged-loading">
-                  <span class="spinner"></span> 加载中...
-                </div>
-                <div v-else-if="merged.error" class="oe-merged-error">{{ merged.error }}</div>
-                <div v-else>
-                  <div v-if="merged.conflicts?.length" class="oe-conflict-note">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                    存在 {{ merged.conflicts.length }} 个同名冲突，已以自有属性覆盖：{{ merged.conflicts.join('、') }}
-                  </div>
-                  <div class="oe-merged-list">
-                    <div
-                      v-for="a in merged.attributes"
-                      :key="a.name"
-                      class="oe-merged-attr"
-                      :class="{ conflict: merged.conflicts?.includes(a.name) }"
-                    >
-                      <span v-if="a.code" class="oe-merged-code">{{ a.code }}</span>
-                      <span class="oe-merged-name">{{ a.name }}</span>
-                      <span class="oe-merged-type">{{ a.data_type }}</span>
-                      <span class="oe-merged-src" :class="{ own: a.source === 'own' }">{{ attrSourceLabel(a.source) }}</span>
-                    </div>
-                  </div>
-                  <div v-if="!merged.attributes?.length" class="oe-merged-empty">
-                    暂无合并属性（无自有属性且未引用模板）
-                  </div>
-                </div>
-              </div>
             </div>
 
             <!-- 本体服务（动作） -->
-            <div class="oe-section">
+            <div v-show="activeTab === 'services'" class="oe-tab-panel">
+              <div class="oe-section">
               <div class="oe-section-head">
                 <span class="oe-section-title">本体服务（动作）</span>
                 <button class="btn sm" @click="openSvcCreate">+ 新建服务</button>
@@ -904,6 +849,8 @@ onActivated(() => { onSvcSaved() })
                 </div>
               </template>
             </div>
+            </div>
+          </div>
           </template>
         </div>
     </ModalDialog>
@@ -1012,21 +959,11 @@ onActivated(() => { onSvcSaved() })
 .oe-color-swatch.active { border-color: var(--c-fg); box-shadow: 0 0 0 2px var(--c-bg), 0 0 0 4px var(--c-fg); }
 .oe-info-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
-.oe-merged { border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 12px; background: var(--c-muted); }
+/* 本体服务区块 */
 .oe-merged-loading, .oe-merged-error { padding: 12px; text-align: center; font-size: 13px; color: var(--c-secondary); }
 .oe-merged-error { color: var(--c-danger); }
-.oe-conflict-note { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--c-accent); margin-bottom: 8px; padding: 6px 10px; background: rgba(161, 98, 7, 0.08); border-radius: var(--radius-sm); }
-.oe-merged-list { display: flex; flex-direction: column; gap: 4px; }
-.oe-merged-attr { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: var(--radius-sm); background: var(--c-panel); font-size: 12px; }
-.oe-merged-attr.conflict { outline: 1px solid var(--c-accent); }
-.oe-merged-name { font-weight: 600; color: var(--c-fg); flex: 1; }
-.oe-merged-type { color: var(--c-secondary); font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
-.oe-merged-code { color: var(--c-accent); font-family: ui-monospace, Consolas, monospace; font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--c-muted); }
-.oe-merged-src { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--c-muted); color: var(--c-secondary); }
-.oe-merged-src.own { background: rgba(161, 98, 7, 0.15); color: var(--c-accent); }
 .oe-merged-empty { padding: 8px; text-align: center; color: var(--c-secondary); font-size: 12px; }
 
-/* 本体服务区块 */
 .oe-svc-tip { font-size: 12px; color: var(--c-secondary); }
 .oe-svc-list { display: flex; flex-direction: column; gap: 4px; }
 .oe-svc-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); font-size: 12px; }
@@ -1082,4 +1019,10 @@ onActivated(() => { onSvcSaved() })
 .oe-mapping-table select { width: 100%; padding: 4px 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 12px; outline: none; }
 .oe-mapping-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .oe-attr-section { border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 10px; margin-top: 6px; }
+
+/* Tab 切换布局 */
+.oe-detail-modal-body { display: flex; flex-direction: column; gap: 0; height: calc(90vh - 160px); min-height: 320px; overflow: hidden; }
+.oe-tab-panels { flex: 1; overflow-y: auto; padding-top: 16px; min-height: 0; }
+.oe-tab-panel { display: flex; flex-direction: column; gap: 12px; }
+.oe-tab-panel > .oe-section { gap: 10px; }
 </style>

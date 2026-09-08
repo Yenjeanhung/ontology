@@ -414,10 +414,10 @@ function sharedPropOf(attr) {
             <label>描述</label>
             <input type="text" v-model="attr.description" @input="markDirty(idx)" placeholder="该属性的含义说明">
           </div>
-          <div class="ae-field-row">
+          <div class="ae-field-row options">
             <div class="ae-field-check">
               <label>是否必填</label>
-              <label class="switch">
+              <label class="switch switch-required">
                 <input type="checkbox" v-model="attr.is_required" @change="markDirty(idx)">
                 <span class="switch-slider"></span>
                 <span class="switch-label">{{ attr.is_required ? '必填' : '可选' }}</span>
@@ -425,7 +425,7 @@ function sharedPropOf(attr) {
             </div>
             <div class="ae-field-check">
               <label>仅人工编辑</label>
-              <label class="switch">
+              <label class="switch switch-editonly">
                 <input type="checkbox" v-model="attr.is_edit_only" @change="markDirty(idx)">
                 <span class="switch-slider"></span>
                 <span class="switch-label">{{ attr.is_edit_only ? '不参与抽取' : '参与抽取' }}</span>
@@ -510,10 +510,33 @@ function sharedPropOf(attr) {
 .ae-caret { color: var(--c-secondary); transition: transform 180ms ease; flex-shrink: 0; }
 .ae-card.expanded .ae-caret { transform: rotate(180deg); }
 
-.ae-card-body { padding: 12px 14px 14px; border-top: 1px solid var(--c-border); display: flex; flex-direction: column; gap: 10px; }
+.ae-card-body { padding: 14px 16px 16px; border-top: 1px solid var(--c-border); display: flex; flex-direction: column; gap: 12px; }
 .ae-field-row { display: flex; gap: 12px; }
+.ae-field-row.options {
+  background: var(--c-muted);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  align-items: center;
+}
 .ae-field { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.ae-field-check { flex: 0 0 160px; }
+.ae-field-check {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.ae-field-check + .ae-field-check {
+  border-left: 1px solid var(--c-border);
+  padding-left: 12px;
+}
+.ae-field-check > label:first-child {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-fg);
+}
 .ae-field label { font-size: 12px; font-weight: 600; color: var(--c-secondary); }
 .ae-field input, .ae-field select {
   width: 100%; padding: 6px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm);
@@ -522,18 +545,21 @@ function sharedPropOf(attr) {
 .ae-field input:focus, .ae-field select:focus { border-color: var(--c-fg); }
 .ae-field input::placeholder { color: var(--c-secondary); opacity: 0.6; }
 
-.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; padding-top: 4px; }
+.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
 .switch input { display: none; }
 .switch-slider {
-  width: 34px; height: 18px; border-radius: 10px; background: var(--c-border);
+  width: 36px; height: 20px; border-radius: 12px; background: var(--c-border);
   position: relative; transition: background 180ms;
 }
 .switch-slider::after {
-  content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+  content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
   border-radius: 50%; background: #fff; transition: transform 180ms;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
 }
 .switch input:checked + .switch-slider { background: var(--c-success); }
+.switch-required input:checked + .switch-slider { background: var(--c-danger); }
+.switch-editonly input:checked + .switch-slider { background: #9333EA; }
 .switch input:checked + .switch-slider::after { transform: translateX(16px); }
-.switch-label { font-size: 12px; color: var(--c-secondary); }
+.switch input:checked + .switch-slider + .switch-label { color: var(--c-fg); }
+.switch-label { font-size: 12px; font-weight: 500; color: var(--c-secondary); min-width: 64px; }
 </style>
