@@ -101,7 +101,6 @@ async def get_entity(entity_id: str, db: AsyncSession = Depends(get_db)):
 async def create_entity(req: CreateEntityRequest, db: AsyncSession = Depends(get_db)):
     return await EntityService.create_entity(
         db,
-        kb_id=req.kb_id,
         ontology_id=req.ontology_id,
         entity_type=req.entity_type,
         name=req.name,

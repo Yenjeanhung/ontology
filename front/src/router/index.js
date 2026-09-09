@@ -22,7 +22,6 @@ import ApiDocsPage from '../components/config/ApiDocsPage.vue'
 import MonitorPage from '../components/monitor/MonitorPage.vue'
 import EntityListPage from '../components/entity/EntityListPage.vue'
 import EntityDetailPage from '../components/entity/EntityDetailPage.vue'
-import RelationListPage from '../components/entity/RelationListPage.vue'
 import GraphCleanupPage from '../components/entity/GraphCleanupPage.vue'
 import GraphAnalysisPage from '../components/graph/GraphAnalysisPage.vue'
 import WorkflowListPage from '../components/workflow/WorkflowListPage.vue'
@@ -45,7 +44,6 @@ const routes = [
   // 实体管理
   { path: '/entities', name: 'entities', component: EntityListPage, meta: { keepAlive: true } },
   { path: '/entities/:entityId', name: 'entity-detail', component: EntityDetailPage, props: true },
-  { path: '/entities/relations', name: 'entity-relations', component: RelationListPage, meta: { keepAlive: true } },
   { path: '/graph-cleanup', name: 'graph-cleanup', component: GraphCleanupPage, meta: { keepAlive: true } },
   // 图分析（迁入 / 图计算 / 图推理）
   { path: '/graph-analysis', name: 'graph-analysis', component: GraphAnalysisPage, meta: { keepAlive: true } },

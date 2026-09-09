@@ -24,6 +24,7 @@ from database import async_session
 from models import (
     Entity,
     File,
+    KnowledgeBase,
     Ontology,
     OntologyAttribute,
     OntologyRelation,
@@ -308,6 +309,15 @@ class EntityService:
             )
             ont_map = {row[0]: row[1] for row in ont_rows}
 
+        # 批量补 kb_name（仅知识库抽取的实体带 kb_id；手动创建的为空）
+        kb_ids = {r.kb_id for r in rows if r.kb_id}
+        kb_map: dict[str, str] = {}
+        if kb_ids:
+            kb_rows = await db.execute(
+                select(KnowledgeBase.id, KnowledgeBase.name).where(KnowledgeBase.id.in_(kb_ids))
+            )
+            kb_map = {row[0]: row[1] for row in kb_rows}
+
         # 批量统计：关系度数 + 服务数（继承/自定义）
         ent_ids = [r.id for r in rows]
 
@@ -380,6 +390,7 @@ class EntityService:
 
             # 按具体本体过滤时返回完整 properties，供列表按本体属性展示列
             it = _serialize_entity(r, ontology_name=ont_map.get(r.ontology_id), include_properties=bool(ontology_id))
+            it["kb_name"] = kb_map.get(r.kb_id, "")
             it["relation_count"] = relation_counts.get(r.id, 0)
             it["property_inherited_count"] = inherited
             it["property_custom_count"] = len(props) - inherited
@@ -417,6 +428,12 @@ class EntityService:
         result = _serialize_entity(ent, ontology_name=ont_name)
         result["category_id"] = category_id or ""
 
+        if ent.kb_id:
+            kb_row = await db.execute(
+                select(KnowledgeBase.name).where(KnowledgeBase.id == ent.kb_id)
+            )
+            result["kb_name"] = kb_row.scalar_one_or_none()
+
         if ent.source_file_id:
             file_row = await db.execute(select(File.name).where(File.id == ent.source_file_id))
             result["source_file_name"] = file_row.scalar_one_or_none()
@@ -428,7 +445,7 @@ class EntityService:
     async def create_entity(
         db: AsyncSession,
         *,
-        kb_id: str,
+        kb_id: str = "",
         ontology_id: str,
         entity_type: str,
         name: str,
@@ -439,6 +456,7 @@ class EntityService:
     ) -> dict:
         """手动创建实体实例（也可被抽取流程复用）。
 
+        kb_id 仅由知识库抽取流程传入；手动创建不传（空值），表示非知识库来源。
         若 (kb_id, entity_type, name) 已存在，则按 upsert 语义更新已有记录。
         """
         normalized_name = _normalize_entity_value(name)

@@ -508,6 +508,7 @@ async def _import_category(category_id: str, progress: dict[str, int]) -> dict:
                         lbl = _esc(label)
                         # MERGE 只按 :Entity {id}（命中业务图残留节点时不能因缺第二标签
                         # 而走 CREATE，否则撞 id 唯一约束）；第二标签随后 SET 补打，幂等
+                        # kb_id：非空才写入；为空（非知识库来源）时 REMOVE，与权威库对齐
                         s.run(
                             f"UNWIND $rows AS row "
                             f"MERGE (n:Entity {{id: row.id}}) "
@@ -516,7 +517,9 @@ async def _import_category(category_id: str, progress: dict[str, int]) -> dict:
                             f"        n.name = row.name, n.entity_type = row.entity_type, "
                             f"        n.ontology_id = row.ontology_id, "
                             f"        n.description = row.description, "
-                            f"        n.properties = row.properties, n.kb_id = row.kb_id "
+                            f"        n.properties = row.properties "
+                            f"SET n.kb_id = CASE WHEN coalesce(row.kb_id, '') = '' THEN n.kb_id ELSE row.kb_id END "
+                            f"FOREACH (_ IN CASE WHEN coalesce(row.kb_id, '') = '' THEN [1] ELSE [] END | REMOVE n.kb_id) "
                             f"SET n:{lbl}",
                             rows=payloads,
                         )

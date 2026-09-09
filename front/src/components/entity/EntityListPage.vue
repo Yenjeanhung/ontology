@@ -46,9 +46,7 @@ let treeSearchTimer = null
 // 新增实体弹窗
 const showCreate = ref(false)
 const createForm = ref({
-  kb_id: '',
   ontology_id: '',
-  entity_type: '',
   name: '',
   description: '',
   properties: '{}',
@@ -65,9 +63,6 @@ async function loadCreateAttrs(ontologyId) {
   createAttrs.value = []
   createAttrValues.value = {}
   if (!ontologyId) return
-  // 实体类型自动带出本体名，与列表「本体类型」列保持一致
-  const ont = ontologyOptions.value.find(o => o.id === ontologyId)
-  if (ont && !createForm.value.entity_type) createForm.value.entity_type = ont.name
   const catId = findCategoryOfOntology(ontologyId)
   if (!catId) return
   createLoadingAttrs.value = true
@@ -84,7 +79,6 @@ async function loadCreateAttrs(ontologyId) {
 }
 
 watch(() => createForm.value.ontology_id, (oid) => {
-  createForm.value.entity_type = ''
   loadCreateAttrs(oid)
 })
 
@@ -93,9 +87,7 @@ async function openCreate() {
   createAttrs.value = []
   createAttrValues.value = {}
   createForm.value = {
-    kb_id: kbId.value || '',
     ontology_id: selectedOntologyId.value || '',
-    entity_type: '',
     name: '',
     description: '',
     properties: '{}'
@@ -130,9 +122,9 @@ async function submitCreate() {
   createLoading.value = true
   try {
     await createEntity({
-      kb_id: createForm.value.kb_id || '',
       ontology_id: createForm.value.ontology_id,
-      entity_type: createForm.value.entity_type || ont?.name || '',
+      // 实体类型由所属本体决定，直接取本体名（与列表「本体类型」列一致）
+      entity_type: ont?.name || '',
       name: createForm.value.name.trim(),
       description: createForm.value.description,
       properties: props,
@@ -611,7 +603,6 @@ const sortedEntities = computed(() => {
       </div>
       <div class="page-actions">
         <button class="primary-btn" @click="openCreate">+ 新增实体</button>
-        <router-link to="/entities/relations" class="link-btn">关系实例 →</router-link>
       </div>
     </div>
 
@@ -710,6 +701,7 @@ const sortedEntities = computed(() => {
               <span class="col-check"><input type="checkbox" :checked="allChecked" @change="toggleCheckAll" @click.stop></span>
               <span class="col-name">实体名称</span>
               <span class="col-type">本体类型</span>
+              <span class="col-kb">知识库</span>
               <span v-for="a in ontAttributes" :key="a.code" class="col-attr head" :title="a.name + (a.data_type ? ` · ${a.data_type}` : '')">{{ a.name }}</span>
               <span class="col-metric-head">
                 <button :class="['metric-head-btn','metric-attr',{active:sortKey==='property_count'}]" @click="toggleSort('property_count')" title="按属性数排序">属性<span class="arr" v-if="sortKey==='property_count'">{{ sortDir==='desc'?'↓':'↑' }}</span></button>
@@ -732,6 +724,7 @@ const sortedEntities = computed(() => {
               <span class="col-type">
                 <span class="type-tag">{{ ent.entity_type || ent.ontology_name || '—' }}</span>
               </span>
+              <span class="col-kb" :title="ent.kb_name || ''">{{ ent.kb_name || '—' }}</span>
               <span v-for="a in ontAttributes" :key="a.code" class="col-attr" :title="formatAttr(ent.properties?.[a.code])">{{ formatAttr(ent.properties?.[a.code]) }}</span>
               <span class="col-metric">
                 <button :class="['metric-pill','metric-attr',{active:sortKey==='property_count'}]" @click.stop="toggleSort('property_count')" title="按属性数排序">
@@ -761,6 +754,7 @@ const sortedEntities = computed(() => {
               <span class="col-check"><input type="checkbox" :checked="allChecked" @change="toggleCheckAll" @click.stop></span>
               <span class="col-name">实体名称</span>
               <span class="col-type">本体类型</span>
+              <span class="col-kb">知识库</span>
               <span class="col-metric-head">
                 <button :class="['metric-head-btn','metric-attr',{active:sortKey==='property_count'}]" @click="toggleSort('property_count')" title="按属性数排序">属性<span class="arr" v-if="sortKey==='property_count'">{{ sortDir==='desc'?'↓':'↑' }}</span></button>
                 <button :class="['metric-head-btn','metric-rel',{active:sortKey==='relation_count'}]" @click="toggleSort('relation_count')" title="按关系数排序">关系<span class="arr" v-if="sortKey==='relation_count'">{{ sortDir==='desc'?'↓':'↑' }}</span></button>
@@ -783,6 +777,7 @@ const sortedEntities = computed(() => {
               <span class="col-type">
                 <span class="type-tag">{{ ent.entity_type || ent.ontology_name || '—' }}</span>
               </span>
+              <span class="col-kb" :title="ent.kb_name || ''">{{ ent.kb_name || '—' }}</span>
               <span class="col-metric">
                 <button :class="['metric-pill','metric-attr',{active:sortKey==='property_count'}]" @click.stop="toggleSort('property_count')" title="按属性数排序">
                   <span class="metric-pill-num">{{ ent.property_count ?? 0 }}</span><span class="metric-pill-label">属性</span>
@@ -831,10 +826,6 @@ const sortedEntities = computed(() => {
               <option value="">请选择本体</option>
               <option v-for="o in ontologyOptions" :key="o.id" :value="o.id">{{ o.name }}</option>
             </select>
-          </div>
-          <div class="form-row">
-            <label>实体类型</label>
-            <input type="text" v-model="createForm.entity_type" placeholder="选择本体后自动带出">
           </div>
           <div class="form-row">
             <label>实体名称</label>
@@ -1069,6 +1060,7 @@ const sortedEntities = computed(() => {
 .col-type { flex: 0 0 130px; min-width: 0; }
 .col-num { flex: 0 0 56px; min-width: 0; text-align: center; font-size: 12px; color: var(--c-secondary); font-variant-numeric: tabular-nums; }
 .col-props { flex: 2; min-width: 160px; font-size: 12px; color: var(--c-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-kb { flex: 0 0 130px; min-width: 0; font-size: 12px; color: var(--c-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-attr { flex: 1 1 0; min-width: 96px; font-size: 12px; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-attr.head { color: var(--c-secondary); font-weight: 600; text-transform: none; letter-spacing: 0; }
 

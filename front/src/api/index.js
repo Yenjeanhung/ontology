@@ -1836,25 +1836,6 @@ export async function getOntologiesByCategory(categoryId) {
   return res.json()
 }
 
-// 模块七：关系实例管理
-export async function fetchRelationInstances({ kb_id = '', relation_type = '', q = '', page = 1, page_size = 20 } = {}) {
-  const params = new URLSearchParams()
-  if (kb_id) params.set('kb_id', kb_id)
-  if (relation_type) params.set('relation_type', relation_type)
-  if (q) params.set('q', q)
-  params.set('page', String(page))
-  params.set('page_size', String(page_size))
-  const res = await fetch(`${API}/api/relations?${params.toString()}`)
-  if (!res.ok) throw new Error('Fetch relation instances failed')
-  return res.json()
-}
-
-export async function deleteRelationInstance(relationId) {
-  const res = await fetch(`${API}/api/relations/${relationId}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error('Delete relation instance failed')
-  return res.json()
-}
-
 // 通知聚合（侧栏红点 + 顶栏消息总数）
 export async function fetchNotificationSummary() {
   const res = await fetch(`${API}/api/notifications/summary`)

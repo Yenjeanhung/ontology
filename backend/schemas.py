@@ -537,7 +537,7 @@ class UpdateRelationRequest(BaseModel):
 
 
 class CreateEntityRequest(BaseModel):
-    kb_id: str
+    # 注意：不携带 kb_id —— 只有知识库文本抽取的实体才有 kb_id（抽取流程直接调 service 层传入）
     ontology_id: str
     entity_type: str
     name: str

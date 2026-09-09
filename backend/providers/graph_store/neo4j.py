@@ -305,14 +305,22 @@ class Neo4jGraphAdapter(GraphStoreAdapter):
         - category_id 非空时才覆盖，避免把迁入写好的归属清空。
         """
         set_category = ", e.category_id = $category_id" if (category_id or "").strip() else ""
+        # 只有知识库抽取的实体才写 kb_id；kb_id 为空（手动创建）时 REMOVE，
+        # 顺带清掉历史误写的 kb_id，保持图与权威库一致
+        if (kb_id or "").strip():
+            set_kb = ", e.kb_id = $kb_id"
+            remove_kb = ""
+        else:
+            set_kb = ""
+            remove_kb = " REMOVE e.kb_id"
         ident = (label or "").strip().replace("`", "")
         extra_label = f" SET e:`{ident}`" if ident else ""
         self._execute(
             f"""
             MERGE (e:Entity {{id: $entity_id}})
-            SET e.kb_id = $kb_id, e.name = $name, e.entity_type = $entity_type,
+            SET e.name = $name, e.entity_type = $entity_type,
                 e.description = $description, e.ontology_id = $ontology_id,
-                e.properties = $properties{set_category}{extra_label}
+                e.properties = $properties{set_kb}{set_category}{extra_label}{remove_kb}
             """,
             {
                 "entity_id": entity_id,
