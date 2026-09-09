@@ -403,7 +403,8 @@ function toFlowNode(n) {
 }
 function toFlowEdge(e) {
   return {
-    id: e.id,
+    // 兜底：历史数据可能缺 id（undefined 会让 Vue Flow 内部 .toString() 崩溃，画布只剩部分节点）
+    id: e.id || `${e.source}->${e.target}`,
     source: e.source,
     target: e.target,
     sourceHandle: e.handle && e.handle !== 'default' ? e.handle : undefined,
@@ -1391,6 +1392,7 @@ watch(selectedNodeId, (id) => {
     const n = nodes.value.find(x => x.id === id)
     if (n?.type === 'service') loadSvc(n.data.config)
     if (n?.type === 'end') syncEndRows()
+    if (n?.type === 'start') syncInputRows()
     if (n?.type === 'agent' || n?.type === 'llm' || n?.type === 'code') { syncStructRows() }
   }
 })
@@ -1492,6 +1494,29 @@ function flushStructRows() {
     ...cfg.output_fields.filter(f => !fixed.includes(f) && cfg.structured_outputs.some(s => s.name === f)),
     ...cfg.structured_outputs.map(s => s.name).filter(n => !cfg.output_fields.includes(n) && !fixed.includes(n)),
   ]
+}
+
+// 开始节点输入变量（config.inputs：[{name,label,type,required}]）行编辑，数据结构与旧 JSON 完全一致
+const inputRows = ref([])
+function syncInputRows() {
+  const arr = selectedConfig.value?.inputs
+  inputRows.value = Array.isArray(arr)
+    ? arr.map(f => ({ name: f.name || '', label: f.label || '', type: f.type || 'string', required: !!f.required }))
+    : []
+}
+function flushInputRows() {
+  if (!selectedNode.value) return
+  selectedNode.value.data.config.inputs = inputRows.value
+    .filter(r => r.name.trim())
+    .map(r => ({ name: r.name.trim(), label: r.label.trim(), type: r.type, required: !!r.required }))
+}
+function addInputRow() {
+  inputRows.value.push({ name: '', label: '', type: 'string', required: false })
+  flushInputRows()
+}
+function removeInputRow(i) {
+  inputRows.value.splice(i, 1)
+  flushInputRows()
 }
 // 保存前校验：agent/llm 节点结构化输出里字段名填了但说明为空 → 提示（说明是大模型识别字段的关键）
 function validateStructRows() {
@@ -1598,8 +1623,29 @@ watch(nowTick, () => {
             <!-- 开始 -->
             <template v-if="selectedType === 'start'">
               <div class="field">
-                <label>输入变量（JSON）</label>
-                <textarea :value="jsonText('inputs')" @input="setJson('inputs', $event.target.value)" rows="6" placeholder='[{"name":"question","label":"问题","type":"text","required":true}]'></textarea>
+                <label>输入变量</label>
+                <p class="field-hint">运行时需要填写的入参；下游节点用 <code v-pre>{{start.字段名}}</code> 引用。</p>
+                <div class="struct-table">
+                  <div class="end-row st-head">
+                    <span class="st-col st-col-name">字段名</span>
+                    <span class="st-col st-col-type">类型</span>
+                    <span class="st-col st-col-desc">显示名 / 说明</span>
+                    <span class="st-col st-col-req">必填</span>
+                    <span class="st-col st-col-op"></span>
+                  </div>
+                  <div v-for="(row, i) in inputRows" :key="i" class="end-row struct-row">
+                    <input type="text" v-model="row.name" placeholder="如 entity_id" class="st-col st-col-name" @change="flushInputRows">
+                    <select v-model="row.type" class="st-col st-col-type" @change="flushInputRows">
+                      <option value="string">string</option>
+                      <option value="number">number</option>
+                      <option value="boolean">boolean</option>
+                    </select>
+                    <input type="text" v-model="row.label" placeholder="如 航段实体ID" class="st-col st-col-desc" @change="flushInputRows">
+                    <label class="st-col st-col-req"><input type="checkbox" v-model="row.required" @change="flushInputRows"></label>
+                    <button type="button" class="btn sm st-col st-col-op" @click="removeInputRow(i)">×</button>
+                  </div>
+                  <button type="button" class="btn sm" @click="addInputRow">＋ 添加字段</button>
+                </div>
               </div>
             </template>
 
@@ -2756,6 +2802,8 @@ watch(nowTick, () => {
 .st-col-type { width: 74px; }
 .st-col-desc { flex: 1; min-width: 0; }  /* 说明列弹性伸缩 */
 .st-col-op { width: 26px; text-align: center; }
+.st-col-req { width: 36px; display: flex; align-items: center; justify-content: center; }
+.st-col-req input { accent-color: var(--c-accent); cursor: pointer; }
 .struct-row-fixed { opacity: .8; }
 .st-lock {
   display: flex; align-items: center; font-size: 11.5px; color: var(--c-secondary);

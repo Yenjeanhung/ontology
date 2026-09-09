@@ -364,9 +364,13 @@ async function loadDerived() {
 // 编辑弹窗里关联函数的参数模式（随函数切换动态加载）
 const derivedFnSchema = ref([])
 
+// 弹窗里展示的「所属本体」：新建 = 顶部筛选选中的本体；编辑 = 该派生属性已绑定的本体（只读）
+const derivedOntologyName = ref('')
+
 function openDerivedNew() {
   derivedForm.value = emptyDerivedForm()
   derivedFnSchema.value = []
+  derivedOntologyName.value = ontologies.value.find((o) => o.id === ontologyId.value)?.name || ''
   showDerivedModal.value = true
 }
 
@@ -379,6 +383,10 @@ function openDerivedEdit(dp) {
     is_enabled: dp.is_enabled !== false,
     params: { ...(dp.params || {}) },
   }
+  derivedOntologyName.value = dp.ontology_name
+    || ontologies.value.find((o) => o.id === dp.ontology_id)?.name
+    || dp.ontology_id
+    || ''
   derivedFnSchema.value = []
   if (derivedForm.value.source_kind === 'function' && derivedForm.value.function_id) {
     fetchFnSchema(derivedForm.value.function_id).then((s) => { derivedFnSchema.value = s })
@@ -777,6 +785,9 @@ onMounted(async () => {
         <div class="modal-head"><h3>{{ derivedForm.id ? '编辑' : '新建' }}派生属性</h3><button class="close-btn" @click="showDerivedModal = false">✕</button></div>
         <div class="modal-body">
           <div class="form-grid">
+            <label class="field"><span>所属本体</span>
+              <input :value="derivedOntologyName" disabled :title="derivedForm.id ? '创建后不可更换所属本体' : '归属到页面顶部「本体」筛选当前选中的本体'">
+            </label>
             <label class="field"><span>名称 *</span><input v-model="derivedForm.name" placeholder="如 机龄"></label>
             <label class="field"><span>编码 *</span><input v-model="derivedForm.code" placeholder="如 age_years" :disabled="!!derivedForm.id"></label>
             <label class="field"><span>数据类型</span>

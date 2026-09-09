@@ -42,6 +42,12 @@ const props = defineProps({
     type: Object,
     default: () => ({}),
   },
+  // 派生属性（只读展示，带「派生」标记，不参与保存）：
+  // [{ code, name, data_type, sourceLabel, enabled }]
+  derivedAttributes: {
+    type: Array,
+    default: () => [],
+  },
 })
 
 const emit = defineEmits(['saved', 'change'])
@@ -318,6 +324,25 @@ function sharedPropOf(attr) {
           <span v-if="t.description" class="ae-builtin-desc">{{ t.description }}</span>
         </div>
       </div>
+      <!-- 派生属性：只读展示，运行时由函数/图指标计算，无存储值，不参与保存 -->
+      <div
+        v-for="d in derivedAttributes"
+        :key="'dp-' + (d.code || d.name)"
+        class="ae-card derived"
+      >
+        <div class="ae-card-head">
+          <span class="ae-lock" title="派生属性：运行时由函数/图指标计算，无存储值；到「函数与派生属性」页维护">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          </span>
+          <span v-if="d.code" class="ae-code-tag">{{ d.code }}</span>
+          <span class="ae-name">{{ d.name || '未命名派生属性' }}</span>
+          <span class="ae-type-tag">{{ typeLabel(d.data_type) }}</span>
+          <span class="ae-derived-tag" title="派生属性，在实体详情页按需实时计算">派生</span>
+          <span class="ae-derived-src" :title="d.sourceLabel">{{ d.sourceLabel }}</span>
+          <span v-if="d.enabled === false" class="ae-derived-tag" style="opacity: .55;">停用</span>
+          <span class="ae-spacer"></span>
+        </div>
+      </div>
       <!-- 可编辑属性 -->
       <div
         v-for="(attr, idx) in list"
@@ -466,6 +491,10 @@ function sharedPropOf(attr) {
 .ae-card.inherited { border-style: dashed; background: var(--c-muted); }
 .ae-card.inherited .ae-card-head { cursor: default; background: transparent; }
 .ae-card.inherited .ae-card-head:hover { background: transparent; }
+.ae-card.derived { border-style: dashed; background: var(--c-muted); border-left: 2px solid rgba(139, 92, 246, 0.55); }
+.ae-card.derived .ae-card-head { cursor: default; background: transparent; }
+.ae-card.derived .ae-card-head:hover { background: transparent; }
+.ae-card.derived .ae-lock { color: #A78BFA; }
 .ae-lock { color: var(--c-secondary); flex-shrink: 0; display: inline-flex; align-items: center; }
 .ae-builtin-tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: rgba(22, 163, 74, 0.12); color: var(--c-success); flex-shrink: 0; }
 .ae-builtin-desc { font-size: 11px; color: var(--c-secondary); font-style: italic; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -484,7 +513,7 @@ function sharedPropOf(attr) {
 .drag-btn:hover { color: var(--c-fg); }
 .ae-name { font-size: 13px; font-weight: 600; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
 .ae-name.placeholder { color: var(--c-secondary); font-weight: 500; font-style: italic; }
-.ae-type-tag, .ae-req-tag, .ae-code-tag {
+.ae-type-tag, .ae-req-tag, .ae-code-tag, .ae-editonly-tag, .ae-shared-tag, .ae-tpl-tag, .ae-derived-tag {
   font-size: 11px; padding: 1px 7px; border-radius: 10px;
   background: var(--c-muted); color: var(--c-secondary); flex-shrink: 0;
 }
@@ -500,6 +529,12 @@ function sharedPropOf(attr) {
 .ae-tpl-src {
   font-size: 11px; padding: 1px 7px; border-radius: 10px;
   background: rgba(245, 158, 11, 0.08); color: #B45309; flex-shrink: 0;
+  max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ae-derived-tag { background: rgba(139, 92, 246, 0.16); color: #A78BFA; }
+.ae-derived-src {
+  font-size: 11px; padding: 1px 7px; border-radius: 10px;
+  background: rgba(139, 92, 246, 0.1); color: #A78BFA; flex-shrink: 0;
   max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ae-locked-tip { font-size: 11px; color: var(--c-secondary); font-style: italic; }

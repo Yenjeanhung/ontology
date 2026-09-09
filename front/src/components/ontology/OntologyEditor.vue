@@ -18,6 +18,8 @@ import {
   implementInterface,
   removeImplementation,
   getInterfaceDetail,
+  fetchDerivedProperties,
+  fetchOntologyFunctions,
 } from '../../api'
 import AttributeEditor from '../common/AttributeEditor.vue'
 import SearchableSelect from '../common/SearchableSelect.vue'
@@ -106,6 +108,20 @@ const templates = ref([])
 // 按 code 去重；绑定模板变化时由 saveTpl / loadDetail 重新拉取
 const inheritedAttrs = ref([])
 
+// 派生属性（只读展示用）：随详情加载，函数名映射异步补齐
+const derivedProps = ref([])
+const fnNameMap = ref({})
+const METRIC_LABELS = { degree: '度数', pagerank: 'PageRank', betweenness: '介数中心性', community: '社区' }
+const derivedEntries = computed(() => (derivedProps.value || []).map(d => ({
+  code: d.code,
+  name: d.name,
+  data_type: d.data_type,
+  sourceLabel: d.source_kind === 'function'
+    ? `函数：${fnNameMap.value[d.function_id] || d.function_id || '未关联'}`
+    : `图指标：${METRIC_LABELS[d.graph_metric] || d.graph_metric || '—'}`,
+  enabled: d.is_enabled !== false,
+})))
+
 // 本体服务（仅当前本体）
 const services = ref([])
 const svcLoading = ref(false)
@@ -137,7 +153,7 @@ const activeTab = ref('info')
 
 const detailTabs = computed(() => [
   { key: 'info', label: '基础信息' },
-  { key: 'attributes', label: '本体属性', badge: ((detail.value?.attributes?.length || 0) + (inheritedAttrs.value?.length || 0)) || undefined },
+  { key: 'attributes', label: '本体属性', badge: ((detail.value?.attributes?.length || 0) + (inheritedAttrs.value?.length || 0) + (derivedEntries.value?.length || 0)) || undefined },
   { key: 'interfaces', label: '实现接口', badge: implInterfaces.value.length || undefined },
   { key: 'services', label: '服务', badge: services.value.length || undefined },
 ].filter(t => t.key !== 'interfaces' || interfaces.value.length))
@@ -184,6 +200,19 @@ async function loadDetail(ontId) {
     tplBinding.value = [...(d.template_ids || [])]
     tplDirty.value = false
     inheritedAttrs.value = []
+    // 派生属性只读列表 + 函数名映射（并行，失败静默，不阻塞详情展示）
+    derivedProps.value = []
+    fnNameMap.value = {}
+    fetchDerivedProperties(props.categoryId, ontId)
+      .then((dps) => { derivedProps.value = Array.isArray(dps) ? dps : [] })
+      .catch(() => {})
+    fetchOntologyFunctions(props.categoryId, ontId)
+      .then((fns) => {
+        const nameMap = {}
+        for (const f of (fns || [])) nameMap[f.id] = f.name || f.code
+        fnNameMap.value = nameMap
+      })
+      .catch(() => {})
     // 详情加载完成 → 把字段同步到编辑表单（进入抽屉即处于编辑态）
     syncEditFromDetail(d)
     // 后台拉取每个已绑定模板的完整属性，组装成「继承」只读列表
@@ -764,6 +793,7 @@ onActivated(() => { onSvcSaved() })
                   :shared-properties="sharedProps"
                   :inherited-attributes="inheritedAttrs"
                   :template-name-map="templateNameMap"
+                  :derived-attributes="derivedEntries"
                   @saved="() => {}"
                 />
               </div>
