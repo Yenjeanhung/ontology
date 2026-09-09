@@ -1,10 +1,10 @@
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import {
   fetchOntologyCategories, getOntologyCategoryDetail,
   fetchOntologyFunctions, createOntologyFunction, updateOntologyFunction, deleteOntologyFunction, testOntologyFunction,
   fetchAllDerivedProperties, createDerivedProperty, updateDerivedProperty, deleteDerivedProperty, materializeDerivedProperty,
-  fetchEntities, testDerivedProperty, getOntologyFunction,
+  fetchEntities, testDerivedProperty, getOntologyFunction, aiAssistFunctionCode,
 } from '../../api'
 import PythonEditor from '../workflow/PythonEditor.vue'
 import { useToast } from '../../composables/useToast'
@@ -171,6 +171,107 @@ async function runTest() {
     fnTestResult.value = { success: false, error: e.message }
   } finally {
     fnTesting.value = false
+  }
+}
+
+// ── AI 辅助编写函数代码（参考本体服务的 AI 辅助：SSE 流式 + 多轮对话 + 应用代码）──
+const fnCodeEditorRef = ref(null)
+const aiChatOpen = ref(false)
+const aiMessages = ref([]) // { role: 'user'|'assistant', content, code?, params?, streaming? }
+const aiInput = ref('')
+const aiLoading = ref(false)
+const aiBodyRef = ref(null)
+const aiQuotedCode = ref('') // 编辑器中选中的代码片段（作为本轮重点上下文）
+
+function toggleAiChat() {
+  aiChatOpen.value = !aiChatOpen.value
+  if (aiChatOpen.value) scrollAiChat()
+}
+
+function onFnCodeSelection(sel) {
+  aiQuotedCode.value = (sel?.text || '').trim()
+}
+
+function clearQuote() {
+  aiQuotedCode.value = ''
+  fnCodeEditorRef.value?.focus?.()
+}
+
+function scrollAiChat() {
+  nextTick(() => {
+    const el = aiBodyRef.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+// 把 assistant 回复拆成 文本/代码 段落渲染
+function splitSegments(msg) {
+  const segs = []
+  const re = /```(?:python)?\s*\n([\s\S]*?)```/g
+  let last = 0
+  let m
+  while ((m = re.exec(msg.content))) {
+    if (m.index > last) segs.push({ type: 'text', text: msg.content.slice(last, m.index).trim() })
+    segs.push({ type: 'code', code: m[1].replace(/\n$/, '') })
+    last = re.lastIndex
+  }
+  if (last < msg.content.length) segs.push({ type: 'text', text: msg.content.slice(last).trim() })
+  if (!segs.length) segs.push({ type: 'text', text: msg.content })
+  return segs
+}
+
+function applyAiCode(seg, msg) {
+  if (!seg?.code) return
+  fnForm.value.code_text = seg.code
+  // AI 同时给出了参数定义且当前参数表为空时，自动带入
+  if (msg.params?.length && !fnForm.value.params_schema.some((p) => p.name)) {
+    fnForm.value.params_schema = msg.params.map((p) => ({
+      name: p.name || '', type: p.type || 'string',
+      required: p.required !== false, description: p.description || '',
+    }))
+  }
+  toast('已应用到编辑器，点击「保存」生效', 'success')
+}
+
+async function sendAiMessage() {
+  const q = aiInput.value.trim()
+  if (!q || aiLoading.value) return
+  aiInput.value = ''
+  aiMessages.value.push({ role: 'user', content: q })
+  const reply = { role: 'assistant', content: '', streaming: true }
+  aiMessages.value.push(reply)
+  aiLoading.value = true
+  scrollAiChat()
+  try {
+    const history = aiMessages.value
+      .filter((m) => !m.streaming && m.content)
+      .slice(-10)
+      .map((m) => ({ role: m.role, content: m.content }))
+    const result = await aiAssistFunctionCode({
+      prompt: q,
+      name: fnForm.value.name,
+      code: fnForm.value.code,
+      description: fnForm.value.description,
+      owner_name: ontologies.value.find((o) => o.id === ontologyId.value)?.name || '',
+      current_code: fnForm.value.code_text,
+      selected_code: aiQuotedCode.value,
+      history,
+      onDelta: (t) => { reply.content += t; scrollAiChat() },
+    })
+    if (result?.code_text) {
+      reply.content = (result.explanation ? result.explanation + '\n\n' : '')
+        + '```python\n' + result.code_text + '\n```\n' + (result.explanation ? '' : reply.content)
+      reply.code = result.code_text
+      reply.params = result.params || []
+    }
+    aiQuotedCode.value = ''
+  } catch (e) {
+    reply.content = reply.content || ''
+    reply.error = e.message
+  } finally {
+    reply.streaming = false
+    aiLoading.value = false
+    scrollAiChat()
   }
 }
 
@@ -490,9 +591,14 @@ onMounted(async () => {
           <button class="btn sm" @click="addParam">+ 添加参数</button>
         </div>
 
-        <div class="sec-sub">函数代码（沙箱执行，仅只读上下文）</div>
+        <div class="sec-sub code-sub-row">
+          <span>函数代码（沙箱执行，仅只读上下文）</span>
+          <button class="ai-toggle" :class="{ on: aiChatOpen }" :title="aiChatOpen ? '关闭 AI 辅助' : 'AI 辅助编写函数代码'" @click="toggleAiChat">
+            ✦ AI 辅助
+          </button>
+        </div>
         <div class="code-wrap">
-          <PythonEditor v-model="fnForm.code_text" />
+          <PythonEditor ref="fnCodeEditorRef" v-model="fnForm.code_text" @selection-change="onFnCodeSelection" />
         </div>
 
         <div class="sec-sub">测试运行</div>
@@ -512,6 +618,50 @@ onMounted(async () => {
           </template>
         </div>
       </div>
+
+      <!-- AI 辅助聊天面板 -->
+      <aside v-if="aiChatOpen" class="ai-chat">
+        <div class="ai-chat-head">
+          <span class="ai-chat-title">✦ AI 辅助编写函数</span>
+          <button class="close-btn" @click="aiChatOpen = false">✕</button>
+        </div>
+        <div ref="aiBodyRef" class="ai-chat-body">
+          <div v-if="!aiMessages.length" class="ai-chat-empty">
+            描述你想要的函数功能，AI 将生成符合沙箱约束的只读函数代码；也可先在编辑器中<b>选中一段代码</b>再提问，针对片段修改。
+          </div>
+          <div v-for="(m, i) in aiMessages" :key="i" class="ai-msg" :class="m.role">
+            <div class="ai-bubble">
+              <template v-if="m.role === 'user'">{{ m.content }}</template>
+              <template v-else>
+                <template v-for="(s, j) in splitSegments(m)" :key="j">
+                  <div v-if="s.type === 'text' && s.text" class="ai-text">{{ s.text }}</div>
+                  <div v-else-if="s.type === 'code'" class="ai-code">
+                    <pre>{{ s.code }}</pre>
+                    <button class="ai-apply" :disabled="aiLoading" @click="applyAiCode(s, m)">应用到编辑器</button>
+                  </div>
+                </template>
+                <div v-if="m.error" class="ai-err">{{ m.error }}</div>
+                <div v-if="m.streaming && !m.content" class="ai-text dim">生成中...</div>
+              </template>
+            </div>
+          </div>
+        </div>
+        <div v-if="aiQuotedCode" class="ai-quote-bar">
+          <span class="ai-quote-label">已引用选中代码（{{ aiQuotedCode.split('\n').length }} 行）</span>
+          <button class="ai-quote-clear" @click="clearQuote">移除</button>
+        </div>
+        <div class="ai-chat-input">
+          <textarea
+            v-model="aiInput" rows="2"
+            placeholder="描述需求，回车发送，Shift+回车换行"
+            :disabled="aiLoading"
+            @keydown.enter.exact.prevent="sendAiMessage"
+          ></textarea>
+          <button class="primary-btn sm" :disabled="aiLoading || !aiInput.trim()" @click="sendAiMessage">
+            {{ aiLoading ? '生成中...' : '发送' }}
+          </button>
+        </div>
+      </aside>
     </div>
 
     <!-- ══ 派生属性管理 ══ -->
@@ -717,7 +867,38 @@ onMounted(async () => {
 .param-row input, .param-row select { padding: 6px 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-fg); font-size: 12px; outline: none; }
 .param-row .grow { flex: 1; min-width: 0; }
 
-.code-wrap { border: 1px solid var(--c-border); border-radius: var(--radius-sm); overflow: hidden; height: 260px; }
+.code-wrap { border: 1px solid var(--c-border); border-radius: var(--radius-sm); overflow: hidden; height: 300px; }
+
+/* ── AI 辅助 ── */
+.code-sub-row { display: flex; align-items: center; justify-content: space-between; }
+.ai-toggle { border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-secondary); font-size: 11px; font-weight: 600; padding: 3px 10px; cursor: pointer; }
+.ai-toggle:hover { color: var(--c-accent); border-color: var(--c-accent); }
+.ai-toggle.on { background: var(--c-accent); border-color: var(--c-accent); color: #fff; }
+.ai-chat { flex: 0 0 360px; min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); overflow: hidden; }
+.ai-chat-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--c-border); }
+.ai-chat-title { font-size: 13px; font-weight: 700; color: var(--c-accent); }
+.ai-chat-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.ai-chat-empty { font-size: 12px; color: var(--c-secondary); line-height: 1.7; padding: 8px 2px; }
+.ai-msg { display: flex; }
+.ai-msg.user { justify-content: flex-end; }
+.ai-bubble { max-width: 88%; padding: 8px 11px; border-radius: 10px; font-size: 12px; line-height: 1.6; }
+.ai-msg.user .ai-bubble { background: var(--c-accent); color: #fff; white-space: pre-wrap; word-break: break-word; }
+.ai-msg.assistant .ai-bubble { background: var(--c-bg); border: 1px solid var(--c-border); color: var(--c-fg); }
+.ai-text { white-space: pre-wrap; word-break: break-word; }
+.ai-text.dim { color: var(--c-secondary); }
+.ai-code { margin-top: 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); overflow: hidden; }
+.ai-code pre { margin: 0; padding: 8px 10px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-x: auto; max-height: 220px; overflow-y: auto; white-space: pre; }
+.ai-apply { width: 100%; border: 0; border-top: 1px solid var(--c-border); background: var(--c-muted); color: var(--c-accent); font-size: 11px; font-weight: 600; padding: 5px 0; cursor: pointer; }
+.ai-apply:hover { background: var(--c-accent); color: #fff; }
+.ai-apply:disabled { opacity: 0.5; cursor: not-allowed; }
+.ai-err { margin-top: 6px; color: var(--c-danger); font-size: 11px; }
+.ai-quote-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--c-border); background: var(--c-muted); }
+.ai-quote-label { font-size: 11px; color: var(--c-accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-quote-clear { border: 0; background: transparent; color: var(--c-secondary); font-size: 11px; cursor: pointer; }
+.ai-quote-clear:hover { color: var(--c-danger); }
+.ai-chat-input { display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--c-border); }
+.ai-chat-input textarea { flex: 1; min-width: 0; resize: none; padding: 7px 9px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-fg); font-size: 12px; font-family: var(--font); outline: none; }
+.ai-chat-input textarea:focus { border-color: var(--c-accent); }
 
 .test-box { display: flex; flex-direction: column; gap: 10px; }
 .test-cols { display: flex; gap: 12px; }

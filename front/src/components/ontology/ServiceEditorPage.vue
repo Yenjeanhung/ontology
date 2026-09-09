@@ -466,17 +466,16 @@ async function removeRule(rule) {
 }
 
 // ── 副作用 CRUD ──
-const effects = ref([])
-const showEffectModal = ref(false)
-const effectSaving = ref(false)
-const effectForm = ref(emptyEffectForm())
-
 const EFFECT_TEMPLATES = {
   update_property: '{"property_code": "status", "value": "已完成"}',
   create_relation: '{"target_entity_id": "", "relation_type": "depends_on"}',
   webhook: '{"url": "https://example.com/hook", "method": "POST"}',
   notify: '{"title": "动作已执行", "content": "执行结果见记录", "level": "info"}',
 }
+const effects = ref([])
+const showEffectModal = ref(false)
+const effectSaving = ref(false)
+const effectForm = ref(emptyEffectForm())
 
 function emptyEffectForm() {
   return {

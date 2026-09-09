@@ -1439,11 +1439,11 @@ export async function testOntologyService(serviceId, { params, mock_entity } = {
   return res.json()
 }
 
-// AI 辅助编写动作代码（SSE 流式）：onDelta 收增量文本，结束后返回 {code_text, params, explanation}
-export async function aiAssistServiceCode({ prompt, name, code, description, owner_name, current_code, selected_code, history, onDelta, signal } = {}) {
-  const res = await fetch(`${API}/api/ontology-services/ai-assist`, {
+// AI 辅助编写代码（SSE 流式）通用实现：onDelta 收增量文本，结束后返回 {code_text, params, explanation}
+async function _aiAssistCodeSSE(url, payload, onDelta, signal) {
+  const res = await fetch(url, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, name, code, description, owner_name, current_code, selected_code, history }),
+    body: JSON.stringify(payload),
     signal,
   })
   if (!res.ok) {
@@ -1476,6 +1476,18 @@ export async function aiAssistServiceCode({ prompt, name, code, description, own
     }
   }
   return result
+}
+
+// AI 辅助编写动作代码（SSE 流式）：onDelta 收增量文本，结束后返回 {code_text, params, explanation}
+export async function aiAssistServiceCode({ prompt, name, code, description, owner_name, current_code, selected_code, history, onDelta, signal } = {}) {
+  return _aiAssistCodeSSE(`${API}/api/ontology-services/ai-assist`,
+    { prompt, name, code, description, owner_name, current_code, selected_code, history }, onDelta, signal)
+}
+
+// AI 辅助编写函数代码（SSE 流式）：onDelta 收增量文本，结束后返回 {code_text, params, explanation}
+export async function aiAssistFunctionCode({ prompt, name, code, description, owner_name, current_code, selected_code, history, onDelta, signal } = {}) {
+  return _aiAssistCodeSSE(`${API}/api/ontology-functions/ai-assist`,
+    { prompt, name, code, description, owner_name, current_code, selected_code, history }, onDelta, signal)
 }
 
 export async function fetchEntityServices(entityId) {

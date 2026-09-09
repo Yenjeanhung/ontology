@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
-import { EditorState } from '@codemirror/state'
+import { EditorState, RangeSetBuilder } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, gutter, GutterMarker } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { bracketMatching, indentOnInput, foldGutter, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
@@ -200,24 +200,32 @@ function runLint(text) {
 const lintMarker = (sev) => new class extends GutterMarker {
   toDOM() { const d = document.createElement('span'); d.textContent = sev === 'error' ? '●' : '○'; d.style.color = sev === 'error' ? '#ef4444' : '#eab308'; d.style.fontSize = '9px'; d.style.paddingLeft = '4px'; return d }
 }()
-const lintGutterField = gutter({
-  class: 'cm-lint-gutter',
-  markers: (view) => {
-    const marks = []
-    const seen = new Set()
-    for (const d of lintDiags.value) {
-      if (seen.has(d.line)) continue
-      seen.add(d.line)
-      marks.push({ line: d.line, marker: lintMarker(d.sev) })
-    }
-    return marks
-  },
-  initialSpacer: () => lintMarker('error'),
-})
-
 const lintDiags = ref([])
 const backendError = ref(null)
 let backendLintTimer = null
+
+const lintGutterField = gutter({
+  class: 'cm-lint-gutter',
+  markers: (view) => {
+    // gutter() 要求返回按位置排序的 RangeSet，每条标记挂在对应行的行首
+    const seen = new Set()
+    const rows = []
+    for (const d of lintDiags.value) {
+      if (seen.has(d.line)) continue
+      seen.add(d.line)
+      rows.push(d)
+    }
+    rows.sort((a, b) => a.line - b.line)
+    const builder = new RangeSetBuilder()
+    const totalLines = view.state.doc.lines
+    for (const d of rows) {
+      const line = view.state.doc.line(Math.min(d.line + 1, totalLines))
+      builder.add(line.from, line.from, lintMarker(d.sev))
+    }
+    return builder.finish()
+  },
+  initialSpacer: () => lintMarker('error'),
+})
 
 function refreshLint() {
   if (!view) return
