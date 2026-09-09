@@ -21,7 +21,8 @@ const categories = ref([])
 const categoryId = ref('')
 const ontologies = ref([])
 const ontologyId = ref('')
-const tab = ref('functions')
+const tab = ref(sessionStorage.getItem('fnPage.tab') === 'derived' ? 'derived' : 'functions')
+watch(tab, v => { try { sessionStorage.setItem('fnPage.tab', v) } catch { /* 忽略隐私模式 */ } })
 
 async function loadCategories() {
   categories.value = await fetchOntologyCategories()
@@ -106,6 +107,15 @@ function newFn() {
   fnTestResult.value = null
   fnTestParams.value = '{}'
   fnTestMockEntity.value = ''
+}
+
+function duplicateFn(fn) {
+  selectFn(fn)
+  selectedFn.value = null          // 置空 → 保存走"新建"，不会覆盖原函数
+  fnForm.value.id = ''
+  fnForm.value.name = `${fn.name}_copy`
+  fnForm.value.code = `${fn.code || ''}_copy`.slice(0, 64)
+  toast('已复制为新函数，请检查编码后保存', 'success')
 }
 
 function addParam() { fnForm.value.params_schema.push({ name: '', type: 'string', required: true, description: '' }) }
@@ -308,13 +318,18 @@ async function sendAiMessage() {
 const allDerived = ref([])
 const loadingDerived = ref(false)
 const showDerivedModal = ref(false)
+const searchDp = ref('')
 const derivedForm = ref(emptyDerivedForm())
 const derivedSaving = ref(false)
 const materializingId = ref('')
 
 const derived = computed(() => {
-  if (!ontologyId.value) return allDerived.value
-  return allDerived.value.filter((d) => d.ontology_id === ontologyId.value)
+  let list = allDerived.value
+  if (ontologyId.value) list = list.filter((d) => d.ontology_id === ontologyId.value)
+  const q = (searchDp.value || '').toLowerCase().trim()
+  if (!q) return list
+  return list.filter(d => [d.name, d.code, d.ontology_name, d.data_type, d.source_kind, d.description]
+    .some(v => (v || '').toLowerCase().includes(q)))
 })
 
 // 筛选下拉选项：当前分类的全部本体 + 全量数据中出现过的其他本体
@@ -550,7 +565,7 @@ onMounted(async () => {
     <div class="page-head">
       <div class="page-title-row">
         <h2 class="page-title">函数与派生属性</h2>
-        <span class="page-subtitle">S3 · 只读函数与派生属性管理（计算 / 物化）</span>
+        <!-- <span class="page-subtitle">S3 · 只读函数与派生属性管理（计算 / 物化）</span> -->
       </div>
       <div class="head-controls">
         <select v-model="categoryId" class="ctrl-select">
@@ -583,6 +598,7 @@ onMounted(async () => {
             <div class="fn-item-meta">
               <span v-if="f.is_enabled === false" class="tag off">停用</span>
             </div>
+            <button class="fn-copy-btn" title="复制为新函数" @click.stop="duplicateFn(f)">⧉</button>
           </div>
         </div>
       </div>
@@ -721,6 +737,8 @@ onMounted(async () => {
           <option value="">全部本体</option>
           <option v-for="o in ontologyOptions" :key="o.id" :value="o.id">{{ o.name }}</option>
         </select>
+        <input v-model="searchDp" type="text" class="fn-search" placeholder="搜索派生属性...">
+        <button class="btn sm" :disabled="loadingDerived" @click="loadDerived">刷新</button>
         <button class="primary-btn sm" :disabled="!ontologyId" @click="openDerivedNew">+ 新建派生属性</button>
       </div>
 
@@ -890,11 +908,13 @@ onMounted(async () => {
 .fn-list-toolbar { display: flex; gap: 8px; }
 .fn-search { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-fg); font-size: 12px; outline: none; }
 .fn-items { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
-.fn-item { padding: 9px 11px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); cursor: pointer; transition: all 120ms; }
+.fn-item { position: relative; padding: 9px 11px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); cursor: pointer; transition: all 120ms; }
 .fn-item:hover { border-color: var(--c-accent); }
 .fn-item.active { border-color: var(--c-accent); background: var(--c-muted); }
 .fn-item-name { font-size: 13px; font-weight: 600; color: var(--c-fg); }
 .fn-item-meta { display: flex; gap: 6px; margin-top: 5px; flex-wrap: wrap; }
+.fn-copy-btn { position: absolute; top: 6px; right: 6px; border: none; background: transparent; color: var(--c-secondary); font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 4px; cursor: pointer; transition: all 120ms; }
+.fn-copy-btn:hover { color: var(--c-accent); background: var(--c-muted); }
 .tag { font-size: 10px; padding: 1px 7px; border-radius: 8px; background: var(--c-muted); color: var(--c-secondary); }
 .tag.off { background: rgba(220,38,38,0.12); color: var(--c-danger); }
 
@@ -924,8 +944,8 @@ onMounted(async () => {
 .ai-toggle { border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-secondary); font-size: 11px; font-weight: 600; padding: 3px 10px; cursor: pointer; }
 .ai-toggle:hover { color: var(--c-accent); border-color: var(--c-accent); }
 .ai-toggle.on { background: var(--c-accent); border-color: var(--c-accent); color: #fff; }
-.ai-chat { flex: 0 0 360px; min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); overflow: hidden; }
-.ai-chat-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--c-border); }
+.ai-chat { flex: 0 0 360px; min-width: 0; align-self: flex-start; height: calc(100vh - 190px); min-height: 460px; display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); overflow: hidden; }
+.ai-chat-head { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--c-border); }
 .ai-chat-title { font-size: 13px; font-weight: 700; color: var(--c-accent); }
 .ai-chat-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; scrollbar-width: thin; scrollbar-color: rgba(148, 163, 184, 0.3) transparent; }
 .ai-chat-body::-webkit-scrollbar { width: 6px; }
@@ -963,11 +983,11 @@ onMounted(async () => {
 .ai-params th, .ai-params td { padding: 4px 8px; border-top: 1px solid var(--c-border); text-align: left; color: var(--c-fg); }
 .ai-params th { background: var(--c-muted); color: var(--c-secondary); font-weight: 600; }
 .ai-params-desc { color: var(--c-secondary); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-quote-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--c-border); background: var(--c-muted); }
+.ai-quote-bar { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--c-border); background: var(--c-muted); }
 .ai-quote-label { font-size: 11px; color: var(--c-accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-quote-clear { border: 0; background: transparent; color: var(--c-secondary); font-size: 11px; cursor: pointer; }
 .ai-quote-clear:hover { color: var(--c-danger); }
-.ai-chat-input { display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--c-border); }
+.ai-chat-input { flex-shrink: 0; display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--c-border); }
 .ai-chat-input textarea { flex: 1; min-width: 0; resize: none; padding: 7px 9px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-fg); font-size: 12px; font-family: var(--font); outline: none; }
 .ai-chat-input textarea:focus { border-color: var(--c-accent); }
 
@@ -980,6 +1000,7 @@ onMounted(async () => {
 
 .derived-layout { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; }
 .derived-toolbar { display: flex; gap: 10px; align-items: center; }
+.derived-toolbar .fn-search { flex: 0 0 auto; width: 220px; }
 .hint { font-size: 12px; color: var(--c-secondary); padding: 4px 2px; }
 .hint.pad { padding: 30px; text-align: center; font-size: 13px; }
 

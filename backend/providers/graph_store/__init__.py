@@ -157,9 +157,12 @@ def upsert_entity(
     name: str,
     description: str = "",
     properties: str = "",
+    label: str = "",
+    category_id: str = "",
 ):
     _get_adapter().upsert_entity(
-        entity_id, kb_id, ontology_id, entity_type, name, description, properties
+        entity_id, kb_id, ontology_id, entity_type, name, description, properties,
+        label, category_id,
     )
 
 

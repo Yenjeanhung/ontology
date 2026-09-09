@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from sqlalchemy import delete, func, select
@@ -27,6 +28,33 @@ import logging
 from services.ontology_action_service import OntologyServiceService
 
 logger = logging.getLogger(__name__)
+
+# 本体编码（Ontology.code）：图库标签/API 名使用的稳定标识（对标 Palantir API Name），
+# 显示名（name）可随意重命名而不影响图标签；编码一经使用不建议修改
+ONTOLOGY_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+
+
+async def _validate_ontology_code(
+    db: AsyncSession, category_id: str, code: str | None,
+    exclude_id: str | None = None,
+) -> str | None:
+    """校验本体编码格式与同类别唯一性，返回规范化后的编码（空返回 None）。"""
+    code = (code or "").strip()
+    if not code:
+        return None
+    if not ONTOLOGY_CODE_RE.match(code):
+        raise ValueError(
+            f'本体编码 "{code}" 格式非法：需以字母开头，仅含字母、数字、下划线，'
+            "最长 64 字符（如 Flight、FLT_SEG）"
+        )
+    dup_q = select(Ontology.id).where(
+        Ontology.category_id == category_id, Ontology.code == code
+    )
+    if exclude_id:
+        dup_q = dup_q.where(Ontology.id != exclude_id)
+    if (await db.execute(dup_q)).scalar_one_or_none():
+        raise ValueError(f'本体编码 "{code}" 在该本体类别下已存在')
+    return code
 
 
 # ---------- 辅助序列化 ----------
@@ -434,6 +462,7 @@ class OntologyService:
             description=(description or "").strip(), color=color, sort_order=sort_order,
         )
         _apply_ontology_meta(ont, meta)
+        ont.code = await _validate_ontology_code(db, category_id, ont.code)
         db.add(ont)
         await db.commit()
         await db.refresh(ont)
@@ -458,6 +487,10 @@ class OntologyService:
         if sort_order is not None:
             ont.sort_order = sort_order
         _apply_ontology_meta(ont, meta)
+        if meta and "code" in meta:
+            ont.code = await _validate_ontology_code(
+                db, ont.category_id, ont.code, exclude_id=ont.id
+            )
         ont.updated_at = datetime.now().isoformat()
         await db.commit()
         return _serialize_ontology(ont)

@@ -20,6 +20,7 @@ from typing import Any
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from database import async_session
 from models import (
     Entity,
     File,
@@ -169,10 +170,27 @@ def _serialize_relation(rel: Relation, extra: dict | None = None) -> dict:
     return payload
 
 
-# ---------- Kùzu 同步（best-effort）----------
+# ---------- 图库同步（best-effort）----------
 
-def _sync_upsert_entity(ent: Entity):
+async def _sync_upsert_entity(ent: Entity):
+    """best-effort 同步图库，节点形态与「图迁入」产物对齐。
+
+    从权威库解析本体编码与类别后补打第二标签（``:Entity:<本体编码>``）与
+    category_id，使手动/抽取新增的实体无需重新迁入即可被类别维度查询
+    与图分析（按 label 投影）看到。ontology_id 悬空时退化为仅 :Entity。
+    """
     try:
+        label = ""
+        category_id = ""
+        if ent.ontology_id:
+            async with async_session() as db:
+                row = (await db.execute(
+                    select(Ontology.code, Ontology.name, Ontology.category_id)
+                    .where(Ontology.id == ent.ontology_id)
+                )).first()
+                if row:
+                    label = row[0] or row[1] or ""
+                    category_id = row[2] or ""
         graph_upsert_entity(
             entity_id=ent.id,
             kb_id=ent.kb_id,
@@ -181,9 +199,11 @@ def _sync_upsert_entity(ent: Entity):
             name=ent.name,
             description=ent.description or "",
             properties=ent.properties or "",
+            label=label,
+            category_id=category_id,
         )
     except Exception:
-        logger.exception("Kùzu upsert_entity failed: entity_id=%s", ent.id)
+        logger.exception("graph upsert_entity failed: entity_id=%s", ent.id)
 
 
 def _sync_delete_entity(entity_id: str):
@@ -465,7 +485,7 @@ class EntityService:
 
         ont_name = await _enrich_entity_ontology_name(db, ent)
         payload = _serialize_entity(ent, ontology_name=ont_name)
-        _sync_upsert_entity(ent)
+        await _sync_upsert_entity(ent)
         return payload
 
     @staticmethod
@@ -494,7 +514,7 @@ class EntityService:
 
         ont_name = await _enrich_entity_ontology_name(db, ent)
         payload = _serialize_entity(ent, ontology_name=ont_name)
-        _sync_upsert_entity(ent)
+        await _sync_upsert_entity(ent)
         return payload
 
     @staticmethod
@@ -664,7 +684,7 @@ class EntityService:
         await db.refresh(canonical)
 
         # 8. Kùzu 同步（best-effort）：先刷新存活关系、删丢弃关系，最后删被合并实体
-        _sync_upsert_entity(canonical)
+        await _sync_upsert_entity(canonical)
         for rel in rewired_rels:
             _sync_upsert_relation(rel)
         for rid in dropped_rel_ids:

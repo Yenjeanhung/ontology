@@ -662,6 +662,64 @@ class KuzuGraphAdapter(GraphStoreAdapter):
                         }
                     )
 
+        # 手动维护实体（未被任何 Chunk MENTIONS，例如「实体管理」页新增/修改的实体）。
+        # 实体服务在新增/修改时已实时 upsert 到图库，这里把它们也纳入 KB 视图，
+        # 作为「手动维护实体」分组展示，保证图库与实体管理数据一致。
+        if not relation_filter:
+            mentioned_ids = {row["entity_id"] for row in mentions}
+            standalone_rows: list[dict] = []
+            for row in self.list_kb_entities(kb_id, limit=5000):
+                entity_id = row.get("entity_id") or ""
+                if not entity_id or entity_id in mentioned_ids:
+                    continue
+                if entity_filter and entity_filter not in str(row.get("name", "")).lower():
+                    continue
+                standalone_rows.append(
+                    {
+                        "entity_id": entity_id,
+                        "name": row.get("name") or entity_id,
+                        "entity_type": row.get("entity_type") or "UNKNOWN",
+                        "description": row.get("description") or "",
+                    }
+                )
+            if standalone_rows:
+                for entity in standalone_rows:
+                    entity_node_id = f"entity:{entity['entity_id']}"
+                    if entity_node_id in seen_nodes:
+                        continue
+                    seen_nodes.add(entity_node_id)
+                    entity_type = (entity["entity_type"] or "UNKNOWN").upper()
+                    entity_ids.add(entity["entity_id"])
+                    nodes.append(
+                        {
+                            "id": entity_node_id,
+                            "kind": "entity",
+                            "label": entity["name"],
+                            "meta": {
+                                "entity_id": entity["entity_id"],
+                                "entity_type": entity["entity_type"],
+                                "description": entity["description"],
+                                "color": entity_type_palette.get(entity_type, entity_type_palette["UNKNOWN"]),
+                                "manual": True,
+                            },
+                        }
+                    )
+                filtered_result_count += len(standalone_rows)
+                chunk_records.append(
+                    {
+                        "chunk_id": "__manual_entities__",
+                        "chunk_index": -1,
+                        "file_id": "__manual__",
+                        "file_name": "手动维护实体",
+                        "content_preview": "",
+                        "content_full": "",
+                        "entities": standalone_rows,
+                        "relations": [],
+                        "entity_count": len(standalone_rows),
+                        "relation_count": 0,
+                    }
+                )
+
         return {
             "summary": {
                 "provider": self.provider_name,
@@ -689,11 +747,16 @@ class KuzuGraphAdapter(GraphStoreAdapter):
         name: str,
         description: str = "",
         properties: str = "",
+        label: str = "",
+        category_id: str = "",
     ):
         """以 SQLite entity.id 作为 Kùzu Entity.id 进行 upsert。
 
         与抽取流程的 hash-based id 共存：手动管理的实体使用 SQLite id，
         抽取流程产出的实体在阶段二B改造后也使用 SQLite id。
+
+        label/category_id 参数仅与 Neo4j 适配器签名对齐：Kùzu 的实体统一
+        存 :Entity 表（label 即表名，无第二标签能力），此处忽略。
         """
         with _kuzu_write_lock:
             self._execute_internal(

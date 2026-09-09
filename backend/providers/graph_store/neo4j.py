@@ -295,13 +295,24 @@ class Neo4jGraphAdapter(GraphStoreAdapter):
         name: str,
         description: str = "",
         properties: str = "",
+        label: str = "",
+        category_id: str = "",
     ):
+        """实例级 upsert：节点形态与 graph_sync_service._import_category 对齐。
+
+        label（本体编码）/category_id 由调用方从权威库解析后传入：
+        - label 非空时补打第二标签（``SET e:`编码```），类别维度查询立即可见；
+        - category_id 非空时才覆盖，避免把迁入写好的归属清空。
+        """
+        set_category = ", e.category_id = $category_id" if (category_id or "").strip() else ""
+        ident = (label or "").strip().replace("`", "")
+        extra_label = f" SET e:`{ident}`" if ident else ""
         self._execute(
-            """
-            MERGE (e:Entity {id: $entity_id})
+            f"""
+            MERGE (e:Entity {{id: $entity_id}})
             SET e.kb_id = $kb_id, e.name = $name, e.entity_type = $entity_type,
                 e.description = $description, e.ontology_id = $ontology_id,
-                e.properties = $properties
+                e.properties = $properties{set_category}{extra_label}
             """,
             {
                 "entity_id": entity_id,
@@ -311,6 +322,7 @@ class Neo4jGraphAdapter(GraphStoreAdapter):
                 "description": _normalize_text(description),
                 "ontology_id": ontology_id or "",
                 "properties": properties or "",
+                "category_id": category_id or "",
             },
         )
 

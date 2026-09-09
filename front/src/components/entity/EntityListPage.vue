@@ -1,9 +1,10 @@
 <script setup>
 import { ref, computed, watch, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchEntities, deleteEntity, createEntity, fetchKbs, fetchOntologyCategories, getOntologyCategoryDetail, getOntologyDetail, fetchOntologyServices, batchInvokeService } from '../../api'
+import { fetchEntities, deleteEntity, createEntity, updateEntity, getEntityDetail, fetchKbs, fetchOntologyCategories, getOntologyCategoryDetail, getOntologyDetail, fetchOntologyServices, batchInvokeService } from '../../api'
 import SearchableSelect from '../common/SearchableSelect.vue'
 import Pagination from '../common/Pagination.vue'
+import ConfirmDialog from '../common/ConfirmDialog.vue'
 
 const router = useRouter()
 const entities = ref([])
@@ -55,11 +56,44 @@ const createForm = ref({
 const createError = ref('')
 const createLoading = ref(false)
 const ontologyOptions = ref([])
+// 新增实体：随所选本体动态加载属性作为表单字段（与列表表头一致）
+const createAttrs = ref([]) // [{name, code, data_type}]
+const createAttrValues = ref({}) // { code: 输入值 }
+const createLoadingAttrs = ref(false)
+
+async function loadCreateAttrs(ontologyId) {
+  createAttrs.value = []
+  createAttrValues.value = {}
+  if (!ontologyId) return
+  // 实体类型自动带出本体名，与列表「本体类型」列保持一致
+  const ont = ontologyOptions.value.find(o => o.id === ontologyId)
+  if (ont && !createForm.value.entity_type) createForm.value.entity_type = ont.name
+  const catId = findCategoryOfOntology(ontologyId)
+  if (!catId) return
+  createLoadingAttrs.value = true
+  try {
+    const detail = await getOntologyDetail(catId, ontologyId)
+    createAttrs.value = (detail.attributes || [])
+      .filter(a => a.code || a.name)
+      .map(a => ({ name: a.name || a.code, code: a.code || a.name, data_type: a.data_type || '' }))
+  } catch (e) {
+    console.error('load ontology attributes failed', e)
+  } finally {
+    createLoadingAttrs.value = false
+  }
+}
+
+watch(() => createForm.value.ontology_id, (oid) => {
+  createForm.value.entity_type = ''
+  loadCreateAttrs(oid)
+})
 
 async function openCreate() {
   createError.value = ''
+  createAttrs.value = []
+  createAttrValues.value = {}
   createForm.value = {
-    kb_id: '',
+    kb_id: kbId.value || '',
     ontology_id: selectedOntologyId.value || '',
     entity_type: '',
     name: '',
@@ -76,28 +110,30 @@ async function openCreate() {
   // 避免仅选中「本体」节点时分类 ID 为空导致下拉为空。
   ontologyOptions.value = ontologyTree.value.flatMap(g => g.ontologies || [])
   showCreate.value = true
+  // 已预选本体时主动加载属性字段（watch 不会因值未变化而触发）
+  if (createForm.value.ontology_id) loadCreateAttrs(createForm.value.ontology_id)
 }
 
 async function submitCreate() {
   createError.value = ''
-  if (!createForm.value.ontology_id || !createForm.value.name || !createForm.value.entity_type) {
-    createError.value = '请选择本体、填写实体类型和名称'
+  if (!createForm.value.ontology_id || !createForm.value.name.trim()) {
+    createError.value = '请选择本体并填写实体名称'
     return
   }
-  let props = {}
-  try {
-    props = JSON.parse(createForm.value.properties || '{}')
-  } catch {
-    createError.value = '属性 JSON 格式不正确'
-    return
+  // 按本体属性收集表单值（留空的属性不提交）
+  const props = {}
+  for (const a of createAttrs.value) {
+    const v = String(createAttrValues.value[a.code] ?? '').trim()
+    if (v !== '') props[a.code] = v
   }
+  const ont = ontologyOptions.value.find(o => o.id === createForm.value.ontology_id)
   createLoading.value = true
   try {
     await createEntity({
       kb_id: createForm.value.kb_id || '',
       ontology_id: createForm.value.ontology_id,
-      entity_type: createForm.value.entity_type,
-      name: createForm.value.name,
+      entity_type: createForm.value.entity_type || ont?.name || '',
+      name: createForm.value.name.trim(),
       description: createForm.value.description,
       properties: props,
     })
@@ -309,14 +345,131 @@ function goDetail(entityId) {
   router.push({ path: '/entities/' + entityId, query: { from } })
 }
 
-async function remove(entity, e) {
+// ══ 删除确认弹窗（替代原生 confirm）══
+const showDelete = ref(false)
+const deleteTarget = ref(null)
+const deleteLoading = ref(false)
+const deleteError = ref('')
+
+function remove(entity, e) {
   e && e.stopPropagation()
-  if (!confirm(`确认删除实体「${entity.name}」？\n关联的关系实例将一并删除，图谱同步更新。`)) return
+  deleteTarget.value = entity
+  deleteError.value = ''
+  showDelete.value = true
+}
+
+async function confirmRemove() {
+  if (!deleteTarget.value) return
+  deleteLoading.value = true
+  deleteError.value = ''
   try {
-    await deleteEntity(entity.id)
+    await deleteEntity(deleteTarget.value.id)
+    showDelete.value = false
+    deleteTarget.value = null
     await load()
   } catch (e) {
-    alert('删除失败：' + e.message)
+    deleteError.value = e.message || '删除失败'
+  } finally {
+    deleteLoading.value = false
+  }
+}
+
+// ══ 编辑实体弹窗（列表行内编辑，与详情页分离）══
+const showEdit = ref(false)
+const editLoading = ref(false)
+const editSaving = ref(false)
+const editError = ref('')
+const editTarget = ref(null)
+const editForm = ref({ name: '', description: '' })
+const editAttrs = ref([]) // 本体定义属性 [{name, code, data_type}]
+const editAttrValues = ref({}) // { code: 输入值 }
+const editExtraProps = ref([]) // 本体未定义的自定义属性 [{ key, value }]
+
+function parseProps(p) {
+  if (p && typeof p === 'object') return p
+  if (typeof p === 'string') {
+    try { return JSON.parse(p) || {} } catch { return {} }
+  }
+  return {}
+}
+
+async function openEdit(ent, e) {
+  e && e.stopPropagation()
+  editError.value = ''
+  editTarget.value = ent
+  editForm.value = { name: ent.name || '', description: ent.description || '' }
+  editAttrs.value = []
+  editAttrValues.value = {}
+  editExtraProps.value = []
+  showEdit.value = true
+  editLoading.value = true
+  // 拉取实体详情与本体属性定义；失败不阻塞编辑（属性退化为自定义字段编辑）
+  let props = parseProps(ent.properties)
+  try {
+    const detail = await getEntityDetail(ent.id)
+    if (detail) {
+      editTarget.value = detail
+      editForm.value = { name: detail.name || '', description: detail.description || '' }
+      props = parseProps(detail.properties)
+      if (detail.category_id && detail.ontology_id) {
+        const od = await getOntologyDetail(detail.category_id, detail.ontology_id)
+        editAttrs.value = (od.attributes || [])
+          .filter(a => a.code || a.name)
+          .map(a => ({ name: a.name || a.code, code: a.code || a.name, data_type: a.data_type || '' }))
+      }
+    }
+  } catch (err) {
+    console.error('load entity for edit failed', err)
+  } finally {
+    editLoading.value = false
+  }
+  // 预填：本体定义的属性进固定字段，其余进自定义属性（update 为整体替换，不能丢）
+  const seen = new Set()
+  for (const a of editAttrs.value) {
+    editAttrValues.value[a.code] = props[a.code] != null ? String(props[a.code]) : ''
+    seen.add(a.code)
+  }
+  for (const [k, v] of Object.entries(props)) {
+    if (!seen.has(k)) editExtraProps.value.push({ key: k, value: v != null ? String(v) : '' })
+  }
+}
+
+function addExtraProp() {
+  editExtraProps.value.push({ key: '', value: '' })
+}
+
+function removeExtraProp(idx) {
+  editExtraProps.value.splice(idx, 1)
+}
+
+async function submitEdit() {
+  if (!editForm.value.name.trim()) {
+    editError.value = '请填写实体名称'
+    return
+  }
+  // update 接口对 properties 为整体替换：本体属性 + 自定义属性全量提交
+  const props = {}
+  for (const a of editAttrs.value) {
+    props[a.code] = String(editAttrValues.value[a.code] ?? '').trim()
+  }
+  for (const p of editExtraProps.value) {
+    const k = p.key.trim()
+    if (k) props[k] = p.value
+  }
+  editSaving.value = true
+  editError.value = ''
+  try {
+    await updateEntity(editTarget.value.id, {
+      name: editForm.value.name.trim(),
+      description: editForm.value.description,
+      properties: props,
+    })
+    showEdit.value = false
+    await load()
+  } catch (e) {
+    editError.value = e.message || '保存失败'
+  } finally {
+    editSaving.value = false
   }
 }
 
@@ -600,6 +753,9 @@ const sortedEntities = computed(() => {
                 </button>
               </span>
               <span class="col-actions">
+                <button class="edit-btn sm" @click="openEdit(ent, $event)" title="编辑">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                </button>
                 <button class="rm-btn sm" @click="remove(ent, $event)" title="删除">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 </button>
@@ -648,6 +804,9 @@ const sortedEntities = computed(() => {
               </span>
               <span class="col-props">{{ ent.property_preview || '—' }}</span>
               <span class="col-actions">
+                <button class="edit-btn sm" @click="openEdit(ent, $event)" title="编辑">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                </button>
                 <button class="rm-btn sm" @click="remove(ent, $event)" title="删除">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 </button>
@@ -682,7 +841,7 @@ const sortedEntities = computed(() => {
           </div>
           <div class="form-row">
             <label>实体类型</label>
-            <input type="text" v-model="createForm.entity_type" placeholder="如 AircraftModel">
+            <input type="text" v-model="createForm.entity_type" placeholder="选择本体后自动带出">
           </div>
           <div class="form-row">
             <label>实体名称</label>
@@ -693,8 +852,15 @@ const sortedEntities = computed(() => {
             <input type="text" v-model="createForm.description" placeholder="可选">
           </div>
           <div class="form-row">
-            <label>属性 JSON</label>
-            <textarea v-model="createForm.properties" rows="4" placeholder='{"key":"value"}'></textarea>
+            <label>本体属性{{ createAttrs.length ? `（${createAttrs.length}）` : '' }}</label>
+            <div v-if="createLoadingAttrs" class="attr-empty">属性定义加载中...</div>
+            <template v-else-if="createAttrs.length">
+              <div v-for="a in createAttrs" :key="a.code" class="attr-field">
+                <label class="attr-label" :title="'属性编码：' + a.code">{{ a.name }}<i v-if="a.data_type">{{ a.data_type }}</i></label>
+                <input type="text" v-model="createAttrValues[a.code]" :placeholder="a.data_type ? `请输入${a.name}（${a.data_type}）` : `请输入${a.name}`">
+              </div>
+            </template>
+            <div v-else class="attr-empty">{{ createForm.ontology_id ? '该本体暂未定义属性' : '请先选择本体' }}</div>
           </div>
           <div v-if="createError" class="form-error">{{ createError }}</div>
         </div>
@@ -752,6 +918,68 @@ const sortedEntities = computed(() => {
         <div class="modal-foot">
           <button class="btn" @click="showBatch = false">关闭</button>
           <button class="primary-btn" :disabled="batchRunning || !batchServiceId" @click="runBatchInvoke">{{ batchRunning ? '执行中...' : '▶ 批量执行' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 删除实体确认弹窗 -->
+    <ConfirmDialog
+      v-model="showDelete"
+      title="删除实体"
+      :message="`确认删除实体「${deleteTarget?.name || ''}」？\n关联的关系实例将一并删除，图谱同步更新。`"
+      confirm-text="删除"
+      :loading="deleteLoading"
+      :error="deleteError"
+      @confirm="confirmRemove"
+    />
+
+    <!-- 编辑实体弹窗 -->
+    <div v-if="showEdit" class="modal-overlay">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3>编辑实体</h3>
+          <button class="close-btn" @click="showEdit = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <label>本体类型</label>
+            <div class="edit-type-static">{{ editTarget?.entity_type || editTarget?.ontology_name || '—' }}</div>
+          </div>
+          <div class="form-row">
+            <label>实体名称</label>
+            <input type="text" v-model="editForm.name" placeholder="实体名称">
+          </div>
+          <div class="form-row">
+            <label>描述</label>
+            <input type="text" v-model="editForm.description" placeholder="可选">
+          </div>
+          <div class="form-row">
+            <label>本体属性{{ editAttrs.length ? `（${editAttrs.length}）` : '' }}</label>
+            <div v-if="editLoading" class="attr-empty">实体信息加载中...</div>
+            <template v-else-if="editAttrs.length">
+              <div v-for="a in editAttrs" :key="a.code" class="attr-field">
+                <label class="attr-label" :title="'属性编码：' + a.code">{{ a.name }}<i v-if="a.data_type">{{ a.data_type }}</i></label>
+                <input type="text" v-model="editAttrValues[a.code]" :placeholder="a.data_type ? `请输入${a.name}（${a.data_type}）` : `请输入${a.name}`">
+              </div>
+            </template>
+            <div v-else class="attr-empty">该本体暂未定义属性</div>
+          </div>
+          <div v-if="!editLoading" class="form-row">
+            <label>自定义属性{{ editExtraProps.length ? `（${editExtraProps.length}）` : '' }}</label>
+            <div v-for="(p, i) in editExtraProps" :key="i" class="extra-prop-row">
+              <input type="text" v-model="p.key" placeholder="属性名" class="extra-key">
+              <input type="text" v-model="p.value" placeholder="属性值" class="extra-val">
+              <button class="rm-btn sm" @click="removeExtraProp(i)" title="删除属性">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <button class="add-prop-btn" @click="addExtraProp">+ 添加属性</button>
+          </div>
+          <div v-if="editError" class="form-error">{{ editError }}</div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" @click="showEdit = false">取消</button>
+          <button class="primary-btn" :disabled="editSaving || editLoading || !editForm.name.trim()" @click="submitEdit">{{ editSaving ? '保存中...' : '保存' }}</button>
         </div>
       </div>
     </div>
@@ -842,17 +1070,22 @@ const sortedEntities = computed(() => {
 .filter-clear { border: 0; background: transparent; color: var(--c-secondary); cursor: pointer; font-size: 12px; margin-left: auto; }
 .filter-clear:hover { color: var(--c-danger); }
 
-.ent-table { border: 1px solid var(--c-border); border-radius: var(--radius); overflow: hidden; background: var(--c-panel); }
-.ent-row { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--c-border); cursor: pointer; transition: background 120ms; }
+/* 列很多时：行按内容撑开 + 容器横向滚动，列不再互相挤压 */
+.ent-table { border: 1px solid var(--c-border); border-radius: var(--radius); overflow-x: auto; overflow-y: hidden; background: var(--c-panel); }
+.ent-table::-webkit-scrollbar { height: 8px; }
+.ent-table::-webkit-scrollbar-track { background: transparent; }
+.ent-table::-webkit-scrollbar-thumb { background: var(--c-border); border-radius: 4px; }
+.ent-table::-webkit-scrollbar-thumb:hover { background: var(--c-secondary); }
+.ent-row { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--c-border); cursor: pointer; transition: background 120ms; width: max-content; min-width: 100%; }
 .ent-row:last-child { border-bottom: 0; }
 .ent-row:hover { background: var(--c-muted); }
 .ent-row-head { background: var(--c-muted); cursor: default; font-size: 12px; font-weight: 600; color: var(--c-secondary); text-transform: uppercase; letter-spacing: 0.3px; }
 .ent-row-head:hover { background: var(--c-muted); }
-.col-name { flex: 1.5; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-name { flex: 1.5; min-width: 150px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-type { flex: 0 0 130px; min-width: 0; }
 .col-num { flex: 0 0 56px; min-width: 0; text-align: center; font-size: 12px; color: var(--c-secondary); font-variant-numeric: tabular-nums; }
-.col-props { flex: 2; min-width: 0; font-size: 12px; color: var(--c-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.col-attr { flex: 1 1 0; min-width: 0; font-size: 12px; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-props { flex: 2; min-width: 160px; font-size: 12px; color: var(--c-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-attr { flex: 1 1 0; min-width: 96px; font-size: 12px; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-attr.head { color: var(--c-secondary); font-weight: 600; text-transform: none; letter-spacing: 0; }
 
 /* 属性 / 关系 / 服务 三列：metric pill 风格 + 点击排序 */
@@ -888,11 +1121,23 @@ const sortedEntities = computed(() => {
 .metric-head-btn.metric-attr.active, .metric-head-btn.metric-attr:hover { color: #16a34a; }
 .metric-head-btn.metric-rel.active, .metric-head-btn.metric-rel:hover { color: #2563eb; }
 .metric-head-btn.metric-svc.active, .metric-head-btn.metric-svc:hover { color: #9333ea; }
-.col-actions { flex: 0 0 40px; display: flex; justify-content: flex-end; }
+.col-actions { flex: 0 0 64px; display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
 .ent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .type-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--c-muted); color: var(--c-secondary); }
-.rm-btn.sm { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); cursor: pointer; }
+.edit-btn.sm, .rm-btn.sm { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); cursor: pointer; }
+.edit-btn.sm:hover { background: rgba(59, 130, 246, 0.1); color: var(--c-accent); }
 .rm-btn.sm:hover { background: rgba(220, 38, 38, 0.1); color: var(--c-danger); }
+
+/* 编辑实体弹窗 */
+.edit-type-static { display: inline-flex; align-items: center; min-height: 36px; padding: 0 10px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); background: var(--c-muted); color: var(--c-secondary); font-size: 13px; width: fit-content; }
+.extra-prop-row { display: flex; align-items: center; gap: 8px; }
+.extra-prop-row input { padding: 8px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-fg); font-size: 13px; font-family: var(--font); outline: none; }
+.extra-prop-row input:focus { border-color: var(--c-accent); }
+.extra-key { flex: 0 0 150px; min-width: 0; }
+.extra-val { flex: 1; min-width: 0; }
+.extra-prop-row .rm-btn.sm { flex-shrink: 0; }
+.add-prop-btn { align-self: flex-start; padding: 5px 12px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); font-size: 12px; cursor: pointer; transition: color 150ms, border-color 150ms; }
+.add-prop-btn:hover { color: var(--c-accent); border-color: var(--c-accent); }
 
 .loading-state { padding: 40px; text-align: center; color: var(--c-secondary); }
 .empty-state { text-align: center; padding: 48px 20px; color: var(--c-secondary); }
@@ -925,4 +1170,12 @@ const sortedEntities = computed(() => {
 .form-row input:focus, .form-row select:focus, .form-row textarea:focus { border-color: var(--c-accent); }
 .form-row textarea { resize: vertical; }
 .form-error { color: var(--c-danger); font-size: 12px; padding: 4px 0; }
+
+/* 新增实体：本体属性动态字段 */
+.attr-field { display: flex; flex-direction: column; gap: 4px; }
+.attr-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--c-secondary); }
+.attr-label i { font-style: normal; font-size: 10px; font-weight: 400; color: var(--c-secondary); background: var(--c-muted); padding: 1px 6px; border-radius: 8px; }
+.attr-field input { padding: 8px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-fg); font-size: 13px; font-family: var(--font); outline: none; }
+.attr-field input:focus { border-color: var(--c-accent); }
+.attr-empty { font-size: 12px; color: var(--c-secondary); padding: 10px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); text-align: center; }
 </style>

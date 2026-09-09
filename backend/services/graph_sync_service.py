@@ -8,8 +8,12 @@
 ==========================
 - PostgreSQL 为权威存储，单向流入 Neo4j 分析图；分析图可随时全量重建；
 - 分析图 schema（沿用脚本已验证结构）：
-  - 节点 ``(:Entity:<本体类型名> {id, kb_id, category_id, name, entity_type, ontology_id, description, properties})``
-  - 关系 ``[:<关系字典语义名> {relation_id, kb_id, category_id}]``
+  - 节点 ``(:Entity:<本体编码> {id, kb_id, category_id, name, entity_type, ontology_id, description, properties})``
+    标签用稳定编码 ``Ontology.code``（如 Flight），本体重命名不再导致图标签漂移；
+    ``entity_type`` 属性仍存显示名，供图分析 label_filter 与列表展示。
+    未定义编码的本体回落显示名（兼容历史数据）。
+  - 关系 ``[:<关系编码> {relation_id, kb_id, category_id}]``
+    关系类型用 ``OntologyRelation.code``（如 HAS_LEG），未定义编码时回落关系名。
 - ``category_id`` 属性是分析图的圈定标记（M0 投影与查询都靠它），
   运行时业务抽取图（KB 维度）不写该属性，两图天然隔离。
 
@@ -33,7 +37,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from config import settings
 from database import async_session
-from models import Entity, GraphSyncRun, Ontology, OntologyCategory, Relation
+from models import (
+    Entity,
+    GraphSyncRun,
+    Ontology,
+    OntologyCategory,
+    OntologyRelation,
+    Relation,
+)
 from providers.graph_store import gds
 
 logger = logging.getLogger(__name__)
@@ -442,8 +453,24 @@ async def _import_category(category_id: str, progress: dict[str, int]) -> dict:
 
             _clear_category_graph(s, category_id)
 
-            # ── 实体：游标分页读 PG，按本体类型分组 UNWIND 写入 ──
             async with Session() as db:
+                # 标签/关系类型编码映射：图内标识用稳定编码（Ontology.code /
+                # OntologyRelation.code），未定义编码时回落名称。
+                ont_rows = (await db.execute(
+                    select(Ontology.id, Ontology.code, Ontology.name)
+                    .where(Ontology.category_id == category_id)
+                )).all()
+                label_by_ont = {rid: (code or name) for rid, code, name in ont_rows}
+                # 二级回落：ontology_id 悬空的实体（历史数据）按类型名解析编码
+                label_by_name = {name: (code or name) for _rid, code, name in ont_rows}
+                reldef_rows = (await db.execute(
+                    select(OntologyRelation.id, OntologyRelation.code, OntologyRelation.name)
+                    .where(OntologyRelation.category_id == category_id)
+                )).all()
+                rtype_by_def = {rid: (code or name) for rid, code, name in reldef_rows}
+                rtype_by_name = {name: (code or name) for _rid, code, name in reldef_rows}
+
+                # ── 实体：游标分页读 PG，按本体编码分组 UNWIND 写入 ──
                 last_id = ""
                 while True:
                     rows = (await db.execute(
@@ -460,7 +487,12 @@ async def _import_category(category_id: str, progress: dict[str, int]) -> dict:
 
                     by_label: dict[str, list[dict[str, Any]]] = {}
                     for ent in rows:
-                        by_label.setdefault(ent.entity_type, []).append({
+                        by_label.setdefault(
+                            label_by_ont.get(ent.ontology_id)
+                            or label_by_name.get(ent.entity_type)
+                            or ent.entity_type,
+                            [],
+                        ).append({
                             "id": ent.id,
                             "kb_id": ent.kb_id,
                             "category_id": category_id,
@@ -508,7 +540,12 @@ async def _import_category(category_id: str, progress: dict[str, int]) -> dict:
 
                     by_type: dict[str, list[dict[str, Any]]] = {}
                     for rel in rrows:
-                        by_type.setdefault(rel.relation_type, []).append({
+                        by_type.setdefault(
+                            rtype_by_def.get(rel.relation_def_id)
+                            or rtype_by_name.get(rel.relation_type)
+                            or rel.relation_type,
+                            [],
+                        ).append({
                             "start": rel.source_entity_id,
                             "end": rel.target_entity_id,
                             "relation_id": rel.id,

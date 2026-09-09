@@ -115,9 +115,13 @@ const router = useRouter()
 // 新建本体
 const showCreate = ref(false)
 const newName = ref('')
+const newCode = ref('')
 const newDesc = ref('')
 const newColor = ref(COLOR_PRESETS[0])
 const creating = ref(false)
+
+// 本体编码：图库标签 / API 名用的稳定标识（对标 Palantir API Name）
+const ONTOLOGY_CODE_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
 
 const templateOptions = computed(() =>
   templates.value.map(t => ({ value: t.id, label: t.name, meta: `${t.attribute_count} 个属性` }))
@@ -260,6 +264,7 @@ function closeDetail() {
 
 function openCreate() {
   newName.value = ''
+  newCode.value = ''
   newDesc.value = ''
   newColor.value = COLOR_PRESETS[0]
   showCreate.value = true
@@ -267,10 +272,20 @@ function openCreate() {
 
 async function submitCreate() {
   if (!newName.value.trim()) return
+  const code = newCode.value.trim()
+  if (!code) {
+    alert('请填写本体编码：图库节点标签使用稳定编码，本体重命名不会影响图谱')
+    return
+  }
+  if (!ONTOLOGY_CODE_RE.test(code)) {
+    alert('编码格式非法：需以字母开头，仅含字母、数字、下划线，最长 64 字符（如 Flight、FLT_SEG）')
+    return
+  }
   creating.value = true
   try {
     const ont = await createOntology(props.categoryId, {
       name: newName.value.trim(),
+      code,
       description: newDesc.value.trim(),
       color: newColor.value,
     })
@@ -572,6 +587,7 @@ onActivated(() => { onSvcSaved() })
           <thead>
             <tr>
               <th>本体名称</th>
+              <th>编码</th>
               <th class="num-col">实体</th>
               <th class="num-col">属性</th>
               <th class="num-col">模板</th>
@@ -596,6 +612,7 @@ onActivated(() => { onSvcSaved() })
                   </div>
                 </div>
               </td>
+              <td class="code-cell"><code>{{ ont.code || '—' }}</code></td>
               <td class="num-cell">{{ ont.entity_count ?? '—' }}</td>
               <td class="num-cell">{{ ont.attribute_count ?? '—' }}</td>
               <td class="num-cell">{{ ont.template_count || '—' }}</td>
@@ -870,6 +887,11 @@ onActivated(() => { onSvcSaved() })
           <input type="text" v-model="newName" placeholder="如：人物、组织、产品" @keydown.enter="submitCreate">
         </div>
         <div class="oe-field">
+          <label>本体编码</label>
+          <input type="text" v-model="newCode" placeholder="如：Flight、FLT_SEG（图库标签 / API 名）" @keydown.enter="submitCreate">
+          <span class="oe-field-hint">以字母开头，仅含字母 / 数字 / 下划线；同一类别内唯一，创建后不建议修改</span>
+        </div>
+        <div class="oe-field">
           <label>描述（可选）</label>
           <input type="text" v-model="newDesc" placeholder="该本体代表的实体类型说明">
         </div>
@@ -927,6 +949,12 @@ onActivated(() => { onSvcSaved() })
 .oe-table .date-cell { font-size: 12px; color: var(--c-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .oe-table .op-col { width: 110px; text-align: right; }
 .oe-table .op-cell { text-align: right; white-space: nowrap; }
+.oe-table .code-cell code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px; color: var(--c-secondary); background: var(--c-muted);
+  padding: 2px 6px; border-radius: 4px; white-space: nowrap;
+}
+.oe-field-hint { display: block; margin-top: 4px; font-size: 11px; color: var(--c-secondary); }
 
 .oe-cell-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .oe-color-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }

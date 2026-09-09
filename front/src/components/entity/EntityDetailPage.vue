@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl, fetchEntityServices, copyServiceToEntity, deleteOntologyService, resolveObjectView, fetchEntities, getMergedAttributes, fetchEntityDerivedProperties } from '../../api'
 import { marked } from 'marked'
 import ServiceInvokeDialog from './ServiceInvokeDialog.vue'
+import ConfirmDialog from '../common/ConfirmDialog.vue'
 
 const props = defineProps({
   entityId: { type: String, required: true },
@@ -465,7 +466,19 @@ function startEdit() {
   editName.value = entity.value.name || ''
   editDesc.value = entity.value.description || ''
   const props = parsedProperties.value
-  editProps.value = Object.keys(props).map(k => ({ key: k, value: String(props[k] ?? '') }))
+  const rows = []
+  const seen = new Set()
+  // 本体已定义的属性优先：编码固定、名称只读，与列表表头一致
+  for (const [code, def] of Object.entries(attrDefs.value)) {
+    if (!def?.name && !props[code] && props[code] !== 0) continue
+    seen.add(code)
+    rows.push({ key: code, name: def?.name || code, locked: true, value: props[code] != null ? String(props[code]) : '' })
+  }
+  // 本体未定义的已有属性（遗留/自定义字段）仍可编辑或删除
+  for (const k of Object.keys(props)) {
+    if (!seen.has(k)) rows.push({ key: k, name: '', locked: false, value: props[k] != null ? String(props[k]) : '' })
+  }
+  editProps.value = rows
   editing.value = true
 }
 
@@ -474,7 +487,7 @@ function cancelEdit() {
 }
 
 function addProp() {
-  editProps.value.push({ key: '', value: '' })
+  editProps.value.push({ key: '', name: '', locked: false, value: '' })
 }
 
 function removeProp(idx) {
@@ -505,17 +518,31 @@ async function save() {
   }
 }
 
-async function remove() {
-  if (!confirm(`确认删除实体「${entity.value.name}」？\n关联关系将一并删除，图谱同步更新。`)) return
+// ══ 删除确认弹窗（替代原生 confirm）══
+const showDelete = ref(false)
+const deleteLoading = ref(false)
+const deleteError = ref('')
+
+function remove() {
+  deleteError.value = ''
+  showDelete.value = true
+}
+
+async function confirmRemove() {
+  deleteLoading.value = true
+  deleteError.value = ''
   try {
     await deleteEntity(props.entityId)
+    showDelete.value = false
     if (window.history.length > 1) {
       router.back()
     } else {
       router.push('/entities')
     }
   } catch (e) {
-    alert('删除失败：' + e.message)
+    deleteError.value = e.message || '删除失败'
+  } finally {
+    deleteLoading.value = false
   }
 }
 
@@ -819,17 +846,22 @@ onMounted(load)
           </div>
         </div>
 
-        <!-- 属性 -->
-        <div v-if="!objectView" class="detail-section">
+        <!-- 属性（编辑模式下始终显示，即使配置了对象视图） -->
+        <div v-if="editing || !objectView" class="detail-section">
           <div class="section-head">
             <span class="section-title">属性</span>
             <button v-if="editing" class="btn sm" @click="addProp">添加属性</button>
           </div>
           <div v-if="editing" class="props-edit">
             <div v-for="(p, idx) in editProps" :key="idx" class="prop-edit-row">
-              <input type="text" v-model="p.key" placeholder="属性名" class="prop-key">
+              <template v-if="p.locked">
+                <span class="prop-key locked" :title="'属性编码：' + p.key">{{ p.name }}</span>
+              </template>
+              <template v-else>
+                <input type="text" v-model="p.key" placeholder="属性名" class="prop-key">
+              </template>
               <input type="text" v-model="p.value" placeholder="属性值" class="prop-val">
-              <button class="rm-btn sm" @click="removeProp(idx)">
+              <button v-if="!p.locked" class="rm-btn sm" @click="removeProp(idx)">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
@@ -1182,6 +1214,16 @@ onMounted(load)
       </div>
 
       <ServiceInvokeDialog v-model="showInvoke" :entity-id="entityId" :entity-name="entity?.name || ''" :service="invokeTarget" />
+
+      <ConfirmDialog
+        v-model="showDelete"
+        title="删除实体"
+        :message="`确认删除实体「${entity?.name || ''}」？\n关联关系将一并删除，图谱同步更新。`"
+        confirm-text="删除"
+        :loading="deleteLoading"
+        :error="deleteError"
+        @confirm="confirmRemove"
+      />
     </div>
   </div>
 </template>
@@ -1220,6 +1262,7 @@ onMounted(load)
 .props-edit { display: flex; flex-direction: column; gap: 8px; }
 .prop-edit-row { display: flex; gap: 8px; align-items: center; }
 .prop-key { flex: 0 0 180px; }
+.prop-key.locked { flex: 0 0 180px; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; min-height: 32px; box-sizing: border-box; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-secondary); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prop-val { flex: 1; min-width: 0; }
 .prop-edit-row input { padding: 6px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 13px; font-family: var(--font); outline: none; }
 .prop-edit-row input:focus { border-color: var(--c-fg); }

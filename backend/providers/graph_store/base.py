@@ -235,6 +235,8 @@ class GraphStoreAdapter(ABC):
         name: str,
         description: str = "",
         properties: str = "",
+        label: str = "",
+        category_id: str = "",
     ):
         raise NotImplementedError
 
