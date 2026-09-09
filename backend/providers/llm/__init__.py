@@ -6,6 +6,8 @@
 
 import logging
 
+import httpx
+
 from config import settings
 
 _logger = logging.getLogger(__name__)
@@ -38,6 +40,26 @@ except Exception as _patch_err:  # pragma: no cover
 
 _llm = None
 
+# ═══════════════ LLM 专用 HTTP 客户端（绕过系统代理 + 连接复用）═══════════════
+# GLM / DeepSeek 等均为国内可直连服务。若后端进程环境带 HTTP_PROXY，httpx 默认
+# trust_env=True 会把 LLM 流量发给本地代理；代理重启/换端口时 SDK 快速失败重试，
+# 短时间产生上万连接打爆临时端口池（ENOBUFS/EADDRINUSE）。这里显式 trust_env=False，
+# 并进程级复用 keep-alive 连接池，减少连接建立次数。
+_no_proxy_sync: httpx.Client | None = None
+_no_proxy_async: httpx.AsyncClient | None = None
+
+
+def _get_no_proxy_clients():
+    """返回（同步, 异步）两个不走代理的 httpx 客户端（进程级单例）。"""
+    global _no_proxy_sync, _no_proxy_async
+    timeout = httpx.Timeout(600.0, connect=15.0)
+    limits = httpx.Limits(max_connections=50, max_keepalive_connections=20)
+    if _no_proxy_sync is None or _no_proxy_sync.is_closed:
+        _no_proxy_sync = httpx.Client(trust_env=False, timeout=timeout, limits=limits)
+    if _no_proxy_async is None or _no_proxy_async.is_closed:
+        _no_proxy_async = httpx.AsyncClient(trust_env=False, timeout=timeout, limits=limits)
+    return _no_proxy_sync, _no_proxy_async
+
 
 def build_llm(provider, api_key, base_url, model, max_tokens, temperature):
     """根据显式参数构造一个 LLM 实例（不缓存，供测试连接使用）。"""
@@ -59,6 +81,9 @@ def build_llm(provider, api_key, base_url, model, max_tokens, temperature):
         )
         if base_url:
             kwargs["anthropic_api_url"] = base_url
+        sync_client, async_client = _get_no_proxy_clients()
+        kwargs["http_client"] = sync_client
+        kwargs["http_async_client"] = async_client
         return ChatAnthropic(**kwargs)
 
     # 默认 OpenAI 兼容协议
@@ -69,6 +94,9 @@ def build_llm(provider, api_key, base_url, model, max_tokens, temperature):
         max_tokens=max_tokens,
         temperature=temperature,
     )
+    sync_client, async_client = _get_no_proxy_clients()
+    kwargs["http_client"] = sync_client
+    kwargs["http_async_client"] = async_client
     if base_url:
         kwargs["base_url"] = base_url
     return ChatOpenAI(**kwargs)
@@ -184,6 +212,27 @@ def extract_reasoning(chunk) -> str:
                 text = _reasoning_to_text(v)
                 if text:
                     return text
+    return ""
+
+
+def chunk_reasoning(chunk) -> str:
+    """从 LLM chunk 中提取推理（思考）内容；模型不输出思考链时返回空串。"""
+    kw = getattr(chunk, "additional_kwargs", None)
+    if isinstance(kw, dict):
+        rc = kw.get("reasoning_content") or kw.get("reasoning")
+        if isinstance(rc, str) and rc:
+            return rc
+    content = getattr(chunk, "content", None)
+    if isinstance(content, list):
+        out: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") in ("reasoning", "thinking"):
+                t = block.get("reasoning") or block.get("thinking") or block.get("text") or ""
+                if isinstance(t, str):
+                    out.append(t)
+        return "".join(out)
     return ""
 
 

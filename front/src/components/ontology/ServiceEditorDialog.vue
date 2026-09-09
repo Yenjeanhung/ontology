@@ -75,6 +75,17 @@ async function scrollChat() {
   if (chatBodyRef.value) chatBodyRef.value.scrollTop = chatBodyRef.value.scrollHeight
 }
 
+// 思考区是独立的内层滚动容器（max-height + overflow-y），流式增量时必须滚动它自身
+const aiThinkRef = ref(null)
+function scrollThinkBody() {
+  nextTick(() => {
+    // v-for 内的模板 ref 在 Vue 3 中是数组；流式中的思考区是其中最后一个元素
+    const v = aiThinkRef.value
+    const el = Array.isArray(v) ? v[v.length - 1] : v
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
 // 把流式 Markdown 文本切成 文本/代码 段（未闭合的代码块按代码续流）
 function splitSegments(text) {
   const segs = []
@@ -153,7 +164,7 @@ async function chatSend() {
       role: m.role,
       content: m.role === 'user' ? m.content : `${m.data.explanation || ''}\n\n${m.data.code_text}`,
     }))
-  const msg = reactive({ role: 'assistant', content: '', data: null, error: null, streaming: true, oldCode: form.code_text, showDiff: false })
+  const msg = reactive({ role: 'assistant', content: '', thinking: '', thinkCollapsed: false, data: null, error: null, streaming: true, oldCode: form.code_text, showDiff: false })
   chatMessages.value.push(msg)
   scrollChat()
   try {
@@ -166,6 +177,7 @@ async function chatSend() {
       current_code: form.code_text,
       selected_code: quoted,
       history,
+      onThinking: d => { msg.thinking += d; scrollThinkBody() },
       onDelta: d => { msg.content += d; scrollChat() },
     })
     msg.data = data
@@ -173,6 +185,7 @@ async function chatSend() {
     msg.error = e.message || 'AI 生成失败'
   } finally {
     msg.streaming = false
+    msg.thinkCollapsed = true
     chatLoading.value = false
     scrollChat()
   }
@@ -474,6 +487,13 @@ async function runTest() {
               <div class="sed-chat-bubble">{{ m.content }}</div>
             </div>
             <div v-else class="sed-chat-msg assistant">
+              <div v-if="m.thinking" class="ai-think" :class="{ streaming: m.streaming && !m.content }">
+                <button class="ai-think-toggle" @click="m.thinkCollapsed = !m.thinkCollapsed">
+                  <span class="ai-think-arrow">{{ m.thinkCollapsed ? '▸' : '▾' }}</span>
+                  <span class="ai-think-label">{{ m.streaming && !m.content ? '思考中…' : '已深度思考' }}</span>
+                </button>
+                <pre v-if="!m.thinkCollapsed" ref="aiThinkRef" class="ai-think-body">{{ m.thinking }}</pre>
+              </div>
               <div v-if="m.error" class="sed-ai-error">{{ m.error }}</div>
               <template v-else>
                 <template v-for="(seg, si) in splitSegments(m.content)" :key="si">
@@ -553,6 +573,18 @@ async function runTest() {
 .sed-code:focus { border-color: var(--c-fg); }
 
 .sed-ai-error { padding: 7px 9px; border-radius: var(--radius-sm); background: rgba(220, 38, 38, 0.08); color: var(--c-danger); font-size: 12px; }
+.ai-think { margin-bottom: 8px; border-left: 2px solid rgba(148, 163, 184, 0.35); padding-left: 10px; }
+.ai-think-toggle { display: flex; align-items: center; gap: 4px; width: 100%; border: 0; background: transparent; color: var(--c-secondary); font-size: 11px; text-align: left; padding: 2px 0; cursor: pointer; }
+.ai-think-toggle:hover { color: var(--c-fg); }
+.ai-think-arrow { font-size: 9px; opacity: 0.8; }
+.ai-think.streaming .ai-think-label { animation: ai-think-pulse 1.6s ease-in-out infinite; }
+.ai-think-body { margin: 2px 0 4px; padding: 0; color: rgba(148, 163, 184, 0.95); font-size: 11px; line-height: 1.65; font-family: var(--font); white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: transparent transparent; -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 10px, #000 calc(100% - 14px), transparent 100%); mask-image: linear-gradient(180deg, transparent 0, #000 10px, #000 calc(100% - 14px), transparent 100%); }
+.ai-think-body:hover { scrollbar-color: rgba(148, 163, 184, 0.28) transparent; }
+.ai-think-body::-webkit-scrollbar { width: 3px; }
+.ai-think-body::-webkit-scrollbar-thumb { background: transparent; border-radius: 2px; }
+.ai-think-body:hover::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.28); }
+.ai-think-body::-webkit-scrollbar-track { background: transparent; }
+@keyframes ai-think-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 .sed-ai-explain { font-size: 12.5px; color: var(--c-fg); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .sed-ai-meta { font-size: 11px; color: var(--c-secondary); }
 .sed-ai-actions { display: flex; gap: 8px; }
@@ -577,7 +609,10 @@ async function runTest() {
 .sed-chat-title { font-size: 13px; font-weight: 700; color: #8b5cf6; }
 .sed-chat-close { width: 26px; height: 26px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); font-size: 16px; line-height: 1; cursor: pointer; }
 .sed-chat-close:hover { background: rgba(139, 92, 246, 0.12); color: var(--c-fg); }
-.sed-chat-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 200px; }
+.sed-chat-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 200px; scrollbar-width: thin; scrollbar-color: rgba(148, 163, 184, 0.3) transparent; }
+.sed-chat-body::-webkit-scrollbar { width: 6px; }
+.sed-chat-body::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.3); border-radius: 3px; }
+.sed-chat-body::-webkit-scrollbar-track { background: transparent; }
 .sed-chat-empty { color: var(--c-secondary); font-size: 12px; text-align: center; line-height: 2; margin-top: 40%; }
 .sed-chat-msg.user { display: flex; justify-content: flex-end; }
 .sed-chat-bubble { background: rgba(139, 92, 246, 0.14); border-radius: 10px 10px 2px 10px; padding: 8px 11px; font-size: 12.5px; color: var(--c-fg); max-width: 88%; white-space: pre-wrap; word-break: break-word; }

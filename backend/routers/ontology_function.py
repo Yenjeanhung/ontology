@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import get_db
-from providers.llm import build_llm, chunk_text
+from providers.llm import build_llm, chunk_reasoning, chunk_text
 from schemas import (
     AiAssistServiceCodeRequest,
     InvokeFunctionRequest,
@@ -314,6 +314,9 @@ async def ai_assist_function_code(req: AiAssistServiceCodeRequest):
         full = ""
         try:
             async for chunk in llm.astream(messages):
+                think = chunk_reasoning(chunk)
+                if think:
+                    yield _fn_sse({"type": "thinking", "content": think})
                 delta = chunk_text(chunk)
                 if not delta:
                     continue

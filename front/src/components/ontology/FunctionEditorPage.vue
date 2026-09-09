@@ -204,6 +204,17 @@ function scrollAiChat() {
   })
 }
 
+// 思考区是独立的内层滚动容器（max-height + overflow-y），流式增量时必须滚动它自身
+const aiThinkRef = ref(null)
+function scrollThinkBody() {
+  nextTick(() => {
+    // v-for 内的模板 ref 在 Vue 3 中是数组；流式中的思考区是其中最后一个元素
+    const v = aiThinkRef.value
+    const el = Array.isArray(v) ? v[v.length - 1] : v
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
 // 把 assistant 回复拆成 文本/代码 段落渲染（支持流式中尚未闭合的代码块）
 function splitSegments(msg) {
   const segs = []
@@ -254,7 +265,7 @@ async function sendAiMessage() {
   aiMessages.value.push({ role: 'user', content: q })
   // 必须用 reactive 包装：push 进响应式数组后 Vue 渲染的是代理副本，
   // 直接修改普通对象 onDelta 的增量不会触发流式渲染
-  const reply = reactive({ role: 'assistant', content: '', streaming: true })
+  const reply = reactive({ role: 'assistant', content: '', thinking: '', thinkCollapsed: false, streaming: true })
   aiMessages.value.push(reply)
   aiLoading.value = true
   scrollAiChat()
@@ -272,6 +283,7 @@ async function sendAiMessage() {
       current_code: fnForm.value.code_text,
       selected_code: aiQuotedCode.value,
       history,
+      onThinking: (t) => { reply.thinking += t; scrollThinkBody() },
       onDelta: (t) => { reply.content += t; scrollAiChat() },
     })
     if (result?.code_text) {
@@ -286,6 +298,7 @@ async function sendAiMessage() {
     reply.error = e.message
   } finally {
     reply.streaming = false
+    reply.thinkCollapsed = true
     aiLoading.value = false
     scrollAiChat()
   }
@@ -649,6 +662,13 @@ onMounted(async () => {
             <div class="ai-bubble">
               <template v-if="m.role === 'user'">{{ m.content }}</template>
               <template v-else>
+                <div v-if="m.thinking" class="ai-think" :class="{ streaming: m.streaming && !m.content }">
+                  <button class="ai-think-toggle" @click="m.thinkCollapsed = !m.thinkCollapsed">
+                    <span class="ai-think-arrow">{{ m.thinkCollapsed ? '▸' : '▾' }}</span>
+                    <span class="ai-think-label">{{ m.streaming && !m.content ? '思考中…' : '已深度思考' }}</span>
+                  </button>
+                  <pre v-if="!m.thinkCollapsed" ref="aiThinkRef" class="ai-think-body">{{ m.thinking }}</pre>
+                </div>
                 <template v-for="(s, j) in splitSegments(m)" :key="j">
                   <div v-if="s.type === 'text' && s.text" class="ai-text">{{ s.text }}</div>
                   <div v-else-if="s.type === 'code' && s.code" class="ai-code">
@@ -656,8 +676,22 @@ onMounted(async () => {
                     <button v-if="s.lang !== 'json'" class="ai-apply" :disabled="aiLoading" @click="applyAiCode(s, m)">应用到编辑器</button>
                   </div>
                 </template>
+                <div v-if="m.params?.length" class="ai-params">
+                  <div class="ai-params-title">参数定义（应用时自动同步到参数表）</div>
+                  <table>
+                    <thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+                    <tbody>
+                      <tr v-for="p in m.params" :key="p.name">
+                        <td class="mono">{{ p.name }}</td>
+                        <td>{{ p.type || 'string' }}</td>
+                        <td>{{ p.required !== false ? '是' : '否' }}</td>
+                        <td class="ai-params-desc">{{ p.description || '—' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
                 <div v-if="m.error" class="ai-err">{{ m.error }}</div>
-                <div v-if="m.streaming && !m.content" class="ai-text dim">生成中...</div>
+                <div v-if="m.streaming && !m.content && !m.thinking" class="ai-text dim">生成中...</div>
               </template>
             </div>
           </div>
@@ -893,12 +927,15 @@ onMounted(async () => {
 .ai-chat { flex: 0 0 360px; min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); overflow: hidden; }
 .ai-chat-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--c-border); }
 .ai-chat-title { font-size: 13px; font-weight: 700; color: var(--c-accent); }
-.ai-chat-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.ai-chat-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; scrollbar-width: thin; scrollbar-color: rgba(148, 163, 184, 0.3) transparent; }
+.ai-chat-body::-webkit-scrollbar { width: 6px; }
+.ai-chat-body::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.3); border-radius: 3px; }
+.ai-chat-body::-webkit-scrollbar-track { background: transparent; }
 .ai-chat-empty { font-size: 12px; color: var(--c-secondary); line-height: 1.7; padding: 8px 2px; }
 .ai-msg { display: flex; }
 .ai-msg.user { justify-content: flex-end; }
 .ai-bubble { max-width: 88%; padding: 8px 11px; border-radius: 10px; font-size: 12px; line-height: 1.6; }
-.ai-msg.user .ai-bubble { background: var(--c-accent); color: #fff; white-space: pre-wrap; word-break: break-word; }
+.ai-msg.user .ai-bubble { background: var(--c-bg); border: 1px solid var(--c-border); color: var(--c-fg); white-space: pre-wrap; word-break: break-word; }
 .ai-msg.assistant .ai-bubble { background: var(--c-bg); border: 1px solid var(--c-border); color: var(--c-fg); }
 .ai-text { white-space: pre-wrap; word-break: break-word; }
 .ai-text.dim { color: var(--c-secondary); }
@@ -908,6 +945,24 @@ onMounted(async () => {
 .ai-apply:hover { background: var(--c-accent); color: #fff; }
 .ai-apply:disabled { opacity: 0.5; cursor: not-allowed; }
 .ai-err { margin-top: 6px; color: var(--c-danger); font-size: 11px; }
+.ai-think { margin-bottom: 8px; border-left: 2px solid rgba(148, 163, 184, 0.35); padding-left: 10px; }
+.ai-think-toggle { display: flex; align-items: center; gap: 4px; width: 100%; border: 0; background: transparent; color: var(--c-secondary); font-size: 11px; text-align: left; padding: 2px 0; cursor: pointer; }
+.ai-think-toggle:hover { color: var(--c-fg); }
+.ai-think-arrow { font-size: 9px; opacity: 0.8; }
+.ai-think.streaming .ai-think-label { animation: ai-think-pulse 1.6s ease-in-out infinite; }
+.ai-think-body { margin: 2px 0 4px; padding: 0; color: rgba(148, 163, 184, 0.95); font-size: 11px; line-height: 1.65; font-family: var(--font); white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: transparent transparent; -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 10px, #000 calc(100% - 14px), transparent 100%); mask-image: linear-gradient(180deg, transparent 0, #000 10px, #000 calc(100% - 14px), transparent 100%); }
+.ai-think-body:hover { scrollbar-color: rgba(148, 163, 184, 0.28) transparent; }
+.ai-think-body::-webkit-scrollbar { width: 3px; }
+.ai-think-body::-webkit-scrollbar-thumb { background: transparent; border-radius: 2px; }
+.ai-think-body:hover::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.28); }
+.ai-think-body::-webkit-scrollbar-track { background: transparent; }
+@keyframes ai-think-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.ai-params { margin-top: 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); overflow: hidden; }
+.ai-params-title { padding: 4px 8px; background: var(--c-muted); font-size: 11px; font-weight: 600; color: var(--c-secondary); }
+.ai-params table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.ai-params th, .ai-params td { padding: 4px 8px; border-top: 1px solid var(--c-border); text-align: left; color: var(--c-fg); }
+.ai-params th { background: var(--c-muted); color: var(--c-secondary); font-weight: 600; }
+.ai-params-desc { color: var(--c-secondary); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-quote-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--c-border); background: var(--c-muted); }
 .ai-quote-label { font-size: 11px; color: var(--c-accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-quote-clear { border: 0; background: transparent; color: var(--c-secondary); font-size: 11px; cursor: pointer; }

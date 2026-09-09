@@ -1440,7 +1440,7 @@ export async function testOntologyService(serviceId, { params, mock_entity } = {
 }
 
 // AI 辅助编写代码（SSE 流式）通用实现：onDelta 收增量文本，结束后返回 {code_text, params, explanation}
-async function _aiAssistCodeSSE(url, payload, onDelta, signal) {
+async function _aiAssistCodeSSE(url, payload, onDelta, onThinking, signal) {
   const res = await fetch(url, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -1468,6 +1468,8 @@ async function _aiAssistCodeSSE(url, payload, onDelta, signal) {
       try { ev = JSON.parse(line) } catch { continue }
       if (ev.type === 'delta') {
         onDelta?.(ev.content)
+      } else if (ev.type === 'thinking') {
+        onThinking?.(ev.content)
       } else if (ev.type === 'done') {
         result = ev.data
       } else if (ev.type === 'error') {
@@ -1478,16 +1480,16 @@ async function _aiAssistCodeSSE(url, payload, onDelta, signal) {
   return result
 }
 
-// AI 辅助编写动作代码（SSE 流式）：onDelta 收增量文本，结束后返回 {code_text, params, explanation}
-export async function aiAssistServiceCode({ prompt, name, code, description, owner_name, current_code, selected_code, history, onDelta, signal } = {}) {
+// AI 辅助编写动作代码（SSE 流式）：onDelta 收正文增量、onThinking 收思考增量，结束后返回 {code_text, params, explanation}
+export async function aiAssistServiceCode({ prompt, name, code, description, owner_name, current_code, selected_code, history, onDelta, onThinking, signal } = {}) {
   return _aiAssistCodeSSE(`${API}/api/ontology-services/ai-assist`,
-    { prompt, name, code, description, owner_name, current_code, selected_code, history }, onDelta, signal)
+    { prompt, name, code, description, owner_name, current_code, selected_code, history }, onDelta, onThinking, signal)
 }
 
-// AI 辅助编写函数代码（SSE 流式）：onDelta 收增量文本，结束后返回 {code_text, params, explanation}
-export async function aiAssistFunctionCode({ prompt, name, code, description, owner_name, current_code, selected_code, history, onDelta, signal } = {}) {
+// AI 辅助编写函数代码（SSE 流式）：onDelta 收正文增量、onThinking 收思考增量，结束后返回 {code_text, params, explanation}
+export async function aiAssistFunctionCode({ prompt, name, code, description, owner_name, current_code, selected_code, history, onDelta, onThinking, signal } = {}) {
   return _aiAssistCodeSSE(`${API}/api/ontology-functions/ai-assist`,
-    { prompt, name, code, description, owner_name, current_code, selected_code, history }, onDelta, signal)
+    { prompt, name, code, description, owner_name, current_code, selected_code, history }, onDelta, onThinking, signal)
 }
 
 export async function fetchEntityServices(entityId) {
