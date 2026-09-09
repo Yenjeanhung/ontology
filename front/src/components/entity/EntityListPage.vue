@@ -703,6 +703,7 @@ const sortedEntities = computed(() => {
         <div v-if="loading && !entities.length" class="loading-state"><span class="spinner"></span> 加载中...</div>
 
         <div v-else-if="sortedEntities.length" class="ent-table">
+          <div class="ent-table-inner">
           <!-- 选中具体本体：表头展示该本体全部属性列 -->
           <template v-if="ontAttributes.length">
             <div class="ent-row ent-row-head">
@@ -804,6 +805,7 @@ const sortedEntities = computed(() => {
               </span>
             </div>
           </template>
+          </div>
         </div>
 
         <div v-else class="empty-state">
@@ -1056,7 +1058,9 @@ const sortedEntities = computed(() => {
 .ent-table::-webkit-scrollbar-track { background: transparent; }
 .ent-table::-webkit-scrollbar-thumb { background: var(--c-border); border-radius: 4px; }
 .ent-table::-webkit-scrollbar-thumb:hover { background: var(--c-secondary); }
-.ent-row { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--c-border); cursor: pointer; transition: background 120ms; width: max-content; min-width: 100%; }
+/* 内层容器按最宽行撑开统一宽度：表头与数据行共用同一列宽，避免弹性列各自分配导致错位 */
+.ent-table-inner { min-width: 100%; width: max-content; }
+.ent-row { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--c-border); cursor: pointer; transition: background 120ms; width: 100%; }
 .ent-row:last-child { border-bottom: 0; }
 .ent-row:hover { background: var(--c-muted); }
 .ent-row-head { background: var(--c-muted); cursor: default; font-size: 12px; font-weight: 600; color: var(--c-secondary); text-transform: uppercase; letter-spacing: 0.3px; }
@@ -1068,8 +1072,8 @@ const sortedEntities = computed(() => {
 .col-attr { flex: 1 1 0; min-width: 96px; font-size: 12px; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-attr.head { color: var(--c-secondary); font-weight: 600; text-transform: none; letter-spacing: 0; }
 
-/* 属性 / 关系 / 服务 三列：metric pill 风格 + 点击排序 */
-.col-metric, .col-metric-head { flex: 0 0 220px; min-width: 0; display: flex; align-items: center; gap: 6px; }
+/* 属性 / 关系 / 服务 三列：metric pill 风格 + 点击排序；横向滚动时固定在操作列左侧 */
+.col-metric, .col-metric-head { flex: 0 0 220px; min-width: 0; display: flex; align-items: center; gap: 6px; position: sticky; right: 64px; z-index: 2; background: var(--c-panel); transition: background 120ms; box-shadow: -12px 0 12px -10px rgba(0,0,0,0.55); }
 .col-metric-head { justify-content: flex-start; }
 .metric-head-btn, .metric-pill {
   display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
@@ -1101,7 +1105,11 @@ const sortedEntities = computed(() => {
 .metric-head-btn.metric-attr.active, .metric-head-btn.metric-attr:hover { color: #16a34a; }
 .metric-head-btn.metric-rel.active, .metric-head-btn.metric-rel:hover { color: #2563eb; }
 .metric-head-btn.metric-svc.active, .metric-head-btn.metric-svc:hover { color: #9333ea; }
-.col-actions { flex: 0 0 64px; display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
+/* 操作列固定在最右侧 */
+.col-actions { flex: 0 0 64px; display: flex; align-items: center; justify-content: flex-end; gap: 2px; position: sticky; right: 0; z-index: 2; background: var(--c-panel); transition: background 120ms; }
+/* 固定列背景随行状态变化，避免滚动时透出下层内容 */
+.ent-row-head .col-metric-head, .ent-row-head .col-actions { background: var(--c-muted); }
+.ent-row:hover .col-metric, .ent-row:hover .col-metric-head, .ent-row:hover .col-actions { background: var(--c-muted); }
 .ent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .type-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--c-muted); color: var(--c-secondary); }
 .edit-btn.sm, .rm-btn.sm { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); cursor: pointer; }

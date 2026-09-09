@@ -25,11 +25,25 @@ export async function refreshNotifications() {
 // 整站只维持一条连接：服务端仅在计数变化时下发，无变化时只有心跳，零业务请求。
 
 let es = null
+let retryTimer = null
+let failures = 0
+
+// 连续失败上限：后端不可达时 EventSource 会以固定间隔无限重连，
+// 每次重连都新建 TCP，Windows 上会堆积 TIME_WAIT 并最终耗尽动态端口
+// （表现为 vite 报 connect EADDRINUSE）。达上限后主动停，退避重试。
+const MAX_CONSECUTIVE_FAILURES = 10
+const RETRY_DELAY_MS = 60000
 
 export function startNotificationStream() {
   if (es || typeof EventSource === 'undefined') return
 
   es = new EventSource(`${API}/api/notifications/stream`)
+  failures = 0
+
+  es.onopen = () => {
+    // 连接成功：清零失败计数
+    failures = 0
+  }
 
   es.onmessage = (e) => {
     try {
@@ -39,12 +53,24 @@ export function startNotificationStream() {
     }
   }
 
-  // 不主动 close：EventSource 自带指数退避重连。
-  // 这里只做日志，避免断网瞬间的错误噪音。
-  es.onerror = () => {}
+  es.onerror = () => {
+    failures += 1
+    if (failures < MAX_CONSECUTIVE_FAILURES) return
+    // 后端大概率不可达：断开并退避重试，避免无限重连耗尽本地端口
+    stopNotificationStream()
+    if (retryTimer) clearTimeout(retryTimer)
+    retryTimer = setTimeout(() => {
+      retryTimer = null
+      startNotificationStream()
+    }, RETRY_DELAY_MS)
+  }
 }
 
 export function stopNotificationStream() {
+  if (retryTimer) {
+    clearTimeout(retryTimer)
+    retryTimer = null
+  }
   if (es) {
     es.close()
     es = null
