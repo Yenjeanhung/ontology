@@ -8,6 +8,9 @@
   --c-muted-hover: #E5DED1;
   --c-border: #E4DCCE;
   --c-accent: #A16207;
+  /* 主按钮统一配色（.primary-btn 等）：默认跟随强调色，各主题可单独调淡 */
+  --c-btn-primary-bg: var(--c-accent);
+  --c-btn-primary-bg-hover: var(--c-accent);
   --c-danger: #DC2626;
   --c-success: #16A34A;
   --c-panel: #FCFAF6;
@@ -44,6 +47,9 @@
   --c-muted-hover: #262930;
   --c-border: #26282F;
   --c-accent: #2DD4BF;
+  /* 主按钮：亮青调淡降饱和，白字不刺眼（一处配置全站生效） */
+  --c-btn-primary-bg: #0F9E8F;
+  --c-btn-primary-bg-hover: #13B0A0;
   --c-danger: #F87171;
   --c-success: #34D399;
   --c-panel: #17181C;
@@ -324,11 +330,11 @@ select option {
 
 /* ─── 数据平台深色专项修正（替换原暗色中的暖金硬编码） ─── */
 :root[data-theme='platform-dark'] .btn.primary {
-  background: var(--c-accent) !important;
-  border-color: var(--c-accent) !important;
-  color: #0d1b1a !important;
+  background: var(--c-btn-primary-bg) !important;
+  border-color: var(--c-btn-primary-bg) !important;
+  color: #fff !important;
 }
-:root[data-theme='platform-dark'] .btn.primary:hover { filter: brightness(1.1); }
+:root[data-theme='platform-dark'] .btn.primary:hover { background: var(--c-btn-primary-bg-hover) !important; }
 
 :root[data-theme='platform-dark'] .field-icon,
 :root[data-theme='platform-dark'] .answer-card h4 svg,

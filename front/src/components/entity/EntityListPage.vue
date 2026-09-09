@@ -383,7 +383,7 @@ const editTarget = ref(null)
 const editForm = ref({ name: '', description: '' })
 const editAttrs = ref([]) // 本体定义属性 [{name, code, data_type}]
 const editAttrValues = ref({}) // { code: 输入值 }
-const editExtraProps = ref([]) // 本体未定义的自定义属性 [{ key, value }]
+const editHiddenProps = ref({}) // 本体未定义的历史遗留属性（不展示不可改：update 为整体替换，提交时原样合并防丢失）
 
 function parseProps(p) {
   if (p && typeof p === 'object') return p
@@ -400,7 +400,7 @@ async function openEdit(ent, e) {
   editForm.value = { name: ent.name || '', description: ent.description || '' }
   editAttrs.value = []
   editAttrValues.value = {}
-  editExtraProps.value = []
+  editHiddenProps.value = {}
   showEdit.value = true
   editLoading.value = true
   // 拉取实体详情与本体属性定义；失败不阻塞编辑（属性退化为自定义字段编辑）
@@ -423,23 +423,17 @@ async function openEdit(ent, e) {
   } finally {
     editLoading.value = false
   }
-  // 预填：本体定义的属性进固定字段，其余进自定义属性（update 为整体替换，不能丢）
+  // 预填：本体定义的属性进固定字段；属性以本体为准，不再提供自定义属性编辑入口
   const seen = new Set()
   for (const a of editAttrs.value) {
     editAttrValues.value[a.code] = props[a.code] != null ? String(props[a.code]) : ''
     seen.add(a.code)
   }
+  const hidden = {}
   for (const [k, v] of Object.entries(props)) {
-    if (!seen.has(k)) editExtraProps.value.push({ key: k, value: v != null ? String(v) : '' })
+    if (!seen.has(k)) hidden[k] = v != null ? String(v) : ''
   }
-}
-
-function addExtraProp() {
-  editExtraProps.value.push({ key: '', value: '' })
-}
-
-function removeExtraProp(idx) {
-  editExtraProps.value.splice(idx, 1)
+  editHiddenProps.value = hidden
 }
 
 async function submitEdit() {
@@ -447,15 +441,12 @@ async function submitEdit() {
     editError.value = '请填写实体名称'
     return
   }
-  // update 接口对 properties 为整体替换：本体属性 + 自定义属性全量提交
+  // update 接口对 properties 为整体替换：本体属性 + 历史遗留属性原样合并（不提供新增入口）
   const props = {}
   for (const a of editAttrs.value) {
     props[a.code] = String(editAttrValues.value[a.code] ?? '').trim()
   }
-  for (const p of editExtraProps.value) {
-    const k = p.key.trim()
-    if (k) props[k] = p.value
-  }
+  Object.assign(props, editHiddenProps.value)
   editSaving.value = true
   editError.value = ''
   try {
@@ -964,17 +955,6 @@ const sortedEntities = computed(() => {
             </template>
             <div v-else class="attr-empty">该本体暂未定义属性</div>
           </div>
-          <div v-if="!editLoading" class="form-row">
-            <label>自定义属性{{ editExtraProps.length ? `（${editExtraProps.length}）` : '' }}</label>
-            <div v-for="(p, i) in editExtraProps" :key="i" class="extra-prop-row">
-              <input type="text" v-model="p.key" placeholder="属性名" class="extra-key">
-              <input type="text" v-model="p.value" placeholder="属性值" class="extra-val">
-              <button class="rm-btn sm" @click="removeExtraProp(i)" title="删除属性">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-            </div>
-            <button class="add-prop-btn" @click="addExtraProp">+ 添加属性</button>
-          </div>
           <div v-if="editError" class="form-error">{{ editError }}</div>
         </div>
         <div class="modal-foot">
@@ -1130,14 +1110,7 @@ const sortedEntities = computed(() => {
 
 /* 编辑实体弹窗 */
 .edit-type-static { display: inline-flex; align-items: center; min-height: 36px; padding: 0 10px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); background: var(--c-muted); color: var(--c-secondary); font-size: 13px; width: fit-content; }
-.extra-prop-row { display: flex; align-items: center; gap: 8px; }
-.extra-prop-row input { padding: 8px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-fg); font-size: 13px; font-family: var(--font); outline: none; }
-.extra-prop-row input:focus { border-color: var(--c-accent); }
-.extra-key { flex: 0 0 150px; min-width: 0; }
-.extra-val { flex: 1; min-width: 0; }
-.extra-prop-row .rm-btn.sm { flex-shrink: 0; }
-.add-prop-btn { align-self: flex-start; padding: 5px 12px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); font-size: 12px; cursor: pointer; transition: color 150ms, border-color 150ms; }
-.add-prop-btn:hover { color: var(--c-accent); border-color: var(--c-accent); }
+
 
 .loading-state { padding: 40px; text-align: center; color: var(--c-secondary); }
 .empty-state { text-align: center; padding: 48px 20px; color: var(--c-secondary); }
@@ -1152,8 +1125,8 @@ const sortedEntities = computed(() => {
 .btn.sm:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .page-actions { display: flex; align-items: center; gap: 12px; }
-.primary-btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: 0; border-radius: var(--radius-sm); background: var(--c-accent); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: filter 150ms; }
-.primary-btn:hover { filter: brightness(1.1); }
+.primary-btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: 0; border-radius: var(--radius-sm); background: var(--c-btn-primary-bg); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 150ms; }
+.primary-btn:hover { background: var(--c-btn-primary-bg-hover); }
 .primary-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .primary-btn.mt { margin-top: 16px; }
 

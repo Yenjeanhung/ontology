@@ -474,7 +474,7 @@ function startEdit() {
     seen.add(code)
     rows.push({ key: code, name: def?.name || code, locked: true, value: props[code] != null ? String(props[code]) : '' })
   }
-  // 本体未定义的已有属性（遗留/自定义字段）仍可编辑或删除
+  // 本体未定义的已有属性（遗留字段）：仅可编辑/删除存量，不提供新增入口
   for (const k of Object.keys(props)) {
     if (!seen.has(k)) rows.push({ key: k, name: '', locked: false, value: props[k] != null ? String(props[k]) : '' })
   }
@@ -484,10 +484,6 @@ function startEdit() {
 
 function cancelEdit() {
   editing.value = false
-}
-
-function addProp() {
-  editProps.value.push({ key: '', name: '', locked: false, value: '' })
 }
 
 function removeProp(idx) {
@@ -850,7 +846,6 @@ onMounted(load)
         <div v-if="editing || !objectView" class="detail-section">
           <div class="section-head">
             <span class="section-title">属性</span>
-            <button v-if="editing" class="btn sm" @click="addProp">添加属性</button>
           </div>
           <div v-if="editing" class="props-edit">
             <div v-for="(p, idx) in editProps" :key="idx" class="prop-edit-row">
@@ -865,7 +860,7 @@ onMounted(load)
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
-            <div v-if="!editProps.length" class="props-empty">无属性，点击「添加属性」</div>
+            <div v-if="!editProps.length" class="props-empty">无属性</div>
           </div>
           <div v-else>
             <table v-if="Object.keys(displayedProperties).length" class="prop-table">

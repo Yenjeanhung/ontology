@@ -110,13 +110,17 @@ _ONTOLOGY_META_FIELDS = (
 
 
 def _apply_ontology_meta(ont: Ontology, meta: dict | None) -> None:
-    """把对象类型元数据写入本体（None 表示"不修改"）。"""
+    """把对象类型元数据写入本体（None 表示"不修改"）。
+
+    code 字段特殊处理：本体编码（API 名）一旦设置即不可修改；
+    若 ont.code 已设置，忽略 meta.code（由 update_ontology 入口处抛错）。
+    """
     if not meta:
         return
     for field in _ONTOLOGY_META_FIELDS:
         if field in meta and meta[field] is not None:
             setattr(ont, field, meta[field])
-    if "code" in meta and meta["code"] is not None:
+    if "code" in meta and meta["code"] is not None and not ont.code:
         ont.code = (meta["code"] or "").strip() or None
 
 
@@ -486,11 +490,21 @@ class OntologyService:
             ont.color = color
         if sort_order is not None:
             ont.sort_order = sort_order
-        _apply_ontology_meta(ont, meta)
+        # 本体编码（code）一旦设置即锁定：已存在的 code 拒绝修改请求；
+        # 未设置时按规范生成。变更 code 只能删除本体重建，避免破坏已写入的
+        # Entity.entity_type 映射与图谱节点标签。
         if meta and "code" in meta:
-            ont.code = await _validate_ontology_code(
-                db, ont.category_id, ont.code, exclude_id=ont.id
-            )
+            new_code = (meta.get("code") or "").strip() or None
+            if ont.code and new_code and new_code != ont.code:
+                raise ValueError(
+                    f'本体编码 "{ont.code}" 已设置，不可修改。'
+                    "如需变更请删除本体重建。"
+                )
+            if (not ont.code) and new_code:
+                ont.code = await _validate_ontology_code(
+                    db, ont.category_id, new_code, exclude_id=ont.id
+                )
+        _apply_ontology_meta(ont, meta)
         ont.updated_at = datetime.now().isoformat()
         await db.commit()
         return _serialize_ontology(ont)
@@ -1282,6 +1296,9 @@ class OntologyService:
             entry = {
                 "id": ont["id"],
                 "name": ont["name"],
+                # 本体编码（稳定 API 名）：写入 Neo4j/SQLite 实体时
+                # entity_type 改用此值，避免本体改名导致存量数据失配
+                "code": (ont.get("code") or "").strip(),
                 "attributes": slim_attrs,
             }
             ontology_list.append(entry)
@@ -1694,7 +1711,10 @@ class OntologySuggestionService:
     ) -> int:
         """审批后将 Kùzu 中 ontology_id 为空的实体回填 ontology_id 并写入 SQLite。
 
-        匹配策略：Kùzu Entity.entity_type == Ontology.name（精确匹配）。
+        匹配策略（兼容新旧）：
+          - 新数据：Kùzu Entity.entity_type == Ontology.code（稳定 API 名）
+          - 旧数据：Kùzu Entity.entity_type == Ontology.name（迁移前存量）
+        回填完成后将 entity_type 一并改为 ontology.code，使全库统一使用稳定标识。
         返回成功回填的实体数量。
         """
         if not ont_id_by_name:
@@ -1722,10 +1742,22 @@ class OntologySuggestionService:
         if not orphan_rows:
             return 0
 
-        # 2. 建立 entity_type → ontology_id 的映射（精确匹配本体名）
-        type_to_ont = {}
-        for ont_name, ont_id in ont_id_by_name.items():
-            type_to_ont[ont_name] = ont_id
+        # 2. 建立 (entity_type → ontology_id) 的双向索引：code 优先（稳定标识），
+        #    再叠加 name（兼容迁移前的存量数据）
+        ont_rows = await db.execute(
+            select(Ontology.id, Ontology.code, Ontology.name).where(
+                Ontology.id.in_(set(ont_id_by_name.values()))
+            )
+        )
+        ont_id_to_code: dict[str, str] = {}
+        type_to_ont: dict[str, str] = {}
+        for row in ont_rows.all():
+            oid, ocode, oname = row[0], (row[1] or "").strip(), (row[2] or "").strip()
+            ont_id_to_code[oid] = ocode
+            if ocode:
+                type_to_ont[ocode] = oid
+            if oname:
+                type_to_ont.setdefault(oname, oid)  # 旧数据按 name 匹配
 
         backfilled = 0
         for row in orphan_rows:
@@ -1734,19 +1766,27 @@ class OntologySuggestionService:
             if not ont_id:
                 continue  # 该实体类型没有对应本体
 
+            # 回填后 entity_type 统一为 ontology.code（稳定 API 名）
+            ont_code = ont_id_to_code.get(ont_id, "")
+            new_et = ont_code or et
+
             entity_graph_id = row.get("entity_id") or ""
             entity_name = (row.get("name") or "").strip()
             entity_desc = (row.get("description") or "").strip()
             entity_props = (row.get("properties") or "").strip()
 
-            # 3. 更新图库中实体的 ontology_id
+            # 3. 更新图库中实体的 ontology_id + entity_type
             try:
                 adapter._execute(
                     """
                     MATCH (e:Entity {id: $entity_id})
-                    SET e.ontology_id = $ontology_id
+                    SET e.ontology_id = $ontology_id, e.entity_type = $entity_type
                     """,
-                    {"entity_id": entity_graph_id, "ontology_id": ont_id},
+                    {
+                        "entity_id": entity_graph_id,
+                        "ontology_id": ont_id,
+                        "entity_type": new_et,
+                    },
                 )
             except Exception:
                 logger.exception("更新图库实体 ontology_id 失败: %s", entity_graph_id)
@@ -1760,21 +1800,21 @@ class OntologySuggestionService:
                     except (json.JSONDecodeError, TypeError):
                         props_dict = None
 
-                # 先检查是否已存在
+                # 先检查是否已存在（按当前 entity_type 与新 entity_type 都查一遍，避免遗漏）
                 existing = await db.execute(
                     select(Entity).where(
                         Entity.kb_id == kb_id,
-                        Entity.entity_type == et,
+                        Entity.entity_type.in_([et, new_et]),
                         Entity.name == entity_name,
                     )
                 )
-                ent = existing.scalar_one_or_none()
+                ent = existing.scalars().first()
                 if ent is None:
                     ent = Entity(
                         id=entity_graph_id if entity_graph_id else None,
                         kb_id=kb_id,
                         ontology_id=ont_id,
-                        entity_type=et,
+                        entity_type=new_et,
                         name=entity_name,
                         description=entity_desc,
                         properties=json.dumps(props_dict, ensure_ascii=False) if props_dict else None,
@@ -1783,6 +1823,8 @@ class OntologySuggestionService:
                 else:
                     if not ent.ontology_id:
                         ent.ontology_id = ont_id
+                    if ent.entity_type != new_et and new_et:
+                        ent.entity_type = new_et
                 backfilled += 1
             except Exception:
                 logger.exception("写入 SQLite 实体失败: %s", entity_name)

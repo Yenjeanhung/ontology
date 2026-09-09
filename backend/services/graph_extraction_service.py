@@ -760,8 +760,14 @@ class GraphExtractionService:
                     if not ont_def:
                         # 实体类型不在本体定义中，跳过
                         continue
-                    # 回填本体 id 与属性规整
+                    # 回填本体 id
                     entity.ontology_id = ont_def.get("id")
+                    # entity_type 改为 ontology.code（稳定 API 名），
+                    # 写入 Neo4j / SQLite 后不受本体重命名影响。
+                    # 本体未设置 code 时保留 LLM 给出的名称，避免脏数据失匹配。
+                    ont_code = (ont_def.get("code") or "").strip()
+                    if ont_code:
+                        entity.entity_type = ont_code
                     entity.properties = GraphExtractionService._normalize_properties(
                         entity.properties, ont_def.get("attributes", [])
                     )

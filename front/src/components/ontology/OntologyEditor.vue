@@ -63,8 +63,7 @@ const detail = ref(null)
 const detailLoading = ref(false)
 const detailError = ref('')
 
-// 基础信息编辑（抽屉内）
-const editingInfo = ref(false)
+// 基础信息（抽屉内始终为编辑态，detail 加载完成后立即同步到表单字段）
 const savingInfo = ref(false)
 const editName = ref('')
 const editDesc = ref('')
@@ -184,8 +183,9 @@ async function loadDetail(ontId) {
     implInterfaces.value = implIfaces
     tplBinding.value = [...(d.template_ids || [])]
     tplDirty.value = false
-    editingInfo.value = false
     inheritedAttrs.value = []
+    // 详情加载完成 → 把字段同步到编辑表单（进入抽屉即处于编辑态）
+    syncEditFromDetail(d)
     // 后台拉取每个已绑定模板的完整属性，组装成「继承」只读列表
     const tplIds = tplBinding.value
     if (tplIds.length) {
@@ -257,7 +257,6 @@ function openDetail(ont) {
 
 function closeDetail() {
   drawerOpen.value = false
-  editingInfo.value = false
 }
 
 // ── 新建本体 ──
@@ -301,8 +300,7 @@ async function submitCreate() {
 
 // ── 基础信息 ──
 
-function startEditInfo() {
-  const d = detail.value
+function syncEditFromDetail(d) {
   if (!d) return
   editName.value = d.name
   editDesc.value = d.description || ''
@@ -314,7 +312,6 @@ function startEditInfo() {
   editStatus.value = d.status || 'active'
   editGroup.value = d.group_name || ''
   editTitleKey.value = d.title_key || 'name'
-  editingInfo.value = true
 }
 
 async function saveInfo() {
@@ -636,7 +633,6 @@ onActivated(() => { onSvcSaved() })
         :title="(detail || currentRow)?.name || '本体详情'"
         size="xl"
         close-on-esc
-        @close="editingInfo = false"
       >
       <div class="oe-detail-head">
         <span class="oe-color-dot lg" :style="{ background: (detail || currentRow)?.color || '#A16207' }"></span>
@@ -664,9 +660,8 @@ onActivated(() => { onSvcSaved() })
                   v-if="detail.status && detail.status !== 'active'"
                   class="oe-status-tag" :class="detail.status"
                 >{{ statusLabel(detail.status) }}</span>
-                <button v-if="!editingInfo" class="btn sm" @click="startEditInfo">编辑</button>
               </div>
-              <template v-if="editingInfo">
+              <template v-if="detail">
                 <div class="oe-info-form">
                   <div class="oe-field">
                     <label>名称</label>
@@ -692,7 +687,9 @@ onActivated(() => { onSvcSaved() })
                   <div class="oe-meta-grid">
                     <div class="oe-field">
                       <label>类型编码 (code)</label>
-                      <input type="text" v-model="editCode" placeholder="如 person_org（API 名）">
+                      <input type="text" v-model="editCode" placeholder="如 person_org（API 名）" :disabled="!!detail.code">
+                      <span class="oe-field-hint" v-if="detail.code">本体编码已设置，新增后不可修改。如需变更请删除本体重建。</span>
+                      <span class="oe-field-hint" v-else>以字母开头，仅含字母 / 数字 / 下划线；同一类别内唯一，设置后不可修改</span>
                     </div>
                     <div class="oe-field">
                       <label>显示名</label>
@@ -725,17 +722,10 @@ onActivated(() => { onSvcSaved() })
                   </div>
                 </div>
                 <div class="oe-info-actions">
-                  <button class="btn sm" @click="editingInfo = false">取消</button>
+                  <button class="btn sm" @click="closeDetail">取消</button>
                   <button class="btn primary sm" @click="saveInfo" :disabled="savingInfo || !editName.trim()">
                     <span v-if="savingInfo" class="spinner"></span> 保存
                   </button>
-                </div>
-              </template>
-              <template v-else>
-                <div class="oe-info-view">
-                  <span class="oe-info-desc" v-if="detail.description">{{ detail.description }}</span>
-                  <span class="oe-info-desc placeholder" v-else>暂无描述</span>
-                  <span v-if="detail.code" class="oe-info-code">{{ detail.code }}</span>
                 </div>
               </template>
             </div>
@@ -978,9 +968,13 @@ onActivated(() => { onSvcSaved() })
 .oe-section-head { display: flex; align-items: center; justify-content: space-between; }
 .oe-section-title { font-size: 13px; font-weight: 700; color: var(--c-fg); }
 
-.oe-info-view { font-size: 13px; }
+.oe-info-view { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
 .oe-info-desc { color: var(--c-fg); }
 .oe-info-desc.placeholder { color: var(--c-secondary); font-style: italic; }
+.oe-field.readonly label { color: var(--c-secondary); }
+.oe-field-value { display: flex; align-items: center; gap: 6px; min-height: 30px; box-sizing: border-box; padding: 5px 10px; border-radius: var(--radius-sm); background: var(--c-muted); color: var(--c-fg); font-size: 13px; word-break: break-all; }
+.oe-field-value.empty { color: var(--c-secondary); font-style: italic; }
+.oe-field-value code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 
 .oe-info-form { display: flex; flex-direction: column; gap: 10px; }
 .oe-field { display: flex; flex-direction: column; gap: 4px; }

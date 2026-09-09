@@ -1017,8 +1017,8 @@ onMounted(async () => {
 .btn { padding: 7px 14px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 13px; cursor: pointer; }
 .btn:hover { background: var(--c-muted); }
 .btn.sm { padding: 4px 10px; font-size: 11px; }
-.primary-btn { padding: 7px 14px; border: 0; border-radius: var(--radius-sm); background: var(--c-accent); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
-.primary-btn:hover { filter: brightness(1.1); }
+.primary-btn { padding: 7px 14px; border: 0; border-radius: var(--radius-sm); background: var(--c-btn-primary-bg); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
+.primary-btn:hover { background: var(--c-btn-primary-bg-hover); }
 .primary-btn.sm { padding: 4px 10px; font-size: 11px; }
 .primary-btn:disabled, .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .danger-btn.sm { padding: 4px 10px; font-size: 11px; border: 1px solid rgba(220,38,38,0.35); border-radius: var(--radius-sm); background: transparent; color: var(--c-danger); cursor: pointer; }

@@ -375,7 +375,7 @@ watch(
 .btn { padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; border: 1px solid var(--c-border); background: transparent; color: var(--c-fg); }
 .btn:hover { background: var(--c-muted); }
 .btn.sm { padding: 3px 9px; font-size: 11px; }
-.btn.primary { background: var(--c-accent); color: #fff; border-color: transparent; }
+.btn.primary { background: var(--c-btn-primary-bg); color: #fff; border-color: transparent; }
 .btn.danger { background: var(--c-danger); color: #fff; border-color: transparent; }
 .btn:disabled { opacity: .55; cursor: not-allowed; }
 

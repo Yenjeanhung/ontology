@@ -500,9 +500,9 @@ async function reject() {
   cursor: not-allowed;
 }
 .btn.primary {
-  background: var(--c-accent);
+  background: var(--c-btn-primary-bg);
   color: #fff;
-  border-color: var(--c-accent);
+  border-color: var(--c-btn-primary-bg);
 }
 .btn.primary:hover {
   opacity: 0.9;

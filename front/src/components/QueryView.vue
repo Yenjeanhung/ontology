@@ -532,8 +532,8 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 .mode-tab:hover:not(:disabled) { color: var(--c-fg); background: var(--c-muted); }
 .mode-tab.active {
   color: #fff;
-  background: var(--c-accent);
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--c-accent) 32%, transparent);
+  background: var(--c-btn-primary-bg);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--c-btn-primary-bg) 32%, transparent);
 }
 .mode-tab:disabled { opacity: 0.55; cursor: not-allowed; }
 
