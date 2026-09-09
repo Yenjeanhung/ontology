@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, reactive, computed, watch, onMounted, nextTick } from 'vue'
 import {
   fetchOntologyCategories, getOntologyCategoryDetail,
   fetchOntologyFunctions, createOntologyFunction, updateOntologyFunction, deleteOntologyFunction, testOntologyFunction,
@@ -204,33 +204,47 @@ function scrollAiChat() {
   })
 }
 
-// 把 assistant 回复拆成 文本/代码 段落渲染
+// 把 assistant 回复拆成 文本/代码 段落渲染（支持流式中尚未闭合的代码块）
 function splitSegments(msg) {
   const segs = []
-  const re = /```(?:python)?\s*\n([\s\S]*?)```/g
+  const re = /```(\w+)?[ \t]*\n([\s\S]*?)(?:```|$)/g
   let last = 0
   let m
   while ((m = re.exec(msg.content))) {
     if (m.index > last) segs.push({ type: 'text', text: msg.content.slice(last, m.index).trim() })
-    segs.push({ type: 'code', code: m[1].replace(/\n$/, '') })
+    segs.push({ type: 'code', lang: (m[1] || '').toLowerCase(), code: m[2].replace(/\n$/, '') })
     last = re.lastIndex
+    if (m[0].length === 0) re.lastIndex++ // 空匹配保护，防死循环
   }
   if (last < msg.content.length) segs.push({ type: 'text', text: msg.content.slice(last).trim() })
   if (!segs.length) segs.push({ type: 'text', text: msg.content })
   return segs
 }
 
+// AI 返回的类型可能不在下拉选项里，归一化到 params_schema 支持的类型
+function normParamType(t) {
+  const s = String(t || '').toLowerCase()
+  if (['number', 'int', 'integer', 'float', 'double'].includes(s)) return 'number'
+  if (['boolean', 'bool'].includes(s)) return 'boolean'
+  if (['object', 'dict', 'list', 'array'].includes(s)) return 'object'
+  return 'string'
+}
+
 function applyAiCode(seg, msg) {
   if (!seg?.code) return
   fnForm.value.code_text = seg.code
-  // AI 同时给出了参数定义且当前参数表为空时，自动带入
-  if (msg.params?.length && !fnForm.value.params_schema.some((p) => p.name)) {
-    fnForm.value.params_schema = msg.params.map((p) => ({
-      name: p.name || '', type: p.type || 'string',
-      required: p.required !== false, description: p.description || '',
-    }))
+  // AI 给出参数定义时以它为准同步参数表（代码与参数是配套的）
+  let synced = false
+  if (msg.params?.length) {
+    fnForm.value.params_schema = msg.params
+      .filter((p) => p.name)
+      .map((p) => ({
+        name: p.name, type: normParamType(p.type),
+        required: p.required !== false, description: p.description || '',
+      }))
+    synced = fnForm.value.params_schema.length > 0
   }
-  toast('已应用到编辑器，点击「保存」生效', 'success')
+  toast(synced ? '已应用代码并同步参数，点击「保存」生效' : '已应用到编辑器，点击「保存」生效', 'success')
 }
 
 async function sendAiMessage() {
@@ -238,7 +252,9 @@ async function sendAiMessage() {
   if (!q || aiLoading.value) return
   aiInput.value = ''
   aiMessages.value.push({ role: 'user', content: q })
-  const reply = { role: 'assistant', content: '', streaming: true }
+  // 必须用 reactive 包装：push 进响应式数组后 Vue 渲染的是代理副本，
+  // 直接修改普通对象 onDelta 的增量不会触发流式渲染
+  const reply = reactive({ role: 'assistant', content: '', streaming: true })
   aiMessages.value.push(reply)
   aiLoading.value = true
   scrollAiChat()
@@ -635,9 +651,9 @@ onMounted(async () => {
               <template v-else>
                 <template v-for="(s, j) in splitSegments(m)" :key="j">
                   <div v-if="s.type === 'text' && s.text" class="ai-text">{{ s.text }}</div>
-                  <div v-else-if="s.type === 'code'" class="ai-code">
+                  <div v-else-if="s.type === 'code' && s.code" class="ai-code">
                     <pre>{{ s.code }}</pre>
-                    <button class="ai-apply" :disabled="aiLoading" @click="applyAiCode(s, m)">应用到编辑器</button>
+                    <button v-if="s.lang !== 'json'" class="ai-apply" :disabled="aiLoading" @click="applyAiCode(s, m)">应用到编辑器</button>
                   </div>
                 </template>
                 <div v-if="m.error" class="ai-err">{{ m.error }}</div>

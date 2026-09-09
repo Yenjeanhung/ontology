@@ -1,0 +1,139 @@
+- generic [ref=f10e3]:
+  - complementary [ref=f10e4]:
+    - generic [ref=f10e5]:
+      - button "返回首页" [ref=f10e6] [cursor=pointer]:
+        - generic [ref=f10e7]: K
+        - generic [ref=f10e8]: KnowSource
+        - generic [ref=f10e9]: v1.4
+      - button "收起菜单" [ref=f10e10] [cursor=pointer]
+    - navigation [ref=f10e14]:
+      - generic [ref=f10e15]: 知识定义
+      - generic [ref=f10e20]:
+        - button "本体管理" [expanded] [ref=f10e21] [cursor=pointer]
+        - generic [ref=f10e29]:
+          - link "本体模板" [ref=f10e30] [cursor=pointer]:
+            - /url: /ontology/templates
+          - link "共享属性" [ref=f10e32] [cursor=pointer]:
+            - /url: /ontology/shared-properties
+          - link "本体管理" [ref=f10e34] [cursor=pointer]:
+            - /url: /ontology/ontologies
+          - link "函数与派生属性" [ref=f10e36] [cursor=pointer]:
+            - /url: /ontology/functions
+          - link "关系字典" [ref=f10e38] [cursor=pointer]:
+            - /url: /ontology/relations-dict
+          - link "本体关系" [ref=f10e40] [cursor=pointer]:
+            - /url: /ontology/constraints
+          - link "本体建议" [ref=f10e42] [cursor=pointer]:
+            - /url: /ontology/suggestions
+      - link "实体" [ref=f10e44] [cursor=pointer]:
+        - /url: /entities
+      - generic [ref=f10e50]: 知识生产
+      - link "文件管理" [ref=f10e55] [cursor=pointer]:
+        - /url: /files
+      - button "知识库" [ref=f10e61] [cursor=pointer]
+      - button "知识图谱" [ref=f10e68] [cursor=pointer]
+      - link "向量数据" [ref=f10e76] [cursor=pointer]:
+        - /url: /vectors
+      - generic [ref=f10e82]: 应用
+      - button "智能体" [ref=f10e91] [cursor=pointer]
+      - link "工作流" [ref=f10e97] [cursor=pointer]:
+        - /url: /workflows
+      - link "待办" [ref=f10e104] [cursor=pointer]:
+        - /url: /human-tasks
+      - link "定时管理" [ref=f10e111] [cursor=pointer]:
+        - /url: /schedules
+      - button "系统配置" [ref=f10e119] [cursor=pointer]
+  - main [ref=f10e125]:
+    - generic [ref=f10e126]:
+      - navigation "面包屑" [ref=f10e127]:
+        - link "首页" [ref=f10e128] [cursor=pointer]:
+          - /url: /
+        - generic [ref=f10e129]: /
+        - generic [ref=f10e130]: 本体管理
+        - generic [ref=f10e131]: /
+        - generic [ref=f10e132]: 函数与派生属性
+      - button "消息通知" [ref=f10e134] [cursor=pointer]
+      - button "切换皮肤" [ref=f10e139] [cursor=pointer]
+    - generic [ref=f10e143]:
+      - generic [ref=f10e144]:
+        - generic [ref=f10e145]:
+          - heading "函数与派生属性" [level=2] [ref=f10e146]
+          - generic [ref=f10e147]: S3 · 只读函数与派生属性管理（计算 / 物化）
+        - generic [ref=f10e148]:
+          - combobox [ref=f10e149]:
+            - option "选择分类" [disabled] [selected]
+          - generic [ref=f10e150]:
+            - button "函数" [ref=f10e151] [cursor=pointer]
+            - button "派生属性" [ref=f10e152] [cursor=pointer]
+      - generic [ref=f10e153]:
+        - generic [ref=f10e154]:
+          - generic [ref=f10e155]:
+            - textbox "搜索函数..." [ref=f10e156]
+            - button "+ 新建" [ref=f10e157] [cursor=pointer]
+          - generic [ref=f10e158]: 暂无函数，点击「+ 新建」创建
+        - generic [ref=f10e159]:
+          - generic [ref=f10e160]:
+            - generic [ref=f10e161]: 新建函数
+            - button "保存" [ref=f10e163] [cursor=pointer]
+          - generic [ref=f10e164]:
+            - generic [ref=f10e165]:
+              - generic [ref=f10e166]: 名称 *
+              - textbox "名称 *" [ref=f10e167]:
+                - /placeholder: 如 机龄计算
+            - generic [ref=f10e168]:
+              - generic [ref=f10e169]: 编码 *
+              - textbox "编码 *" [ref=f10e170]:
+                - /placeholder: 如 compute_age
+            - generic [ref=f10e171]:
+              - generic [ref=f10e172]: 超时(秒，1-120)
+              - spinbutton "超时(秒，1-120)" [ref=f10e173]: "30"
+            - generic [ref=f10e174]:
+              - generic [ref=f10e175]: 启用
+              - combobox "启用" [ref=f10e176]:
+                - option "启用" [selected]
+                - option "停用"
+            - generic [ref=f10e177]:
+              - generic [ref=f10e178]: 描述
+              - textbox "描述" [ref=f10e179]:
+                - /placeholder: 可选
+          - generic [ref=f10e180]: 参数（params_schema）
+          - button "+ 添加参数" [ref=f10e182] [cursor=pointer]
+          - generic [ref=f10e183]:
+            - generic [ref=f10e184]: 函数代码（沙箱执行，仅只读上下文）
+            - button "✦ AI 辅助" [ref=f10e185] [cursor=pointer]
+          - generic [ref=f10e187]:
+            - generic [ref=f10e190]:
+              - generic [aria-hidden] [ref=f10e191]:
+                - generic [ref=f10e192]:
+                  - generic [ref=f10e193]: "1"
+                  - generic [ref=f10e194]: "2"
+                  - generic [ref=f10e195]: "3"
+                  - generic [ref=f10e196]: "4"
+                  - generic [ref=f10e197]: "5"
+                  - generic [ref=f10e198]: "6"
+                  - generic [ref=f10e199]: "7"
+                  - generic [ref=f10e200]: "8"
+                  - generic [ref=f10e201]: "9"
+                - generic [ref=f10e202]:
+                  - generic [ref=f10e203]: ⌄
+                  - generic [ref=f10e204]: ⌄
+              - textbox [ref=f10e207]:
+                - generic [ref=f10e208]: "def run(params, entity, context):"
+                - generic [ref=f10e209]: "\"\"\"只读函数：返回可 JSON 序列化的结果"
+                - generic [ref=f10e211]: "params: 调用参数(dict)"
+                - generic [ref=f10e212]: "entity: 当前实体(dict, 含 properties)"
+                - generic [ref=f10e213]: "context: 运行上下文(dict)"
+                - generic [ref=f10e214]: "\"\"\""
+                - generic [ref=f10e215]: "return {\"echo\": params}"
+            - generic [ref=f10e217]: 186 / 50000 chars
+          - generic [ref=f10e219]: 测试运行
+          - generic [ref=f10e220]:
+            - generic [ref=f10e221]:
+              - generic [ref=f10e222]:
+                - generic [ref=f10e223]: params（JSON）
+                - textbox "params（JSON）" [ref=f10e224]: "{}"
+              - generic [ref=f10e225]:
+                - generic [ref=f10e226]: 模拟实体（可选 JSON，含 properties）
+                - textbox "模拟实体（可选 JSON，含 properties）" [ref=f10e227]:
+                  - /placeholder: "{\"name\":\"B-1234\",\"properties\":{\"first_flight\":\"2015-01-01\"}}"
+            - button "▶ 运行测试" [ref=f10e228] [cursor=pointer]
