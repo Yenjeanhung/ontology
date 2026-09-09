@@ -1205,9 +1205,12 @@ function streamCallbacks() {
         logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'running', input: d.input })
       },
       onNodeProgress(d) {
-        // 心跳：更新对应 running 日志行的已运行时长
+        // 心跳：更新对应 running 日志行的已运行时长 + 实时步骤（如物化进度）
         const line = [...logs.value].reverse().find(l => l.kind === 'node' && l.node_id === d.node_id && l.status === 'running')
-        if (line) line.elapsed_ms = d.elapsed_ms
+        if (line) {
+          line.elapsed_ms = d.elapsed_ms
+          if (d.step) line.step = d.step
+        }
         // 流式执行：把实时输出 / 当前步骤挂载到节点上，节点卡片可动态渲染
         if (d.output || d.step) {
           updateNode(d.node_id, (node) => {
@@ -2259,6 +2262,7 @@ watch(nowTick, () => {
               <span class="log-nodeid">{{ l.node_id }}</span>
               <span class="log-summary" v-if="l.error" :title="l.error">{{ l.error }}</span>
               <span class="log-summary" v-else-if="l.summary">{{ l.summary }}</span>
+              <span class="log-step" v-else-if="l.status === 'running' && l.step" :title="l.step">{{ l.step }}</span>
               <span class="log-dur" v-if="l.status === 'running' && runningSince[l.node_id]">{{ fmtElapsed(nowTick - runningSince[l.node_id]) }}</span>
               <span class="log-dur" v-else-if="l.duration_ms != null">{{ l.duration_ms }}ms</span>
               <span class="log-expand">{{ expandedLog === i ? '▾ 收起' : '▸ 详情' }}</span>
@@ -2626,6 +2630,7 @@ watch(nowTick, () => {
 .log-card.stc-skipped .log-ico { opacity: .5; }
 .log-title { flex-shrink: 0; font-weight: 600; color: var(--c-fg); }
 .log-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--c-secondary); }
+.log-step { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--c-primary, #4ade80); font-size: 11px; }
 .log-node.st-failed .log-summary { color: var(--c-danger); }
 .log-dur { flex-shrink: 0; color: var(--c-secondary); opacity: .8; }
 .log-expand { flex-shrink: 0; color: var(--c-secondary); }

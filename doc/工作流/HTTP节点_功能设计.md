@@ -197,6 +197,8 @@ async def _exec_http(cfg: dict, context: dict) -> dict:
 | 输出投影 | `_project_output` + `FIXED_OUTPUTS["http"]` 自动生效 |
 | 输出截断 | `_truncate_output` / `WORKFLOW_NODE_OUTPUT_LIMIT` 自动生效 |
 | SSE 事件 | `node_started / node_progress / node_finished / node_failed` 全部复用，无新事件 |
+| SSE 响应透传（2026-09-09） | 响应 `Content-Type` 为 `text/event-stream` 且引擎有进度通道时，逐事件解析 `data:` 行，`progress` / `done` 事件实时回调为 `node_progress`（`step` 文案显示在运行控制台与节点卡片）；最终以**最后一个事件**作为响应体进入输出契约（`data` = 该事件 JSON）。典型用法：派生属性流式物化 `POST /api/derived-properties/{id}/materialize/stream` |
+| 自调用 ASGI 直调（2026-09-09） | URL 指向本服务自身（`127.0.0.1/localhost/::1/0.0.0.0/实际 HOST` 且端口 = `settings.PORT`）时，引擎改用 `httpx.ASGITransport(app)` **进程内直调**，不走 TCP 回环——规避 Windows/uvicorn 下进程自调用偶发 `ConnectError: All connection attempts failed`（实测同一进程第 1 个请求成功、后续连续被拒），也不受系统代理与防火墙干扰。SSE 流式响应在 ASGI 传输下同样逐事件透传。`ConnectError` 失败信息统一追加提示「连接被拒绝：目标服务未监听该端口，或地址/端口配置有误」 |
 | 并行 / fail-fast | LangGraph superstep 调度自动覆盖（多个 HTTP 节点自动并发） |
 | 人工节点挂起/续跑 | 重放机制不感知节点类型，HTTP 节点天然兼容 |
 

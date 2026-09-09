@@ -5,6 +5,7 @@
 - 函数：只读计算，可被动作/视图/派生属性/智能体复用，确定性函数支持 TTL 缓存；
 - 派生属性：来源为函数（实时算）或图计算指标（读图分析结果），可物化写入实体属性。
 """
+import asyncio
 import json
 import re
 
@@ -14,7 +15,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from database import get_db
+from database import async_session, get_db
 from providers.llm import build_llm, chunk_reasoning, chunk_text
 from schemas import (
     AiAssistServiceCodeRequest,
@@ -186,6 +187,49 @@ async def materialize_derived_property(
     if err:
         raise _nf(err)
     return res
+
+
+@router.post("/derived-properties/{prop_id}/materialize/stream")
+async def materialize_derived_property_stream(prop_id: str, limit: int = 1000):
+    """流式物化（SSE）：逐批下发物化进度，供工作流 HTTP 节点实时透传到运行控制台。
+
+    事件契约：progress{done,total,ok,fail,message} → done{property_id,updated,failed,total,...}
+    → error{error}（失败时）→ [DONE]。
+    """
+    def _evt(payload: dict) -> str:
+        return f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+
+    async def gen():
+        async with async_session() as db:
+            queue: asyncio.Queue = asyncio.Queue()
+
+            async def on_progress(info: dict):
+                await queue.put(info)
+
+            task = asyncio.create_task(
+                DerivedPropertyService.materialize(db, prop_id, limit, on_progress=on_progress))
+            while not (task.done() and queue.empty()):
+                try:
+                    info = await asyncio.wait_for(queue.get(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    continue  # 等待下一批进度
+                yield _evt({"type": "progress", **info})
+            try:
+                res, err = task.result()
+            except Exception as e:  # 物化过程抛异常：以 error 事件收尾
+                yield _evt({"type": "error", "error": str(e)})
+                yield "data: [DONE]\n\n"
+                return
+            if err:
+                yield _evt({"type": "error", "error": err})
+            else:
+                yield _evt({"type": "done", **res})
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/derived-properties/{prop_id}/test")

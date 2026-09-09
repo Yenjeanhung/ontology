@@ -310,7 +310,7 @@ def _workflow_a(base_url: str, props: list[dict]) -> dict:
             "id": nid, "type": "http", "title": f"物化-{prop['name']}",
             "config": {
                 "method": "POST",
-                "url": f"{base_url}/api/derived-properties/{prop['id']}/materialize",
+                "url": f"{base_url}/api/derived-properties/{prop['id']}/materialize/stream",
                 "params": {"limit": 5000},
                 "timeout_seconds": 120,
             },

@@ -993,8 +993,28 @@ def _http_body_preview(body_kwargs: dict):
     return None
 
 
-async def _exec_http(cfg: dict, context: dict) -> dict:
-    """执行 HTTP 请求节点（输出契约见设计文档 §3.3，失败语义见 §3.4）。"""
+def _is_self_api(url: str) -> bool:
+    """URL 是否指向本服务自身（命中则进程内 ASGI 直调，绕过 TCP 回环）。"""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    local_hosts = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+    if settings.HOST and settings.HOST.lower() not in ("0.0.0.0", "::"):
+        local_hosts.add(settings.HOST.lower())
+    return host in local_hosts and port == settings.PORT
+
+
+async def _exec_http(cfg: dict, context: dict, on_progress=None) -> dict:
+    """执行 HTTP 请求节点（输出契约见设计文档 §3.3，失败语义见 §3.4）。
+
+    on_progress(evt)：响应为 text/event-stream 时逐事件回调（progress/done），
+    由引擎主循环转发为 node_progress，实现长任务的实时进度透传。
+    """
     cfg = cfg or {}
     method, url, headers, params, body_kwargs = _http_build_request(cfg, context)
 
@@ -1019,11 +1039,17 @@ async def _exec_http(cfg: dict, context: dict) -> dict:
     resp: Optional[httpx.Response] = None
     body_bytes = b""
     too_large = False
-    async with httpx.AsyncClient(
+    client_kwargs: dict = dict(
         timeout=timeout,
         verify=bool(cfg.get("verify_ssl", True)),
         follow_redirects=bool(cfg.get("follow_redirects", True)),
-    ) as client:
+    )
+    if _is_self_api(url):
+        # URL 指向本服务自身 → 进程内 ASGI 直调：绕过 TCP 回环（Windows 下 uvicorn
+        # 进程自调用偶发 ConnectError），也不受系统代理/防火墙干扰。
+        from server import app  # 延迟导入：避免循环依赖（server → routers → engine）
+        client_kwargs["transport"] = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(**client_kwargs) as client:
         for attempt in range(max_retries + 1):
             attempts = attempt + 1
             resp = None  # 每次尝试独立持有，失败不留上次已关闭的响应
@@ -1042,16 +1068,42 @@ async def _exec_http(cfg: dict, context: dict) -> dict:
                     last_error = ""
                 # 流式读取响应体：必须在 client 生命周期内完成（连接池关闭后再读流会 ReadError）。
                 # 超过大小上限立即中断（防止大响应打爆内存）；读流中途断开按传输错误走重试。
-                chunks: list[bytes] = []
-                total = 0
-                too_large = False
-                async for chunk in resp.aiter_bytes():
-                    total += len(chunk)
-                    if total > max_bytes:
-                        too_large = True
-                        break
-                    chunks.append(chunk)
-                body_bytes = b"".join(chunks)
+                content_type_header = (resp.headers.get("content-type") or "").lower()
+                if "text/event-stream" in content_type_header and on_progress is not None:
+                    # SSE 响应（如派生属性流式物化）：逐事件解析，progress/done 实时回调；
+                    # 最终以最后一个事件作为响应体进入输出契约（data = done 的 JSON）。
+                    sse_events: list[dict] = []
+                    sse_bytes = 0
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        payload = line[6:].strip()
+                        if not payload or payload == "[DONE]":
+                            continue
+                        sse_bytes += len(line)
+                        if sse_bytes > max_bytes:
+                            too_large = True
+                            break
+                        try:
+                            evt = json.loads(payload)
+                        except (ValueError, TypeError):
+                            continue
+                        sse_events.append(evt)
+                        if isinstance(evt, dict) and evt.get("type") in ("progress", "done"):
+                            on_progress(evt)
+                    body_bytes = (json.dumps(sse_events[-1], ensure_ascii=False, default=str)
+                                  .encode("utf-8") if sse_events else b"")
+                else:
+                    chunks: list[bytes] = []
+                    total = 0
+                    too_large = False
+                    async for chunk in resp.aiter_bytes():
+                        total += len(chunk)
+                        if total > max_bytes:
+                            too_large = True
+                            break
+                        chunks.append(chunk)
+                    body_bytes = b"".join(chunks)
                 break  # 拿到完整响应（含超限：重试无意义）
             except (httpx.TimeoutException, httpx.TransportError) as e:
                 last_error = f"{type(e).__name__}: {_short(e, 160)}"
@@ -1079,8 +1131,11 @@ async def _exec_http(cfg: dict, context: dict) -> dict:
                 "text": "", "duration_ms": duration_ms, "attempts": attempts, "error": err}
 
     if resp is None:
-        logger.warning("[http] ← %s %s 请求失败（尝试 %d 次）：%s", method, url, attempts, last_error)
-        return _fail(f"HTTP 请求失败（尝试 {attempts} 次）：{last_error}")
+        hint = ""
+        if isinstance(last_error, str) and "ConnectError" in last_error:
+            hint = "（连接被拒绝：目标服务未监听该端口，或地址/端口配置有误）"
+        logger.warning("[http] ← %s %s 请求失败（尝试 %d 次）：%s%s", method, url, attempts, last_error, hint)
+        return _fail(f"HTTP 请求失败（尝试 {attempts} 次）：{last_error}{hint}")
 
     if too_large:
         return _fail(f"响应体超过 {settings.WORKFLOW_HTTP_MAX_RESPONSE_MB}MB 上限")
@@ -1148,7 +1203,7 @@ async def exec_http_node_test(config: dict, context: dict) -> dict:
     }
 
 
-async def _execute_node(node: dict, context: dict, db) -> dict:
+async def _execute_node(node: dict, context: dict, db, on_progress=None) -> dict:
     t = node["type"]
     cfg = node.get("config") or {}
     if t == "start":
@@ -1179,7 +1234,7 @@ async def _execute_node(node: dict, context: dict, db) -> dict:
     if t == "code":
         return await _exec_code(cfg, context)
     if t == "http":
-        return await _exec_http(cfg, context)
+        return await _exec_http(cfg, context, on_progress=on_progress)
     raise ValueError(f"未知节点类型：{t}")
 
 
@@ -1662,7 +1717,15 @@ def _make_node_fn(rt: _Runtime, node: dict):
             logger.info("[run %s] 使用流式执行大模型节点 %s", rt.run_id, nid)
             task = asyncio.create_task(_exec_llm_stream(node.get("config") or {}, context, _on_token, _on_step, _on_reasoning))
         else:
-            task = asyncio.create_task(_execute_node(node, context, rt.db))
+            def _on_http_progress(evt: dict):
+                # HTTP 节点的 SSE 进度事件 → node_progress.step，控制台/节点卡片实时显示
+                msg = evt.get("message")
+                if evt.get("type") == "done" and not msg:
+                    msg = (f"完成：更新 {evt.get('updated', 0)} / 失败 {evt.get('failed', 0)}"
+                           f" / 共 {evt.get('total', '?')}")
+                if msg:
+                    _emit_progress({"step": str(msg)})
+            task = asyncio.create_task(_execute_node(node, context, rt.db, on_progress=_on_http_progress))
         try:
             # 非流式节点：执行期间每 2s 发一次 node_progress 心跳
             # 流式节点：token 到达时已由 _on_token 持续发送，这里只需等待完成

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Awaitable, Callable
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -497,29 +498,47 @@ class DerivedPropertyService:
         return out
 
     @staticmethod
-    async def materialize(db: AsyncSession, prop_id: str, limit: int = 1000) -> tuple[dict | None, str | None]:
-        """物化：把派生属性值写入 entities.properties（键 = 派生属性 code）。"""
+    async def materialize(db: AsyncSession, prop_id: str, limit: int = 1000,
+                          on_progress: "Callable[[dict], Awaitable[None]] | None" = None,
+                          ) -> tuple[dict | None, str | None]:
+        """物化：把派生属性值写入 entities.properties（键 = 派生属性 code）。
+
+        on_progress(info)：可选进度回调，开始时与每处理 50 个实体调用一次，
+        info = {"done", "total", "ok", "fail", "code", "message"}，供流式接口透传实时进度。
+        """
         dp = await db.get(OntologyDerivedProperty, prop_id)
         if not dp:
             return None, "派生属性不存在"
         entities = (await db.execute(
             select(Entity).where(Entity.ontology_id == dp.ontology_id).limit(limit)
         )).scalars().all()
+        total = len(entities)
+
+        async def _report(done: int, ok: int, fail: int):
+            if on_progress:
+                await on_progress({
+                    "done": done, "total": total, "ok": ok, "fail": fail, "code": dp.code,
+                    "message": f"已处理 {done}/{total} · 成功 {ok} · 失败 {fail}",
+                })
+
+        await _report(0, 0, 0)
         ok = fail = 0
-        for ent in entities:
+        for i, ent in enumerate(entities, 1):
             computed = await DerivedPropertyService.resolve_value(db, dp, ent)
             if not computed.get("ok"):
                 fail += 1
-                continue
-            props = _load_json(ent.properties, {}) or {}
-            props[dp.code] = computed.get("value")
-            ent.properties = _dump_json(props)
-            ent.updated_at = _now()
-            ok += 1
+            else:
+                props = _load_json(ent.properties, {}) or {}
+                props[dp.code] = computed.get("value")
+                ent.properties = _dump_json(props)
+                ent.updated_at = _now()
+                ok += 1
+            if i % 50 == 0 or i == total:
+                await _report(i, ok, fail)
         dp.materialize_mode = "materialized"
         dp.last_materialized_at = _now()
         await db.commit()
-        return {"property_id": dp.id, "updated": ok, "failed": fail,
+        return {"property_id": dp.id, "updated": ok, "failed": fail, "total": total,
                 "last_materialized_at": dp.last_materialized_at}, None
 
     @staticmethod
