@@ -1792,9 +1792,20 @@ def _make_node_fn(rt: _Runtime, node: dict):
                 "step": "思考中...",
             })
 
+        # ── DB 会话隔离：LangGraph 会并行执行同一 superstep 内的无依赖节点，
+        # 若共用 rt.db（同一条 asyncpg 连接），并发 SQL 会触发
+        # InterfaceError: another operation is in progress。
+        # 因此除人工节点（串行挂起，用 rt.db 建单）外，每个节点执行都持有独立会话。
         if node.get("type") == "agent":
             logger.info("[run %s] 使用流式执行智能体节点 %s", rt.run_id, nid)
-            task = asyncio.create_task(_exec_agent_stream(node.get("config") or {}, context, rt.db, _on_token, _on_step, _on_reasoning))
+
+            async def _run_agent_with_own_db():
+                async with async_session() as node_db:
+                    return await _exec_agent_stream(
+                        node.get("config") or {}, context, node_db,
+                        _on_token, _on_step, _on_reasoning)
+
+            task = asyncio.create_task(_run_agent_with_own_db())
         elif node.get("type") == "llm":
             logger.info("[run %s] 使用流式执行大模型节点 %s", rt.run_id, nid)
             task = asyncio.create_task(_exec_llm_stream(node.get("config") or {}, context, _on_token, _on_step, _on_reasoning))
@@ -1807,7 +1818,12 @@ def _make_node_fn(rt: _Runtime, node: dict):
                            f" / 共 {evt.get('total', '?')}")
                 if msg:
                     _emit_progress({"step": str(msg)})
-            task = asyncio.create_task(_execute_node(node, context, rt.db, on_progress=_on_http_progress))
+
+            async def _run_node_with_own_db():
+                async with async_session() as node_db:
+                    return await _execute_node(node, context, node_db, on_progress=_on_http_progress)
+
+            task = asyncio.create_task(_run_node_with_own_db())
         try:
             # 非流式节点：执行期间每 2s 发一次 node_progress 心跳
             # 流式节点：token 到达时已由 _on_token 持续发送，这里只需等待完成
