@@ -21,7 +21,6 @@ import PythonEditor from './PythonEditor.vue'
 import ConditionRuleBuilder from './ConditionRuleBuilder.vue'
 import HumanTaskForm from './HumanTaskForm.vue'
 import { TYPE_META } from './nodeMeta.js'
-import { useEscClose } from '../../composables/useEscClose'
 
 const route = useRoute()
 const router = useRouter()
@@ -1741,16 +1740,6 @@ watch(nowTick, () => {
     if (n && n.data.status === 'running') n.data.elapsedText = fmtElapsed(nodeElapsed(nid))
   }
 })
-
-// 弹窗支持按 ESC 关闭
-useEscClose(() => [
-  [conditionModalOpen.value, closeConditionModal],
-  [!!historyDetail.value, closeRunDetail],
-  [runModal.value, () => { runModal.value = false }],
-  [!!humanModalNodeId.value, closeHumanModal],
-  [contextMenu.visible, closeContextMenu],
-])
-
 </script>
 
 <template>

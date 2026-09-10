@@ -9,7 +9,6 @@ import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
 import ConditionRuleBuilder from '../workflow/ConditionRuleBuilder.vue'
 import { flowToCode, fnReturns } from '../../utils/flowToCode'
-import { useEscClose } from '../../composables/useEscClose'
 
 const props = defineProps({
   /** 编排图 {schema_version, nodes, edges, layout} */
@@ -355,12 +354,6 @@ function applyToCode() {
   showCode.value = false
   emit('apply-to-code', generatedCode.value)
 }
-
-// 弹窗支持按 ESC 关闭
-useEscClose(() => [
-  [showCode.value, () => { showCode.value = false }],
-])
-
 </script>
 
 <template>

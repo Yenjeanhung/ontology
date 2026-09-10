@@ -13,7 +13,6 @@ import PythonEditor from '../workflow/PythonEditor.vue'
 import ActionFlowCanvas from './ActionFlowCanvas.vue'
 import { flowToCode } from '../../utils/flowToCode'
 import { useToast } from '../../composables/useToast'
-import { useEscClose } from '../../composables/useEscClose'
 
 const route = useRoute()
 const router = useRouter()
@@ -725,13 +724,6 @@ async function runBatch() {
     batchRunning.value = false
   }
 }
-
-// 弹窗支持按 ESC 关闭
-useEscClose(() => [
-  [showRuleModal.value, () => { showRuleModal.value = false }],
-  [showEffectModal.value, () => { showEffectModal.value = false }],
-])
-
 </script>
 
 <template>
