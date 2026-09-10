@@ -1,9 +1,11 @@
 """工作流路由：定义 CRUD + 运行（SSE）+ 运行记录 + 节点面板数据源。"""
 from __future__ import annotations
 
+import io
 import json
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -180,6 +182,139 @@ async def get_workflow_run(workflow_id: str, run_id: str, db: AsyncSession = Dep
         "started_at": row.started_at, "finished_at": row.finished_at,
         "duration_ms": row.duration_ms,
     }
+
+
+# ─────────────────────── 运行简报导出 ───────────────────────
+
+_RUN_STATUS_TEXT = {
+    "succeeded": "成功", "failed": "失败", "cancelled": "已取消",
+    "waiting": "等待人工处理", "running": "运行中",
+}
+
+
+def _report_sections(row: WorkflowRun) -> tuple[str, list[tuple[str, dict | list | str]]]:
+    """从运行记录提取（状态文本, [(标题, 输出内容), ...]）。
+
+    落库 outputs 兼容两种结构：按节点 id 分组 {node_id: out}（旧）与
+    引擎展平后的结束输出 {输出名: 值}（现行为），以 node_states 标题表区分。
+    """
+    node_states = _json(row.node_states) or {}
+    titles = {nid: st.get("title") or nid
+              for nid, st in node_states.items() if isinstance(st, dict)}
+    outputs = _json(row.outputs) or {}
+    status = _RUN_STATUS_TEXT.get(row.status, row.status or "-")
+    if not outputs:
+        return status, []
+    if all(k in titles for k in outputs):
+        return status, [(titles[k], v) for k, v in outputs.items()]
+    return status, [("运行输出", outputs)]
+
+
+def _fmt_value(v) -> str:
+    if isinstance(v, str):
+        return v
+    return json.dumps(v, ensure_ascii=False, indent=2, default=str)
+
+
+def _build_report_markdown(wf_name: str, row: WorkflowRun) -> str:
+    """把一次运行的结束输出组织为 Markdown 简报（长文本值作正文段落，短值作键值列表）。"""
+    status, sections = _report_sections(row)
+    lines = [
+        f"# {wf_name} · 运行简报",
+        "",
+        f"- 运行 ID：`{row.id}`",
+        f"- 状态：{status}",
+        f"- 开始时间：{row.started_at or '-'}",
+        f"- 结束时间：{row.finished_at or '-'}",
+        f"- 耗时：{row.duration_ms if row.duration_ms is not None else '-'} ms",
+        "",
+    ]
+    if row.error:
+        lines += ["## 运行错误", "", "```text", str(row.error), "```", ""]
+    if not sections:
+        lines += ["## 运行输出", "", "（无输出）", ""]
+    for title, out in sections:
+        lines += [f"## {title}", ""]
+        if isinstance(out, dict):
+            for k, v in out.items():
+                text = _fmt_value(v).rstrip()
+                if "\n" in text or len(text) > 80:
+                    lines += [f"### {k}", "", text, ""]
+                else:
+                    lines.append(f"- **{k}**：{text}")
+            lines.append("")
+        else:
+            lines += ["```json", _fmt_value(out), "```", ""]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _build_report_docx(wf_name: str, row: WorkflowRun) -> bytes:
+    """把一次运行的结束输出组织为 Word 简报（python-docx，已在 requirements 中）。"""
+    from docx import Document
+
+    status, sections = _report_sections(row)
+    doc = Document()
+    doc.add_heading(f"{wf_name} · 运行简报", level=0)
+    for label, value in [
+        ("运行 ID", row.id), ("状态", status),
+        ("开始时间", row.started_at or "-"), ("结束时间", row.finished_at or "-"),
+        ("耗时", f"{row.duration_ms} ms" if row.duration_ms is not None else "-"),
+    ]:
+        p = doc.add_paragraph()
+        r = p.add_run(f"{label}：")
+        r.bold = True
+        p.add_run(str(value))
+    if row.error:
+        doc.add_heading("运行错误", level=1)
+        doc.add_paragraph(str(row.error))
+    if not sections:
+        doc.add_heading("运行输出", level=1)
+        doc.add_paragraph("（无输出）")
+    for title, out in sections:
+        doc.add_heading(title, level=1)
+        if isinstance(out, dict):
+            for k, v in out.items():
+                text = _fmt_value(v).strip()
+                if "\n" in text or len(text) > 80:
+                    doc.add_heading(k, level=2)
+                    doc.add_paragraph(text)
+                else:
+                    p = doc.add_paragraph()
+                    r = p.add_run(f"{k}：")
+                    r.bold = True
+                    p.add_run(text)
+        else:
+            doc.add_paragraph(_fmt_value(out))
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+@router.get("/workflows/{workflow_id}/runs/{run_id}/export")
+async def export_workflow_run(
+    workflow_id: str, run_id: str,
+    format: str = Query(default="md", pattern="^(md|docx)$"),
+    db: AsyncSession = Depends(get_db),
+):
+    """把一次运行的最终输出导出为可下载的简报文件：md=Markdown / docx=Word。"""
+    row = await db.get(WorkflowRun, run_id)
+    if not row or row.workflow_id != workflow_id:
+        raise HTTPException(404, "运行记录不存在")
+    wf = await WorkflowService.get(db, workflow_id)
+    wf_name = ((wf or {}).get("name") or workflow_id).strip() or "工作流"
+    stem = f"{wf_name}-运行简报-{(row.finished_at or row.started_at or '')[:10]}"
+    if format == "docx":
+        data = _build_report_docx(wf_name, row)
+        media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = f"{stem}.docx"
+    else:
+        data = _build_report_markdown(wf_name, row).encode("utf-8")
+        media = "text/markdown; charset=utf-8"
+        filename = f"{stem}.md"
+    return Response(
+        content=data, media_type=media,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.delete("/workflows/{workflow_id}/runs/{run_id}")

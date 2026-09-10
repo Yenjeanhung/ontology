@@ -2271,6 +2271,13 @@ export async function cancelWorkflowRun(workflowId, runId) {
   return data
 }
 
+// 导出一次运行的简报文件（format: 'md' | 'docx'），返回 Blob
+export async function exportWorkflowRun(workflowId, runId, format = 'md') {
+  const res = await fetch(`${API}/api/workflows/${workflowId}/runs/${runId}/export?format=${format}`)
+  if (!res.ok) throw new Error('导出运行简报失败')
+  return res.blob()
+}
+
 // ───────────────────── HTTP 节点 · 测试请求 ─────────────────────
 
 /** HTTP 节点「发送测试」：执行一次请求并返回输出 + 脱敏请求回显（不落库）。 */

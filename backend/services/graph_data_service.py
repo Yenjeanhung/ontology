@@ -352,6 +352,14 @@ class GraphDataService:
         node_map = {e.id: e for e in ent_rows}
         node_map.update(extra_entities)
 
+        # 过滤悬空关系：relations 表可能存在引用已删除实体的孤儿记录，
+        # 若不过滤会在构建 records 时 KeyError，且 edges 会出现悬空边
+        rel_rows = [
+            r
+            for r in rel_rows
+            if r.source_entity_id in node_map and r.target_entity_id in node_map
+        ]
+
         nodes = [
             {
                 "id": f"entity:{e.id}",

@@ -17,6 +17,7 @@ import asyncio
 import base64
 import ipaddress
 import json
+from langgraph.graph.state import CompiledStateGraph
 import logging
 import re
 import time
@@ -947,6 +948,15 @@ def _http_build_request(cfg: dict, context: dict) -> tuple[str, str, dict, dict,
     url = str(render(cfg.get("url") or "", context) or "").strip()
     if not re.match(r"^https?://", url, re.I):
         raise ValueError(f"URL 必须以 http:// 或 https:// 开头：{_short(url, 120)}")
+    # 变量渲染失败兜底：缺失的上游值会以 {{x.y}} 原样残留在 URL 里，直接给出可操作的报错
+    leftover = [f"{{{{{_v}}}}}" for _v in _VAR_RE.findall(url)]
+    if not leftover and "var(" in url:
+        leftover = ["var(…)"]
+    if leftover:
+        raise ValueError(
+            f"URL 中的变量 {'、'.join(leftover)} 没有可用的值：请填写运行入参"
+            '（或在「发送测试」的样例变量中提供，如 {"start": {"entity_id": "xxx"}}）'
+        )
 
     params = {str(k): v for k, v in (render(cfg.get("params") or {}, context) or {}).items() if v is not None}
     headers = {str(k): str(v) for k, v in (render(cfg.get("headers") or {}, context) or {}).items()}
@@ -1930,7 +1940,7 @@ def _build_graph(rt: _Runtime):
         if node["type"] == "end":
             g.add_edge(node["id"], END)
 
-    compiled = g.compile()
+    compiled: CompiledStateGraph[GraphState, None, GraphState, GraphState] = g.compile()
     logger.info("[run %s] 图编译完成", rt.run_id)
     return compiled
 

@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -57,6 +58,9 @@ async def start():
 
     _scheduler.start()
     logger.info("调度引擎已启动，已加载 %d 个启用计划", len(_scheduler.get_jobs()))
+    # 将调度器真实排期回写 DB：服务重启后网格可能变化，避免列表展示过期时间
+    for job in _scheduler.get_jobs():
+        await _persist_next_run(job.id)
 
 
 async def shutdown():
@@ -73,6 +77,15 @@ def is_running() -> bool:
 
 # ───────────────────────────── job 管理 ─────────────────────────────
 
+def _parse_dt(value) -> Optional[datetime]:
+    """解析 ISO 时间字符串，失败返回 None（不抛异常）。"""
+    try:
+        dt = datetime.fromisoformat(str(value))
+        return dt.replace(tzinfo=_tz) if dt.tzinfo is None else dt
+    except (TypeError, ValueError):
+        return None
+
+
 def _build_trigger(schedule: Schedule):
     """根据计划类型构造 APScheduler 触发器。"""
     cfg = json.loads(schedule.trigger_config or "{}")
@@ -85,11 +98,17 @@ def _build_trigger(schedule: Schedule):
         every = float(cfg.get("every", 1))
         kwargs = {"minutes": every} if unit == "minutes" else \
                  {"hours": every} if unit == "hours" else {"days": every}
+        # 进程重启重建 job 时，以 DB 记录的 next_run_at 作为网格锚点延续排期。
+        # 否则每次重启都按「启动时刻 + interval」重新起算，网格漂移，
+        # 列表展示的「下次运行」永远等不到（例如显示 21:48:14 实际排在 21:57:54）。
+        start_date = _parse_dt(schedule.next_run_at)
+        if start_date is not None:
+            return IntervalTrigger(timezone=_tz, start_date=start_date, **kwargs)
         return IntervalTrigger(timezone=_tz, **kwargs)
     if schedule.trigger == "once":
-        run_at = datetime.fromisoformat(cfg["run_at"])
-        if run_at.tzinfo is None:
-            run_at = run_at.replace(tzinfo=_tz)
+        run_at = _parse_dt(cfg["run_at"])
+        if run_at is None:
+            raise ValueError(f"once.run_at 非法: {cfg.get('run_at')!r}")
         return DateTrigger(run_time=run_at, timezone=_tz)
     raise ValueError(f"未知触发器: {schedule.trigger}")
 
@@ -118,6 +137,26 @@ def _remove_job(schedule_id: str):
         _scheduler.remove_job(schedule_id)
 
 
+async def _persist_next_run(schedule_id: str):
+    """把 APScheduler 中 job 的真实下次触发时间回写 DB。
+
+    列表展示的 next_run_at 此前只在创建/更新/执行完成时按「理论值」刷新，
+    与调度器内存中的实际排期脱节（重启后尤其明显）→ 出现「到点不执行」的假象。
+    """
+    if not is_running():
+        return
+    job = _scheduler.get_job(schedule_id)
+    nxt = job.next_run_time.isoformat() if (job and job.next_run_time) else None
+    async with async_session() as db:
+        s = (await db.execute(
+            select(Schedule).where(Schedule.id == schedule_id)
+        )).scalar_one_or_none()
+        if not s:
+            return
+        s.next_run_at = nxt
+        await db.commit()
+
+
 async def sync_job(schedule_id: str):
     """计划创建/更新/启停后，同步调度器中的 job。"""
     if not is_running():
@@ -132,6 +171,7 @@ async def sync_job(schedule_id: str):
     _remove_job(schedule_id)
     if s.enabled:
         _add_job(s)
+        await _persist_next_run(schedule_id)
 
 
 # ───────────────────────────── 触发回调 ─────────────────────────────
@@ -217,9 +257,13 @@ async def _record_result(schedule_id: str, status: str, error: str = None):
         else:
             s.consecutive_failures += 1
         s.updated_at = datetime.now().isoformat()
-        # 刷新下次运行时间
+        # 刷新下次运行时间：优先取调度器 job 的真实排期（与实际触发一致），
+        # job 不存在时（如 once 已完成被移除）退回理论计算值
         if s.enabled:
-            s.next_run_at = svc.compute_next_run(s.trigger, json.loads(s.trigger_config or "{}"))
+            job = _scheduler.get_job(schedule_id) if is_running() else None
+            nxt = job.next_run_time if job else None
+            s.next_run_at = nxt.isoformat() if nxt else \
+                svc.compute_next_run(s.trigger, json.loads(s.trigger_config or "{}"))
         await db.commit()
 
         # 告警：连续失败达阈值且未静默

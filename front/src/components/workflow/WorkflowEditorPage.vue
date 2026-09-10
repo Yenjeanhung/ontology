@@ -12,6 +12,7 @@ import {
   getWorkflow, updateWorkflow, fetchWorkflowPalette, runWorkflowStream, resumeWorkflowStream,
   fetchEntities, fetchEntityServices, fetchOntologyServices, getEntityDetail,
   fetchWorkflowRuns, getWorkflowRun, deleteWorkflowRun,
+  exportWorkflowRun, triggerDownload,
   fetchOntologyCategories, fetchOntologies,
   submitHumanDecision as submitHumanDecisionApi, cancelWorkflowRun as cancelWorkflowRunApi,
   testHttpNode,
@@ -695,6 +696,21 @@ function onHttpBodyTypeChange() {
 const httpTesting = ref(false)
 const httpTestResult = ref(null)   // { output, request_preview }
 const httpTestCtxText = ref('{}')  // 样例变量 JSON
+// 选中 HTTP 节点时：用开始节点入参（默认值优先）自动生成样例变量，
+// 避免 {{start.x}} 因缺值原样残留进 URL 而 404。用户已手改过则不覆盖。
+function syncHttpTestCtx() {
+  const txt = (httpTestCtxText.value || '').trim()
+  if (txt && txt !== '{}') return
+  const start = nodes.value.find(n => n.type === 'start')
+  const inputs = Array.isArray(start?.data?.config?.inputs) ? start.data.config.inputs : []
+  const sample = {}
+  for (const it of inputs) {
+    if (!it?.name) continue
+    if (`${it.default ?? ''}`.trim() !== '') { sample[it.name] = it.default; continue }
+    sample[it.name] = it.type === 'number' ? 0 : it.type === 'boolean' ? false : ''
+  }
+  httpTestCtxText.value = JSON.stringify({ start: sample }, null, 2)
+}
 async function runHttpTest() {
   if (httpTesting.value) return
   let context = {}
@@ -927,6 +943,24 @@ async function openRunDetail(runId) {
   }
 }
 function closeRunDetail() { historyDetail.value = null }
+
+// ── 简报下载：把一次运行的结束输出导出为 Markdown / Word 文件 ──
+const lastRunOk = ref(false)            // 最近一次当前运行是否成功（控制台头部展示下载入口）
+const exportingRun = ref('')            // 防重复点击：`${runId}:${format}`
+async function downloadRunReport(runId, format) {
+  if (!runId || exportingRun.value) return
+  exportingRun.value = `${runId}:${format}`
+  try {
+    const blob = await exportWorkflowRun(wfId, runId, format)
+    const stamp = new Date().toISOString().slice(0, 10)
+    triggerDownload(blob, `${(wfName.value || '工作流').trim()}-运行简报-${stamp}.${format}`)
+    toast.success(`已导出 ${format.toUpperCase()} 简报`)
+  } catch (e) {
+    toast.error(`导出失败: ${e.message}`)
+  } finally {
+    exportingRun.value = ''
+  }
+}
 
 // 把一条历史 run 的 node_states 回放到画布（节点染色 + 抽开启节点输出面板）
 async function replayRun(runId) {
@@ -1459,6 +1493,7 @@ function streamCallbacks() {
           return
         }
         awaitingHuman.value = false
+        lastRunOk.value = d.status === 'succeeded'
         logs.value.push({ kind: 'meta', text: `工作流${d.status === 'failed' ? '失败' : '完成'} · 耗时 ${d.duration_ms}ms` })
         // 运行结束后刷新历史列表（不阻塞 UI）
         refreshHistory()
@@ -1539,6 +1574,7 @@ async function startRun() {
   clearStatus()
   running.value = true
   awaitingHuman.value = false
+  lastRunOk.value = false
   expandedLog.value = -1
   consoleCollapsed.value = false
   try {
@@ -1595,6 +1631,7 @@ watch(selectedNodeId, (id) => {
     if (n?.type === 'service') loadSvc(n.data.config)
     if (n?.type === 'end') syncEndRows()
     if (n?.type === 'start') syncInputRows()
+    if (n?.type === 'http') syncHttpTestCtx()
     if (n?.type === 'agent' || n?.type === 'llm' || n?.type === 'code') { syncStructRows() }
   }
 })
@@ -1698,22 +1735,27 @@ function flushStructRows() {
   ]
 }
 
-// 开始节点输入变量（config.inputs：[{name,label,type,required}]）行编辑，数据结构与旧 JSON 完全一致
+// 开始节点输入变量（config.inputs：[{name,label,type,required,default}]）行编辑，数据结构与旧 JSON 完全一致
 const inputRows = ref([])
 function syncInputRows() {
   const arr = selectedConfig.value?.inputs
   inputRows.value = Array.isArray(arr)
-    ? arr.map(f => ({ name: f.name || '', label: f.label || '', type: f.type || 'string', required: !!f.required }))
+    ? arr.map(f => ({ name: f.name || '', label: f.label || '', type: f.type || 'string', required: !!f.required, default: f.default ?? '' }))
     : []
 }
 function flushInputRows() {
   if (!selectedNode.value) return
-  selectedNode.value.data.config.inputs = inputRows.value
+  const rows = inputRows.value
     .filter(r => r.name.trim())
-    .map(r => ({ name: r.name.trim(), label: r.label.trim(), type: r.type, required: !!r.required }))
+    .map(r => ({ name: r.name.trim(), label: r.label.trim(), type: r.type, required: !!r.required, default: r.default ?? '' }))
+  selectedNode.value.data.config.inputs = rows
+  // 同步引擎兜底用的 defaults（{名: 值}）：定时触发/空参数运行时 {{start.x}} 也能拿到默认值
+  selectedNode.value.data.config.defaults = Object.fromEntries(
+    rows.filter(r => `${r.default}`.trim() !== '').map(r => [r.name, r.default])
+  )
 }
 function addInputRow() {
-  inputRows.value.push({ name: '', label: '', type: 'string', required: false })
+  inputRows.value.push({ name: '', label: '', type: 'string', required: false, default: '' })
   flushInputRows()
 }
 function removeInputRow(i) {
@@ -1847,6 +1889,7 @@ watch(nowTick, () => {
                     <span class="st-col st-col-name">字段名</span>
                     <span class="st-col st-col-type">类型</span>
                     <span class="st-col st-col-desc">显示名 / 说明</span>
+                    <span class="st-col st-col-desc">默认值</span>
                     <span class="st-col st-col-req">必填</span>
                     <span class="st-col st-col-op"></span>
                   </div>
@@ -1858,6 +1901,7 @@ watch(nowTick, () => {
                       <option value="boolean">boolean</option>
                     </select>
                     <input type="text" v-model="row.label" placeholder="如 航段实体ID" class="st-col st-col-desc" @change="flushInputRows">
+                    <input type="text" v-model="row.default" placeholder="留空则必填" class="st-col st-col-desc" @change="flushInputRows" title="默认值：运行弹窗预填；定时/空参数运行时引擎兜底">
                     <label class="st-col st-col-req"><input type="checkbox" v-model="row.required" @change="flushInputRows"></label>
                     <button type="button" class="btn sm st-col st-col-op" @click="removeInputRow(i)">×</button>
                   </div>
@@ -2482,7 +2526,15 @@ watch(nowTick, () => {
             </button>
           </div>
           <span class="console-spacer"></span>
-          <button class="btn sm" v-if="logTab === 'current'" @click="clearLogs">清空</button>
+          <template v-if="logTab === 'current'">
+            <button class="btn sm" v-if="lastRunOk && currentRunId"
+                    :disabled="!!exportingRun"
+                    @click="downloadRunReport(currentRunId, 'md')">下载简报 .md</button>
+            <button class="btn sm" v-if="lastRunOk && currentRunId"
+                    :disabled="!!exportingRun"
+                    @click="downloadRunReport(currentRunId, 'docx')">下载 Word</button>
+            <button class="btn sm" @click="clearLogs">清空</button>
+          </template>
           <button class="btn sm" v-else @click="refreshHistory" :disabled="loadingHistory">刷新</button>
         </template>
         <span class="console-spacer" v-else></span>
@@ -2572,6 +2624,12 @@ watch(nowTick, () => {
         <div class="rd-head">
           <span class="rd-title">运行详情 · {{ historyDetail.id }}</span>
           <span class="rd-spacer"></span>
+          <template v-if="historyDetail.status === 'succeeded'">
+            <button class="btn sm" :disabled="!!exportingRun"
+                    @click="downloadRunReport(historyDetail.id, 'md')">下载 .md</button>
+            <button class="btn sm" :disabled="!!exportingRun"
+                    @click="downloadRunReport(historyDetail.id, 'docx')">下载 Word</button>
+          </template>
           <button class="btn sm" @click="closeRunDetail">关闭</button>
         </div>
         <div class="rd-body" v-if="historyDetail.loading">加载中...</div>
