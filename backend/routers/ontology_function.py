@@ -12,10 +12,12 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import async_session, get_db
+from models import Ontology, OntologyFunction
 from providers.llm import build_llm, chunk_reasoning, chunk_text
 from schemas import (
     AiAssistServiceCodeRequest,
@@ -52,6 +54,33 @@ async def list_functions(
     category_id: str, ontology_id: str = "", db: AsyncSession = Depends(get_db)
 ):
     return await FunctionService.list_functions(db, category_id, ontology_id)
+
+
+@router.get("/ontology-functions")
+async def list_functions_for_ontology(
+    ontology_id: str = "", db: AsyncSession = Depends(get_db)
+):
+    """按本体列出可引用函数（全局函数 + 同类别的类别级/本体级函数），供动作编排面板使用。"""
+    if not ontology_id:
+        return []
+    ont = await db.get(Ontology, ontology_id)
+    if not ont:
+        raise _nf("本体不存在")
+    rows = (await db.execute(
+        select(OntologyFunction)
+        .where(
+            or_(
+                OntologyFunction.category_id == "",
+                and_(
+                    OntologyFunction.category_id == ont.category_id,
+                    or_(OntologyFunction.ontology_id == "",
+                        OntologyFunction.ontology_id == ontology_id),
+                ),
+            )
+        )
+        .order_by(OntologyFunction.sort_order, OntologyFunction.name)
+    )).scalars().all()
+    return [serialize_function(f) for f in rows]
 
 
 @router.post("/ontology-categories/{category_id}/functions")

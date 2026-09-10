@@ -1439,6 +1439,50 @@ export async function testOntologyService(serviceId, { params, mock_entity } = {
   return res.json()
 }
 
+// ===== 动作编排（flow）=====
+
+export async function getServiceFlow(serviceId) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}/flow`)
+  if (!res.ok) throw new Error('获取编排图失败')
+  return res.json()
+}
+
+export async function saveServiceFlow(serviceId, flow) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}/flow`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ flow }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '保存编排图失败')
+  }
+  return res.json()
+}
+
+export async function validateServiceFlow(serviceId, flow) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}/validate-flow`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ flow }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '校验编排图失败')
+  }
+  return res.json()
+}
+
+export async function testServiceFlow(serviceId, { params, mock_entity } = {}) {
+  const res = await fetch(`${API}/api/ontology-services/${serviceId}/test-flow`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ params, mock_entity }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(body?.detail || '编排测试运行失败')
+  }
+  return res.json()
+}
+
 // AI 辅助编写代码（SSE 流式）通用实现：onDelta 收增量文本，结束后返回 {code_text, params, explanation}
 async function _aiAssistCodeSSE(url, payload, onDelta, onThinking, signal) {
   const res = await fetch(url, {
@@ -1484,6 +1528,12 @@ async function _aiAssistCodeSSE(url, payload, onDelta, onThinking, signal) {
 export async function aiAssistServiceCode({ prompt, name, code, description, owner_name, current_code, selected_code, history, onDelta, onThinking, signal } = {}) {
   return _aiAssistCodeSSE(`${API}/api/ontology-services/ai-assist`,
     { prompt, name, code, description, owner_name, current_code, selected_code, history }, onDelta, onThinking, signal)
+}
+
+// AI 辅助生成编排草图（SSE 流式）：结束后返回 {explanation, flow, params}
+export async function aiAssistFlow({ prompt, name, code, description, owner_name, current_flow, available_functions, history, onDelta, onThinking, signal } = {}) {
+  return _aiAssistCodeSSE(`${API}/api/ontology-services/ai-assist-flow`,
+    { prompt, name, code, description, owner_name, current_flow, available_functions, history }, onDelta, onThinking, signal)
 }
 
 // AI 辅助编写函数代码（SSE 流式）：onDelta 收正文增量、onThinking 收思考增量，结束后返回 {code_text, params, explanation}
@@ -1536,6 +1586,12 @@ export async function copyServiceToEntity(entityId, serviceId) {
 export async function fetchOntologyFunctions(categoryId, ontologyId = '') {
   const qs = ontologyId ? `?ontology_id=${encodeURIComponent(ontologyId)}` : ''
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/functions${qs}`)
+  if (!res.ok) throw new Error('获取函数列表失败')
+  return res.json()
+}
+
+export async function fetchFunctionsByOntology(ontologyId) {
+  const res = await fetch(`${API}/api/ontology-functions?ontology_id=${encodeURIComponent(ontologyId)}`)
   if (!res.ok) throw new Error('获取函数列表失败')
   return res.json()
 }

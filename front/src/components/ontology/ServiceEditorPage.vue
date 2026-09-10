@@ -3,12 +3,14 @@ import { ref, reactive, watch, computed, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   createOntologyService, createEntityService, updateOntologyService, testOntologyService,
-  aiAssistServiceCode, getOntologyService,
+  aiAssistServiceCode, aiAssistFlow, getOntologyService,
+  getServiceFlow, saveServiceFlow, testServiceFlow, fetchFunctionsByOntology,
   fetchServiceRules, createServiceRule, updateServiceRule, deleteServiceRule,
   fetchServiceEffects, createServiceEffect, updateServiceEffect, deleteServiceEffect,
   fetchServiceInvocations, undoServiceInvocation, batchInvokeService,
 } from '../../api'
 import PythonEditor from '../workflow/PythonEditor.vue'
+import ActionFlowCanvas from './ActionFlowCanvas.vue'
 import { useToast } from '../../composables/useToast'
 
 const route = useRoute()
@@ -39,7 +41,7 @@ def run(params, entity, context):
     props = entity.get("properties") or {}
     raw = params.get("values") or ""
     values = [float(v) for v in raw.split(",") if v.strip()]
-    return {
+    return {  
         "entity": entity.get("name"),
         "prop_count": len(props),
         "max": max(values) if values else None,
@@ -56,6 +58,28 @@ const form = reactive({
 const saving = ref(false)
 const errMsg = ref('')
 const loading = ref(false)
+
+// 执行模式：code（Python 代码）/ flow（函数编排）
+const executionMode = ref('code')
+const flowGraph = ref({})
+const functions = ref([])
+const currentOntologyId = ref('')
+
+// 编排模式：切换时按需加载可引用函数
+async function loadFunctions(ontologyId) {
+  if (!ontologyId) { functions.value = []; return }
+  try {
+    functions.value = await fetchFunctionsByOntology(ontologyId)
+  } catch {
+    functions.value = []
+  }
+}
+watch(executionMode, (mode) => {
+  // 两种模式生成的对象不同（代码 / 编排图），切换后清空历史避免误应用
+  chatMessages.value = []
+  chatInput.value = ''
+  if (mode === 'flow' && !functions.value.length) loadFunctions(currentOntologyId.value)
+})
 
 const owner = computed(() => {
   const isEntity = route.name?.startsWith('entity-')
@@ -84,6 +108,11 @@ const mockEntity = reactive({ name: '', entity_type: '', properties: '{}' })
 const testing = ref(false)
 const testResult = ref(null)
 const testError = ref('')
+// 编排模式：测试运行返回节点级 trace，用于画布着色
+const flowTrace = computed(() => {
+  const t = testResult.value?.trace
+  return Array.isArray(t) ? t : []
+})
 
 // AI 辅助（右侧聊天面板）
 const chatOpen = ref(false)
@@ -180,30 +209,44 @@ async function chatSend() {
   chatInput.value = ''
   quotedCode.value = ''
   chatLoading.value = true
+  const isFlow = executionMode.value === 'flow'
+  if (isFlow && !functions.value.length) await loadFunctions(currentOntologyId.value)
   const history = chatMessages.value
-    .filter(m => !m.error && (m.role === 'user' ? m.content : m.data?.code_text))
+    .filter(m => !m.error && (m.role === 'user' ? m.content : (isFlow ? m.data?.flow : m.data?.code_text)))
     .slice(-10)
     .map(m => ({
       role: m.role,
-      content: m.role === 'user' ? m.content : `${m.data.explanation || ''}\n\n${m.data.code_text}`,
+      content: m.role === 'user' ? m.content
+        : `${m.data.explanation || ''}\n\n${isFlow ? JSON.stringify(m.data.flow) : m.data.code_text}`,
     }))
-  const msg = reactive({ role: 'assistant', content: '', thinking: '', thinkCollapsed: false, data: null, error: null, streaming: true, oldCode: form.code_text, showDiff: false })
+  const msg = reactive({
+    role: 'assistant', content: '', thinking: '', thinkCollapsed: false,
+    data: null, error: null, streaming: true,
+    oldCode: form.code_text, oldFlow: JSON.stringify(flowGraph.value), showDiff: false,
+  })
   chatMessages.value.push(msg)
   scrollChat()
   try {
-    const data = await aiAssistServiceCode({
+    const common = {
       prompt: text,
       name: form.name,
       code: form.code,
       description: form.description,
       owner_name: owner.value?.ontologyName || owner.value?.entityName || '',
-      current_code: form.code_text,
-      selected_code: quoted,
       history,
       onThinking: d => { msg.thinking += d; scrollThinkBody() },
       onDelta: d => { msg.content += d; scrollChat() },
-    })
-    msg.data = data
+    }
+    msg.data = isFlow
+      ? await aiAssistFlow({
+        ...common,
+        current_flow: flowGraph.value,
+        available_functions: functions.value.map(f => ({
+          id: f.id, name: f.name, code: f.code,
+          description: f.description || '', params_schema: f.params_schema || [],
+        })),
+      })
+      : await aiAssistServiceCode({ ...common, current_code: form.code_text, selected_code: quoted })
   } catch (e) {
     msg.error = e.message || 'AI 生成失败'
   } finally {
@@ -217,6 +260,22 @@ async function chatSend() {
 function applyChatCode(msg) {
   if (!msg.data?.code_text) return
   form.code_text = msg.data.code_text
+  if (msg.data.params?.length) {
+    form.params = msg.data.params.map(p => ({
+      name: (p.name || '').trim(),
+      label: p.label || p.name || '',
+      type: p.type || 'string',
+      required: !!p.required,
+      default: p.default ?? '',
+      description: p.description || '',
+    }))
+  }
+}
+
+/** 编排模式：把 AI 生成的编排图应用到画布 */
+function applyChatFlow(msg) {
+  if (!msg.data?.flow) return
+  flowGraph.value = msg.data.flow
   if (msg.data.params?.length) {
     form.params = msg.data.params.map(p => ({
       name: (p.name || '').trim(),
@@ -259,6 +318,8 @@ function buildPayload() {
     timeout_seconds: Number(form.timeout_seconds) || 30,
     is_enabled: !!form.is_enabled,
     sort_order: 0,
+    execution_mode: executionMode.value,
+    flow: executionMode.value === 'flow' ? flowGraph.value : null,
   }
 }
 
@@ -282,6 +343,9 @@ function resetForm(isEditing, svc) {
     form.code_text = svc.code_text || ''
     form.params = (svc.params || []).map(p => ({ ...p }))
     savedId.value = svc.id
+    executionMode.value = svc.execution_mode || 'code'
+    flowGraph.value = svc.flow || {}
+    currentOntologyId.value = svc.ontology_id || route.query.ontologyId || ''
   } else {
     form.name = ''
     form.code = ''
@@ -291,7 +355,11 @@ function resetForm(isEditing, svc) {
     form.code_text = CODE_TEMPLATES.http
     form.params = []
     savedId.value = ''
+    executionMode.value = 'code'
+    flowGraph.value = {}
+    currentOntologyId.value = route.query.ontologyId || ''
   }
+  if (executionMode.value === 'flow') loadFunctions(currentOntologyId.value)
   Object.keys(testParams).forEach(k => delete testParams[k])
   mockEntity.name = ''
   mockEntity.entity_type = ''
@@ -305,6 +373,10 @@ onMounted(async () => {
       const id = props.serviceId || route.params.serviceId
       const svc = await getOntologyService(id)
       resetForm(true, svc)
+      if ((svc.execution_mode || 'code') === 'flow') {
+        const f = await getServiceFlow(id).catch(() => null)
+        if (f?.flow) flowGraph.value = f.flow
+      }
     } catch (e) {
       toast.error(`加载服务失败：${e.message}`)
       goBack()
@@ -323,8 +395,12 @@ function goBack() {
 }
 
 async function save() {
-  if (!form.name.trim() || !form.code.trim() || !form.code_text.trim()) {
-    errMsg.value = '名称、动作标识、代码均不能为空'
+  if (!form.name.trim() || !form.code.trim()) {
+    errMsg.value = '名称与动作标识不能为空'
+    return
+  }
+  if (executionMode.value === 'code' && !form.code_text.trim()) {
+    errMsg.value = '代码不能为空'
     return
   }
   saving.value = true
@@ -339,6 +415,7 @@ async function save() {
       svc = await createEntityService(owner.value.entityId, buildPayload())
     }
     savedId.value = svc.id
+    if (executionMode.value === 'flow') await saveServiceFlow(svc.id, flowGraph.value)
     toast.success('已保存')
     goBack()
   } catch (e) {
@@ -361,7 +438,9 @@ async function runTest() {
         mock = { name: mockEntity.name, entity_type: mockEntity.entity_type, properties: propsJson }
       }
     } catch { /* 属性 JSON 非法时忽略 mock */ }
-    testResult.value = await testOntologyService(savedId.value, { params: { ...testParams }, mock_entity: mock })
+    testResult.value = executionMode.value === 'flow'
+      ? await testServiceFlow(savedId.value, { params: { ...testParams }, mock_entity: mock })
+      : await testOntologyService(savedId.value, { params: { ...testParams }, mock_entity: mock })
   } catch (e) {
     testError.value = e.message || '测试运行失败'
   } finally {
@@ -686,7 +765,7 @@ async function runBatch() {
           </div>
         </div>
 
-        <div class="sep-hint sep-api">
+        <div v-if="executionMode === 'code'" class="sep-hint sep-api">
           可用 import：json / re / math / datetime / random / collections / urllib / hashlib / base64 / requests / httpx 等；
           入口为 <code>run(params, entity, context)</code>，返回可 JSON 序列化的 dict。
         </div>
@@ -695,16 +774,33 @@ async function runBatch() {
       <!-- 中：代码 + 测试 -->
       <main class="sep-main">
         <div class="sep-code-head">
-          <span class="sep-block-title">代码（Python，定义 run 函数）</span>
+          <span class="sep-block-title">
+            {{ executionMode === 'flow' ? '编排（拖拽函数组合）' : '代码（Python，定义 run 函数）' }}
+          </span>
+          <div class="sep-mode-switch">
+            <button :class="{ on: executionMode === 'code' }" @click="executionMode = 'code'">代码模式</button>
+            <button :class="{ on: executionMode === 'flow' }" @click="executionMode = 'flow'">编排模式</button>
+          </div>
           <div class="sep-tpl-btns">
-            <button class="btn sm ai-btn" :class="{ active: chatOpen }" @click="chatOpen = !chatOpen">✦ AI 辅助</button>
+            <button class="btn sm ai-btn" :class="{ active: chatOpen }" @click="chatOpen = !chatOpen">
+              ✦ AI 辅助{{ executionMode === 'flow' ? '（生成草图）' : '' }}
+            </button>
+            <template v-if="executionMode === 'code'">
             <button v-if="chatOpen" class="btn sm" :disabled="!hasSelection" @click="quoteSelection"
               :title="hasSelection ? '把选中的代码片段引用到 AI 对话' : '先在代码区选中代码'">选中 → AI</button>
             <button class="btn sm" @click="applyTemplate('http')">示例：调用 API</button>
             <button class="btn sm" @click="applyTemplate('data')">示例：数据处理</button>
+            </template>
           </div>
         </div>
+        <ActionFlowCanvas
+          v-if="executionMode === 'flow'"
+          v-model="flowGraph"
+          :functions="functions"
+          :trace="flowTrace"
+        />
         <PythonEditor
+          v-else
           ref="codeEditorRef"
           v-model="form.code_text"
           :height="380"
@@ -912,19 +1008,30 @@ async function runBatch() {
                 </template>
                 <span v-if="m.streaming" class="sep-chat-cursor">▍</span>
                 <template v-if="m.data">
-                  <div class="sep-ai-meta">已通过安全校验{{ m.data.params?.length ? ` · 含 ${m.data.params.length} 个参数定义` : '' }}</div>
-                  <button class="btn sm diff-toggle" @click="m.showDiff = !m.showDiff">
-                    {{ m.showDiff ? '收起改动' : `查看改动（+${diffStats(m).added} −${diffStats(m).removed}）` }}
-                  </button>
-                  <div v-if="m.showDiff" class="sep-diff">
-                    <div v-for="(r, ri) in computeDiff(m.oldCode, m.data.code_text)" :key="ri"
-                      class="sep-diff-row" :class="r.type">
-                      <span class="sep-diff-sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : '' }}</span>
-                      <span class="sep-diff-text">{{ r.text }}</span>
+                  <template v-if="executionMode === 'flow'">
+                    <div class="sep-ai-meta">
+                      已通过结构校验 · {{ m.data.flow?.nodes?.length || 0 }} 个节点
+                      {{ m.data.params?.length ? ` · 含 ${m.data.params.length} 个参数定义` : '' }}
                     </div>
-                  </div>
+                  </template>
+                  <template v-else>
+                    <div class="sep-ai-meta">已通过安全校验{{ m.data.params?.length ? ` · 含 ${m.data.params.length} 个参数定义` : '' }}</div>
+                    <button class="btn sm diff-toggle" @click="m.showDiff = !m.showDiff">
+                      {{ m.showDiff ? '收起改动' : `查看改动（+${diffStats(m).added} −${diffStats(m).removed}）` }}
+                    </button>
+                    <div v-if="m.showDiff" class="sep-diff">
+                      <div v-for="(r, ri) in computeDiff(m.oldCode, m.data.code_text)" :key="ri"
+                        class="sep-diff-row" :class="r.type">
+                        <span class="sep-diff-sign">{{ r.type === 'add' ? '+' : r.type === 'del' ? '−' : '' }}</span>
+                        <span class="sep-diff-text">{{ r.text }}</span>
+                      </div>
+                    </div>
+                  </template>
                   <div class="sep-ai-actions">
-                    <button class="btn primary sm" @click="applyChatCode(m)">应用改动</button>
+                    <button class="btn primary sm"
+                      @click="executionMode === 'flow' ? applyChatFlow(m) : applyChatCode(m)">
+                      {{ executionMode === 'flow' ? '应用到画布' : '应用改动' }}
+                    </button>
                   </div>
                 </template>
               </template>
@@ -1083,6 +1190,10 @@ async function runBatch() {
 .sep-rm { width: 26px; height: 26px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); cursor: pointer; font-size: 15px; line-height: 1; }
 .sep-rm:hover { background: rgba(220, 38, 38, 0.1); color: var(--c-danger); }
 .sep-code-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.sep-mode-switch { display: flex; border: 1px solid var(--c-border); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
+.sep-mode-switch button { padding: 3px 11px; font-size: 11.5px; background: transparent; border: 0; color: var(--c-secondary); cursor: pointer; font-family: var(--font); }
+.sep-mode-switch button:hover { color: var(--c-fg); }
+.sep-mode-switch button.on { background: var(--c-accent); color: #fff; }
 .sep-sel-tip { margin-top: 6px; font-size: 11.5px; color: #8b5cf6; background: rgba(139, 92, 246, 0.08); border: 1px dashed rgba(139, 92, 246, 0.4); border-radius: var(--radius-sm); padding: 5px 9px; }
 .sep-test { border-top: 1px solid var(--c-border); padding-top: 12px; }
 .sep-test-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }

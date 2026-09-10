@@ -411,6 +411,8 @@ class OntologyService(Base):
     timeout_seconds = Column(Integer, nullable=False, default=30)
     is_enabled = Column(Integer, nullable=False, default=1)
     sort_order = Column(Integer, nullable=False, default=0)
+    execution_mode = Column(String(10), nullable=False, default="code")   # code | flow
+    flow = Column(Text, nullable=True)                                    # 编排图 JSON（execution_mode=flow）
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 

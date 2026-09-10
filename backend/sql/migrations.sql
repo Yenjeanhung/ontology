@@ -439,3 +439,7 @@ ALTER TABLE ontology_suggestions ADD COLUMN merged_version_id VARCHAR DEFAULT ''
 -- 注意：只加列、不回填历史数据。历史已挂载属性默认 is_shared_created=0（视为手工/绑定属性），
 -- 取消挂载时只解绑、不删除，避免误删用户手工创建的属性。新挂载（apply 新建）会显式置 1。
 ALTER TABLE ontology_attributes ADD COLUMN is_shared_created INTEGER NOT NULL DEFAULT 0;
+
+-- migration_027: 动作编排（execution_mode / flow），只加列、不回填历史数据
+ALTER TABLE ontology_services ADD COLUMN IF NOT EXISTS execution_mode VARCHAR(10) NOT NULL DEFAULT 'code';
+ALTER TABLE ontology_services ADD COLUMN IF NOT EXISTS flow TEXT DEFAULT NULL;

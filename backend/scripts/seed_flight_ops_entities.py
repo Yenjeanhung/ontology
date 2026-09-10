@@ -9,11 +9,13 @@
 
 数据设计（随机种子固定，可复现）：
 - 全部为国航 CA 航班号：145 个航班号 × 14 个运行日（2026-08-27 ~ 09-09）≈ 2030 航段；
-- 以数据快照时刻 NOW=2026-09-09 13:30 为基准推导各航段当前状态
-  （到达/滑入/巡航/滑出/登机/计划/取消），时间线自洽；
+- 以数据快照时刻 NOW=运行种子脚本的当下（分钟取整）为基准推导各航段当前状态
+  （到达/滑入/巡航/滑出/登机/计划/取消），时间线自洽，且与工作流代码里的
+  datetime.now() 时态一致——告警扫描/升级巡检演示不会因数据日期漂移而失真；
 - 航空器按日排班、同机过站衔接（「衔接前序」关系），延误自然传播；
-- 含 出发/到达延误、复飞、空中等待、取消、撤轮档超时/空中延误/滑出过长告警，
-  便于直接验证 函数 / 派生属性 / 运行监控工作流。
+- 含 出发/到达延误、复飞、空中等待、取消，以及论文第5章分级口径的运行告警
+  （晚关门/超时未落/机组变更 低中高三级，登机未出港航段天然构成
+  「低风险待处理超20分钟」样本供升级巡检演示），便于验证 函数/派生属性/告警工作流。
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ from flight_ops_domain import CATEGORY_NAME, CONSTRAINTS, LIFECYCLE_EVENTS
 
 SEED_KB_NAME = "航班运行监控图谱（种子数据）"
 
-NOW = datetime(2026, 9, 9, 13, 30)   # 数据快照时刻（状态推导基准）
+NOW = datetime.now().replace(second=0, microsecond=0)   # 数据快照时刻（运行种子的当下）
 TODAY = NOW.date()
 DATE_LIST = [TODAY - timedelta(days=d) for d in range(13, -1, -1)]  # 14 个运行日
 
@@ -362,17 +364,22 @@ def finalize_legs(legs: list[dict]) -> None:
         st = leg_status(leg)
         leg["status"] = st
         aobt, atot, aldt, aibt = leg["aobt"], leg["atot"], leg["aldt"], leg["aibt"]
-        if st in ("计划", "登机"):            # 未撤轮档：全部为预计
+        sobt, sibt = leg["sobt"], leg["sibt"]
+        block = int((sibt - sobt).total_seconds() // 60)
+        if st in ("计划", "登机", "取消"):    # 未撤轮档（含取消）：全部为预计
             # 滚动预计 = 计划时刻 + 运行预测偏差（出发 0~60 分钟、到达再加 0~20 分钟），
             # 贴近真实 OCC 预测口径；不直接取模拟实际值（链式推迟会造出数小时的离谱延误）
             shift = RNG.choice([0, 0, 0, 5, 10, 15, 20, 25, 30, 45, 60])
             leg.update(aobt=None, atot=None, aldt=None, aibt=None,
-                       etd=leg["sobt"] + timedelta(minutes=shift),
-                       eta=leg["sibt"] + timedelta(minutes=shift + RNG.randrange(0, 21)))
-        elif st in ("滑出", "巡航"):          # 已撤轮档未落地
-            leg.update(aldt=None, aibt=None, etd=None, eta=aibt)
-        else:                                  # 滑入/到达：全实际
-            leg.update(etd=None, eta=None)
+                       etd=sobt + timedelta(minutes=shift),
+                       eta=sibt + timedelta(minutes=shift + RNG.randrange(0, 21)))
+        elif st in ("滑出", "巡航"):          # 已撤轮档未落地：出发预计定格为实际，到达仍为预计
+            leg.update(aldt=None, aibt=None, etd=aobt,
+                       eta=aobt + timedelta(minutes=block + RNG.randrange(-10, 36)))
+        else:                                  # 滑入/到达：预计时刻定格为最终实际
+            leg.update(etd=aobt, eta=aibt)
+        # 论文第5章风险事件「机组人员变更」：放行后（计划/登机阶段）小概率名单变动
+        leg["crew_changed"] = st in ("计划", "登机") and RNG.random() < 0.08
 
 
 def build_derived(leg: dict) -> dict:
@@ -421,30 +428,48 @@ def build_derived(leg: dict) -> dict:
                           "severity": "一般", "disposal": f"空中盘旋{wait_min}分钟后继续进近",
                           "reason": "目的机场流量控制"})
 
-    # ── 运行告警 ──
-    if st == "登机" and (NOW - leg["sobt"]).total_seconds() >= 25 * 60:
-        alerts.append({"no": f"ALR-{_gid().upper()}", "type": "撤轮档超时",
-                       "severity": "警告",
-                       "threshold": "计划撤轮档后25分钟仍未撤轮档",
-                       "message": f"{leg['leg_no']} 已过计划撤轮档时间未出港，请核实保障进度",
-                       "at": leg["sobt"] + timedelta(minutes=25),
-                       "status": "待处理", "handler": ""})
-    elif st == "滑出" and (NOW - leg["aobt"]).total_seconds() > 25 * 60:
-        alerts.append({"no": f"ALR-{_gid().upper()}", "type": "滑出时间过长",
-                       "severity": "提示",
-                       "threshold": "撤轮档后25分钟仍未起飞",
-                       "message": f"{leg['leg_no']} 滑出后长时间未起飞，可能排队等待",
-                       "at": leg["aobt"] + timedelta(minutes=25),
-                       "status": "已解除", "handler": RNG.choice(CREW_NAMES[:10])})
-    elif st == "巡航" and leg["eta"] and \
-            (leg["eta"] - leg["sibt"]).total_seconds() >= 20 * 60:
-        m = int((leg["eta"] - leg["sibt"]).total_seconds() // 60)
-        alerts.append({"no": f"ALR-{_gid().upper()}", "type": "空中延误超阈值",
-                       "severity": "警告",
-                       "threshold": "预计到达延误≥20分钟",
-                       "message": f"{leg['leg_no']} 预计到达延误{m}分钟，请评估衔接影响",
-                       "at": NOW - timedelta(minutes=RNG.randrange(3, 30)),
-                       "status": "待处理", "handler": ""})
+    # ── 运行告警（论文第5章分级口径：低/中/高三级 + 分级响应牵头部门）──
+    _SEV = {"低": "提示", "中": "警告", "高": "严重"}
+    _DEPT = {"低": "飞行控制室", "中": "运行控制室", "高": "总值班室"}
+
+    def _alert(al_type, level, value, thresh, msg, at, status="待处理", handler=""):
+        alerts.append({"no": f"ALR-{_gid().upper()}", "type": al_type,
+                       "risk_level": level, "severity": _SEV[level],
+                       "trigger_value": value, "threshold": thresh, "message": msg,
+                       "at": at, "status": status, "handler": handler,
+                       "handle_dept": _DEPT[level]})
+
+    late_min = int((NOW - leg["sobt"]).total_seconds() // 60)
+    if st == "登机" and late_min >= 10:
+        # 晚关门：计划撤轮档(SOBT)后仍未出港（未撤轮档⇔未关舱门），10/20/30 分钟三档
+        level = "高" if late_min > 30 else ("中" if late_min > 20 else "低")
+        _alert("晚关门", level, late_min,
+               "计划撤轮档(SOBT)后10/20/30分钟仍未出港，分级低/中/高",
+               f"{leg['leg_no']} 已过计划撤轮档时间{late_min}分钟仍未出港，请核实保障进度",
+               leg["sobt"] + timedelta(minutes=10))
+    elif st == "巡航":
+        # 超时未落：ATOT+计划飞行时长后 5/10/15 分钟仍无落地报
+        plan_land = leg["atot"] + (leg["sibt"] - leg["sobt"])
+        over_min = int((NOW - plan_land).total_seconds() // 60)
+        if over_min >= 5:
+            level = "高" if over_min > 15 else ("中" if over_min > 10 else "低")
+            _alert("超时未落", level, over_min,
+                   "计划到达(ATOT+计划飞行时长)后5/10/15分钟仍无落地报，分级低/中/高",
+                   f"{leg['leg_no']} 超过计划到达时间{over_min}分钟仍无落地报，请核实动态",
+                   plan_land + timedelta(minutes=5))
+    if (st in ("计划", "登机")) and leg.get("crew_changed"):
+        # 机组人员变更：放行后名单变动（低风险，建议人工复核是否升级）
+        _alert("机组变更", "低", 0,
+               "放行后机组名单发生变更",
+               f"{leg['leg_no']} 放行后机组名单变更，请确认资质与连飞限制",
+               NOW - timedelta(minutes=RNG.randrange(3, 25)),
+               status="待处理")
+    if st == "滑出" and (NOW - leg["aobt"]).total_seconds() > 25 * 60:
+        _alert("滑出时间过长", "低", int((NOW - leg["aobt"]).total_seconds() // 60),
+               "撤轮档后25分钟仍未起飞",
+               f"{leg['leg_no']} 滑出后长时间未起飞，可能排队等待",
+               leg["aobt"] + timedelta(minutes=25),
+               status="已解除", handler=RNG.choice(CREW_NAMES[:10]))
 
     leg["delays"], leg["abnormals"], leg["alerts"] = delays, abnormals, alerts
     leg["data_source"] = src
@@ -642,10 +667,8 @@ async def seed(small: bool = False, sync_graph: bool = True) -> None:
                 "leg_status": st, "cruise_altitude": leg["cruise_alt"],
                 "sched_turnaround_min": leg["sched_turn"],
                 "pax_count": leg["pax"], "data_source": leg["data_source"],
+                "is_crew_changed": bool(leg.get("crew_changed")),
             }
-            if st == "取消":
-                props.update(aobt=None, atot=None, aldt=None, aibt=None,
-                             etd=None, eta=None)
             await bs.add_entity(leg["key"], "航段", leg["leg_no"], props,
                           f"{leg['flight_no']} {leg['dep']}-{leg['arr']} [{st}]")
 
@@ -721,8 +744,13 @@ async def seed(small: bool = False, sync_graph: bool = True) -> None:
                 lk = f"{leg['key']}:ALR:{al['type']}"
                 await bs.add_entity(lk, "运行告警", f"{leg['leg_no']}·{al['type']}", {
                     "alert_no": al["no"], "alert_type": al["type"],
-                    "severity": al["severity"], "triggered_at": iso(al["at"]),
-                    "threshold": al["threshold"], "message": al["message"],
+                    "severity": al["severity"], "risk_level": al["risk_level"],
+                    "triggered_at": iso(al["at"]),
+                    "threshold": al["threshold"], "trigger_value": al["trigger_value"],
+                    "lasted_min": int((NOW - al["at"]).total_seconds() // 60)
+                                  if al["status"] == "待处理" else 0,
+                    "message": al["message"], "handle_dept": al["handle_dept"],
+                    "related_leg_no": leg["leg_no"],
                     "handle_status": al["status"], "handler": al["handler"],
                 }, al["message"])
                 await bs.add_relation(leg["key"], "触发告警", lk)

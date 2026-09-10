@@ -52,8 +52,9 @@ ONTOLOGIES: list[dict] = [
     {"name": "异常事件", "code": "AbnormalEvent", "group": "延误异常类",
      "description": "非正常运行：取消、返航、备降、复飞、空中等待、中断起飞、滑回"},
     {"name": "运行告警", "code": "OpsAlert", "group": "监控告警类",
-     "description": "运行监控告警：撤轮档超时、滑出时间过长、过站时间不足、延误超阈值、"
-                    "预计衔接冲突、状态失联等"},
+     "description": "运行风险分级告警：单事件类（晚关门/超时未落/机组变更）与多维度类"
+                    "（晚关门机场聚合/晚关门航线聚合/晚关门组合风险/持续未解除升级），"
+                    "按 低/中/高 三级分级响应处置"},
     {"name": "机位", "code": "Stand", "group": "保障资源类",
      "description": "机场机位，撤轮档与挡轮档的发生位置，分廊桥位与远机位"},
     {"name": "跑道", "code": "Runway", "group": "保障资源类",
@@ -117,6 +118,8 @@ ATTRIBUTES: dict[str, list[dict]] = {
         {"name": "旅客数", "code": "pax_count", "data_type": "number"},
         {"name": "数据来源", "code": "data_source", "data_type": "string",
          "description": "CDM / A-CDM / ACARS / ADS-B / OMIS / 人工"},
+        {"name": "是否机组变更", "code": "is_crew_changed", "data_type": "boolean",
+         "description": "放行后机组名单是否发生变更（运行风险告警触发条件之一）"},
     ],
     "机场": [
         {"name": "IATA三字码", "code": "iata_code", "data_type": "string", "is_required": True},
@@ -196,16 +199,29 @@ ATTRIBUTES: dict[str, list[dict]] = {
     "运行告警": [
         {"name": "告警编号", "code": "alert_no", "data_type": "string", "is_required": True},
         {"name": "告警类型", "code": "alert_type", "data_type": "string", "is_required": True,
-         "description": "枚举：撤轮档超时/滑出时间过长/空中延误超阈值/过站时间不足/"
+         "description": "枚举：晚关门/超时未落/机组变更/晚关门机场聚合/晚关门航线聚合/"
+                        "晚关门组合风险/持续未解除升级/滑出时间过长/过站时间不足/"
                         "预计衔接冲突/状态失联/备降通知"},
         {"name": "严重级别", "code": "severity", "data_type": "string",
-         "description": "提示 / 警告 / 严重"},
+         "description": "提示 / 警告 / 严重（与风险等级对应：低→提示、中→警告、高→严重）"},
+        {"name": "风险等级", "code": "risk_level", "data_type": "string",
+         "description": "分级响应等级（低/中/高），决定牵头部门与响应时限"},
         {"name": "触发时间", "code": "triggered_at", "data_type": "datetime"},
         {"name": "触发阈值", "code": "threshold", "data_type": "string",
          "description": "如 计划撤轮档后30分钟仍未撤轮档"},
+        {"name": "触发数值", "code": "trigger_value", "data_type": "number",
+         "description": "触发时的量化依据：超时分钟数 / 聚合命中次数"},
+        {"name": "已持续分钟", "code": "lasted_min", "data_type": "number",
+         "description": "告警持续未解除的分钟数（升级巡检刷新）"},
         {"name": "告警内容", "code": "message", "data_type": "text"},
+        {"name": "牵头部门", "code": "handle_dept", "data_type": "string",
+         "description": "分级响应牵头部门：飞行控制室/运行控制室/签派放行室/总值班室"},
+        {"name": "处置建议", "code": "advice", "data_type": "text",
+         "description": "智能体研判生成的处置建议"},
+        {"name": "关联航段号", "code": "related_leg_no", "data_type": "string",
+         "description": "冗余存储关联航段号，便于列表检索与单告警研判"},
         {"name": "处理状态", "code": "handle_status", "data_type": "string",
-         "description": "待处理 / 已确认 / 已解除 / 误报"},
+         "description": "待处理 / 处置中 / 已解除 / 已升级 / 误报"},
         {"name": "处理人", "code": "handler", "data_type": "string"},
     ],
     "机位": [
@@ -276,6 +292,8 @@ RELATIONS: list[dict] = [
      "description": "延误记录 → 异常事件：延误由该异常导致"},
     {"name": "触发告警", "code": "TRIGGERS_ALERT",
      "description": "航段 → 运行告警：监控规则命中", "inverse": "告警航段"},
+    {"name": "涉及机场", "code": "INVOLVES_AIRPORT",
+     "description": "运行告警 → 机场：多维度聚合告警涉及的机场", "inverse": "涉事告警"},
     {"name": "拥有机位", "code": "HAS_STAND", "description": "机场 → 机位"},
     {"name": "拥有跑道", "code": "HAS_RUNWAY", "description": "机场 → 跑道"},
     {"name": "撤轮档于", "code": "OFF_BLOCK_AT",
@@ -303,6 +321,7 @@ CONSTRAINTS: list[tuple[str, str, str]] = [
     ("异常事件", "备降于", "机场"),
     ("延误记录", "源于异常", "异常事件"),
     ("航段", "触发告警", "运行告警"),
+    ("运行告警", "涉及机场", "机场"),
     ("机场", "拥有机位", "机位"),
     ("机场", "拥有跑道", "跑道"),
     ("航段", "撤轮档于", "机位"),

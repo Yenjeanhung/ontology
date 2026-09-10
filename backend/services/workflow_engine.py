@@ -1207,7 +1207,10 @@ async def _execute_node(node: dict, context: dict, db, on_progress=None) -> dict
     t = node["type"]
     cfg = node.get("config") or {}
     if t == "start":
-        return context.get("start", {})
+        # 运行入参未提供时回退到节点配置的默认值（defaults），
+        # 保证定时触发/空参数运行时 {{start.xxx}} 模板引用仍能拿到预期初值
+        merged = {**(cfg.get("defaults") or {}), **(context.get("start") or {})}
+        return merged
     if t == "end":
         out = {}
         for o in cfg.get("outputs") or []:
@@ -1754,7 +1757,8 @@ def _make_node_fn(rt: _Runtime, node: dict):
                 "duration_ms": dur,
                 "output": _truncate_output(projected),
             })
-            return {"outputs": {nid: projected}}
+            return {"outputs": {nid: projected},
+                    **({"start": projected} if node.get("type") == "start" else {})}
         except Exception as e:
             dur = int((time.monotonic() - t0) * 1000)
             # 失败也保留入参快照 + 结构化出参（如 HTTP 的状态/响应体），排查「发出了什么、返回了什么」

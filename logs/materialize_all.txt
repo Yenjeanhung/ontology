@@ -1,0 +1,6 @@
+派生属性 4 个
+[10:34:20] 预计飞行时长: 200 {"property_id":"590a04a160c5","updated":2030,"failed":0,"total":2030,"last_materialized_at":"2026-09-10T10:34:20.483350"} (150s)
+[10:36:42] 预计起飞延误: 200 {"property_id":"9c64f7a224b1","updated":2030,"failed":0,"total":2030,"last_materialized_at":"2026-09-10T10:36:42.097025"} (142s)
+[10:39:03] 预计到达延误: 200 {"property_id":"3526cbb1349f","updated":2030,"failed":0,"total":2030,"last_materialized_at":"2026-09-10T10:39:03.517304"} (141s)
+[10:41:29] 当前运行阶段: 200 {"property_id":"6222673ee2b3","updated":2030,"failed":0,"total":2030,"last_materialized_at":"2026-09-10T10:41:29.328304"} (146s)
+全部物化结束

@@ -271,7 +271,7 @@ onMounted(load)
           <div v-else class="tpl-loading"><span class="spinner"></span> 加载中...</div>
         </div>
       </div>
-      <Pagination v-if="filtered.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="filtered.length" />
+      <Pagination v-if="filtered.length" v-model:page="page" v-model:page-size="pageSize" :total="filtered.length" />
     </div>
 
     <div class="empty-state" v-else-if="!loading">
@@ -339,13 +339,13 @@ onMounted(load)
 </template>
 
 <style scoped>
-.page-shell { display: flex; flex-direction: column; gap: 16px; }
-.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--c-border); }
+.page-shell { display: flex; flex-direction: column; gap: 16px; height: calc(100dvh - 128px); min-height: 0; }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--c-border); flex-shrink: 0; }
 .page-title-row { display: flex; flex-direction: column; gap: 2px; }
 .page-title { font-size: 20px; font-weight: 700; color: var(--c-fg); }
 .page-subtitle { font-size: 12px; color: var(--c-secondary); }
 
-.toolbar { display: flex; align-items: center; gap: 10px; }
+.toolbar { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .search-wrap { flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); height: 38px; }
 .search-wrap:focus-within { border-color: var(--c-fg); }
 .search-icon { color: var(--c-secondary); flex-shrink: 0; }
@@ -358,8 +358,8 @@ onMounted(load)
 .tpl-checkbox input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--c-accent); cursor: pointer; }
 .toolbar .tpl-checkbox { margin-right: -4px; }
 
-.tpl-list { display: flex; flex-direction: column; gap: 8px; }
-.tpl-card { border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); overflow: hidden; transition: border-color 150ms; }
+.tpl-list { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; padding-right: 4px; }
+.tpl-card { border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); overflow: hidden; transition: border-color 150ms; flex-shrink: 0; }
 .tpl-card.expanded { border-color: var(--c-fg); }
 .tpl-card-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; user-select: none; }
 .tpl-card-head:hover { background: var(--c-muted); }

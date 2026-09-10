@@ -368,12 +368,18 @@ class ActionEnhanceService:
                     "duration_ms": 0,
                 }, None
 
-        # 2) 执行动作本体
-        result = await execute_service(
-            code_text=svc.code_text, language=svc.language,
-            params=params, entity=entity_payload, context=context,
-            timeout_seconds=svc.timeout_seconds,
-        )
+        # 2) 执行动作本体（code：Python 沙箱；flow：函数编排）
+        if (svc.execution_mode or "code") == "flow":
+            from services.action_flow_service import ActionFlowService
+
+            result = await ActionFlowService.run(
+                db, svc, entity, entity_payload, params, triggered_by=triggered_by)
+        else:
+            result = await execute_service(
+                code_text=svc.code_text, language=svc.language,
+                params=params, entity=entity_payload, context=context,
+                timeout_seconds=svc.timeout_seconds,
+            )
         duration = int(result.get("duration_ms") or 0)
         undo: dict = {}
 

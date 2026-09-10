@@ -18,6 +18,7 @@ from services.service_runtime import coerce_params, execute_service
 
 
 PARAM_TYPES = {"string", "number", "boolean", "date", "datetime", "text"}
+EXECUTION_MODES = {"code", "flow"}          # code：Python 代码；flow：函数编排
 DEFAULT_TIMEOUT = 30
 MAX_TIMEOUT = 120
 
@@ -44,6 +45,17 @@ def _parse_params(raw: str | None) -> list[dict]:
     return out
 
 
+def _parse_flow(raw: str | None) -> dict | None:
+    """解析编排图 JSON；非法或为空时返回 None（前端按空图处理）。"""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def serialize_service(svc: OntologyService, *, source: str | None = None) -> dict:
     return {
         "id": svc.id,
@@ -59,6 +71,8 @@ def serialize_service(svc: OntologyService, *, source: str | None = None) -> dic
         "timeout_seconds": svc.timeout_seconds,
         "is_enabled": bool(svc.is_enabled),
         "sort_order": svc.sort_order,
+        "execution_mode": (svc.execution_mode or "code"),  # code | flow
+        "flow": _parse_flow(svc.flow),
         "source": source,  # ontology | entity | entity_override（有效服务集时给出）
         "created_at": svc.created_at,
         "updated_at": svc.updated_at,
@@ -151,7 +165,10 @@ class OntologyServiceService:
             return "动作标识(code)不能为空"
         if " " in req.code.strip():
             return "动作标识不能包含空格"
-        if not (req.code_text or "").strip():
+        mode = (getattr(req, "execution_mode", "code") or "code").strip()
+        if mode not in EXECUTION_MODES:
+            return f"执行模式无效：{mode}（可选 code / flow）"
+        if mode == "code" and not (req.code_text or "").strip():
             return "代码不能为空"
         if req.language != "python":
             return f"暂不支持 {req.language}，当前仅支持 python"
@@ -202,6 +219,13 @@ class OntologyServiceService:
         ):
             scope = "该本体" if owner_type == "ontology" else "该实体"
             return None, f"动作标识 {code} 在{scope}下已存在"
+        mode = (getattr(req, "execution_mode", "code") or "code").strip()
+        if mode == "flow":
+            from services.action_flow_service import ActionFlowService
+
+            ferr = await ActionFlowService.validate_flow(db, req.flow or {})
+            if ferr:
+                return None, ferr
         svc = OntologyService(
             owner_type=owner_type,
             ontology_id=ontology_id,
@@ -215,10 +239,19 @@ class OntologyServiceService:
             timeout_seconds=max(1, min(MAX_TIMEOUT, req.timeout_seconds or DEFAULT_TIMEOUT)),
             is_enabled=1 if req.is_enabled else 0,
             sort_order=req.sort_order or 0,
+            execution_mode=mode,
+            flow=OntologyServiceService._flow_json(mode, req.flow),
         )
         db.add(svc)
         await db.commit()
         return serialize_service(svc), None
+
+    @staticmethod
+    def _flow_json(mode: str, flow) -> str | None:
+        """编排模式下序列化编排图；代码模式恒为 None。"""
+        if mode != "flow" or not isinstance(flow, dict):
+            return None
+        return json.dumps(flow, ensure_ascii=False)
 
     @staticmethod
     async def update(db: AsyncSession, service_id: str, req) -> tuple[dict | None, str | None]:
@@ -235,6 +268,13 @@ class OntologyServiceService:
         ):
             scope = "该本体" if svc.owner_type == "ontology" else "该实体"
             return None, f"动作标识 {code} 在{scope}下已存在"
+        mode = (getattr(req, "execution_mode", "code") or "code").strip()
+        if mode == "flow":
+            from services.action_flow_service import ActionFlowService
+
+            ferr = await ActionFlowService.validate_flow(db, req.flow or {})
+            if ferr:
+                return None, ferr
         svc.name = req.name.strip()
         svc.code = code
         svc.description = (req.description or "").strip()
@@ -244,6 +284,8 @@ class OntologyServiceService:
         svc.timeout_seconds = max(1, min(MAX_TIMEOUT, req.timeout_seconds or DEFAULT_TIMEOUT))
         svc.is_enabled = 1 if req.is_enabled else 0
         svc.sort_order = req.sort_order or 0
+        svc.execution_mode = mode
+        svc.flow = OntologyServiceService._flow_json(mode, req.flow)
         await db.commit()
         return serialize_service(svc), None
 
@@ -283,6 +325,8 @@ class OntologyServiceService:
             timeout_seconds=svc.timeout_seconds,
             is_enabled=svc.is_enabled,
             sort_order=svc.sort_order,
+            execution_mode=svc.execution_mode or "code",
+            flow=svc.flow,
         )
         db.add(clone)
         await db.commit()
@@ -349,14 +393,23 @@ class ServiceRuntimeService:
         params, perr = coerce_params(_parse_params(svc.params_schema), req.params or {})
         if perr:
             return None, perr
-        result = await execute_service(
-            code_text=svc.code_text,
-            language=svc.language,
-            params=params,
-            entity=ServiceRuntimeService._entity_payload(None, req.mock_entity),
-            context={"service_code": svc.code, "triggered_by": "test"},
-            timeout_seconds=svc.timeout_seconds,
-        )
+        payload = ServiceRuntimeService._entity_payload(None, req.mock_entity)
+        if (svc.execution_mode or "code") == "flow":
+            from services.action_flow_service import ActionFlowService
+
+            result = await ActionFlowService.run(
+                db, svc, None, payload, params,
+                mock_entity=req.mock_entity, triggered_by="test",
+            )
+        else:
+            result = await execute_service(
+                code_text=svc.code_text,
+                language=svc.language,
+                params=params,
+                entity=payload,
+                context={"service_code": svc.code, "triggered_by": "test"},
+                timeout_seconds=svc.timeout_seconds,
+            )
         return result, None
 
     @staticmethod
@@ -373,12 +426,19 @@ class ServiceRuntimeService:
         params, perr = coerce_params(_parse_params(svc.params_schema), params_raw or {})
         if perr:
             return None, perr
-        result = await execute_service(
-            code_text=svc.code_text,
-            language=svc.language,
-            params=params,
-            entity=ServiceRuntimeService._entity_payload(entity),
-            context={"kb_id": entity.kb_id, "service_code": svc.code, "triggered_by": "entity"},
-            timeout_seconds=svc.timeout_seconds,
-        )
+        payload = ServiceRuntimeService._entity_payload(entity)
+        if (svc.execution_mode or "code") == "flow":
+            from services.action_flow_service import ActionFlowService
+
+            result = await ActionFlowService.run(
+                db, svc, entity, payload, params, triggered_by="entity")
+        else:
+            result = await execute_service(
+                code_text=svc.code_text,
+                language=svc.language,
+                params=params,
+                entity=payload,
+                context={"kb_id": entity.kb_id, "service_code": svc.code, "triggered_by": "entity"},
+                timeout_seconds=svc.timeout_seconds,
+            )
         return result, None

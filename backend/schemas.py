@@ -491,11 +491,26 @@ class SaveOntologyServiceRequest(BaseModel):
     timeout_seconds: int = 30
     is_enabled: bool = True
     sort_order: int = 0
+    execution_mode: str = "code"          # code（纯代码）| flow（函数编排）
+    flow: dict | None = None              # 编排图 JSON，execution_mode=flow 时有效
 
 
 class TestOntologyServiceRequest(BaseModel):
     params: dict = {}
     mock_entity: dict | None = None  # 本体级测试运行时的模拟实体 {name, entity_type, properties}
+
+
+class SaveActionFlowRequest(BaseModel):
+    """保存动作编排图。"""
+
+    flow: dict = {}
+
+
+class TestActionFlowRequest(BaseModel):
+    """编排模式测试运行。"""
+
+    params: dict = {}
+    mock_entity: dict | None = None
 
 
 class InvokeEntityServiceRequest(BaseModel):
@@ -507,6 +522,19 @@ class AiAssistChatMessage(BaseModel):
 
     role: str  # user / assistant
     content: str = ""
+
+
+class AiAssistFlowRequest(BaseModel):
+    """AI 辅助生成动作编排草图（flow 模式）。"""
+
+    prompt: str                                  # 需求描述
+    name: str | None = ""
+    code: str | None = ""
+    description: str | None = ""
+    owner_name: str | None = ""
+    current_flow: dict | None = None             # 当前编排图（多轮修改时作为基线）
+    available_functions: list[dict] = []         # 可选函数清单 [{id, name, code, description, params_schema}]
+    history: list[AiAssistChatMessage] = []
 
 
 class AiAssistServiceCodeRequest(BaseModel):

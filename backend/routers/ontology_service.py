@@ -14,15 +14,19 @@ from database import get_db
 from models import Entity, Ontology
 from providers.llm import build_llm, chunk_reasoning, chunk_text
 from schemas import (
+    AiAssistFlowRequest,
     AiAssistServiceCodeRequest,
     BatchInvokeRequest,
     InvokeEntityServiceRequest,
+    SaveActionFlowRequest,
     SaveOntologyServiceRequest,
     SaveServiceEffectRequest,
     SaveServiceRuleRequest,
+    TestActionFlowRequest,
     TestOntologyServiceRequest,
     UndoInvocationRequest,
 )
+from services.action_flow_service import ActionFlowService, validate_structure
 from services.ontology_action_enhance_service import ActionEnhanceService
 from services.ontology_action_service import (
     OntologyServiceService,
@@ -126,6 +130,65 @@ async def get_ontology_service(service_id: str, db: AsyncSession = Depends(get_d
 async def test_ontology_service(
     service_id: str, req: TestOntologyServiceRequest, db: AsyncSession = Depends(get_db)
 ):
+    result, err = await ServiceRuntimeService.test_run(db, service_id, req)
+    if err:
+        raise _bad_request(err)
+    return result
+
+
+# ===== 动作编排（flow）：函数可视化组合 =====
+
+
+@router.get("/ontology-services/{service_id}/flow")
+async def get_service_flow(service_id: str, db: AsyncSession = Depends(get_db)):
+    svc = await OntologyServiceService.get(db, service_id)
+    if not svc:
+        raise _nf("服务不存在")
+    return {
+        "service_id": svc.id,
+        "execution_mode": svc.execution_mode or "code",
+        "flow": ActionFlowService.load_flow(svc),
+    }
+
+
+@router.put("/ontology-services/{service_id}/flow")
+async def save_service_flow(
+    service_id: str, req: SaveActionFlowRequest, db: AsyncSession = Depends(get_db)
+):
+    """保存编排图并切换到编排模式（前端画布保存）。"""
+    svc = await OntologyServiceService.get(db, service_id)
+    if not svc:
+        raise _nf("服务不存在")
+    err = await ActionFlowService.validate(db, req.flow or {})
+    if err:
+        raise _bad_request(err)
+    svc.flow = json.dumps(req.flow or {}, ensure_ascii=False)
+    svc.execution_mode = "flow"
+    await db.commit()
+    return {
+        "service_id": svc.id,
+        "execution_mode": svc.execution_mode,
+        "flow": req.flow or {},
+    }
+
+
+@router.post("/ontology-services/{service_id}/validate-flow")
+async def validate_service_flow(service_id: str, req: SaveActionFlowRequest,
+                                db: AsyncSession = Depends(get_db)):
+    err = await ActionFlowService.validate(db, req.flow or {})
+    return {"valid": not err, "error": err or None}
+
+
+@router.post("/ontology-services/{service_id}/test-flow")
+async def test_service_flow(
+    service_id: str, req: TestActionFlowRequest, db: AsyncSession = Depends(get_db)
+):
+    """编排模式测试运行：返回节点级 trace，供画布着色。"""
+    svc = await OntologyServiceService.get(db, service_id)
+    if not svc:
+        raise _nf("服务不存在")
+    if (svc.execution_mode or "code") != "flow":
+        raise _bad_request("该动作不是编排模式")
     result, err = await ServiceRuntimeService.test_run(db, service_id, req)
     if err:
         raise _bad_request(err)
@@ -266,6 +329,203 @@ async def ai_assist_service_code(req: AiAssistServiceCodeRequest):
             yield _sse({"type": "error", "detail": f"生成的代码未通过安全校验（{err}），请调整描述后重试"})
             return
         yield _sse({"type": "done", "data": parsed})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ===== AI 辅助生成编排草图（flow 模式）=====
+
+AI_FLOW_SYSTEM_PROMPT = """你是本体平台"动作编排"的草图生成助手。动作编排是一个 DAG：开始 → 若干节点 → 结束，用来把**只读函数（Function）**组合成一个可执行的**动作（Action）**——函数只负责"算"，动作负责"审 + 写"。
+
+【输出契约】严格按以下 Markdown 结构输出，除此之外不要输出任何其它文字：
+（1）先写实现说明：简短中文，说明编排思路、关键分支与写回了什么
+（2）然后输出编排图 JSON：
+```json
+{
+  "schema_version": 1,
+  "nodes": [
+    {"id": "n1", "type": "start", "title": "开始", "config": {}},
+    {"id": "f1", "type": "function", "title": "起飞延误", "config": {"function_id": "<必须来自可用函数清单的 id>", "function_code": "etd_delay_min", "params": {"only_late": true}, "on_error": "fail"}},
+    {"id": "c1", "type": "condition", "title": "是否超阈值", "config": {"rule": {"combinator": "and", "rules": [{"field": "{{ f1.value }}", "operator": ">=", "value": 30}]}, "on_false": "abort", "abort_message": "过站裕度不足"}},
+    {"id": "e1", "type": "end", "title": "放行", "config": {"mode": "output", "result": {"delay_min": "{{ f1.value }}"}, "edits": [{"op": "set_property", "property_code": "leg_status", "value": "released"}]}}
+  ],
+  "edges": [
+    {"source": "n1", "target": "f1"},
+    {"source": "f1", "target": "c1"},
+    {"source": "c1", "target": "e1", "source_handle": "true"}
+  ],
+  "layout": {"n1": {"x": 40, "y": 140}, "f1": {"x": 260, "y": 140}}
+}
+```
+（3）最后输出动作入参定义（无入参则输出 []）：
+```json
+[{"name": "threshold", "label": "延误阈值", "type": "number", "required": false, "default": 30, "description": "超过该分钟数才放行"}]
+```
+
+【硬性规则】
+- 必须且只能有 1 个 `start` 节点，至少 1 个 `end` 节点；**不能有环**；节点 id 用 `n1/f1/c1/e1` 这类短标识且不重复
+- `function` 节点的 `function_id` **必须原样取自下面给出的「可用函数清单」**，禁止编造；`function_code` 一并带上
+- 变量引用一律用 `{{ 节点id.value }}`（条件节点也可用 `{{ 节点id.passed }}`）；引用实体属性用 `{{ entity.properties.xxx }}`，动作入参用 `{{ params.xxx }}`
+- `condition` 节点只能有 `true` / `false` 两个出口，用边的 `source_handle` 指定；`on_false` 为 `abort` 时不必再连「假」分支
+- `end` 节点：`mode=output` 时给 `result`（返回数据）与 `edits`（写回，可选）；`mode=abort` 时给 `abort_message`
+- `edits` 只支持两种 op：`{"op":"set_property","property_code":"...","value":"..."}` 与 `{"op":"create_relation","relation_type":"...","target_entity_id":"..."}`
+- 节点数量控制在 8 个以内，能少不多；能用现有函数就不要新造逻辑
+
+【可用函数清单】
+{functions}
+
+若提供了「当前编排图」，请在其基础上按最新需求修改，而不是完全重写。"""
+
+
+def _parse_flow_result(text: str) -> dict | None:
+    """从 Markdown 回复解析 实现说明 / 编排图 / 入参定义。"""
+    blocks = re.findall(r"```json\s*\n([\s\S]*?)```", text)
+    if not blocks:
+        return None
+    try:
+        flow = json.loads(blocks[0])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(flow, dict) or not isinstance(flow.get("nodes"), list):
+        return None
+    params: list = []
+    if len(blocks) > 1:
+        try:
+            v = json.loads(blocks[1])
+            if isinstance(v, list):
+                params = v
+        except json.JSONDecodeError:
+            params = []
+    explanation_m = re.search(r"^([\s\S]*?)```", text)
+    return {
+        "explanation": (explanation_m.group(1) if explanation_m else "").strip(),
+        "flow": flow,
+        "params": params,
+    }
+
+
+def _normalize_flow(flow: dict, available: list[dict]) -> tuple[dict | None, str | None]:
+    """补全字段、按 code 纠正函数 id，并做结构校验。返回 (flow, error)。"""
+    by_id = {str(f.get("id") or ""): f for f in available if f.get("id")}
+    by_code = {str(f.get("code") or ""): f for f in available if f.get("code")}
+    nodes = []
+    for n in flow.get("nodes") or []:
+        if not isinstance(n, dict) or not n.get("id"):
+            continue
+        cfg = n.get("config") if isinstance(n.get("config"), dict) else {}
+        if n.get("type") == "function":
+            fid = str(cfg.get("function_id") or "")
+            fn = by_id.get(fid) or by_code.get(str(cfg.get("function_code") or ""))
+            if not fn:
+                return None, (f"编排引用了不可用的函数：{cfg.get('function_code') or fid or '(未指定)'}，"
+                              f"请只使用可用函数清单中的函数")
+            cfg = {**cfg, "function_id": str(fn["id"]), "function_code": fn.get("code") or ""}
+            cfg.setdefault("params", {})
+            cfg.setdefault("on_error", "fail")
+        nodes.append({
+            "id": str(n["id"]),
+            "type": n.get("type") or "function",
+            "title": n.get("title") or "",
+            "config": cfg,
+        })
+    edges = []
+    for e in flow.get("edges") or []:
+        if isinstance(e, dict) and e.get("source") and e.get("target"):
+            edges.append({
+                "source": str(e["source"]),
+                "target": str(e["target"]),
+                "source_handle": str(e.get("source_handle") or ""),
+            })
+    layout = flow.get("layout") if isinstance(flow.get("layout"), dict) else {}
+    normalized = {"schema_version": 1, "nodes": nodes, "edges": edges, "layout": layout}
+    err = validate_structure(normalized)
+    return (None, err) if err else (normalized, None)
+
+
+@router.post("/ontology-services/ai-assist-flow")
+async def ai_assist_service_flow(req: AiAssistFlowRequest):
+    """按需求描述生成编排草图（SSE 流式输出，结束后做结构校验）。"""
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise _bad_request("请先描述想要编排的动作")
+    if not settings.OPENAI_API_KEY or not settings.LLM_MODEL:
+        raise _bad_request("尚未配置大模型，请先在「系统配置」中配置并激活 LLM")
+
+    fns = req.available_functions or []
+    fn_lines = []
+    for f in fns[:40]:
+        params = f.get("params_schema") or []
+        p_text = "、".join(
+            f"{p.get('name')}({p.get('type', 'string')}{'，必填' if p.get('required') else ''})"
+            for p in params if isinstance(p, dict)
+        )
+        fn_lines.append(
+            f"- id=`{f.get('id')}` code=`{f.get('code')}` 名称={f.get('name')}"
+            f"{'｜入参：' + p_text if p_text else '｜无入参'}"
+            f"{'｜' + str(f.get('description') or '') if f.get('description') else ''}"
+        )
+    system = AI_FLOW_SYSTEM_PROMPT.replace("{functions}", "\n".join(fn_lines) or "（暂无可用函数）")
+
+    ctx_lines = [f"需求：{prompt}"]
+    if req.owner_name:
+        ctx_lines.append(f"所属本体/实体：{req.owner_name}")
+    if req.name:
+        ctx_lines.append(f"动作名称：{req.name}")
+    if req.code:
+        ctx_lines.append(f"动作标识：{req.code}")
+    if req.description:
+        ctx_lines.append(f"动作描述：{req.description}")
+    if req.current_flow:
+        ctx_lines.append(f"当前编排图：\n{json.dumps(req.current_flow, ensure_ascii=False)[:8000]}")
+
+    messages = [SystemMessage(content=system)]
+    for m in (req.history or [])[-10:]:
+        content = (m.content or "").strip()
+        if not content:
+            continue
+        messages.append(
+            AIMessage(content=content[:8000]) if m.role == "assistant" else HumanMessage(content=content[:8000])
+        )
+    messages.append(HumanMessage(content="\n".join(ctx_lines)))
+
+    llm = build_llm(
+        provider=settings.LLM_PROVIDER,
+        api_key=settings.OPENAI_API_KEY,
+        base_url=settings.OPENAI_BASE_URL,
+        model=settings.LLM_MODEL,
+        max_tokens=max(settings.LLM_MAX_TOKENS, 2048),
+        temperature=0.2,
+    )
+
+    async def event_stream():
+        full = ""
+        try:
+            async for chunk in llm.astream(messages):
+                think = chunk_reasoning(chunk)
+                if think:
+                    yield _sse({"type": "thinking", "content": think})
+                delta = chunk_text(chunk)
+                if not delta:
+                    continue
+                full += delta
+                yield _sse({"type": "delta", "content": delta})
+        except Exception as e:
+            yield _sse({"type": "error", "detail": f"调用大模型失败：{e}"})
+            return
+
+        parsed = _parse_flow_result(full)
+        if not parsed or not parsed["flow"].get("nodes"):
+            yield _sse({"type": "error", "detail": "大模型返回内容无法解析为编排图，请调整描述后重试"})
+            return
+        flow, err = _normalize_flow(parsed["flow"], fns)
+        if err:
+            yield _sse({"type": "error", "detail": f"生成的编排图未通过校验（{err}），请调整描述后重试"})
+            return
+        yield _sse({"type": "done", "data": {**parsed, "flow": flow}})
 
     return StreamingResponse(
         event_stream(),

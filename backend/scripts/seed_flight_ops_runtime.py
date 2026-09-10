@@ -13,6 +13,7 @@
 生成内容（挂在类别「民航航班运行监控本体」/ 本体「航段」下）：
     函数 ×4        flight_duration_min / etd_delay_min / eta_delay_min / leg_phase
     派生属性 ×4    与函数一一绑定，读时（virtual）模式 = 每次读取实时计算
+    动作 ×3        编排模式（flow）：航班放行复核 / 航段运行快照 / 航班延误告警评估
     工作流 ×2      航段派生属性定时物化（HTTP×4 批量物化）/ 单航段运行简报（HTTP+LLM）
     定时计划 ×1    每 30 分钟触发「航段派生属性定时物化」
 
@@ -48,6 +49,7 @@ from models import (
     OntologyCategory,
     OntologyDerivedProperty,
     OntologyFunction,
+    OntologyService,
     Schedule,
     Workflow,
     WorkflowRun,
@@ -235,6 +237,150 @@ WF_B_NAME = "单航段运行简报"
 SCHEDULE_NAME = "航段派生属性物化（每30分钟）"
 
 
+# ══════════════════════════ 动作（编排模式，组合上面的函数） ══════════════════════════
+
+ACTION_CODES = ["leg.release.check", "leg.snapshot", "leg.delay.alert"]
+
+
+def _fn_node(nid: str, title: str, code: str, ids: dict, params: dict | None = None) -> dict:
+    return {
+        "id": nid, "type": "function", "title": title,
+        "config": {"function_id": ids.get(code, ""), "function_code": code,
+                   "params": params or {}, "on_error": "fail"},
+    }
+
+
+def _cond_node(nid: str, title: str, rule: dict, on_false: str, abort_message: str = "") -> dict:
+    return {
+        "id": nid, "type": "condition", "title": title,
+        "config": {"rule": rule, "on_false": on_false, "abort_message": abort_message},
+    }
+
+
+def _end_node(nid: str, title: str, result: dict | None = None,
+              edits: list | None = None, abort_message: str = "") -> dict:
+    if abort_message:
+        return {"id": nid, "type": "end", "title": title,
+                "config": {"mode": "abort", "abort_message": abort_message}}
+    return {"id": nid, "type": "end", "title": title,
+            "config": {"mode": "output", "result": result or {}, "edits": edits or []}}
+
+
+def build_actions(func_ids: dict) -> list[dict]:
+    """生成 3 个编排动作（flow），全部只调用种子函数、不写业务代码。"""
+
+    # 1) 航班放行复核：算延误 → 超阈值中止（转人工）→ 未超则看阶段并写回「放行」
+    release = {
+        "name": "航班放行复核", "code": "leg.release.check", "sort_order": 10,
+        "description": "组合函数「预计起飞延误 / 当前运行阶段」：预计延误未超阈值时写回 leg_status=放行；"
+                       "超阈值则中止并提示转人工复核。",
+        "params": [{"name": "delay_threshold_min", "label": "放行延误阈值(分钟)", "type": "number",
+                    "required": False, "default": 30, "description": "预计起飞延误超过该值不放行"}],
+        "flow": {
+            "schema_version": 1,
+            "nodes": [
+                {"id": "n1", "type": "start", "title": "开始", "config": {}},
+                _fn_node("f1", "预计起飞延误", "etd_delay_min", func_ids, {"only_late": True}),
+                _cond_node("c1", "延误未超阈值?", {
+                    "combinator": "and",
+                    "rules": [{"field": "{{ f1.value }}", "operator": "<",
+                               "value": "{{ params.delay_threshold_min }}"}],
+                }, "abort", "预计起飞延误 {{ f1.value }} 分钟已超阈值，暂不放行，请转人工复核"),
+                _fn_node("f2", "当前运行阶段", "leg_phase", func_ids),
+                _end_node("e1", "放行",
+                          result={"decision": "放行", "delay_min": "{{ f1.value }}", "phase": "{{ f2.value }}"},
+                          edits=[{"op": "set_property", "property_code": "leg_status", "value": "放行"}]),
+            ],
+            "edges": [
+                {"source": "n1", "target": "f1"},
+                {"source": "f1", "target": "c1"},
+                {"source": "c1", "target": "f2", "source_handle": "true"},
+                {"source": "f2", "target": "e1"},
+            ],
+            "layout": {"n1": {"x": 40, "y": 160}, "f1": {"x": 240, "y": 160},
+                       "c1": {"x": 440, "y": 160}, "f2": {"x": 640, "y": 160},
+                       "e1": {"x": 840, "y": 160}},
+        },
+    }
+
+    # 2) 航段运行快照：串行调 4 个函数聚合为只读简报（不写回）
+    snapshot = {
+        "name": "航段运行快照", "code": "leg.snapshot", "sort_order": 20,
+        "description": "组合全部 4 个函数，一次输出该航段的飞行时长 / 起飞延误 / 到达延误 / 当前阶段（只读，不写数据）。",
+        "params": [],
+        "flow": {
+            "schema_version": 1,
+            "nodes": [
+                {"id": "n1", "type": "start", "title": "开始", "config": {}},
+                _fn_node("f1", "预计飞行时长", "flight_duration_min", func_ids),
+                _fn_node("f2", "预计起飞延误", "etd_delay_min", func_ids, {"only_late": True}),
+                _fn_node("f3", "预计到达延误", "eta_delay_min", func_ids, {"only_late": True}),
+                _fn_node("f4", "当前运行阶段", "leg_phase", func_ids),
+                _end_node("e1", "快照输出", result={
+                    "leg_no": "{{ entity.properties.leg_no }}",
+                    "duration_min": "{{ f1.value }}",
+                    "etd_delay_min": "{{ f2.value }}",
+                    "eta_delay_min": "{{ f3.value }}",
+                    "phase": "{{ f4.value }}",
+                }),
+            ],
+            "edges": [
+                {"source": "n1", "target": "f1"},
+                {"source": "f1", "target": "f2"},
+                {"source": "f2", "target": "f3"},
+                {"source": "f3", "target": "f4"},
+                {"source": "f4", "target": "e1"},
+            ],
+            "layout": {"n1": {"x": 40, "y": 160}, "f1": {"x": 240, "y": 160},
+                       "f2": {"x": 440, "y": 160}, "f3": {"x": 640, "y": 160},
+                       "f4": {"x": 840, "y": 160}, "e1": {"x": 1040, "y": 160}},
+        },
+    }
+
+    # 3) 航班延误告警评估：起飞/到达延误 → 达阈值走告警分支，否则走正常分支（双出口演示）
+    alert = {
+        "name": "航班延误告警评估", "code": "leg.delay.alert", "sort_order": 30,
+        "description": "组合函数「预计起飞延误 / 预计到达延误」：起飞延误达阈值输出告警结论，否则输出正常结论（双分支，不写数据）。",
+        "params": [{"name": "alert_threshold_min", "label": "告警阈值(分钟)", "type": "number",
+                    "required": False, "default": 45, "description": "预计起飞延误达到该值触发告警结论"}],
+        "flow": {
+            "schema_version": 1,
+            "nodes": [
+                {"id": "n1", "type": "start", "title": "开始", "config": {}},
+                _fn_node("f1", "预计起飞延误", "etd_delay_min", func_ids, {"only_late": True}),
+                _fn_node("f2", "预计到达延误", "eta_delay_min", func_ids, {"only_late": True}),
+                _cond_node("c1", "延误达告警阈值?", {
+                    "combinator": "and",
+                    "rules": [{"field": "{{ f1.value }}", "operator": ">=",
+                               "value": "{{ params.alert_threshold_min }}"}],
+                }, "continue"),
+                _end_node("e1", "告警结论", result={
+                    "alert": True, "level": "中",
+                    "etd_delay_min": "{{ f1.value }}", "eta_delay_min": "{{ f2.value }}",
+                    "message": "预计起飞延误 {{ f1.value }} 分钟，已达告警阈值，请关注过站与衔接",
+                }),
+                _end_node("e2", "正常结论", result={
+                    "alert": False,
+                    "etd_delay_min": "{{ f1.value }}", "eta_delay_min": "{{ f2.value }}",
+                    "message": "运行正常",
+                }),
+            ],
+            "edges": [
+                {"source": "n1", "target": "f1"},
+                {"source": "f1", "target": "f2"},
+                {"source": "f2", "target": "c1"},
+                {"source": "c1", "target": "e1", "source_handle": "true"},
+                {"source": "c1", "target": "e2", "source_handle": "false"},
+            ],
+            "layout": {"n1": {"x": 40, "y": 200}, "f1": {"x": 240, "y": 200},
+                       "f2": {"x": 440, "y": 200}, "c1": {"x": 640, "y": 200},
+                       "e1": {"x": 840, "y": 110}, "e2": {"x": 840, "y": 300}},
+        },
+    }
+
+    return [release, snapshot, alert]
+
+
 # ══════════════════════════ 工作流定义 ══════════════════════════
 
 def _finalize_graph(graph: dict) -> dict:
@@ -372,6 +518,500 @@ def _workflow_b(base_url: str, sample_entity_id: str) -> dict:
     return _finalize_graph(graph)
 
 
+WF_G_NAME = "航班运行风险告警扫描"
+WF_H_NAME = "告警升级巡检"
+WF_I_NAME = "单告警深度研判"
+SCHEDULE_G_NAME = "运行风险告警扫描（每15分钟）"
+SCHEDULE_H_NAME = "告警升级巡检（每15分钟·错峰）"
+
+
+# ── 工作流 G 代码节点：规则引擎（论文第5章 7 条告警规则，阈值见表5.1） ──
+CODE_SCAN = '''\
+from datetime import datetime
+
+def run(params, entity, context):
+    """对拉取的航段逐条匹配告警规则：单事件三级 + 机场/航线聚合 + 组合风险。"""
+    resp = (context.get("http_legs") or {}).get("data") or {}
+    items = resp.get("items") or []
+    now = datetime.now()
+    alerts, seen = [], set()
+
+    def _parse(v):
+        try:
+            return datetime.fromisoformat(str(v).strip())
+        except (ValueError, TypeError):
+            return None
+
+    def add(leg_no, leg_id, al_type, level, value, msg, dept=None):
+        key = (leg_no, al_type)
+        if key in seen:
+            return
+        seen.add(key)
+        alerts.append({
+            "alert_no": "ALT-%s-%s-%s" % (now.strftime("%Y%m%d"), leg_no, al_type[:2]),
+            "leg_no": leg_no, "leg_entity_id": leg_id,
+            "alert_type": al_type, "risk_level": level, "trigger_value": value,
+            "message": msg,
+            "handle_dept": dept or {"低": "飞行控制室", "中": "运行控制室", "高": "总值班室"}[level],
+        })
+
+    late_legs = []   # 命中晚关门的航段（供聚合规则复用）
+    hit_types = {}   # leg_no -> 命中类型列表（组合风险用）
+    for it in items:
+        p = it.get("properties") or {}
+        sobt = _parse(p.get("sobt"))
+        if not sobt or not p.get("leg_status"):
+            continue
+        leg_no = p.get("leg_no") or it.get("name", "")
+        leg_id = it.get("id", "")
+        st = str(p.get("leg_status"))
+        sibt = _parse(p.get("sibt"))
+        hits = hit_types.setdefault(leg_no, [])
+
+        # 规则1 晚关门：SOBT 后 10/20/30 分钟仍未出港（未撤轮档=未关舱门）
+        late_min = int((now - sobt).total_seconds() // 60)
+        if st in ("计划", "登机") and late_min >= 10:
+            level = "高" if late_min > 30 else ("中" if late_min > 20 else "低")
+            add(leg_no, leg_id, "晚关门", level, late_min,
+                "%s 已过计划撤轮档%d分钟仍未出港" % (leg_no, late_min))
+            hits.append("晚关门")
+            if st == "登机":
+                late_legs.append(p)
+        # 规则2 超时未落：ATOT+计划飞行时长 后 5/10/15 分钟仍无落地报
+        atot = _parse(p.get("atot"))
+        if st == "巡航" and atot and sobt and sibt:
+            over = int((now - (atot + (sibt - sobt))).total_seconds() // 60)
+            if over >= 5:
+                level = "高" if over > 15 else ("中" if over > 10 else "低")
+                add(leg_no, leg_id, "超时未落", level, over,
+                    "%s 超过计划到达%d分钟仍无落地报" % (leg_no, over))
+                hits.append("超时未落")
+        # 规则3 机组变更：放行后名单变动（低风险，建议人工复核升级）
+        if str(p.get("is_crew_changed")).lower() in ("true", "1") and st in ("计划", "登机"):
+            add(leg_no, leg_id, "机组变更", "低", 0,
+                "%s 放行后机组名单变更，请确认资质与连飞限制" % leg_no)
+            hits.append("机组变更")
+
+    # 规则4 机场维度聚合：同一出发机场 2 小时窗口内晚关门 >=5 次（登机段天然在窗口内）
+    by_ap = {}
+    for p in late_legs:
+        by_ap.setdefault(str(p.get("dep_airport") or "?"), []).append(p)
+    for ap, lst in sorted(by_ap.items()):
+        if len(lst) >= 5:
+            add("-" + ap, None, "晚关门机场聚合", "中", len(lst),
+                "机场 %s 近2小时晚关门 %d 架次，运行态势异常" % (ap, len(lst)),
+                dept="运行控制室")
+    # 规则5 航线维度聚合：当日同一航线晚关门 >=3 次
+    by_rt = {}
+    for p in late_legs:
+        by_rt.setdefault("%s-%s" % (p.get("dep_airport"), p.get("arr_airport")), []).append(p)
+    for rt, lst in sorted(by_rt.items()):
+        if len(lst) >= 3:
+            add("-" + rt, None, "晚关门航线聚合", "中", len(lst),
+                "航线 %s 当日晚关门 %d 班次，建议排查共因" % (rt, len(lst)),
+                dept="运行控制室")
+    # 规则6 组合风险：同航段命中多类事件 -> 整体升为高
+    for leg_no, hits in hit_types.items():
+        if len(set(hits)) >= 2:
+            add(leg_no, None, "晚关门组合风险", "高", len(set(hits)),
+                "%s 同时命中多类风险事件（%s），升级高风险" % (leg_no, "+".join(sorted(set(hits)))),
+                dept="总值班室")
+
+    rank = {"低": 0, "中": 1, "高": 2}
+    max_level = max((a["risk_level"] for a in alerts), key=lambda x: rank[x]) if alerts else ""
+    return {
+        "alerts": alerts,
+        "alert_count": len(alerts),
+        "max_level": max_level,
+        "has_high": max_level == "高",
+        "scanned_at": now.replace(microsecond=0).isoformat(),
+        "summary": "；".join("%s[%s-%s]" % (a["alert_no"], a["alert_type"], a["risk_level"])
+                              for a in alerts[:8]) or "无",
+    }
+'''
+
+
+# ── 工作流 G 代码节点：告警入库（查重 + 建实体 + 挂关系，按 min_level 过滤） ──
+CODE_SAVE = '''\
+import httpx
+
+def run(params, entity, context):
+    """把规则命中的告警批量写入「运行告警」本体；人工驳回时仅写中低风险。"""
+    scan = (context.get("code_scan") or {})
+    alerts = scan.get("alerts") or []
+    advisories = (context.get("agent_judge") or {}).get("advisories") or []
+    min_level = str(params.get("min_level") or "低")
+    rank = {"低": 0, "中": 1, "高": 2}
+    sev = {"低": "提示", "中": "警告", "高": "严重"}
+    advice_map = {}
+    for a in (advisories if isinstance(advisories, list) else []):
+        if isinstance(a, dict) and a.get("leg_no"):
+            advice_map[a["leg_no"]] = a
+    base = str(params.get("base_url") or "http://127.0.0.1:8000") + "/api"
+    created, skipped, exists = [], [], 0
+    with httpx.Client(base_url=base, timeout=10.0) as c:
+        for al in alerts:
+            if rank.get(al.get("risk_level"), 0) < rank.get(min_level, 0):
+                skipped.append(al.get("alert_no"))
+                continue
+            no = al.get("alert_no")
+            r = c.get("/entities", params={
+                "ontology_id": params.get("alert_ontology_id"),
+                "q": no, "page_size": 1})
+            if r.status_code == 200 and (r.json().get("items") or []):
+                exists += 1
+                continue
+            adv = advice_map.get(al.get("leg_no"), {})
+            payload = {
+                "ontology_id": params.get("alert_ontology_id"),
+                "entity_type": "运行告警", "name": no,
+                "description": "[%s风险][%s] %s" % (
+                    al.get("risk_level"), al.get("alert_type"), al.get("message")),
+                "properties": {
+                    "alert_no": no, "alert_type": al.get("alert_type"),
+                    "severity": sev.get(al.get("risk_level"), "提示"),
+                    "risk_level": al.get("risk_level"),
+                    "triggered_at": scan.get("scanned_at"),
+                    "trigger_value": al.get("trigger_value"), "lasted_min": 0,
+                    "message": al.get("message"),
+                    "handle_dept": adv.get("handle_dept") or al.get("handle_dept"),
+                    "advice": adv.get("advice") or "",
+                    "related_leg_no": al.get("leg_no"),
+                    "handle_status": "待处理", "handler": "",
+                },
+            }
+            r = c.post("/entities", json=payload)
+            if r.status_code >= 400:
+                skipped.append("%s(HTTP%d)" % (no, r.status_code))
+                continue
+            ent = r.json() if isinstance(r.json(), dict) else {}
+            if ent.get("id") and params.get("alert_rel_def_id") and al.get("leg_entity_id"):
+                c.post("/relations", json={
+                    "kb_id": params.get("kb_id"),
+                    "relation_def_id": params.get("alert_rel_def_id"),
+                    "relation_type": "触发告警",
+                    "source_entity_id": al.get("leg_entity_id"),
+                    "target_entity_id": ent.get("id"),
+                    "description": "%s 触发 %s" % (al.get("leg_no"), al.get("alert_type")),
+                })
+            created.append(no)
+    return {"created_count": len(created), "skipped_count": len(skipped),
+            "exists_count": exists, "created": created[:10]}
+'''
+
+
+def _workflow_g(base_url: str, ids: dict, scan_date: str) -> dict:
+    """start → http拉航段 → code规则引擎 → cond有告警 → agent研判 → cond含中高
+    → 人工审批（高）→ code入库（全量/仅中低）；无告警或全低各走对应分支。"""
+    prompt = (
+        "你是航空公司运行控制中心（AOC）的风险研判助理。以下是本轮规则引擎扫描出的"
+        "航班运行告警列表（JSON）：\n{{code_scan.alerts}}\n\n"
+        "请逐条给出研判结果，最终只输出一个 JSON 对象（不要输出数组），字段：\n"
+        "max_level：本轮研判的最高风险等级（低/中/高，无告警时填低）；\n"
+        "advisories：JSON 数组，逐条告警的处置建议，每条含 leg_no（航段号/对象标识）、"
+        "alert_type（告警类型）、risk_level（低/中/高）、advice（一句话处置建议，"
+        "含具体动作如协调机位/催促保障/签派复核/启动备份机组）、handle_dept"
+        "（牵头部门：飞行控制室/运行控制室/签派放行室/总值班室）。\n"
+        "分级口径：低=岗位持续关注；中=主责部门5分钟内介入；高=总值班室3分钟内响应、"
+        "跨部门联动。聚合类告警请结合机场/航线维度给出共因排查方向。"
+    )
+    nodes = [
+        {"id": "start", "type": "start", "title": "开始",
+         "config": {"inputs": [{"name": "scan_date", "label": "扫描日期(yyyymmdd)",
+                                "type": "string", "required": False}],
+                    "defaults": {"scan_date": scan_date}}},
+        {"id": "http_legs", "type": "http", "title": "拉取当日航段",
+         "config": {"method": "GET",
+                    "url": base_url + "/api/entities",
+                    # 快照数据即当日运行全量，不做关键字检索（航段号不含日期，q 必然空结果）
+                    "params": {"ontology_id": ids["leg_ontology_id"], "page_size": 200},
+                    "timeout_seconds": 60}},
+        {"id": "code_scan", "type": "code", "title": "规则引擎（7条告警规则）",
+         "config": {"code_text": CODE_SCAN, "params": {}, "timeout_seconds": 30,
+                    "structured_outputs": [
+                        {"name": "alerts", "type": "array", "description": "命中的告警列表"},
+                        {"name": "alert_count", "type": "number", "description": "告警条数"},
+                        {"name": "max_level", "type": "string", "description": "最高风险等级"},
+                        {"name": "scanned_at", "type": "string", "description": "扫描时刻"},
+                        {"name": "summary", "type": "string", "description": "告警摘要"}]}},
+        {"id": "cond_any", "type": "condition", "title": "存在告警？",
+         "config": {"mode": "simple", "left": "{{code_scan.alert_count}}",
+                    "operator": "gt", "right": 0}},
+        {"id": "agent_judge", "type": "agent", "title": "智能体风险研判",
+         "config": {"query_template": prompt,
+                    "structured_outputs": [
+                        {"name": "max_level", "type": "string",
+                         "description": "本轮最高风险等级（低/中/高，无告警时填低）"},
+                        {"name": "advisories", "type": "array",
+                         "description": "逐条告警的处置建议（leg_no/alert_type/risk_level/advice/handle_dept）"}],
+                    "fail_on_error": False, "timeout_seconds": 120}},
+        {"id": "cond_high", "type": "condition", "title": "含中高风险？",
+         "config": {"mode": "simple", "left": "{{agent_judge.max_level}}",
+                    "operator": "==", "right": "高"}},
+        {"id": "human_approve", "type": "human", "title": "高风险处置审批",
+         "config": {"mode": "approve",
+                    "description": "本轮扫描发现高风险告警，请审批处置方案"
+                                   "（通过=全部入库并启动分级响应；驳回=高风险按误报暂缓，仅中低风险入库）",
+                    "display_fields": [
+                        {"label": "告警总数", "value": "{{code_scan.alert_count}}", "type": "text"},
+                        {"label": "最高风险等级", "value": "{{code_scan.max_level}}", "type": "text"},
+                        {"label": "告警清单", "value": "{{code_scan.summary}}", "type": "text"},
+                        {"label": "研判建议", "value": "{{agent_judge.advisories}}", "type": "text"}],
+                    "submit_text": "提交审批",
+                    "comment": {"label": "审批意见", "required": False},
+                    "assignee": "总值班室"}},
+        {"id": "code_save_all", "type": "code", "title": "告警入库（全部）",
+         "config": {"code_text": CODE_SAVE,
+                    "params": {"min_level": "低", "base_url": base_url,
+                               "kb_id": ids.get("kb_id"),
+                               "alert_ontology_id": ids["alert_ontology_id"],
+                               "alert_rel_def_id": ids.get("alert_rel_def_id")},
+                    "timeout_seconds": 120,
+                    "structured_outputs": [
+                        {"name": "created_count", "type": "number"},
+                        {"name": "skipped_count", "type": "number"},
+                        {"name": "exists_count", "type": "number"}]}},
+        {"id": "code_save_midlow", "type": "code", "title": "告警入库（仅中低风险）",
+         "config": {"code_text": CODE_SAVE,
+                    "params": {"min_level": "中", "base_url": base_url,
+                               "kb_id": ids.get("kb_id"),
+                               "alert_ontology_id": ids["alert_ontology_id"],
+                               "alert_rel_def_id": ids.get("alert_rel_def_id")},
+                    "timeout_seconds": 120,
+                    "structured_outputs": [
+                        {"name": "created_count", "type": "number"},
+                        {"name": "skipped_count", "type": "number"},
+                        {"name": "exists_count", "type": "number"}]}},
+        {"id": "end_done", "type": "end", "title": "结束",
+         "config": {"outputs": [
+             {"name": "summary", "value": "扫描完成：告警 {{code_scan.alert_count}} 条"
+                                           "（最高等级 {{code_scan.max_level}}），"
+                                           "按审批结果完成入库"}]}},
+        {"id": "end_empty", "type": "end", "title": "结束（无告警）",
+         "config": {"outputs": [{"name": "summary", "value": "本轮扫描无告警"}]}},
+    ]
+    edges = [
+        {"source": "start", "target": "http_legs"},
+        {"source": "http_legs", "target": "code_scan"},
+        {"source": "code_scan", "target": "cond_any"},
+        {"source": "cond_any", "target": "agent_judge", "handle": "true"},
+        {"source": "cond_any", "target": "end_empty", "handle": "false"},
+        {"source": "agent_judge", "target": "cond_high"},
+        {"source": "cond_high", "target": "human_approve", "handle": "true"},
+        {"source": "cond_high", "target": "code_save_all", "handle": "false"},
+        {"source": "human_approve", "target": "code_save_all", "handle": "true"},
+        {"source": "human_approve", "target": "code_save_midlow", "handle": "false"},
+        {"source": "code_save_all", "target": "end_done"},
+        {"source": "code_save_midlow", "target": "end_done"},
+    ]
+    return _finalize_graph({"nodes": nodes, "edges": edges})
+
+
+
+# ── 工作流 H 代码节点：升级判定（论文规则7：低风险>20min 升中；中风险>30min 升高） ──
+CODE_ESCALATE = '''\
+from datetime import datetime
+
+def run(params, entity, context):
+    """对未解除告警计算持续时长，命中升级条件生成升级清单。"""
+    resp = (context.get("http_open") or {}).get("data") or {}
+    items = resp.get("items") or []
+    now = datetime.now()
+    escalations = []
+
+    def _parse(v):
+        try:
+            return datetime.fromisoformat(str(v).strip())
+        except (ValueError, TypeError):
+            return None
+
+    for it in items:
+        p = it.get("properties") or {}
+        if str(p.get("handle_status")) not in ("待处理", "处置中"):
+            continue
+        trig = _parse(p.get("triggered_at"))
+        if not trig:
+            continue
+        lasted = max(0, int((now - trig).total_seconds() // 60))
+        level = str(p.get("risk_level") or "低")
+        new_level, reason = None, ""
+        if level == "低" and lasted > 20:
+            new_level, reason = "中", "低风险告警持续%d分钟未解除（阈值20分钟）" % lasted
+        elif level == "中" and lasted > 30:
+            new_level, reason = "高", "中风险告警持续%d分钟未解除（处置时限30分钟）" % lasted
+        if new_level:
+            escalations.append({
+                "entity_id": it.get("id"), "alert_no": p.get("alert_no") or it.get("name"),
+                "alert_type": p.get("alert_type"), "leg_no": p.get("related_leg_no"),
+                "old_level": level, "new_level": new_level,
+                "lasted_min": lasted, "reason": reason,
+                "handle_dept": {"中": "运行控制室", "高": "总值班室"}.get(new_level, "运行控制室"),
+            })
+    return {"escalations": escalations, "escalation_count": len(escalations),
+            "checked_count": len(items)}
+'''
+
+
+# ── 工作流 H 代码节点：升级写回（PUT 更新告警实体等级/状态/持续时长） ──
+CODE_UPGRADE = '''\
+import httpx
+
+def run(params, entity, context):
+    """执行升级：更新告警实体的风险等级/严重级别/处理状态/持续分钟。"""
+    esc = (context.get("code_escalate") or {}).get("escalations") or []
+    base = str(params.get("base_url") or "http://127.0.0.1:8000") + "/api"
+    sev = {"低": "提示", "中": "警告", "高": "严重"}
+    updated = []
+    with httpx.Client(base_url=base, timeout=10.0) as c:
+        for e in esc:
+            r = c.get("/entities/" + str(e.get("entity_id")), timeout=10.0)
+            if r.status_code >= 400:
+                continue
+            props = (r.json() or {}).get("properties") or {}
+            props.update({
+                "risk_level": e.get("new_level"),
+                "severity": sev.get(e.get("new_level"), "警告"),
+                "handle_status": "已升级",
+                "lasted_min": e.get("lasted_min"),
+            })
+            u = c.put("/entities/" + str(e.get("entity_id")),
+                      json={"properties": props})
+            if u.status_code < 400:
+                updated.append(e.get("alert_no"))
+    return {"updated": updated, "updated_count": len(updated)}
+'''
+
+
+def _workflow_h(base_url: str, ids: dict) -> dict:
+    """http拉未解除告警 → code升级判定 → cond有升级 → code写回 → agent通报 → end。"""
+    prompt = (
+        "你是航空公司运行控制中心（AOC）值班经理。以下告警因持续未解除而自动升级：\n"
+        "{{code_escalate.escalations}}\n\n"
+        "请生成一份面向各牵头部门的升级通报（JSON）：report 字段输出通报正文，"
+        "包含：升级原因、涉事航班/机场/航线、新风险等级对应的响应要求"
+        "（中=主责部门5分钟内介入，高=总值班室3分钟内响应并跨部门联动）、"
+        "以及建议的解除条件。语言简练、可直接群发。"
+    )
+    nodes = [
+        {"id": "start", "type": "start", "title": "开始", "config": {"inputs": []}},
+        {"id": "http_open", "type": "http", "title": "拉取运行告警",
+         "config": {"method": "GET", "url": base_url + "/api/entities",
+                    "params": {"ontology_id": ids["alert_ontology_id"], "page_size": 200},
+                    "timeout_seconds": 60}},
+        {"id": "code_escalate", "type": "code", "title": "升级判定",
+         "config": {"code_text": CODE_ESCALATE, "params": {}, "timeout_seconds": 30,
+                    "structured_outputs": [
+                        {"name": "escalations", "type": "array", "description": "待升级清单"},
+                        {"name": "escalation_count", "type": "number"}]}},
+        {"id": "cond_esc", "type": "condition", "title": "有告警升级？",
+         "config": {"mode": "simple", "left": "{{code_escalate.escalation_count}}",
+                    "operator": "gt", "right": 0}},
+        {"id": "code_upgrade", "type": "code", "title": "执行升级写回",
+         "config": {"code_text": CODE_UPGRADE, "params": {"base_url": base_url},
+                    "timeout_seconds": 120,
+                    "structured_outputs": [
+                        {"name": "updated_count", "type": "number"},
+                        {"name": "updated", "type": "array"}]}},
+        {"id": "agent_notify", "type": "agent", "title": "生成升级通报",
+         "config": {"query_template": prompt,
+                    "structured_outputs": [
+                        {"name": "report", "type": "string", "description": "升级通报正文"}],
+                    "fail_on_error": False, "timeout_seconds": 120}},
+        {"id": "end_report", "type": "end", "title": "结束",
+         "config": {"outputs": [
+             {"name": "report", "value": "升级 {{code_upgrade.updated_count}} 条：\n"
+                                          "{{agent_notify.report}}"}]}},
+        {"id": "end_quiet", "type": "end", "title": "结束（无升级）",
+         "config": {"outputs": [{"name": "report", "value": "巡检完成，无告警升级"}]}},
+    ]
+    edges = [
+        {"source": "start", "target": "http_open"},
+        {"source": "http_open", "target": "code_escalate"},
+        {"source": "code_escalate", "target": "cond_esc"},
+        {"source": "cond_esc", "target": "code_upgrade", "handle": "true"},
+        {"source": "cond_esc", "target": "end_quiet", "handle": "false"},
+        {"source": "code_upgrade", "target": "agent_notify"},
+        {"source": "agent_notify", "target": "end_report"},
+    ]
+    return _finalize_graph({"nodes": nodes, "edges": edges})
+
+
+# ── 工作流 I 代码节点：聚合单告警研判上下文（航段实体 + 派生属性刷新） ──
+CODE_GATHER = '''\
+import httpx
+
+def run(params, entity, context):
+    """根据告警实体找到关联航段，刷新派生属性并汇总研判上下文。"""
+    alert = ((context.get("http_alert") or {}).get("data") or {})
+    p = alert.get("properties") or {}
+    leg_no = str(p.get("related_leg_no") or "")
+    base = str(params.get("base_url") or "http://127.0.0.1:8000") + "/api"
+    leg = {}
+    with httpx.Client(base_url=base, timeout=15.0) as c:
+        if leg_no and params.get("leg_ontology_id"):
+            r = c.get("/entities", params={
+                "ontology_id": params.get("leg_ontology_id"),
+                "q": leg_no, "page_size": 1})
+            items = (r.json() or {}).get("items") or [] if r.status_code == 200 else []
+            if items:
+                d = c.get("/entities/%s/derived-properties" % items[0].get("id"),
+                          params={"refresh": "true"}, timeout=60.0)
+                if d.status_code == 200:
+                    leg = d.json() or {}
+                else:
+                    leg = {"properties": items[0].get("properties")}
+    return {"alert": {"alert_no": p.get("alert_no"), "alert_type": p.get("alert_type"),
+                      "risk_level": p.get("risk_level"), "message": p.get("message"),
+                      "trigger_value": p.get("trigger_value"),
+                      "handle_dept": p.get("handle_dept")},
+            "leg": leg, "leg_found": bool(leg)}
+'''
+
+
+def _workflow_i(base_url: str, ids: dict) -> dict:
+    """start(alert_id) → http拉告警 → code聚合航段+派生属性 → agent深度研判 → end。"""
+    prompt = (
+        "你是航空公司运行控制中心的资深值班经理，请对下面这条运行告警做深度研判。\n"
+        "告警信息：{{code_gather.alert}}\n"
+        "关联航段及其派生属性（延误等级/预计延误/衔接风险等）：{{code_gather.leg}}\n\n"
+        "请输出：1) 告警是否成立、是否可能误报及依据；2) 结合航段运行数据的影响面"
+        "（旅客数/后续航班衔接/机组连飞限制）；3) 具体处置动作（按牵头部门分工）；"
+        "4) 解除条件。最后以 JSON 输出：confirm（成立/疑似误报）、proposal（处置动作清单）。"
+    )
+    nodes = [
+        {"id": "start", "type": "start", "title": "开始",
+         "config": {"inputs": [{"name": "alert_id", "label": "告警实体ID",
+                                "type": "string", "required": True}]}},
+        {"id": "http_alert", "type": "http", "title": "拉取告警实体",
+         "config": {"method": "GET", "url": base_url + "/api/entities/{{start.alert_id}}",
+                    "timeout_seconds": 60}},
+        {"id": "code_gather", "type": "code", "title": "聚合研判上下文",
+         "config": {"code_text": CODE_GATHER,
+                    "params": {"base_url": base_url,
+                               "leg_ontology_id": ids["leg_ontology_id"]},
+                    "timeout_seconds": 120,
+                    "structured_outputs": [
+                        {"name": "alert", "type": "object", "description": "告警摘要"},
+                        {"name": "leg", "type": "object", "description": "航段及派生属性"},
+                        {"name": "leg_found", "type": "boolean"}]}},
+        {"id": "agent_deep", "type": "agent", "title": "智能体深度研判",
+         "config": {"query_template": prompt,
+                    "structured_outputs": [
+                        {"name": "confirm", "type": "string", "description": "成立/疑似误报"},
+                        {"name": "proposal", "type": "array", "description": "处置动作清单"}],
+                    "fail_on_error": False, "timeout_seconds": 180}},
+        {"id": "end", "type": "end", "title": "结束",
+         "config": {"outputs": [
+             {"name": "advice", "value": "{{agent_deep.answer}}"}]}},
+    ]
+    edges = [
+        {"source": "start", "target": "http_alert"},
+        {"source": "http_alert", "target": "code_gather"},
+        {"source": "code_gather", "target": "agent_deep"},
+        {"source": "agent_deep", "target": "end"},
+    ]
+    return _finalize_graph({"nodes": nodes, "edges": edges})
+
 
 # ══════════════════════════ 主流程 ══════════════════════════
 
@@ -420,7 +1060,8 @@ async def _clear(db: AsyncSession, cat_id: str, leg_ontology_id: str) -> None:
     prop_codes = [p["code"] for p in DERIVED_PROPS]
 
     wf_ids = [row for row in (await db.execute(
-        select(Workflow.id).where(Workflow.name.in_([WF_A_NAME, WF_B_NAME]))
+        select(Workflow.id).where(Workflow.name.in_(
+            [WF_A_NAME, WF_B_NAME, WF_G_NAME, WF_H_NAME, WF_I_NAME]))
     )).scalars().all()]
     if wf_ids:
         await db.execute(delete(Schedule).where(Schedule.workflow_id.in_(wf_ids)))
@@ -433,6 +1074,10 @@ async def _clear(db: AsyncSession, cat_id: str, leg_ontology_id: str) -> None:
     await db.execute(delete(OntologyFunction).where(
         OntologyFunction.category_id == cat_id,
         OntologyFunction.code.in_(func_codes)))
+    await db.execute(delete(OntologyService).where(
+        OntologyService.owner_type == "ontology",
+        OntologyService.ontology_id == leg_ontology_id,
+        OntologyService.code.in_(ACTION_CODES)))
     await db.commit()
 
 
@@ -446,7 +1091,8 @@ async def _seed(base_url: str, force: bool) -> None:
                 OntologyFunction.category_id == cat_id,
                 OntologyFunction.code.in_([f["code"] for f in FUNCTIONS]))
         )).first() or (await db.execute(
-            select(Workflow.id).where(Workflow.name.in_([WF_A_NAME, WF_B_NAME]))
+            select(Workflow.id).where(Workflow.name.in_(
+                [WF_A_NAME, WF_B_NAME, WF_G_NAME, WF_H_NAME, WF_I_NAME]))
         )).first()
         if existed and not force:
             print("运行时层数据已存在。如需重建请使用 --force 参数。")
@@ -473,6 +1119,29 @@ async def _seed(base_url: str, force: bool) -> None:
             func_id_by_code[fdef["code"]] = fn.id
         print(f"已创建 {len(FUNCTIONS)} 个本体函数：{', '.join(f['code'] for f in FUNCTIONS)}")
 
+        # 1.5 动作（编排模式，组合上面的函数，不写业务代码）
+        dup_ids = [row for row in (await db.execute(
+            select(OntologyService.id).where(
+                OntologyService.owner_type == "ontology",
+                OntologyService.ontology_id == leg_id,
+                OntologyService.code.in_(ACTION_CODES))
+        )).scalars().all()]
+        if dup_ids:
+            await db.execute(delete(OntologyService).where(OntologyService.id.in_(dup_ids)))
+            await db.flush()
+        for adef in build_actions(func_id_by_code):
+            db.add(OntologyService(
+                owner_type="ontology", ontology_id=leg_id, entity_id=None,
+                name=adef["name"], code=adef["code"], description=adef["description"],
+                params_schema=json.dumps(adef["params"], ensure_ascii=False),
+                code_text="", language="python", timeout_seconds=30,
+                is_enabled=1, sort_order=adef["sort_order"],
+                execution_mode="flow",
+                flow=json.dumps(adef["flow"], ensure_ascii=False),
+            ))
+        await db.flush()
+        print(f"已创建 {len(ACTION_CODES)} 个编排动作：{', '.join(ACTION_CODES)}")
+
         # 2. 派生属性（读时模式）
         for pdef in DERIVED_PROPS:
             db.add(OntologyDerivedProperty(
@@ -496,6 +1165,28 @@ async def _seed(base_url: str, force: bool) -> None:
         prop_payloads = [{"id": p.id, "name": p.name, "code": p.code} for p in props]
 
         sample = await _pick_sample_entity(db, leg_id)
+
+        # 3.5 附加定位：运行告警本体 / 触发告警关系定义 / 知识库（注入代码节点 params）
+        from models import Ontology, OntologyRelation
+        alert_ont = (await db.execute(
+            select(Ontology).where(Ontology.category_id == cat_id,
+                                   Ontology.name == "运行告警")
+        )).scalar_one_or_none()
+        if not alert_ont:
+            raise SystemExit("类别下未找到本体「运行告警」，请先重建实体种子（seed_flight_ops_entities.py）")
+        alert_rel = (await db.execute(
+            select(OntologyRelation).where(OntologyRelation.category_id == cat_id,
+                                           OntologyRelation.name == "触发告警")
+        )).scalar_one_or_none()
+        kb_id = (await db.execute(
+            select(Entity.kb_id).where(Entity.ontology_id == leg_id).limit(1)
+        )).scalar_one_or_none()
+        ids = {"leg_ontology_id": leg_id,
+               "alert_ontology_id": alert_ont.id,
+               "kb_id": kb_id or "",
+               "alert_rel_def_id": alert_rel.id if alert_rel else ""}
+        scan_date = datetime.now().strftime("%Y%m%d")
+
         wf_a = Workflow(
             name=WF_A_NAME,
             description="把航段 4 个读时派生属性（飞行时长/起飞延误/到达延误/运行阶段）"
@@ -509,9 +1200,31 @@ async def _seed(base_url: str, force: bool) -> None:
             definition=json.dumps(_workflow_b(base_url, sample["id"] if sample else ""),
                                   ensure_ascii=False),
         )
-        db.add_all([wf_a, wf_b])
+        wf_g = Workflow(
+            name=WF_G_NAME,
+            description="论文第5章分级告警：HTTP 拉当日航段 → 代码规则引擎"
+                        "（晚关门/超时未落/机组变更三级 + 机场/航线聚合 + 组合风险）"
+                        "→ 条件分流 → 智能体研判 → 高风险人工审批 → 批量入库挂关系。",
+            definition=json.dumps(_workflow_g(base_url, ids, scan_date),
+                                  ensure_ascii=False),
+        )
+        wf_h = Workflow(
+            name=WF_H_NAME,
+            description="规则7 持续未解除升级：拉取未解除告警，低风险>20分钟升中、"
+                        "中风险>30分钟升高，写回实体后由智能体生成升级通报。",
+            definition=json.dumps(_workflow_h(base_url, ids), ensure_ascii=False),
+        )
+        wf_i = Workflow(
+            name=WF_I_NAME,
+            description="单告警深度研判：拉告警实体+关联航段派生属性，"
+                        "智能体给出误报判断/影响面/处置动作/解除条件。手动输入 alert_id 运行。",
+            definition=json.dumps(_workflow_i(base_url, ids), ensure_ascii=False),
+        )
+        db.add_all([wf_a, wf_b, wf_g, wf_h, wf_i])
         await db.flush()
-        print(f"已创建工作流：{WF_A_NAME}（id={wf_a.id}）、{WF_B_NAME}（id={wf_b.id}）")
+        print(f"已创建工作流：{WF_A_NAME}（id={wf_a.id}）、{WF_B_NAME}（id={wf_b.id}）、"
+              f"{WF_G_NAME}（id={wf_g.id}）、{WF_H_NAME}（id={wf_h.id}）、"
+              f"{WF_I_NAME}（id={wf_i.id}）")
 
         # 4. 定时计划（后端启动时由调度引擎加载；运行中生成需重启后端生效）
         db.add(Schedule(
@@ -525,8 +1238,30 @@ async def _seed(base_url: str, force: bool) -> None:
             enabled=1,
             muted=0, alert_on_failure=1, max_failures_alert=3,
         ))
+        db.add(Schedule(
+            name=SCHEDULE_G_NAME,
+            description="每 15 分钟运行「航班运行风险告警扫描」（规则引擎→条件分流→"
+                        "智能体研判→高风险人工审批→入库）。",
+            workflow_id=wf_g.id,
+            trigger="interval",
+            trigger_config=json.dumps({"every": 15, "unit": "minutes"}),
+            input_params=json.dumps({}),
+            enabled=1,
+            muted=0, alert_on_failure=1, max_failures_alert=3,
+        ))
+        db.add(Schedule(
+            name=SCHEDULE_H_NAME,
+            description="每 15 分钟运行「告警升级巡检」（与扫描错峰触发），"
+                        "持续未解除的告警自动升级并生成通报。",
+            workflow_id=wf_h.id,
+            trigger="interval",
+            trigger_config=json.dumps({"every": 15, "unit": "minutes"}),
+            input_params=json.dumps({}),
+            enabled=1,
+            muted=0, alert_on_failure=1, max_failures_alert=3,
+        ))
         await db.commit()
-        print(f"已创建定时计划：{SCHEDULE_NAME}")
+        print(f"已创建定时计划：{SCHEDULE_NAME}、{SCHEDULE_G_NAME}、{SCHEDULE_H_NAME}")
 
         if sample:
             wf_b_def = json.loads(wf_b.definition)
@@ -543,6 +1278,8 @@ async def _seed(base_url: str, force: bool) -> None:
         print(f"  1. 实时计算：GET {base_url}/api/entities/<entity_id>/derived-properties?refresh=true")
         print(f"  2. 手动运行工作流 B：前端「工作流」页 → 单航段运行简报 → 运行")
         print("  3. 定时计划：重启后端后生效；也可在「定时计划」页点「立即执行」验证工作流 A")
+        print(f"  4. 告警链路：手动运行「{WF_G_NAME}」→ 审批挂起后在待办里通过/驳回 →"
+              f" 再运行「{WF_H_NAME}」看升级（低风险待处理超 20 分钟即触发）")
 
 
 # ══════════════════════════ 验证 ══════════════════════════

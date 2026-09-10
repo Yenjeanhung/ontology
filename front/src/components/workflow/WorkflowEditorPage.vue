@@ -11,6 +11,7 @@ import WorkflowNode from './WorkflowNode.vue'
 import {
   getWorkflow, updateWorkflow, fetchWorkflowPalette, runWorkflowStream, resumeWorkflowStream,
   fetchEntities, fetchEntityServices, fetchWorkflowRuns, getWorkflowRun, deleteWorkflowRun,
+  fetchOntologyCategories, fetchOntologies,
   submitHumanDecision as submitHumanDecisionApi, cancelWorkflowRun as cancelWorkflowRunApi,
   testHttpNode,
 } from '../../api'
@@ -142,6 +143,13 @@ function outputFieldsOf(nodeLike) {
   let fields = Array.isArray(cfg.output_fields)
     ? [...cfg.output_fields]
     : [...(OUTPUT_FIELDS_DEFAULT[t] || [])]
+  // 开始节点：输入变量即下游可引用的输出（与引擎 _execute_node 对 start 的处理一致）
+  if (t === 'start' && Array.isArray(cfg.inputs)) {
+    for (const i of cfg.inputs) {
+      const n = i?.name
+      if (n && !fields.includes(n)) fields.push(n)
+    }
+  }
   const struct = cfg.structured_outputs
   if ((t === 'agent' || t === 'llm' || t === 'code') && Array.isArray(struct)) {
     const structNames = struct.map(s => s?.name).filter(Boolean)
@@ -317,6 +325,7 @@ function appendEndRowFromVar(id, field) {
 const enabledSkills = computed(() => palette.value.skills || [])
 
 onMounted(async () => {
+  loadOntologyOptions()
   try {
     const [wf, pal] = await Promise.all([getWorkflow(wfId), fetchWorkflowPalette()])
     wfName.value = wf.name
@@ -602,6 +611,52 @@ const httpKvGet = (f) => httpKvGetDeep([f])
 const httpKvAdd = (f) => httpKvAddDeep([f])
 const httpKvDel = (f, i) => httpKvDelDeep([f], i)
 const httpKvUpdate = (f, i, part, val) => httpKvUpdateDeep([f], i, part, val)
+
+// Query 参数 key=ontology_id 时，值改为「类别 → 本体」级联下拉（id 难记忆）
+const ontologyPickGroups = ref([])   // [{ id: 类别id, label: 类别名, options: [{ value: 本体id, label: 本体名 }] }]
+const ontoCascadeCat = reactive({})  // 行级 UI 状态：row._id → 已选类别 id（不落库，row.v 只存本体 id）
+async function loadOntologyOptions() {
+  try {
+    const cats = await fetchOntologyCategories()
+    const groups = await Promise.all((cats || []).map(async c => {
+      const list = await fetchOntologies(c.id).catch(() => [])
+      return { id: c.id, label: c.name, options: (list || []).map(o => ({ value: o.id, label: o.name })) }
+    }))
+    ontologyPickGroups.value = groups.filter(g => g.options.length)
+  } catch { /* 静默：拉取失败时退回手填输入框 */ }
+}
+const isOntologyKey = (k) => String(k || '').trim().toLowerCase() === 'ontology_id'
+// Query 参数名建议（实体服务等常用接口参数；datalist 可输入也可选）
+const QUERY_KEY_SUGGESTIONS = ['ontology_id', 'category_id', 'kb_id', 'entity_type', 'q', 'page', 'page_size', 'limit', 'status', 'sort']
+// 常用请求头建议
+const HEADER_KEY_SUGGESTIONS = ['Content-Type', 'Accept', 'Authorization', 'X-Request-Id']
+// 按本体 id 反推所属类别
+function ontoGroupOf(id) {
+  return ontologyPickGroups.value.find(g => g.options.some(o => o.value === id)) || null
+}
+// 级联条件：key 匹配、选项已加载、非变量引用，且（值为空 或 已存 id 能定位到类别）
+const rowSelectable = (k, v) => {
+  if (!isOntologyKey(k) || !ontologyPickGroups.value.length) return false
+  const s = String(v ?? '')
+  if (s.includes('{{')) return false
+  return !s || !!ontoGroupOf(s)
+}
+// 级联第一级当前值：优先行 UI 状态，否则按已存本体 id 反推
+function cascadeCatOf(row) {
+  if (ontoCascadeCat[row._id] !== undefined) return ontoCascadeCat[row._id]
+  const g = ontoGroupOf(row.v)
+  return g ? g.id : ''
+}
+function cascadeOptionsOf(row) {
+  const g = ontologyPickGroups.value.find(x => x.id === cascadeCatOf(row))
+  return g ? g.options : []
+}
+function onCascadeCat(row, i, catId) {
+  ontoCascadeCat[row._id] = catId
+  const g = ontologyPickGroups.value.find(x => x.id === catId)
+  // 切换类别后，已存本体不属于新类别则清空，避免留下跨类别的脏 id
+  if (row.v && !(g && g.options.some(o => o.value === row.v))) httpKvUpdate('params', i, 'v', '')
+}
 
 // 嵌套路径 JSON 文本编辑（body.data 用）
 function jsonTextDeep(path) {
@@ -1961,21 +2016,37 @@ watch(nowTick, () => {
               <div class="field">
                 <label>Query 参数</label>
                 <div v-for="(row, i) in httpKvGet('params')" :key="row._id" class="df-row">
-                  <input type="text" :value="row.k" @input="httpKvUpdate('params', i, 'k', $event.target.value)" placeholder="参数名，如 page" class="df-label" />
-                  <input type="text" :value="row.v" @input="httpKvUpdate('params', i, 'v', $event.target.value)" placeholder="值，支持 {{变量}}" class="df-value" />
+                  <input type="text" :value="row.k" @input="httpKvUpdate('params', i, 'k', $event.target.value)" placeholder="参数名，如 page" class="df-label" list="wf-qkey-sug" />
+                  <div v-if="rowSelectable(row.k, row.v)" class="onto-cascade">
+                    <select class="onto-cat" :value="cascadeCatOf(row)" @change="onCascadeCat(row, i, $event.target.value)" title="本体类别">
+                      <option value="">选择类别…</option>
+                      <option v-for="g in ontologyPickGroups" :key="g.id" :value="g.id">{{ g.label }}</option>
+                    </select>
+                    <select class="onto-item" :value="row.v" :disabled="!cascadeCatOf(row)" @change="httpKvUpdate('params', i, 'v', $event.target.value)" title="本体（存入本体 id）">
+                      <option value="">{{ cascadeCatOf(row) ? '— 选择本体 —' : '先选类别' }}</option>
+                      <option v-for="o in cascadeOptionsOf(row)" :key="o.value" :value="o.value">{{ o.label }}</option>
+                    </select>
+                  </div>
+                  <input v-else type="text" :value="row.v" @input="httpKvUpdate('params', i, 'v', $event.target.value)" placeholder="值，支持 {{变量}}" class="df-value" />
                   <button type="button" class="df-del" @click="httpKvDel('params', i)" title="删除">×</button>
                 </div>
                 <button type="button" class="btn sm" @click="httpKvAdd('params')">+ 添加参数</button>
+                <datalist id="wf-qkey-sug">
+                  <option v-for="k in QUERY_KEY_SUGGESTIONS" :key="k" :value="k" />
+                </datalist>
               </div>
 
               <!-- 请求头 -->
               <div class="field">
                 <label>请求头</label>
                 <div v-for="(row, i) in httpKvGet('headers')" :key="row._id" class="df-row">
-                  <input type="text" :value="row.k" @input="httpKvUpdate('headers', i, 'k', $event.target.value)" placeholder="Header，如 X-Request-Id" class="df-label" />
+                  <input type="text" :value="row.k" @input="httpKvUpdate('headers', i, 'k', $event.target.value)" placeholder="Header，如 X-Request-Id" class="df-label" list="wf-hkey-sug" />
                   <input type="text" :value="row.v" @input="httpKvUpdate('headers', i, 'v', $event.target.value)" placeholder="值，支持 {{变量}}" class="df-value" />
                   <button type="button" class="df-del" @click="httpKvDel('headers', i)" title="删除">×</button>
                 </div>
+                <datalist id="wf-hkey-sug">
+                  <option v-for="k in HEADER_KEY_SUGGESTIONS" :key="k" :value="k" />
+                </datalist>
                 <button type="button" class="btn sm" @click="httpKvAdd('headers')">+ 添加请求头</button>
               </div>
 
@@ -2474,6 +2545,11 @@ watch(nowTick, () => {
 .df-row, .ff-line { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .df-label { flex: 0 0 118px; }
 .df-value { flex: 1; font-family: ui-monospace, monospace; }
+/* ontology_id 级联下拉：类别 → 本体 */
+.onto-cascade { flex: 1; display: flex; gap: 6px; min-width: 0; }
+.onto-cascade select { min-width: 0; }
+.onto-cat { flex: 0 0 42%; }
+.onto-item { flex: 1; font-family: ui-monospace, monospace; }
 .df-del, .ff-mv {
   flex-shrink: 0; width: 24px; height: 24px; border-radius: 5px; cursor: pointer;
   border: 1px solid var(--c-border-strong, #d8cdbb); background: var(--c-panel); color: var(--c-secondary);
@@ -2493,7 +2569,7 @@ watch(nowTick, () => {
 .ff-options { flex: 1; }
 .ff-spacer { flex: 1; }
 .ff-req { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--c-fg); }
-.df-row input, .ff-line input, .ff-line select {
+.df-row input, .df-row select, .ff-line input, .ff-line select {
   padding: 4px 7px; border-radius: 5px; font-size: 11.5px; font-family: inherit;
   border: 1px solid var(--c-border-strong, #d8cdbb); background: var(--c-panel); color: var(--c-fg);
   min-width: 0;

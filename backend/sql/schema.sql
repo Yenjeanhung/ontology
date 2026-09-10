@@ -235,6 +235,8 @@ CREATE TABLE IF NOT EXISTS ontology_services (
     timeout_seconds INTEGER NOT NULL DEFAULT 30,
     is_enabled INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER NOT NULL DEFAULT 0,
+    execution_mode VARCHAR(10) NOT NULL DEFAULT 'code',
+    flow TEXT DEFAULT NULL,
     created_at VARCHAR,
     updated_at VARCHAR
 );
