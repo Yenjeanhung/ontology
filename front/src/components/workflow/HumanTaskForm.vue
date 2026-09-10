@@ -73,6 +73,62 @@ function fmtVal(v) {
   return String(v)
 }
 
+// ── 只读待审内容的智能渲染 ──────────────────────────────
+// 上游节点（LLM/代码）输出的结构化数据不再以 JSON 字符串裸奔：
+// 对象数组 → 编号卡片列表；单个对象 → 键值网格；标量数组 → 标签；其余 → 文本。
+const KEY_LABELS = {
+  log_no: '告警编号', alert_id: '告警编号', time: '时间', timestamp: '时间',
+  risk_level: '风险等级', risk_desc: '风险描述', location: '环节/位置',
+  source: '来源', level: '级别', severity: '严重度', name: '名称', title: '标题',
+  status: '状态', count: '数量', total: '总数', type: '类型', id: 'ID',
+  desc: '描述', description: '描述', suggestion: '建议', action: '处置动作',
+  owner: '责任人', deadline: '期限', score: '评分', reason: '原因',
+  leg_no: '航段号', alert_type: '告警类型', advice: '处置建议', handle_dept: '处置部门',
+}
+const TITLE_KEYS = ['log_no', 'alert_id', 'no', 'code', 'id', 'name', 'title']
+const RISK_KEYS = ['risk_level', 'risk', 'level', 'severity']
+
+function niceKey(k) { return KEY_LABELS[k] || k }
+function isPlainObj(v) { return !!v && typeof v === 'object' && !Array.isArray(v) }
+function isPlain(v) { return v == null || typeof v !== 'object' }
+function isObjList(v) { return Array.isArray(v) && v.length > 0 && v.every(isPlainObj) }
+function isChipList(v) { return Array.isArray(v) && v.length > 0 && v.every(isPlain) }
+function isBlock(v) { return isObjList(v) || isPlainObj(v) || isChipList(v) }
+function isLongText(v) { return typeof v === 'string' && (v.includes('\n') || v.length > 60) }
+// 卡片标题：优先业务编号键（告警编号/ID/名称…），否则取第一个标量字段
+function cardTitle(item) {
+  for (const k of TITLE_KEYS) {
+    if (item[k] != null && item[k] !== '') return String(item[k])
+  }
+  for (const [k, v] of Object.entries(item)) {
+    if (isPlain(v) && v !== '') return `${niceKey(k)}：${v}`
+  }
+  return '记录'
+}
+// 风险等级值（高/中/低、high/medium/low…），用于头部彩色徽标
+function riskOf(item) {
+  for (const k of RISK_KEYS) {
+    const v = item[k]
+    if (v != null && v !== '') return String(v)
+  }
+  return ''
+}
+function riskCls(v) {
+  const s = String(v).toLowerCase()
+  if (s.includes('高') || s.includes('high') || s.includes('critical') || s.includes('严重')) return 'danger'
+  if (s.includes('低') || s.includes('low') || s.includes('ok')) return 'ok'
+  return 'warn'
+}
+// 卡片正文键值行：跳过已上浮到头部的编号/风险键；嵌套结构兜底 JSON 串
+function kvRows(item) {
+  const rows = {}
+  for (const [k, v] of Object.entries(item || {})) {
+    if (TITLE_KEYS.includes(k) || RISK_KEYS.includes(k)) continue
+    rows[k] = isPlain(v) ? v : JSON.stringify(v)
+  }
+  return rows
+}
+
 function validate(decision) {
   const errs = {}
   // 意见必填：全局必填，或命中 required_on 的场景（由后端判定，这里用 commentRequired 兜底）
@@ -118,11 +174,43 @@ function submit(decision) {
 
     <p class="ht-desc" v-if="description">{{ description }}</p>
 
-    <!-- 只读待审内容 -->
+    <!-- 只读待审内容：结构化智能渲染 -->
     <div class="ht-fields" v-if="Object.keys(formData || {}).length">
-      <div v-for="(v, k) in formData" :key="k" class="ht-row">
+      <div v-for="(v, k) in formData" :key="k" class="ht-row" :class="{ 'ht-row-block': isBlock(v) }">
         <span class="ht-k">{{ k }}</span>
-        <pre class="ht-v">{{ fmtVal(v) }}</pre>
+
+        <!-- 对象数组 → 编号卡片列表 -->
+        <div v-if="isObjList(v)" class="ht-cards">
+          <div v-for="(item, i) in v" :key="i" class="ht-card">
+            <div class="ht-card-head">
+              <span class="ht-card-idx">{{ i + 1 }}</span>
+              <span class="ht-card-title">{{ cardTitle(item) }}</span>
+              <span v-if="riskOf(item)" class="ht-risk" :class="riskCls(riskOf(item))">{{ riskOf(item) }}</span>
+            </div>
+            <div class="ht-kv">
+              <div v-for="(iv, ik) in kvRows(item)" :key="ik" class="ht-kv-row">
+                <span class="ht-kv-k">{{ niceKey(ik) }}</span>
+                <span class="ht-kv-v" :class="{ pre: isLongText(iv) }">{{ fmtVal(iv) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 单个对象 → 键值网格 -->
+        <div v-else-if="isPlainObj(v)" class="ht-kv ht-kv-single">
+          <div v-for="(iv, ik) in kvRows(v)" :key="ik" class="ht-kv-row">
+            <span class="ht-kv-k">{{ niceKey(ik) }}</span>
+            <span class="ht-kv-v" :class="{ pre: isLongText(iv) }">{{ fmtVal(iv) }}</span>
+          </div>
+        </div>
+
+        <!-- 标量数组 → 标签 -->
+        <div v-else-if="isChipList(v)" class="ht-chips">
+          <span v-for="(iv, i) in v" :key="i" class="ht-chip">{{ iv == null ? '—' : iv }}</span>
+        </div>
+
+        <!-- 其余标量/长文本 -->
+        <pre v-else class="ht-v">{{ fmtVal(v) }}</pre>
       </div>
     </div>
 
@@ -210,6 +298,71 @@ function submit(decision) {
   font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-word;
   background: var(--c-bg-soft, rgba(255,255,255,.04)); color: var(--c-fg);
   max-height: 160px; overflow-y: auto;
+}
+
+/* 块级值（卡片/网格/标签）：字段名置顶，内容占满整行 */
+.ht-row-block { grid-template-columns: 1fr; gap: 4px; }
+
+/* 对象数组 → 编号卡片列表（限高内部滚动，避免长清单撑爆弹窗） */
+.ht-cards {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 230px; overflow-y: auto; padding-right: 2px;
+}
+.ht-card {
+  border: 1px solid var(--c-border); border-radius: 7px;
+  background: var(--c-bg-soft, rgba(255,255,255,.03)); overflow: hidden;
+  flex: none;
+}
+.ht-cards::-webkit-scrollbar, .ht-kv-single::-webkit-scrollbar { width: 6px; }
+.ht-cards::-webkit-scrollbar-track, .ht-kv-single::-webkit-scrollbar-track { background: transparent; }
+.ht-cards::-webkit-scrollbar-thumb, .ht-kv-single::-webkit-scrollbar-thumb {
+  border-radius: 3px; background: color-mix(in srgb, var(--c-border-strong, #888) 55%, transparent);
+}
+.ht-cards::-webkit-scrollbar-thumb:hover, .ht-kv-single::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--c-border-strong, #888) 85%, transparent);
+}
+.ht-card-head {
+  display: flex; align-items: center; gap: 7px; padding: 4px 8px;
+  background: color-mix(in srgb, var(--c-accent) 7%, transparent);
+  border-bottom: 1px solid var(--c-border);
+}
+.ht-card-idx {
+  flex: none; min-width: 16px; height: 16px; padding: 0 3px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9.5px; font-weight: 700; color: var(--c-accent);
+  background: color-mix(in srgb, var(--c-accent) 15%, transparent);
+}
+.ht-card-title {
+  font-size: 11px; font-weight: 600; color: var(--c-fg);
+  font-family: ui-monospace, monospace; word-break: break-all;
+}
+.ht-risk {
+  margin-left: auto; flex: none; padding: 0 8px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; line-height: 1.7;
+}
+.ht-risk.danger { color: var(--c-danger); background: color-mix(in srgb, var(--c-danger) 14%, transparent); }
+.ht-risk.warn { color: #d97706; background: rgba(217,119,6,.15); }
+.ht-risk.ok { color: var(--c-success); background: color-mix(in srgb, var(--c-success) 14%, transparent); }
+
+/* 键值网格 */
+.ht-kv { display: flex; flex-direction: column; }
+.ht-kv-single {
+  border: 1px solid var(--c-border); border-radius: 7px;
+  background: var(--c-bg-soft, rgba(255,255,255,.03));
+  max-height: 230px; overflow-y: auto; padding-right: 2px;
+}
+.ht-kv-row { display: grid; grid-template-columns: 76px 1fr; gap: 8px; padding: 4px 8px; }
+.ht-kv-row + .ht-kv-row { border-top: 1px dashed color-mix(in srgb, var(--c-border) 60%, transparent); }
+.ht-kv-k { font-size: 10.5px; color: var(--c-secondary); line-height: 1.6; }
+.ht-kv-v { font-size: 11px; color: var(--c-fg); line-height: 1.6; word-break: break-word; }
+.ht-kv-v.pre { white-space: pre-wrap; font-family: inherit; }
+
+/* 标量数组 → 标签 */
+.ht-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.ht-chip {
+  padding: 1px 8px; border-radius: 999px; font-size: 10.5px; line-height: 1.7;
+  color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-accent) 25%, transparent);
 }
 
 .ht-sep {

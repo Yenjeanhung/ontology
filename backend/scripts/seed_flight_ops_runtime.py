@@ -162,6 +162,310 @@ def run(params, entity, context):
 '''
 
 
+# ── 告警规则函数（每条规则一个函数，阈值/类型/部门从规则实体属性读取）──
+# 约定：entity = 「告警规则」实体（threshold_low/mid/high + alert_type + handle_dept + is_enabled）；
+#       params.legs = 当日航段列表（escalate 为 params.alerts = 未解除告警列表）；
+#       返回统一 {alerts, alert_count, checked_count}，alerts 条目与入库字段对齐。
+
+FUNC_RULE_LATE_GATE = '''\
+from datetime import datetime
+
+def _parse(v):
+    try:
+        return datetime.fromisoformat(str(v).strip())
+    except (ValueError, TypeError):
+        return None
+
+def run(params, entity, context):
+    """晚关门：SOBT 后 threshold_low/mid/high 分钟仍未出港（未撤轮档=未关舱门）。"""
+    rp = entity.get("properties") or {}
+    if str(rp.get("is_enabled")).lower() in ("false", "0", "none"):
+        return {"alerts": [], "alert_count": 0, "checked_count": 0}
+    lo = float(rp.get("threshold_low") or 10)
+    mid = float(rp.get("threshold_mid") or 20)
+    hi = float(rp.get("threshold_high") or 30)
+    a_type = rp.get("alert_type") or "晚关门"
+    dept_map = {"低": "飞行控制室", "中": "运行控制室", "高": "总值班室"}
+    legs = params.get("legs") or []
+    now = datetime.now()
+    alerts = []
+    for it in legs:
+        p = it.get("properties") or {}
+        sobt = _parse(p.get("sobt"))
+        if not sobt or not p.get("leg_status"):
+            continue
+        late_min = int((now - sobt).total_seconds() // 60)
+        if str(p.get("leg_status")) in ("计划", "登机") and late_min >= lo:
+            level = "高" if late_min > hi else ("中" if late_min > mid else "低")
+            leg_no = p.get("leg_no") or it.get("name", "")
+            alerts.append({
+                "alert_no": "ALT-%s-%s-%s" % (now.strftime("%Y%m%d"), leg_no, a_type[:2]),
+                "leg_no": leg_no, "leg_entity_id": it.get("id", ""),
+                "alert_type": a_type, "risk_level": level, "trigger_value": late_min,
+                "message": "%s 已过计划撤轮档%d分钟仍未出港" % (leg_no, late_min),
+                "handle_dept": dept_map.get(level, rp.get("handle_dept") or ""),
+            })
+    return {"alerts": alerts, "alert_count": len(alerts), "checked_count": len(legs)}
+'''
+
+FUNC_RULE_LATE_LAND = '''\
+from datetime import datetime
+
+def _parse(v):
+    try:
+        return datetime.fromisoformat(str(v).strip())
+    except (ValueError, TypeError):
+        return None
+
+def run(params, entity, context):
+    """超时未落：ATOT+计划飞行时长 后 threshold_low/mid/high 分钟仍无落地报。"""
+    rp = entity.get("properties") or {}
+    if str(rp.get("is_enabled")).lower() in ("false", "0", "none"):
+        return {"alerts": [], "alert_count": 0, "checked_count": 0}
+    lo = float(rp.get("threshold_low") or 5)
+    mid = float(rp.get("threshold_mid") or 10)
+    hi = float(rp.get("threshold_high") or 15)
+    a_type = rp.get("alert_type") or "超时未落"
+    dept_map = {"低": "飞行控制室", "中": "运行控制室", "高": "总值班室"}
+    legs = params.get("legs") or []
+    now = datetime.now()
+    alerts = []
+    for it in legs:
+        p = it.get("properties") or {}
+        if str(p.get("leg_status")) != "巡航":
+            continue
+        sobt = _parse(p.get("sobt"))
+        sibt = _parse(p.get("sibt"))
+        atot = _parse(p.get("atot"))
+        if not (atot and sobt and sibt):
+            continue
+        over = int((now - (atot + (sibt - sobt))).total_seconds() // 60)
+        if over >= lo:
+            level = "高" if over > hi else ("中" if over > mid else "低")
+            leg_no = p.get("leg_no") or it.get("name", "")
+            alerts.append({
+                "alert_no": "ALT-%s-%s-%s" % (now.strftime("%Y%m%d"), leg_no, a_type[:2]),
+                "leg_no": leg_no, "leg_entity_id": it.get("id", ""),
+                "alert_type": a_type, "risk_level": level, "trigger_value": over,
+                "message": "%s 超过计划到达%d分钟仍无落地报" % (leg_no, over),
+                "handle_dept": dept_map.get(level, rp.get("handle_dept") or ""),
+            })
+    return {"alerts": alerts, "alert_count": len(alerts), "checked_count": len(legs)}
+'''
+
+FUNC_RULE_CREW_CHANGE = '''\
+from datetime import datetime
+
+def run(params, entity, context):
+    """机组变更：放行后名单变更即低风险告警，建议人工复核资质与连飞限制。"""
+    rp = entity.get("properties") or {}
+    if str(rp.get("is_enabled")).lower() in ("false", "0", "none"):
+        return {"alerts": [], "alert_count": 0, "checked_count": 0}
+    a_type = rp.get("alert_type") or "机组变更"
+    dept = rp.get("handle_dept") or "飞行控制室"
+    legs = params.get("legs") or []
+    now = datetime.now()
+    alerts = []
+    for it in legs:
+        p = it.get("properties") or {}
+        if str(p.get("is_crew_changed")).lower() not in ("true", "1"):
+            continue
+        if str(p.get("leg_status")) not in ("计划", "登机"):
+            continue
+        leg_no = p.get("leg_no") or it.get("name", "")
+        alerts.append({
+            "alert_no": "ALT-%s-%s-%s" % (now.strftime("%Y%m%d"), leg_no, a_type[:2]),
+            "leg_no": leg_no, "leg_entity_id": it.get("id", ""),
+            "alert_type": a_type, "risk_level": "低", "trigger_value": 0,
+            "message": "%s 放行后机组名单变更，请确认资质与连飞限制" % leg_no,
+            "handle_dept": dept,
+        })
+    return {"alerts": alerts, "alert_count": len(alerts), "checked_count": len(legs)}
+'''
+
+FUNC_RULE_AIRPORT_AGG = '''\
+from datetime import datetime
+
+def _parse(v):
+    try:
+        return datetime.fromisoformat(str(v).strip())
+    except (ValueError, TypeError):
+        return None
+
+def run(params, entity, context):
+    """晚关门机场聚合：同一出发机场 2 小时窗口内晚关门 ≥threshold_low 架次（中风险）。
+
+    晚关门航段口径：登机中且超过计划撤轮档 10 分钟（与晚关门规则低风险阈值一致）。
+    """
+    rp = entity.get("properties") or {}
+    if str(rp.get("is_enabled")).lower() in ("false", "0", "none"):
+        return {"alerts": [], "alert_count": 0, "checked_count": 0}
+    lo = float(rp.get("threshold_low") or 5)
+    a_type = rp.get("alert_type") or "晚关门机场聚合"
+    dept = rp.get("handle_dept") or "运行控制室"
+    legs = params.get("legs") or []
+    now = datetime.now()
+    by_ap = {}
+    for it in legs:
+        p = it.get("properties") or {}
+        sobt = _parse(p.get("sobt"))
+        if not sobt or str(p.get("leg_status")) != "登机":
+            continue
+        if int((now - sobt).total_seconds() // 60) >= 10:
+            by_ap.setdefault(str(p.get("dep_airport") or "?"), []).append(p)
+    alerts = []
+    for ap, lst in sorted(by_ap.items()):
+        if len(lst) >= lo:
+            alerts.append({
+                "alert_no": "ALT-%s-AP-%s" % (now.strftime("%Y%m%d"), ap),
+                "leg_no": "-" + ap, "leg_entity_id": "",
+                "alert_type": a_type, "risk_level": "中", "trigger_value": len(lst),
+                "message": "机场 %s 近2小时晚关门 %d 架次，运行态势异常" % (ap, len(lst)),
+                "handle_dept": dept,
+            })
+    return {"alerts": alerts, "alert_count": len(alerts), "checked_count": len(legs)}
+'''
+
+FUNC_RULE_ROUTE_AGG = '''\
+from datetime import datetime
+
+def _parse(v):
+    try:
+        return datetime.fromisoformat(str(v).strip())
+    except (ValueError, TypeError):
+        return None
+
+def run(params, entity, context):
+    """晚关门航线聚合：当日同一航线晚关门 ≥threshold_low 班次（中风险），建议排查共因。"""
+    rp = entity.get("properties") or {}
+    if str(rp.get("is_enabled")).lower() in ("false", "0", "none"):
+        return {"alerts": [], "alert_count": 0, "checked_count": 0}
+    lo = float(rp.get("threshold_low") or 3)
+    a_type = rp.get("alert_type") or "晚关门航线聚合"
+    dept = rp.get("handle_dept") or "运行控制室"
+    legs = params.get("legs") or []
+    now = datetime.now()
+    by_rt = {}
+    for it in legs:
+        p = it.get("properties") or {}
+        sobt = _parse(p.get("sobt"))
+        if not sobt or str(p.get("leg_status")) != "登机":
+            continue
+        if int((now - sobt).total_seconds() // 60) >= 10:
+            by_rt.setdefault("%s-%s" % (p.get("dep_airport"), p.get("arr_airport")), []).append(p)
+    alerts = []
+    for rt, lst in sorted(by_rt.items()):
+        if len(lst) >= lo:
+            alerts.append({
+                "alert_no": "ALT-%s-RT-%s" % (now.strftime("%Y%m%d"), rt.replace("-", "")),
+                "leg_no": "-" + rt, "leg_entity_id": "",
+                "alert_type": a_type, "risk_level": "中", "trigger_value": len(lst),
+                "message": "航线 %s 当日晚关门 %d 班次，建议排查共因" % (rt, len(lst)),
+                "handle_dept": dept,
+            })
+    return {"alerts": alerts, "alert_count": len(alerts), "checked_count": len(legs)}
+'''
+
+FUNC_RULE_COMBO_RISK = '''\
+from datetime import datetime
+
+def _parse(v):
+    try:
+        return datetime.fromisoformat(str(v).strip())
+    except (ValueError, TypeError):
+        return None
+
+def run(params, entity, context):
+    """组合风险：同一航段命中 ≥threshold_low 类风险事件（晚关门/超时未落/机组变更）升高。"""
+    rp = entity.get("properties") or {}
+    if str(rp.get("is_enabled")).lower() in ("false", "0", "none"):
+        return {"alerts": [], "alert_count": 0, "checked_count": 0}
+    lo = float(rp.get("threshold_low") or 2)
+    a_type = rp.get("alert_type") or "晚关门组合风险"
+    dept = rp.get("handle_dept") or "总值班室"
+    legs = params.get("legs") or []
+    now = datetime.now()
+    hit_types = {}
+    for it in legs:
+        p = it.get("properties") or {}
+        sobt = _parse(p.get("sobt"))
+        if not sobt or not p.get("leg_status"):
+            continue
+        st = str(p.get("leg_status"))
+        leg_no = p.get("leg_no") or it.get("name", "")
+        hits = hit_types.setdefault(leg_no, [])
+        if st in ("计划", "登机") and int((now - sobt).total_seconds() // 60) >= 10:
+            hits.append("晚关门")
+        atot = _parse(p.get("atot"))
+        sibt = _parse(p.get("sibt"))
+        if st == "巡航" and atot and sobt and sibt:
+            over = int((now - (atot + (sibt - sobt))).total_seconds() // 60)
+            if over >= 5:
+                hits.append("超时未落")
+        if str(p.get("is_crew_changed")).lower() in ("true", "1") and st in ("计划", "登机"):
+            hits.append("机组变更")
+    alerts = []
+    for leg_no, hits in hit_types.items():
+        if len(set(hits)) >= lo:
+            alerts.append({
+                "alert_no": "ALT-%s-CB-%s" % (now.strftime("%Y%m%d"), leg_no),
+                "leg_no": leg_no, "leg_entity_id": "",
+                "alert_type": a_type, "risk_level": "高", "trigger_value": len(set(hits)),
+                "message": "%s 同时命中多类风险事件（%s），升级高风险"
+                           % (leg_no, "+".join(sorted(set(hits)))),
+                "handle_dept": dept,
+            })
+    return {"alerts": alerts, "alert_count": len(alerts), "checked_count": len(legs)}
+'''
+
+FUNC_RULE_ESCALATE = '''\
+from datetime import datetime
+
+def _parse(v):
+    try:
+        return datetime.fromisoformat(str(v).strip())
+    except (ValueError, TypeError):
+        return None
+
+def run(params, entity, context):
+    """持续未解除升级：低风险 >threshold_low 分钟升中、中风险 >threshold_mid 分钟升高。"""
+    rp = entity.get("properties") or {}
+    if str(rp.get("is_enabled")).lower() in ("false", "0", "none"):
+        return {"alerts": [], "alert_count": 0, "checked_count": 0}
+    lo = float(rp.get("threshold_low") or 20)
+    mid = float(rp.get("threshold_mid") or 30)
+    items = params.get("alerts") or []
+    now = datetime.now()
+    alerts = []
+    for it in items:
+        p = it.get("properties") or {}
+        if str(p.get("handle_status")) not in ("待处理", "处置中"):
+            continue
+        trig = _parse(p.get("triggered_at"))
+        if not trig:
+            continue
+        lasted = max(0, int((now - trig).total_seconds() // 60))
+        level = str(p.get("risk_level") or "低")
+        new_level, reason = None, ""
+        if level == "低" and lasted > lo:
+            new_level = "中"
+            reason = "低风险告警持续%d分钟未解除（阈值%d分钟）" % (lasted, int(lo))
+        elif level == "中" and lasted > mid:
+            new_level = "高"
+            reason = "中风险告警持续%d分钟未解除（处置时限%d分钟）" % (lasted, int(mid))
+        if new_level:
+            alerts.append({
+                "entity_id": it.get("id"),
+                "alert_no": p.get("alert_no") or it.get("name"),
+                "alert_type": p.get("alert_type"), "leg_no": p.get("related_leg_no"),
+                "old_level": level, "new_level": new_level, "lasted_min": lasted,
+                "reason": reason,
+                "handle_dept": {"中": "运行控制室", "高": "总值班室"}.get(new_level, "运行控制室"),
+            })
+    return {"alerts": alerts, "alert_count": len(alerts), "checked_count": len(items)}
+'''
+
+
 # ══════════════════════════ 种子定义 ══════════════════════════
 
 FUNCTIONS: list[dict] = [
@@ -264,6 +568,104 @@ def _end_node(nid: str, title: str, result: dict | None = None,
                 "config": {"mode": "abort", "abort_message": abort_message}}
     return {"id": nid, "type": "end", "title": title,
             "config": {"mode": "output", "result": result or {}, "edits": edits or []}}
+
+
+# ── 告警规则函数与服务定义：7 条规则各一个函数；每条规则实体一个实体级 flow 服务，
+#    服务仅做「实体(阈值参数) + 函数(规则逻辑)」的绑定，供告警扫描工作流以 service 节点引用 ──
+RULE_ONTOLOGY_NAME = "告警规则"
+
+RULE_FUNCTIONS: list[dict] = [
+    {"name": "规则·晚关门", "code": "rule.late_gate",
+     "description": "SOBT 后 10/20/30 分钟仍未出港，按规则实体阈值分级低/中/高",
+     "code_text": FUNC_RULE_LATE_GATE,
+     "params_schema": [{"name": "legs", "label": "航段列表", "type": "array", "required": True}],
+     "sort_order": 110},
+    {"name": "规则·超时未落", "code": "rule.late_land",
+     "description": "ATOT+计划飞行时长后 5/10/15 分钟仍无落地报，按规则实体阈值分级",
+     "code_text": FUNC_RULE_LATE_LAND,
+     "params_schema": [{"name": "legs", "label": "航段列表", "type": "array", "required": True}],
+     "sort_order": 111},
+    {"name": "规则·机组变更", "code": "rule.crew_change",
+     "description": "放行后机组名单变更即低风险告警",
+     "code_text": FUNC_RULE_CREW_CHANGE,
+     "params_schema": [{"name": "legs", "label": "航段列表", "type": "array", "required": True}],
+     "sort_order": 112},
+    {"name": "规则·晚关门机场聚合", "code": "rule.airport_agg",
+     "description": "同一出发机场 2 小时窗口内晚关门 ≥阈值 架次",
+     "code_text": FUNC_RULE_AIRPORT_AGG,
+     "params_schema": [{"name": "legs", "label": "航段列表", "type": "array", "required": True}],
+     "sort_order": 113},
+    {"name": "规则·晚关门航线聚合", "code": "rule.route_agg",
+     "description": "当日同一航线晚关门 ≥阈值 班次",
+     "code_text": FUNC_RULE_ROUTE_AGG,
+     "params_schema": [{"name": "legs", "label": "航段列表", "type": "array", "required": True}],
+     "sort_order": 114},
+    {"name": "规则·晚关门组合风险", "code": "rule.combo_risk",
+     "description": "同一航段命中 ≥阈值 类风险事件",
+     "code_text": FUNC_RULE_COMBO_RISK,
+     "params_schema": [{"name": "legs", "label": "航段列表", "type": "array", "required": True}],
+     "sort_order": 115},
+    {"name": "规则·持续未解除升级", "code": "rule.escalate",
+     "description": "低/中风险告警超时未解除自动升级",
+     "code_text": FUNC_RULE_ESCALATE,
+     "params_schema": [{"name": "alerts", "label": "未解除告警列表", "type": "array", "required": True}],
+     "sort_order": 116},
+]
+
+RULE_FUNC_CODES = [f["code"] for f in RULE_FUNCTIONS]
+
+
+def build_rule_services(func_id_by_code: dict) -> list[dict]:
+    """7 条规则各一个「实体级 flow 服务」：start → function(引用规则函数) → end。
+
+    服务 owner 是对应的告警规则实体：函数执行时 entity 即规则实体，
+    阈值/类型/牵头部门从实体属性读取——调阈值=改实体属性，无需改代码。
+    """
+    services = []
+    for rdef in RULE_FUNCTIONS:
+        rc = rdef["code"].split(".", 1)[1]
+        input_name = rdef["params_schema"][0]["name"]
+        title = rdef["name"].split("·", 1)[1]
+        services.append({
+            "rule_code": rc,
+            "name": "规则评估·%s" % title,
+            "code": rdef["code"],
+            "description": "%s（实体服务：引用函数 %s，阈值取自规则实体属性）"
+                           % (rdef["description"], rdef["code"]),
+            "params": rdef["params_schema"],
+            "flow": {
+                "schema_version": 1,
+                "nodes": [
+                    {"id": "n1", "type": "start", "title": "开始", "config": {}},
+                    {"id": "f1", "type": "function", "title": rdef["name"],
+                     "config": {"function_id": func_id_by_code.get(rdef["code"], ""),
+                                "function_code": rdef["code"],
+                                "params": {input_name: "{{ params.%s }}" % input_name},
+                                "on_error": "fail"}},
+                    {"id": "e1", "type": "end", "title": "输出",
+                     "config": {"mode": "output",
+                                "result": {"alerts": "{{ f1.value.alerts }}",
+                                           "alert_count": "{{ f1.value.alert_count }}",
+                                           "checked_count": "{{ f1.value.checked_count }}"},
+                                "edits": []}},
+                ],
+                "edges": [{"source": "n1", "target": "f1"}, {"source": "f1", "target": "e1"}],
+                "layout": {"n1": {"x": 80, "y": 160}, "f1": {"x": 320, "y": 160},
+                           "e1": {"x": 560, "y": 160}},
+            },
+        })
+    return services
+
+
+# 告警扫描工作流中的规则服务节点：(rule_code, 节点id, 节点标题)
+RULE_FLOW_NODES = [
+    ("late_gate", "svc_late_gate", "规则·晚关门"),
+    ("late_land", "svc_late_land", "规则·超时未落"),
+    ("crew_change", "svc_crew_change", "规则·机组变更"),
+    ("airport_agg", "svc_airport_agg", "规则·机场聚合"),
+    ("route_agg", "svc_route_agg", "规则·航线聚合"),
+    ("combo_risk", "svc_combo_risk", "规则·组合风险"),
+]
 
 
 def build_actions(func_ids: dict) -> list[dict]:
@@ -525,98 +927,31 @@ SCHEDULE_G_NAME = "运行风险告警扫描（每15分钟）"
 SCHEDULE_H_NAME = "告警升级巡检（每15分钟·错峰）"
 
 
-# ── 工作流 G 代码节点：规则引擎（论文第5章 7 条告警规则，阈值见表5.1） ──
+# ── 工作流 G 代码节点：合并 6 个规则评估服务的输出 ──
+# 规则本身已资产化：「告警规则」实体（阈值参数）+ 本体函数（rule.*，规则逻辑）
+# + 实体级 flow 服务（规则评估·xx），本节点只做结果汇总，不再内嵌规则逻辑。
 CODE_SCAN = '''\
 from datetime import datetime
 
+RULE_NODES = ["svc_late_gate", "svc_late_land", "svc_crew_change",
+              "svc_airport_agg", "svc_route_agg", "svc_combo_risk"]
+
 def run(params, entity, context):
-    """对拉取的航段逐条匹配告警规则：单事件三级 + 机场/航线聚合 + 组合风险。"""
-    resp = (context.get("http_legs") or {}).get("data") or {}
-    items = resp.get("items") or []
-    now = datetime.now()
-    alerts, seen = [], set()
-
-    def _parse(v):
-        try:
-            return datetime.fromisoformat(str(v).strip())
-        except (ValueError, TypeError):
-            return None
-
-    def add(leg_no, leg_id, al_type, level, value, msg, dept=None):
-        key = (leg_no, al_type)
-        if key in seen:
-            return
-        seen.add(key)
-        alerts.append({
-            "alert_no": "ALT-%s-%s-%s" % (now.strftime("%Y%m%d"), leg_no, al_type[:2]),
-            "leg_no": leg_no, "leg_entity_id": leg_id,
-            "alert_type": al_type, "risk_level": level, "trigger_value": value,
-            "message": msg,
-            "handle_dept": dept or {"低": "飞行控制室", "中": "运行控制室", "高": "总值班室"}[level],
-        })
-
-    late_legs = []   # 命中晚关门的航段（供聚合规则复用）
-    hit_types = {}   # leg_no -> 命中类型列表（组合风险用）
-    for it in items:
-        p = it.get("properties") or {}
-        sobt = _parse(p.get("sobt"))
-        if not sobt or not p.get("leg_status"):
+    """合并各规则服务的告警输出：去重、累计检查数、计算最高风险等级。"""
+    alerts, seen, errors, checked = [], set(), [], 0
+    for nid in RULE_NODES:
+        out = context.get(nid) or {}
+        data = out.get("data") or {}
+        checked += int(data.get("checked_count") or 0)
+        if not out.get("success"):
+            errors.append(nid)
             continue
-        leg_no = p.get("leg_no") or it.get("name", "")
-        leg_id = it.get("id", "")
-        st = str(p.get("leg_status"))
-        sibt = _parse(p.get("sibt"))
-        hits = hit_types.setdefault(leg_no, [])
-
-        # 规则1 晚关门：SOBT 后 10/20/30 分钟仍未出港（未撤轮档=未关舱门）
-        late_min = int((now - sobt).total_seconds() // 60)
-        if st in ("计划", "登机") and late_min >= 10:
-            level = "高" if late_min > 30 else ("中" if late_min > 20 else "低")
-            add(leg_no, leg_id, "晚关门", level, late_min,
-                "%s 已过计划撤轮档%d分钟仍未出港" % (leg_no, late_min))
-            hits.append("晚关门")
-            if st == "登机":
-                late_legs.append(p)
-        # 规则2 超时未落：ATOT+计划飞行时长 后 5/10/15 分钟仍无落地报
-        atot = _parse(p.get("atot"))
-        if st == "巡航" and atot and sobt and sibt:
-            over = int((now - (atot + (sibt - sobt))).total_seconds() // 60)
-            if over >= 5:
-                level = "高" if over > 15 else ("中" if over > 10 else "低")
-                add(leg_no, leg_id, "超时未落", level, over,
-                    "%s 超过计划到达%d分钟仍无落地报" % (leg_no, over))
-                hits.append("超时未落")
-        # 规则3 机组变更：放行后名单变动（低风险，建议人工复核升级）
-        if str(p.get("is_crew_changed")).lower() in ("true", "1") and st in ("计划", "登机"):
-            add(leg_no, leg_id, "机组变更", "低", 0,
-                "%s 放行后机组名单变更，请确认资质与连飞限制" % leg_no)
-            hits.append("机组变更")
-
-    # 规则4 机场维度聚合：同一出发机场 2 小时窗口内晚关门 >=5 次（登机段天然在窗口内）
-    by_ap = {}
-    for p in late_legs:
-        by_ap.setdefault(str(p.get("dep_airport") or "?"), []).append(p)
-    for ap, lst in sorted(by_ap.items()):
-        if len(lst) >= 5:
-            add("-" + ap, None, "晚关门机场聚合", "中", len(lst),
-                "机场 %s 近2小时晚关门 %d 架次，运行态势异常" % (ap, len(lst)),
-                dept="运行控制室")
-    # 规则5 航线维度聚合：当日同一航线晚关门 >=3 次
-    by_rt = {}
-    for p in late_legs:
-        by_rt.setdefault("%s-%s" % (p.get("dep_airport"), p.get("arr_airport")), []).append(p)
-    for rt, lst in sorted(by_rt.items()):
-        if len(lst) >= 3:
-            add("-" + rt, None, "晚关门航线聚合", "中", len(lst),
-                "航线 %s 当日晚关门 %d 班次，建议排查共因" % (rt, len(lst)),
-                dept="运行控制室")
-    # 规则6 组合风险：同航段命中多类事件 -> 整体升为高
-    for leg_no, hits in hit_types.items():
-        if len(set(hits)) >= 2:
-            add(leg_no, None, "晚关门组合风险", "高", len(set(hits)),
-                "%s 同时命中多类风险事件（%s），升级高风险" % (leg_no, "+".join(sorted(set(hits)))),
-                dept="总值班室")
-
+        for a in data.get("alerts") or []:
+            key = (a.get("leg_no"), a.get("alert_type"))
+            if key in seen:
+                continue
+            seen.add(key)
+            alerts.append(a)
     rank = {"低": 0, "中": 1, "高": 2}
     max_level = max((a["risk_level"] for a in alerts), key=lambda x: rank[x]) if alerts else ""
     return {
@@ -624,7 +959,9 @@ def run(params, entity, context):
         "alert_count": len(alerts),
         "max_level": max_level,
         "has_high": max_level == "高",
-        "scanned_at": now.replace(microsecond=0).isoformat(),
+        "rule_errors": errors,
+        "checked_count": checked,
+        "scanned_at": datetime.now().replace(microsecond=0).isoformat(),
         "summary": "；".join("%s[%s-%s]" % (a["alert_no"], a["alert_type"], a["risk_level"])
                               for a in alerts[:8]) or "无",
     }
@@ -701,8 +1038,12 @@ def run(params, entity, context):
 
 
 def _workflow_g(base_url: str, ids: dict, scan_date: str) -> dict:
-    """start → http拉航段 → code规则引擎 → cond有告警 → agent研判 → cond含中高
-    → 人工审批（高）→ code入库（全量/仅中低）；无告警或全低各走对应分支。"""
+    """start → http拉航段 → 6个规则服务并行评估（引用告警规则实体的评估服务）
+    → code汇总 → cond有告警 → agent研判 → cond含中高 → 人工审批（高）
+    → code入库（全量/仅中低）；无告警或全低各走对应分支。
+
+    规则阈值在「告警规则」实体属性上：调阈值=改实体属性；改规则逻辑=函数编辑器。
+    """
     prompt = (
         "你是航空公司运行控制中心（AOC）的风险研判助理。以下是本轮规则引擎扫描出的"
         "航班运行告警列表（JSON）：\n{{code_scan.alerts}}\n\n"
@@ -715,6 +1056,7 @@ def _workflow_g(base_url: str, ids: dict, scan_date: str) -> dict:
         "分级口径：低=岗位持续关注；中=主责部门5分钟内介入；高=总值班室3分钟内响应、"
         "跨部门联动。聚合类告警请结合机场/航线维度给出共因排查方向。"
     )
+    bindings = ids.get("rule_bindings") or {}
     nodes = [
         {"id": "start", "type": "start", "title": "开始",
          "config": {"inputs": [{"name": "scan_date", "label": "扫描日期(yyyymmdd)",
@@ -726,14 +1068,31 @@ def _workflow_g(base_url: str, ids: dict, scan_date: str) -> dict:
                     # 快照数据即当日运行全量，不做关键字检索（航段号不含日期，q 必然空结果）
                     "params": {"ontology_id": ids["leg_ontology_id"], "page_size": 200},
                     "timeout_seconds": 60}},
-        {"id": "code_scan", "type": "code", "title": "规则引擎（7条告警规则）",
+    ]
+    edges = [{"source": "start", "target": "http_legs"}]
+    # 6 个规则评估服务节点：同一上游，引擎自动并行执行
+    for rc, nid, title in RULE_FLOW_NODES:
+        b = bindings.get(rc) or {}
+        nodes.append({
+            "id": nid, "type": "service", "title": title,
+            "config": {"ontology_id": ids["alert_ontology_id"],
+                       "service_id": b.get("service_id", ""),
+                       "entity_id": b.get("entity_id", ""),
+                       "params": {"legs": "{{http_legs.data.items}}"},
+                       "timeout_seconds": 60}})
+        edges.append({"source": "http_legs", "target": nid})
+        edges.append({"source": nid, "target": "code_scan"})
+    nodes.append(
+        {"id": "code_scan", "type": "code", "title": "告警汇总（6条规则服务）",
          "config": {"code_text": CODE_SCAN, "params": {}, "timeout_seconds": 30,
                     "structured_outputs": [
                         {"name": "alerts", "type": "array", "description": "命中的告警列表"},
                         {"name": "alert_count", "type": "number", "description": "告警条数"},
                         {"name": "max_level", "type": "string", "description": "最高风险等级"},
+                        {"name": "rule_errors", "type": "array", "description": "执行失败的规则服务节点"},
                         {"name": "scanned_at", "type": "string", "description": "扫描时刻"},
-                        {"name": "summary", "type": "string", "description": "告警摘要"}]}},
+                        {"name": "summary", "type": "string", "description": "告警摘要"}]}})
+    nodes += [
         {"id": "cond_any", "type": "condition", "title": "存在告警？",
          "config": {"mode": "simple", "left": "{{code_scan.alert_count}}",
                     "operator": "gt", "right": 0}},
@@ -790,9 +1149,7 @@ def _workflow_g(base_url: str, ids: dict, scan_date: str) -> dict:
         {"id": "end_empty", "type": "end", "title": "结束（无告警）",
          "config": {"outputs": [{"name": "summary", "value": "本轮扫描无告警"}]}},
     ]
-    edges = [
-        {"source": "start", "target": "http_legs"},
-        {"source": "http_legs", "target": "code_scan"},
+    edges += [
         {"source": "code_scan", "target": "cond_any"},
         {"source": "cond_any", "target": "agent_judge", "handle": "true"},
         {"source": "cond_any", "target": "end_empty", "handle": "false"},
@@ -808,57 +1165,14 @@ def _workflow_g(base_url: str, ids: dict, scan_date: str) -> dict:
 
 
 
-# ── 工作流 H 代码节点：升级判定（论文规则7：低风险>20min 升中；中风险>30min 升高） ──
-CODE_ESCALATE = '''\
-from datetime import datetime
-
-def run(params, entity, context):
-    """对未解除告警计算持续时长，命中升级条件生成升级清单。"""
-    resp = (context.get("http_open") or {}).get("data") or {}
-    items = resp.get("items") or []
-    now = datetime.now()
-    escalations = []
-
-    def _parse(v):
-        try:
-            return datetime.fromisoformat(str(v).strip())
-        except (ValueError, TypeError):
-            return None
-
-    for it in items:
-        p = it.get("properties") or {}
-        if str(p.get("handle_status")) not in ("待处理", "处置中"):
-            continue
-        trig = _parse(p.get("triggered_at"))
-        if not trig:
-            continue
-        lasted = max(0, int((now - trig).total_seconds() // 60))
-        level = str(p.get("risk_level") or "低")
-        new_level, reason = None, ""
-        if level == "低" and lasted > 20:
-            new_level, reason = "中", "低风险告警持续%d分钟未解除（阈值20分钟）" % lasted
-        elif level == "中" and lasted > 30:
-            new_level, reason = "高", "中风险告警持续%d分钟未解除（处置时限30分钟）" % lasted
-        if new_level:
-            escalations.append({
-                "entity_id": it.get("id"), "alert_no": p.get("alert_no") or it.get("name"),
-                "alert_type": p.get("alert_type"), "leg_no": p.get("related_leg_no"),
-                "old_level": level, "new_level": new_level,
-                "lasted_min": lasted, "reason": reason,
-                "handle_dept": {"中": "运行控制室", "高": "总值班室"}.get(new_level, "运行控制室"),
-            })
-    return {"escalations": escalations, "escalation_count": len(escalations),
-            "checked_count": len(items)}
-'''
-
-
 # ── 工作流 H 代码节点：升级写回（PUT 更新告警实体等级/状态/持续时长） ──
+# 升级判定已资产化为规则函数 rule.escalate + 规则实体「持续未解除升级」的评估服务
 CODE_UPGRADE = '''\
 import httpx
 
 def run(params, entity, context):
     """执行升级：更新告警实体的风险等级/严重级别/处理状态/持续分钟。"""
-    esc = (context.get("code_escalate") or {}).get("escalations") or []
+    esc = ((context.get("svc_escalate") or {}).get("data") or {}).get("alerts") or []
     base = str(params.get("base_url") or "http://127.0.0.1:8000") + "/api"
     sev = {"低": "提示", "中": "警告", "高": "严重"}
     updated = []
@@ -883,28 +1197,30 @@ def run(params, entity, context):
 
 
 def _workflow_h(base_url: str, ids: dict) -> dict:
-    """http拉未解除告警 → code升级判定 → cond有升级 → code写回 → agent通报 → end。"""
+    """http拉未解除告警 → 规则服务·持续未解除升级 → cond有升级 → code写回 → agent通报 → end。"""
     prompt = (
         "你是航空公司运行控制中心（AOC）值班经理。以下告警因持续未解除而自动升级：\n"
-        "{{code_escalate.escalations}}\n\n"
+        "{{svc_escalate.data.alerts}}\n\n"
         "请生成一份面向各牵头部门的升级通报（JSON）：report 字段输出通报正文，"
         "包含：升级原因、涉事航班/机场/航线、新风险等级对应的响应要求"
         "（中=主责部门5分钟内介入，高=总值班室3分钟内响应并跨部门联动）、"
         "以及建议的解除条件。语言简练、可直接群发。"
     )
+    b = (ids.get("rule_bindings") or {}).get("escalate") or {}
     nodes = [
         {"id": "start", "type": "start", "title": "开始", "config": {"inputs": []}},
         {"id": "http_open", "type": "http", "title": "拉取运行告警",
          "config": {"method": "GET", "url": base_url + "/api/entities",
                     "params": {"ontology_id": ids["alert_ontology_id"], "page_size": 200},
                     "timeout_seconds": 60}},
-        {"id": "code_escalate", "type": "code", "title": "升级判定",
-         "config": {"code_text": CODE_ESCALATE, "params": {}, "timeout_seconds": 30,
-                    "structured_outputs": [
-                        {"name": "escalations", "type": "array", "description": "待升级清单"},
-                        {"name": "escalation_count", "type": "number"}]}},
+        {"id": "svc_escalate", "type": "service", "title": "规则·持续未解除升级",
+         "config": {"ontology_id": ids["alert_ontology_id"],
+                    "service_id": b.get("service_id", ""),
+                    "entity_id": b.get("entity_id", ""),
+                    "params": {"alerts": "{{http_open.data.items}}"},
+                    "timeout_seconds": 60}},
         {"id": "cond_esc", "type": "condition", "title": "有告警升级？",
-         "config": {"mode": "simple", "left": "{{code_escalate.escalation_count}}",
+         "config": {"mode": "simple", "left": "{{svc_escalate.data.alert_count}}",
                     "operator": "gt", "right": 0}},
         {"id": "code_upgrade", "type": "code", "title": "执行升级写回",
          "config": {"code_text": CODE_UPGRADE, "params": {"base_url": base_url},
@@ -926,8 +1242,8 @@ def _workflow_h(base_url: str, ids: dict) -> dict:
     ]
     edges = [
         {"source": "start", "target": "http_open"},
-        {"source": "http_open", "target": "code_escalate"},
-        {"source": "code_escalate", "target": "cond_esc"},
+        {"source": "http_open", "target": "svc_escalate"},
+        {"source": "svc_escalate", "target": "cond_esc"},
         {"source": "cond_esc", "target": "code_upgrade", "handle": "true"},
         {"source": "cond_esc", "target": "end_quiet", "handle": "false"},
         {"source": "code_upgrade", "target": "agent_notify"},
@@ -1055,8 +1371,8 @@ async def _pick_sample_entity(db: AsyncSession, ontology_id: str) -> dict | None
 
 
 async def _clear(db: AsyncSession, cat_id: str, leg_ontology_id: str) -> None:
-    """按名称/编码删除本脚本生成的数据（计划 → 工作流 → 派生属性 → 函数）。"""
-    func_codes = [f["code"] for f in FUNCTIONS]
+    """按名称/编码删除本脚本生成的数据（计划 → 工作流 → 派生属性 → 函数/服务）。"""
+    func_codes = [f["code"] for f in FUNCTIONS] + RULE_FUNC_CODES
     prop_codes = [p["code"] for p in DERIVED_PROPS]
 
     wf_ids = [row for row in (await db.execute(
@@ -1078,6 +1394,17 @@ async def _clear(db: AsyncSession, cat_id: str, leg_ontology_id: str) -> None:
         OntologyService.owner_type == "ontology",
         OntologyService.ontology_id == leg_ontology_id,
         OntologyService.code.in_(ACTION_CODES)))
+    # 规则实体的评估服务（owner_type=entity，挂「告警规则」本体）
+    from models import Ontology
+    rule_ont = (await db.execute(
+        select(Ontology).where(Ontology.category_id == cat_id,
+                               Ontology.name == RULE_ONTOLOGY_NAME)
+    )).scalar_one_or_none()
+    if rule_ont:
+        await db.execute(delete(OntologyService).where(
+            OntologyService.owner_type == "entity",
+            OntologyService.ontology_id == rule_ont.id,
+            OntologyService.code.in_(RULE_FUNC_CODES)))
     await db.commit()
 
 
@@ -1089,7 +1416,7 @@ async def _seed(base_url: str, force: bool) -> None:
         existed = (await db.execute(
             select(OntologyFunction.id).where(
                 OntologyFunction.category_id == cat_id,
-                OntologyFunction.code.in_([f["code"] for f in FUNCTIONS]))
+                OntologyFunction.code.in_([f["code"] for f in FUNCTIONS] + RULE_FUNC_CODES))
         )).first() or (await db.execute(
             select(Workflow.id).where(Workflow.name.in_(
                 [WF_A_NAME, WF_B_NAME, WF_G_NAME, WF_H_NAME, WF_I_NAME]))
@@ -1142,6 +1469,61 @@ async def _seed(base_url: str, force: bool) -> None:
         await db.flush()
         print(f"已创建 {len(ACTION_CODES)} 个编排动作：{', '.join(ACTION_CODES)}")
 
+        # 1.7 告警规则函数 + 规则实体评估服务（规则资产化：阈值在实体属性，逻辑在函数）
+        from models import Ontology
+        rule_ont = (await db.execute(
+            select(Ontology).where(Ontology.category_id == cat_id,
+                                   Ontology.name == RULE_ONTOLOGY_NAME)
+        )).scalar_one_or_none()
+        if not rule_ont:
+            raise SystemExit("类别下未找到本体「告警规则」，请先重建定义层与实体层种子"
+                             "（seed_flight_ops_ontology.py / seed_flight_ops_entities.py）")
+        rule_fn_ids: dict[str, str] = {}
+        rule_return_schema = '{"alerts": "array", "alert_count": "number", "checked_count": "number"}'
+        for rdef in RULE_FUNCTIONS:
+            fn = OntologyFunction(
+                category_id=cat_id, ontology_id=rule_ont.id,
+                name=rdef["name"], code=rdef["code"],
+                description=rdef["description"],
+                params_schema=json.dumps(rdef["params_schema"], ensure_ascii=False),
+                return_schema=rule_return_schema,
+                code_text=rdef["code_text"],
+                is_deterministic=0,
+                sort_order=rdef["sort_order"],
+            )
+            db.add(fn)
+            await db.flush()
+            rule_fn_ids[rdef["code"]] = fn.id
+        print(f"已创建 {len(RULE_FUNCTIONS)} 个告警规则函数：{', '.join(RULE_FUNC_CODES)}")
+
+        rule_ents = (await db.execute(
+            select(Entity).where(Entity.ontology_id == rule_ont.id)
+        )).scalars().all()
+        ent_by_code: dict[str, Entity] = {}
+        for ent in rule_ents:
+            props = json.loads(ent.properties or "{}") or {}
+            if props.get("rule_code"):
+                ent_by_code[str(props["rule_code"])] = ent
+        rule_bindings: dict[str, dict] = {}
+        for sdef in build_rule_services(rule_fn_ids):
+            ent = ent_by_code.get(sdef["rule_code"])
+            if not ent:
+                raise SystemExit(f"未找到规则编码为「{sdef['rule_code']}」的告警规则实体，"
+                                 "请先重建实体种子（seed_flight_ops_entities.py）")
+            svc = OntologyService(
+                owner_type="entity", ontology_id=rule_ont.id, entity_id=ent.id,
+                name=sdef["name"], code=sdef["code"], description=sdef["description"],
+                params_schema=json.dumps(sdef["params"], ensure_ascii=False),
+                code_text="", language="python", timeout_seconds=30,
+                is_enabled=1, sort_order=200,
+                execution_mode="flow",
+                flow=json.dumps(sdef["flow"], ensure_ascii=False),
+            )
+            db.add(svc)
+            await db.flush()
+            rule_bindings[sdef["rule_code"]] = {"service_id": svc.id, "entity_id": ent.id}
+        print(f"已创建 {len(rule_bindings)} 个规则评估服务（实体级，引用规则函数）")
+
         # 2. 派生属性（读时模式）
         for pdef in DERIVED_PROPS:
             db.add(OntologyDerivedProperty(
@@ -1184,7 +1566,8 @@ async def _seed(base_url: str, force: bool) -> None:
         ids = {"leg_ontology_id": leg_id,
                "alert_ontology_id": alert_ont.id,
                "kb_id": kb_id or "",
-               "alert_rel_def_id": alert_rel.id if alert_rel else ""}
+               "alert_rel_def_id": alert_rel.id if alert_rel else "",
+               "rule_bindings": rule_bindings}
         scan_date = datetime.now().strftime("%Y%m%d")
 
         wf_a = Workflow(
@@ -1202,16 +1585,16 @@ async def _seed(base_url: str, force: bool) -> None:
         )
         wf_g = Workflow(
             name=WF_G_NAME,
-            description="论文第5章分级告警：HTTP 拉当日航段 → 代码规则引擎"
-                        "（晚关门/超时未落/机组变更三级 + 机场/航线聚合 + 组合风险）"
-                        "→ 条件分流 → 智能体研判 → 高风险人工审批 → 批量入库挂关系。",
+            description="论文第5章分级告警：HTTP 拉当日航段 → 6 个规则评估服务并行"
+                        "（规则资产化：告警规则实体+本体函数，阈值改实体属性即可生效）"
+                        "→ 汇总 → 条件分流 → 智能体研判 → 高风险人工审批 → 批量入库挂关系。",
             definition=json.dumps(_workflow_g(base_url, ids, scan_date),
                                   ensure_ascii=False),
         )
         wf_h = Workflow(
             name=WF_H_NAME,
-            description="规则7 持续未解除升级：拉取未解除告警，低风险>20分钟升中、"
-                        "中风险>30分钟升高，写回实体后由智能体生成升级通报。",
+            description="规则7 持续未解除升级：拉取未解除告警 → 规则评估服务"
+                        "（阈值取自规则实体属性）→ 写回实体后由智能体生成升级通报。",
             definition=json.dumps(_workflow_h(base_url, ids), ensure_ascii=False),
         )
         wf_i = Workflow(

@@ -47,6 +47,38 @@ from flight_ops_domain import CATEGORY_NAME, CONSTRAINTS, LIFECYCLE_EVENTS
 
 SEED_KB_NAME = "航班运行监控图谱（种子数据）"
 
+# 论文第5章 7 条告警规则（阈值见表5.1）：规则实体 = 规则资产，阈值改实体属性即可生效
+ALERT_RULES: list[dict] = [
+    {"rule_code": "late_gate", "alert_type": "晚关门",
+     "threshold_low": 10, "threshold_mid": 20, "threshold_high": 30,
+     "handle_dept": "飞行控制室", "is_enabled": True,
+     "rule_desc": "SOBT 后 10/20/30 分钟仍未出港（未撤轮档=未关舱门），分级低/中/高"},
+    {"rule_code": "late_land", "alert_type": "超时未落",
+     "threshold_low": 5, "threshold_mid": 10, "threshold_high": 15,
+     "handle_dept": "运行控制室", "is_enabled": True,
+     "rule_desc": "ATOT+计划飞行时长后 5/10/15 分钟仍无落地报，分级低/中/高"},
+    {"rule_code": "crew_change", "alert_type": "机组变更",
+     "threshold_low": 0, "threshold_mid": 0, "threshold_high": 0,
+     "handle_dept": "飞行控制室", "is_enabled": True,
+     "rule_desc": "放行后机组名单变更，固定低风险，建议人工复核资质与连飞限制"},
+    {"rule_code": "airport_agg", "alert_type": "晚关门机场聚合",
+     "threshold_low": 5, "threshold_mid": 0, "threshold_high": 0,
+     "handle_dept": "运行控制室", "is_enabled": True,
+     "rule_desc": "同一出发机场 2 小时窗口内晚关门 ≥5 架次（低风险阈值 threshold_low），运行态势异常"},
+    {"rule_code": "route_agg", "alert_type": "晚关门航线聚合",
+     "threshold_low": 3, "threshold_mid": 0, "threshold_high": 0,
+     "handle_dept": "运行控制室", "is_enabled": True,
+     "rule_desc": "当日同一航线晚关门 ≥3 班次（threshold_low），建议排查共因"},
+    {"rule_code": "combo_risk", "alert_type": "晚关门组合风险",
+     "threshold_low": 2, "threshold_mid": 0, "threshold_high": 0,
+     "handle_dept": "总值班室", "is_enabled": True,
+     "rule_desc": "同一航段命中 ≥2 类风险事件（threshold_low）即整体升为高风险"},
+    {"rule_code": "escalate", "alert_type": "持续未解除升级",
+     "threshold_low": 20, "threshold_mid": 30, "threshold_high": 0,
+     "handle_dept": "总值班室", "is_enabled": True,
+     "rule_desc": "低风险告警持续 >20 分钟升中、中风险 >30 分钟升高（threshold_low/mid），升级巡检用"},
+]
+
 NOW = datetime.now().replace(second=0, microsecond=0)   # 数据快照时刻（运行种子的当下）
 TODAY = NOW.date()
 DATE_LIST = [TODAY - timedelta(days=d) for d in range(13, -1, -1)]  # 14 个运行日
@@ -638,6 +670,11 @@ async def seed(small: bool = False, sync_graph: bool = True) -> None:
                 "employee_no": eno, "name": name, "role": role,
                 "license_type": lic, "type_rating": rating, "total_hours": hours,
             })
+        # 3.5 告警规则资产：7 条规则各一个实体，阈值/牵头部门/启停全在属性上；
+        #     运行时层为每个实体绑定规则函数形成评估服务，告警扫描工作流按规则引用
+        for rc in ALERT_RULES:
+            await bs.add_entity(f"RULE:{rc['rule_code']}", "告警规则",
+                          rc["alert_type"], dict(rc), rc["rule_desc"])
         print(f"静态实体：机场{len(AIRPORTS)} 机位{len(STANDS)} 跑道{len(RUNWAYS)} "
               f"机型{len(AIRCRAFT_TYPES)} 航空器{len(FLEET)} "
               f"航班{8 if small else len(FLIGHTS)} 机组{len(CREW)}")

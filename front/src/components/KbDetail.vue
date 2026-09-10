@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from '../composables/useToast'
+import { useEscClose } from '../composables/useEscClose'
 import FolderTreeNode from './FolderTreeNode.vue'
 import {
   attachAssetsToKb,
@@ -415,6 +416,14 @@ function confirmDialogCancel() {
   confirmDialogCallback(false)
 }
 
+// 所有弹窗支持按 ESC 关闭（后打开的弹窗优先关闭）
+useEscClose(() => [
+  [showOntologyPicker.value, () => { showOntologyPicker.value = false }],
+  [showAssetPicker.value, () => { showAssetPicker.value = false }],
+  [showProcessDialog.value, closeProcessDialog],
+  [showConfirmDialog.value, confirmDialogCancel],
+])
+
 function openProcessDialog(file) {
   pendingFileId.value = file.id
   pendingFileName.value = file.name
@@ -437,6 +446,14 @@ function openBatchProcessDialog() {
   pendingFileName.value = ''
   pendingProcessMode.value = 'process'
   showProcessDialog.value = true
+}
+
+function closeProcessDialog() {
+  showProcessDialog.value = false
+  pendingFileId.value = ''
+  pendingFileName.value = ''
+  pendingProcessMode.value = 'process'
+  isBatchProcess.value = false
 }
 
 async function confirmProcess(extractGraph) {
@@ -1169,10 +1186,16 @@ function stageIconClass(file, stageName) {
                 <polyline points="13 2 3 14 12 14 19 8" />
               </svg>
             </div>
-            <div>
+            <div class="dialog-head-main">
               <div class="dialog-title">选择处理模式</div>
               <div class="dialog-sub">{{ isBatchProcess ? `批量处理 ${uploadedCount} 个文件` : pendingFileName }}</div>
             </div>
+            <button class="dialog-close" type="button" title="关闭" aria-label="关闭" @click="closeProcessDialog">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
           </div>
           <div class="dialog-body">
             <button class="mode-btn" @click="confirmProcess(true)">
@@ -2002,6 +2025,30 @@ h1 { font-size: 18px; font-weight: 700; }
   gap: 12px;
   padding: 18px 20px;
   border-bottom: 1px solid var(--c-border);
+}
+
+.dialog-head-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.dialog-close {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--c-secondary);
+  cursor: pointer;
+  transition: background 150ms, color 150ms;
+}
+.dialog-close:hover {
+  background: var(--c-muted);
+  color: var(--c-fg);
 }
 
 .dialog-icon {

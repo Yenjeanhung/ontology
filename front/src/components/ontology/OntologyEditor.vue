@@ -27,6 +27,7 @@ import Pagination from '../common/Pagination.vue'
 import ModalDialog from '../common/ModalDialog.vue'
 import TabNav from '../common/TabNav.vue'
 import { useToast } from '../../composables/useToast'
+import { useEscClose } from '../../composables/useEscClose'
 
 const props = defineProps({
   categoryId: { type: String, required: true },
@@ -585,6 +586,12 @@ function paramSummary(svc) {
 
 // 从服务编辑大页面返回时刷新服务列表
 onActivated(() => { onSvcSaved() })
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showCreate.value, () => { showCreate.value = false }],
+])
+
 </script>
 
 <template>

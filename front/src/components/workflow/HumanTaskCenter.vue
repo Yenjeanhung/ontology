@@ -7,6 +7,7 @@ import { useToast } from '../../composables/useToast'
 import { notifications } from '../../stores/notifications'
 import HumanTaskForm from './HumanTaskForm.vue'
 import Pagination from '../common/Pagination.vue'
+import { useEscClose } from '../../composables/useEscClose'
 
 const router = useRouter()
 const toast = useToast()
@@ -29,6 +30,9 @@ const selected = ref(new Set())   // 批量选中的任务 id
 const batchComment = ref('')
 const batchOperator = ref(localStorage.getItem('ks_human_operator') || '')
 const batchBusy = ref(false)
+
+// 抽屉支持按 ESC 关闭
+useEscClose(() => [[!!detail.value, () => { detail.value = null }]])
 
 const DECISION_LABEL = { approved: '通过', rejected: '驳回', submitted: '已提交', pending: '待处理', cancelled: '已取消' }
 

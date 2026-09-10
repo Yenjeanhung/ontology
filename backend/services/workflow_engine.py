@@ -737,8 +737,35 @@ def _parse_structured(answer: str, fields: list[dict]) -> dict:
     return out
 
 
+def _check_unresolved(params):
+    """服务节点参数预检：渲染后仍残留 {{...}} 表达式 → 上游引用写错，提前报错。
+
+    render 对解析失败的引用会原样保留表达式；若带病下传，服务端只会报
+    「参数 xxx 需要 xx 类型」，难以定位。这里在前端把问题点和正确写法直接指出。
+    """
+    expr_re = re.compile(r"^\{\{\s*[\w.\[\]-]+\s*\}\}$")
+
+    def _walk(v, path):
+        if isinstance(v, str) and expr_re.match(v.strip()):
+            raise RuntimeError(
+                f"参数 {path} 的引用 {v} 未解析到任何数据："
+                f"请检查上游节点 id 与字段路径（参考写法：{{{{http节点id.data.items}}}}），"
+                f"或确认该上游节点在当前分支会被执行")
+        if isinstance(v, dict):
+            for k, vv in v.items():
+                _walk(vv, f"{path}.{k}" if path else str(k))
+        elif isinstance(v, list):
+            for i, vv in enumerate(v):
+                _walk(vv, f"{path}[{i}]")
+
+    if isinstance(params, dict):
+        for k, v in params.items():
+            _walk(v, str(k))
+
+
 async def _exec_service(cfg: dict, context: dict, db) -> dict:
     params = render(cfg.get("params") or {}, context) or {}
+    _check_unresolved(params)
     if cfg.get("entity_id"):
         result, err = await ServiceRuntimeService.invoke(
             db, cfg["entity_id"], cfg["service_id"], params,
@@ -1009,6 +1036,31 @@ def _is_self_api(url: str) -> bool:
     return host in local_hosts and port == settings.PORT
 
 
+def _deepjson(value, depth: int = 2):
+    """递归解析嵌套在字符串里的 JSON（双重编码字段，如 items/properties 被存成 JSON 文本）。
+
+    只把「能解析为 dict/list 的字符串」替换为解析结果，普通文本 / 数字字符串原样保留；
+    depth 限制嵌套解析层数，防止病态输入深度递归。
+    """
+    if depth < 0:
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if s[:1] in ("{", "["):
+            try:
+                parsed = json.loads(s)
+            except (ValueError, TypeError):
+                return value
+            if isinstance(parsed, (dict, list)):
+                return _deepjson(parsed, depth - 1)
+        return value
+    if isinstance(value, dict):
+        return {k: _deepjson(v, depth) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_deepjson(v, depth) for v in value]
+    return value
+
+
 async def _exec_http(cfg: dict, context: dict, on_progress=None) -> dict:
     """执行 HTTP 请求节点（输出契约见设计文档 §3.3，失败语义见 §3.4）。
 
@@ -1142,13 +1194,16 @@ async def _exec_http(cfg: dict, context: dict, on_progress=None) -> dict:
 
     encoding = resp.charset_encoding or "utf-8"
     text = body_bytes.decode(encoding, errors="replace")
+    raw_text = text  # 原始响应体留底：日志 / fail_on_error 错误消息始终可引用
 
-    # 按 Content-Type 自动解析 JSON → data；非 JSON 落 text 兜底（评审结论 §0-5）
+    # 能解析成 JSON 就优先返回 JSON（data），不再同时携带原始字符串；
+    # 解析不了（HTML/纯文本等）才落 text 兜底（评审结论 §0-5 + 输出友好性优化）
     data = None
     content_type = (resp.headers.get("content-type") or "").lower()
     if "json" in content_type or (text[:1] in ("{", "[")):
         try:
-            data = json.loads(text)
+            data = _deepjson(json.loads(text))
+            text = ""  # JSON 解析成功：原始字符串不重复携带，避免大响应双份输出
         except (ValueError, TypeError):
             data = None
 
@@ -1168,10 +1223,10 @@ async def _exec_http(cfg: dict, context: dict, on_progress=None) -> dict:
     }
     if fail_on_error and not ok:
         logger.warning("[http] ← %s %s HTTP %s（fail_on_error，节点失败）resp=%s",
-                       method, url, resp.status_code, _short(text, 300))
-        raise _HttpNodeFailure(f"HTTP {resp.status_code} {_short(text, 160)}".strip(), out)
+                       method, url, resp.status_code, _short(raw_text, 300))
+        raise _HttpNodeFailure(f"HTTP {resp.status_code} {_short(raw_text, 160)}".strip(), out)
     logger.info("[http] ← %s %s HTTP %s %dms 尝试%d %dB resp=%s",
-                method, url, resp.status_code, duration_ms, attempts, len(body_bytes), _short(text, 300))
+                method, url, resp.status_code, duration_ms, attempts, len(body_bytes), _short(raw_text, 300))
     return out
 
 
@@ -1287,11 +1342,35 @@ def _project_output(node: dict, result) -> dict:
     return projected if projected else result
 
 
+def _shrink_value(value, max_field_len: int = 4000, max_items: int = 8, depth: int = 0):
+    """递归收缩超长的 JSON 值，保持原有结构便于面板阅读。
+
+    字符串超长截断；列表只保留前 max_items 条（追加提示元素）；dict 逐字段递归。
+    仅用于 SSE 展示层，不影响落库与下游引用的真实输出。
+    """
+    if depth > 6:
+        return value
+    if isinstance(value, str):
+        if len(value) > max_field_len:
+            return value[:max_field_len] + f"…（截断，共 {len(value)} 字符）"
+        return value
+    if isinstance(value, list):
+        if len(value) > max_items:
+            head = [_shrink_value(v, max_field_len, max_items, depth + 1) for v in value[:max_items]]
+            head.append(f"…（共 {len(value)} 条，仅展示前 {max_items} 条）")
+            return head
+        return [_shrink_value(v, max_field_len, max_items, depth + 1) for v in value]
+    if isinstance(value, dict):
+        return {k: _shrink_value(v, max_field_len, max_items, depth + 1) for k, v in value.items()}
+    return value
+
+
 def _truncate_output(result, max_field_len: int = 4000):
     """截断输出对象中过长的字段值，优先保留结构化自定义字段的完整可读性。
 
-    当整体 JSON 超过 WORKFLOW_NODE_OUTPUT_LIMIT 时，仅截断单字段值（如 answer/text），
-    而不是把全部字段替换为一个 text 字符串，确保下游自定义输出仍能正常引用。
+    当整体 JSON 超过 WORKFLOW_NODE_OUTPUT_LIMIT 时，仅对超长部分做结构保留式收缩
+    （字符串截断、大列表截条数），不把字段替换为一个整段字符串，
+    确保面板能看到真实 JSON 层级、下游自定义输出仍能正常引用。
     """
     limit = settings.WORKFLOW_NODE_OUTPUT_LIMIT
     try:
@@ -1306,14 +1385,7 @@ def _truncate_output(result, max_field_len: int = 4000):
 
     truncated = {"_truncated": True}
     for k, v in result.items():
-        try:
-            vs = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, default=str)
-        except Exception:
-            vs = str(v)
-        if len(vs) > max_field_len:
-            truncated[k] = vs[:max_field_len] + f"\n…（该字段共 {len(vs)} 字符）"
-        else:
-            truncated[k] = v
+        truncated[k] = _shrink_value(v, max_field_len)
     return truncated
 
 
@@ -1629,8 +1701,11 @@ def _make_node_fn(rt: _Runtime, node: dict):
         # ── 续跑：人工节点的处理结果注入（不重跑，直接产出输出）──
         if nid in rt.inject:
             out = _project_output(node, rt.inject[nid])
+            prev = rt.node_states.get(nid) or {}
             rt.node_states[nid] = {
-                "status": "succeeded", "output": out, "duration_ms": 0,
+                "status": "succeeded", "output": out,
+                # 保留挂起前记录的耗时（prev_states 已随 rt.node_states 继承），无则 0
+                "duration_ms": prev.get("duration_ms") or 0,
                 "summary": _summarize(node, out), "title": title,
             }
             logger.info("[run %s] 人工节点结果注入 %s (%s) → %s",
@@ -1645,11 +1720,15 @@ def _make_node_fn(rt: _Runtime, node: dict):
         # ── 续跑：已完成节点重放（O(1) 返回快照，保持条件路由所需的上游输出）──
         if nid in rt.replay:
             out = rt.replay[nid]
+            prev = rt.node_states.get(nid) or {}
             rt.node_states[nid] = {
-                "status": "succeeded", "output": out, "duration_ms": 0,
+                "status": "succeeded", "output": out,
+                # 保留挂起前（上一段执行）落库的真实耗时，防止刷新后节点全部显示 0ms
+                "duration_ms": prev.get("duration_ms") or 0,
                 "summary": _summarize(node, out), "title": title,
             }
-            rt.emit({"type": "node_replayed", "node_id": nid, "title": title})
+            rt.emit({"type": "node_replayed", "node_id": nid, "title": title,
+                     "duration_ms": prev.get("duration_ms") or 0})
             return {"outputs": {nid: out}}
 
         logger.info("[run %s] 节点开始 %s (%s)", rt.run_id, nid, title)

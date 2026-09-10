@@ -5,6 +5,7 @@ import {
   fetchRelationProperties, createRelationProperty, updateRelationProperty, deleteRelationProperty,
 } from '../../api'
 import Pagination from '../common/Pagination.vue'
+import { useEscClose } from '../../composables/useEscClose'
 
 const props = defineProps({
   categoryId: { type: String, required: true },
@@ -115,6 +116,11 @@ const advSaving = ref(false)
 const relProps = ref([])
 const propsLoading = ref(false)
 const propEditor = ref({ id: '', name: '', code: '', data_type: 'string', description: '', is_required: false, enum_text: '' })
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showAdv.value, () => { showAdv.value = false }],
+])
 
 async function openAdv(rel) {
   advRel.value = rel

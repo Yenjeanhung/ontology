@@ -1,11 +1,15 @@
 <script setup>
 import { ref } from 'vue'
 import { createKb as apiCreateKb } from '../api'
+import { useEscClose } from '../composables/useEscClose'
 
 const emit = defineEmits(['close', 'created'])
 
 const name = ref('')
 const creating = ref(false)
+
+// 弹窗支持按 ESC 关闭（组件挂载即视为打开）
+useEscClose(() => [[true, () => emit('close')]])
 
 async function create() {
   const n = name.value.trim()

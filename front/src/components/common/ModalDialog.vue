@@ -23,7 +23,7 @@ const props = defineProps({
   // 是否允许 Esc 键关闭
   closeOnEsc: {
     type: Boolean,
-    default: false,
+    default: true,
   },
   // 是否显示右上角关闭按钮
   showClose: {
@@ -58,6 +58,8 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'close', 'confirm', 'cancel'])
 
 function close() {
+  // 处理中（loading）时不允许关闭，避免中断进行中的操作
+  if (props.confirmLoading) return
   emit('update:modelValue', false)
   emit('close')
 }

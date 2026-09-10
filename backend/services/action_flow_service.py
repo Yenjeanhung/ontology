@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Entity, OntologyFunction
 from services.ontology_function_service import FunctionService
-from services.service_runtime import execute_service
+from services.service_runtime import execute_service, referenced_function_codes
 from services.workflow_engine import _eval_rule_tree, render
 
 SCHEMA_VERSION = 1
@@ -270,7 +270,7 @@ class ActionFlowService:
 
                 elif ntype == "code":
                     res = await ActionFlowService._run_code(
-                        svc, node, entity_payload, ctx, params, timeout, triggered_by)
+                        db, svc, node, entity_payload, ctx, params, timeout, triggered_by)
                     stdout_parts.append(res.get("stdout") or "")
                     ctx[node_id] = {
                         "ok": bool(res.get("success")),
@@ -379,7 +379,7 @@ class ActionFlowService:
 
     @staticmethod
     async def _run_code(
-        svc, node: dict, entity_payload: dict, ctx: dict,
+        db: AsyncSession, svc, node: dict, entity_payload: dict, ctx: dict,
         params: dict, timeout: int, triggered_by: str,
     ) -> dict:
         cfg = node.get("config") or {}
@@ -395,11 +395,15 @@ class ActionFlowService:
             "params": params,
             **{k: v for k, v in ctx.items() if k not in ("entity", "params")},
         }
+        # 注入引用函数注册表：编排 code 节点的 call_function 与动作代码模式共用同一运行时
+        codes = referenced_function_codes(code_text)
+        functions = await FunctionService.registry_for_codes(db, codes) if codes else {}
         return await execute_service(
             code_text=code_text, language="python",
             params=node_params if isinstance(node_params, dict) else {},
             entity=entity_payload, context=context,
             timeout_seconds=min(timeout, int(cfg.get("timeout_seconds") or timeout) or timeout),
+            functions=functions,
         )
 
     @staticmethod

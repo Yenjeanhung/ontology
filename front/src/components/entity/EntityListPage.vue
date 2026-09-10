@@ -5,6 +5,7 @@ import { fetchEntities, deleteEntity, createEntity, updateEntity, getEntityDetai
 import SearchableSelect from '../common/SearchableSelect.vue'
 import Pagination from '../common/Pagination.vue'
 import ConfirmDialog from '../common/ConfirmDialog.vue'
+import { useEscClose } from '../../composables/useEscClose'
 
 const router = useRouter()
 const entities = ref([])
@@ -592,6 +593,14 @@ const sortedEntities = computed(() => {
     return av < bv ? sign : -sign
   })
 })
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showCreate.value, () => { showCreate.value = false }],
+  [showEdit.value, () => { showEdit.value = false }],
+  [showBatch.value, () => { showBatch.value = false }],
+])
+
 </script>
 
 <template>

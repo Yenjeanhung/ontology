@@ -37,6 +37,8 @@ const props = defineProps({
     }),
   },
   enableLinter: { type: Boolean, default: true },
+  /** 自定义 lint 扩展：(text) => [{ line(0 基), sev: 'error'|'warning', msg }]，与内置 lint 合并 */
+  extraLint: { type: Function, default: null },
 })
 const emit = defineEmits(['update:modelValue', 'selection-change', 'lint', 'drop-text'])
 
@@ -229,7 +231,11 @@ const lintGutterField = gutter({
 
 function refreshLint() {
   if (!view) return
-  const diags = props.enableLinter ? runLint(view.state.doc.toString()) : []
+  const text = view.state.doc.toString()
+  const diags = props.enableLinter ? runLint(text) : []
+  if (props.extraLint) {
+    try { diags.push(...(props.extraLint(text) || [])) } catch { /* 扩展 lint 异常不影响内置 lint */ }
+  }
   if (backendError.value) {
     diags.push({ line: backendError.value.line, sev: 'error', msg: backendError.value.msg })
   }

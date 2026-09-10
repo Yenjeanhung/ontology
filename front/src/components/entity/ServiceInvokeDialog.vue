@@ -1,6 +1,7 @@
 <script setup>
 import { ref, reactive, watch } from 'vue'
 import { invokeEntityService } from '../../api'
+import { useEscClose } from '../../composables/useEscClose'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -15,6 +16,9 @@ const params = reactive({})
 const running = ref(false)
 const result = ref(null)
 const error = ref('')
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [[props.modelValue, () => emit('update:modelValue', false)]])
 
 watch(() => props.modelValue, (v) => {
   if (!v) return

@@ -3,6 +3,7 @@ import { computed, ref, watch, nextTick } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { TYPE_META } from './nodeMeta.js'
 import { marked } from 'marked'
+import { useEscClose } from '../../composables/useEscClose'
 
 const FIXED_KEYS = ['answer', 'chunks', 'entities', 'subgraph', 'success', 'data', 'error', 'stdout', 'duration_ms', 'text', 'result',
   // 人工节点固定输出
@@ -302,6 +303,10 @@ async function copyOutputJson() {
     alert('复制失败：' + (e?.message || '未知错误'))
   }
 }
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [[outOpen.value, () => { outOpen.value = false }]])
+
 </script>
 
 <template>
@@ -327,10 +332,11 @@ async function copyOutputJson() {
     </div>
     <div class="wf-body">{{ bodyText(type, props.data?.config) }}</div>
 
-    <!-- 人工节点：等待人工处理时的提示条 -->
-    <div class="wf-waiting" v-if="status === 'waiting'">
+    <!-- 人工节点：等待人工处理时的提示条（可点击，点击在画布上弹出审批框） -->
+    <div class="wf-waiting wf-waiting-btn" v-if="status === 'waiting'" title="点击处理该人工任务">
       <span class="wf-pulse"></span>
-      {{ humanMode === 'form' ? '等待填写并提交' : '等待人工审批' }}
+      {{ humanMode === 'form' ? '待填写' : '待审批' }}
+      <span class="wf-waiting-action">点击处理 →</span>
       <span v-if="pendingTaskId" class="wf-waiting-task">#{{ pendingTaskId }}</span>
     </div>
 
@@ -721,6 +727,13 @@ async function copyOutputJson() {
 }
 .wf-waiting .wf-pulse { color: #d97706; }
 .wf-waiting-task { margin-left: auto; font-family: ui-monospace, monospace; font-weight: 500; opacity: .8; }
+/* 可点击审批入口：按钮化 + hover 增强（点击冒泡到 node-click，由编辑器弹出审批框） */
+.wf-waiting-btn { cursor: pointer; transition: background .15s, box-shadow .15s; user-select: none; }
+.wf-waiting-btn:hover { background: rgba(217,119,6,.20); box-shadow: 0 0 0 2px rgba(217,119,6,.18); }
+.wf-waiting-action {
+  font-weight: 700; white-space: nowrap;
+  text-decoration: underline; text-underline-offset: 2px; text-decoration-color: rgba(217,119,6,.5);
+}
 
 /* 人工节点处理结果 */
 .wf-human-result {

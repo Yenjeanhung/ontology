@@ -12,6 +12,7 @@ import {
 } from '../../api/monitor'
 import ComponentCard from './ComponentCard.vue'
 import SystemInfoPanel from './SystemInfoPanel.vue'
+import { useEscClose } from '../../composables/useEscClose'
 
 const loading = ref(true)
 const errorMsg = ref('')
@@ -227,6 +228,11 @@ async function runVectorQuery() {
 function closeDialog() {
   dialogVisible.value = false
 }
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [dialogVisible.value, closeDialog],
+])
 
 function scoreClass(score) {
   if (score >= 0.7) return 'high'

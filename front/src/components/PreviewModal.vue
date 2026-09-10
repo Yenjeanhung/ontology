@@ -2,6 +2,7 @@
 import { ref, watch, nextTick, computed, onBeforeUnmount } from 'vue'
 import * as pdfjsLib from 'pdfjs-dist'
 import { getFilePreviewUrl, fetchFileContent } from '../api'
+import { useEscClose } from '../composables/useEscClose'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
@@ -441,6 +442,9 @@ onBeforeUnmount(() => {
 function onClose() {
   emit('close')
 }
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [[props.visible, onClose]])
 </script>
 
 <template>

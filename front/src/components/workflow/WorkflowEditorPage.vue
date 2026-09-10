@@ -10,7 +10,8 @@ import '@vue-flow/controls/dist/style.css'
 import WorkflowNode from './WorkflowNode.vue'
 import {
   getWorkflow, updateWorkflow, fetchWorkflowPalette, runWorkflowStream, resumeWorkflowStream,
-  fetchEntities, fetchEntityServices, fetchWorkflowRuns, getWorkflowRun, deleteWorkflowRun,
+  fetchEntities, fetchEntityServices, fetchOntologyServices, getEntityDetail,
+  fetchWorkflowRuns, getWorkflowRun, deleteWorkflowRun,
   fetchOntologyCategories, fetchOntologies,
   submitHumanDecision as submitHumanDecisionApi, cancelWorkflowRun as cancelWorkflowRunApi,
   testHttpNode,
@@ -20,6 +21,7 @@ import PythonEditor from './PythonEditor.vue'
 import ConditionRuleBuilder from './ConditionRuleBuilder.vue'
 import HumanTaskForm from './HumanTaskForm.vue'
 import { TYPE_META } from './nodeMeta.js'
+import { useEscClose } from '../../composables/useEscClose'
 
 const route = useRoute()
 const router = useRouter()
@@ -34,7 +36,7 @@ const DEFAULT_CONFIG = {
   start: { inputs: [] },
   end: { outputs: [] },
   agent: { agent_id: '', kb_id: '', skill_ids: [], query_template: '{{start.input}}' },
-  service: { kb_id: '', entity_id: '', service_id: '', params: {} },
+  service: { ontology_id: '', entity_id: '', service_id: '', params: {}, mock_entity: {} },
   llm: { system_prompt: '', prompt_template: '', structured_outputs: [] },
   condition: { mode: 'simple', operator: '==', left: '', right: '', rule: { combinator: 'and', rules: [] } },
   code: {
@@ -374,6 +376,7 @@ async function restoreLastRun() {
       n.data.status = st.status
       n.data.output = st.output ?? null
       if (st.duration_ms != null) n.data.elapsedText = fmtElapsed(st.duration_ms)
+      restorePendingTask(n, st, run.id)
       logs.value.push({
         kind: 'node', node_id: n.id,
         title: st.title || n.data?.title || n.id,
@@ -752,7 +755,14 @@ function selectNode(id) {
     if (n?.type === 'service') loadSvc(n.data.config)
   }
 }
-function onNodeClick({ node }) { selectNode(node.id) }
+function onNodeClick({ node }) {
+  selectNode(node.id)
+  drawerCollapsed.value = false  // 点击节点自动展开配置抽屉，保证「运行输出」立即可见
+  // 人工节点等待处理：点击直接弹出审批框（工作流内闭环处理，不必去待办中心）
+  if (node.type === 'human' && node.data?.status === 'waiting' && pendingTasks[node.id]) {
+    humanModalNodeId.value = node.id
+  }
+}
 function onPaneClick() { selectedNodeId.value = null }
 function onConnect(conn) {
   const { source, target } = conn
@@ -932,6 +942,7 @@ async function replayRun(runId) {
       n.data.status = st.status
       n.data.output = st.output ?? null
       if (st.duration_ms != null) n.data.elapsedText = fmtElapsed(st.duration_ms)
+      restorePendingTask(n, st, runId)
       count++
     }
     if (count) {
@@ -960,7 +971,7 @@ async function replayRun(runId) {
 }
 
 function fmtStatusText(s) {
-  return s === 'succeeded' ? '成功' : s === 'failed' ? '失败' : s === 'cancelled' ? '已取消' : (s || '未知')
+  return s === 'succeeded' ? '成功' : s === 'failed' ? '失败' : s === 'cancelled' ? '已取消' : s === 'waiting' ? '等待人工' : (s || '未知')
 }
 function fmtTime(ts) {
   if (!ts) return ''
@@ -992,34 +1003,121 @@ async function deleteRun(runId) {
 // 进入历史 Tab 时自动拉取
 watch(logTab, (t) => { if (t === 'history') refreshHistory() })
 
-// ───── 实体服务下拉 ─────
+// ───── 实体服务下拉（本体 → 实体(选填) → 服务）─────
+// 选了实体：列出该实体的有效服务（继承本体级 + 实体自定义），执行时以该实体为上下文；
+// 不选实体：列出本体级服务，执行时用「模拟实体」试运行。
+function svcCategoryOf(ontologyId) {
+  for (const g of ontologyPickGroups.value) {
+    if (g.options.some(o => o.value === ontologyId)) return g.id
+  }
+  return ''
+}
 async function loadSvc(cfg) {
   svcEntities.value = []
   svcServices.value = []
-  if (cfg.kb_id) {
+  // 兼容旧节点：只存了 entity_id 时，按实体详情反推本体并回填配置
+  if (!cfg.ontology_id && cfg.entity_id) {
     try {
-      const r = await fetchEntities({ kb_id: cfg.kb_id, page_size: 200 })
-      svcEntities.value = r.items || []
+      const ent = await getEntityDetail(cfg.entity_id)
+      if (ent?.ontology_id) cfg.ontology_id = ent.ontology_id
     } catch {}
   }
-  if (cfg.entity_id) {
-    try { svcServices.value = await fetchEntityServices(cfg.entity_id) } catch {}
+  const jobs = []
+  if (cfg.ontology_id) {
+    jobs.push(fetchEntities({ ontology_id: cfg.ontology_id, page_size: 200 })
+      .then(r => { svcEntities.value = r.items || [] }).catch(() => {}))
   }
+  if (cfg.entity_id) {
+    jobs.push(fetchEntityServices(cfg.entity_id)
+      .then(list => { svcServices.value = list || [] }).catch(() => {}))
+  } else if (cfg.ontology_id) {
+    const cat = svcCategoryOf(cfg.ontology_id)
+    if (cat) {
+      jobs.push(fetchOntologyServices(cat, cfg.ontology_id)
+        .then(list => { svcServices.value = list || [] }).catch(() => {}))
+    }
+  }
+  await Promise.all(jobs)
 }
-async function onSvcKbChange() {
+async function onSvcOntologyChange() {
   selectedConfig.value.entity_id = ''
   selectedConfig.value.service_id = ''
   await loadSvc(selectedConfig.value)
 }
 async function onSvcEntityChange() {
-  svcServices.value = []
-  try { svcServices.value = await fetchEntityServices(selectedConfig.value.entity_id) } catch {}
+  selectedConfig.value.service_id = ''
+  await loadSvc(selectedConfig.value)
 }
+
+// ───── 服务入参：清单展示 / 模板生成 / 类型校验 ─────
+const selectedSvc = computed(() => svcServices.value.find(s => s.id === selectedConfig.value?.service_id) || null)
+const selectedSvcParams = computed(() => {
+  const p = selectedSvc.value?.params
+  return Array.isArray(p) ? p : []
+})
+// 按服务入参 schema 生成参数骨架，避免手写 JSON 漏项/写错类型
+function genSvcParamsTemplate() {
+  if (!selectedNode.value) return
+  const tpl = {}
+  for (const p of selectedSvcParams.value) {
+    if (p.type === 'array') tpl[p.name] = []
+    else if (p.type === 'object') tpl[p.name] = {}
+    else if (p.type === 'number') tpl[p.name] = 0
+    else if (p.type === 'boolean') tpl[p.name] = false
+    else tpl[p.name] = ''
+  }
+  selectedNode.value.data.config.params = tpl
+  toast.success('已按服务入参生成参数模板')
+}
+// 字面量类型推断：{{...}} 引用返回 'ref'（真实类型运行时才确定，跳过校验）
+function svcLiteralTypeOf(v) {
+  if (typeof v === 'string') {
+    if (/^\{\{\s*[\w.[\]-]+\s*\}\}$/.test(v.trim())) return 'ref'
+    const t = v.trim()
+    if (t !== '' && !Number.isNaN(Number(t))) return 'number'
+    if (t === 'true' || t === 'false') return 'boolean'
+    return 'string'
+  }
+  if (typeof v === 'number') return 'number'
+  if (typeof v === 'boolean') return 'boolean'
+  if (Array.isArray(v)) return 'array'
+  if (v && typeof v === 'object') return 'object'
+  return 'empty'
+}
+// 服务参数类型名 → 中文提示
+const SVC_TYPE_CN = { string: '字符串', number: '数字', boolean: '布尔', array: '数组', object: '对象', ref: '变量引用', empty: '空值' }
+// 实时校验当前服务节点的参数填写（必填缺失 / 字面量类型不符）
+const svcParamIssues = computed(() => {
+  const issues = []
+  const cfg = selectedConfig.value
+  if (cfg == null || selectedType.value !== 'service') return issues
+  const params = cfg.params
+  for (const p of selectedSvcParams.value) {
+    const display = p.label && p.label !== p.name ? `${p.name}(${p.label})` : p.name
+    const missing = !params || !(p.name in params) || params[p.name] === '' || params[p.name] == null
+    if (missing) {
+      if (p.required) issues.push(`必填参数 ${display}（${p.type}）未提供`)
+      continue
+    }
+    const lt = svcLiteralTypeOf(params[p.name])
+    if (lt === 'ref') continue
+    if (p.type === 'array' && lt !== 'array') {
+      issues.push(`参数 ${display} 需要 array（数组），当前写的是${SVC_TYPE_CN[lt] || lt}；请用 {{节点.字段}} 直接引用数组字段，如 {{http节点.data.items}}`)
+    } else if (p.type === 'object' && lt !== 'object') {
+      issues.push(`参数 ${display} 需要 object（对象），当前写的是${SVC_TYPE_CN[lt] || lt}；请引用对象字段或写成 JSON 对象`)
+    } else if (p.type === 'number' && lt !== 'number') {
+      issues.push(`参数 ${display} 需要 number（数字），当前写的是${SVC_TYPE_CN[lt] || lt}`)
+    } else if (p.type === 'boolean' && lt !== 'boolean') {
+      issues.push(`参数 ${display} 需要 boolean（布尔），当前写的是${SVC_TYPE_CN[lt] || lt}`)
+    }
+  }
+  return issues
+})
 
 // ───── 变量引用 ─────
 function jsonText(field) {
   const v = selectedConfig.value?.[field]
-  return JSON.stringify(v ?? (field === 'params' ? {} : []), null, 2)
+  return JSON.stringify(v ?? (field === 'params' || field === 'mock_entity' ? {} : []), null, 2)
 }
 function setJson(field, text) {
   if (!selectedNode.value) return
@@ -1158,6 +1256,11 @@ async function save() {
   }
   if (!validateStructRows()) return
   if (!validateVarRefs()) return
+  // 服务节点参数类型校验：按服务入参 schema 检查必填与字面量类型
+  if (selectedNode.value?.type === 'service' && svcParamIssues.value.length) {
+    toast.error(svcParamIssues.value[0] + (svcParamIssues.value.length > 1 ? `（共 ${svcParamIssues.value.length} 处参数问题）` : ''))
+    return
+  }
   saving.value = true
   const definition = {
     nodes: nodes.value.map(n => {
@@ -1341,9 +1444,9 @@ function streamCallbacks() {
         selectNode(d.node_id)
       },
       // ── 续跑：重放的已完成节点 / 人工节点结果注入 ──
-      onNodeReplayed(d) { setStatus(d.node_id, 'succeeded', 0) },
+      onNodeReplayed(d) { setStatus(d.node_id, 'succeeded', d.duration_ms) },
       onNodeResumed(d) {
-        setStatus(d.node_id, 'succeeded', 0)
+        setStatus(d.node_id, 'succeeded', d.duration_ms)
         const line = [...logs.value].reverse().find(l => l.kind === 'node' && l.node_id === d.node_id)
         if (line) Object.assign(line, { status: 'succeeded', summary: d.summary, output: d.output })
         else logs.value.push({ kind: 'node', node_id: d.node_id, title: d.title, status: 'succeeded', summary: d.summary, output: d.output })
@@ -1363,6 +1466,48 @@ function streamCallbacks() {
       },
   }
 }
+
+// ── 恢复/回放：重建人工节点待办，使编辑器内可直接审批（不必去待办中心）──
+// 后端 node_states(waiting) 持久化了 task_id/mode/form_data；
+// 说明文案/表单字段/意见规则等展示配置取当前画布节点配置（引擎渲染时同源）。
+function restorePendingTask(n, st, runId) {
+  if (!n || n.type !== 'human' || st.status !== 'waiting' || !st.task_id) return
+  if (pendingTasks[n.id]) return
+  n.data.taskId = st.task_id
+  const cfg = n.data?.config || {}
+  pendingTasks[n.id] = {
+    task_id: st.task_id,
+    mode: st.mode || cfg.mode || 'approve',
+    description: cfg.description || '',
+    form_data: st.form_data || {},
+    form_fields: (Array.isArray(cfg.form_fields) ? cfg.form_fields : []).filter(f => f.key),
+    decisions: Array.isArray(cfg.decisions) ? cfg.decisions : [],
+    submit_text: cfg.submit_text || '提交',
+    comment_label: cfg.comment?.label || '处理意见',
+    comment_placeholder: cfg.comment?.placeholder || '',
+    comment_required: !!cfg.comment?.required,
+    assignee: cfg.assignee || '',
+    due_at: '',
+  }
+  if (runId) currentRunId.value = runId
+  awaitingHuman.value = true
+}
+
+// ── 画布内审批弹窗：点击待处理的人工节点直接弹出 ──
+const humanModalNodeId = ref(null)
+const humanModalNode = computed(() => nodes.value.find(n => n.id === humanModalNodeId.value) || null)
+// pendingTasks 存 snake_case，HumanTaskForm 的 props 是 camelCase，这里做一次映射供 v-bind 展开
+const humanModalTask = computed(() => {
+  const t = pendingTasks[humanModalNodeId.value]
+  if (!t) return null
+  return {
+    mode: t.mode, description: t.description, formData: t.form_data, formFields: t.form_fields,
+    decisions: t.decisions, submitText: t.submit_text, commentLabel: t.comment_label,
+    commentPlaceholder: t.comment_placeholder, commentRequired: t.comment_required,
+    taskId: t.task_id, assignee: t.assignee, dueAt: t.due_at,
+  }
+})
+function closeHumanModal() { humanModalNodeId.value = null }
 
 // 处理人工任务：提交决策（auto_resume=false）后立刻开 resume 流续播
 async function handleHumanSubmit(nodeId, payload) {
@@ -1596,6 +1741,16 @@ watch(nowTick, () => {
     if (n && n.data.status === 'running') n.data.elapsedText = fmtElapsed(nodeElapsed(nid))
   }
 })
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [conditionModalOpen.value, closeConditionModal],
+  [!!historyDetail.value, closeRunDetail],
+  [runModal.value, () => { runModal.value = false }],
+  [!!humanModalNodeId.value, closeHumanModal],
+  [contextMenu.visible, closeContextMenu],
+])
+
 </script>
 
 <template>
@@ -1671,6 +1826,21 @@ watch(nowTick, () => {
           </div>
 
           <div class="dr-body">
+            <!-- ═══ 分区零：本次运行输出（点击节点即看结果，无需去日志翻找） ═══ -->
+            <template v-if="selectedNode.data.status">
+              <div class="section-title run-out-head">
+                运行输出
+                <span class="run-out-badge" :class="'stc-' + selectedNode.data.status">{{ statusIcon(selectedNode.data.status) }} {{ fmtStatusText(selectedNode.data.status) }}</span>
+                <span class="run-out-dur" v-if="selectedNode.data.elapsedText">{{ selectedNode.data.elapsedText }}</span>
+              </div>
+              <pre v-if="selectedNode.data.output != null" class="run-out-pre">{{ JSON.stringify(selectedNode.data.output, null, 2) }}</pre>
+              <p v-else-if="selectedNode.data.status === 'waiting'" class="field-hint">该节点在等待人工处理，流程暂停中；点击画布上的该节点可直接审批。</p>
+              <p v-else class="field-hint">该节点本次运行尚未产生输出（未执行或被跳过）。</p>
+            </template>
+            <template v-else>
+              <div class="section-title">运行输出</div>
+              <p class="field-hint">暂无运行记录：运行工作流后，点击节点即可在此查看该节点的输入、输出与耗时。</p>
+            </template>
             <!-- ═══ 分区一：智能体配置（节点名称 + 该类型专属配置） ═══ -->
             <div class="section-title">{{ TYPE_META[selectedType]?.name }}配置</div>
             <div class="field">
@@ -1775,18 +1945,21 @@ watch(nowTick, () => {
             <!-- 实体服务 -->
             <template v-else-if="selectedType === 'service'">
               <div class="field">
-                <label>知识库（用于筛选实体）</label>
-                <select v-model="selectedConfig.kb_id" @change="onSvcKbChange">
-                  <option value="">（不限定）</option>
-                  <option v-for="kb in palette.kbs" :key="kb.id" :value="kb.id">{{ kb.name }}</option>
+                <label>本体（筛选实体 / 服务）</label>
+                <select v-model="selectedConfig.ontology_id" @change="onSvcOntologyChange">
+                  <option value="">请选择本体</option>
+                  <optgroup v-for="g in ontologyPickGroups" :key="g.id" :label="g.label">
+                    <option v-for="o in g.options" :key="o.value" :value="o.value">{{ o.label }}</option>
+                  </optgroup>
                 </select>
               </div>
               <div class="field">
-                <label>实体 <span class="req">*</span></label>
+                <label>实体（选填）</label>
                 <select v-model="selectedConfig.entity_id" @change="onSvcEntityChange">
-                  <option value="">请选择实体</option>
+                  <option value="">不选实体 · 调用本体级服务</option>
                   <option v-for="e in svcEntities" :key="e.id" :value="e.id">{{ e.name }}（{{ e.entity_type }}）</option>
                 </select>
+                <p class="field-hint">选实体＝以该实体身份执行（服务内 entity 即它，阈值读其属性）；不选＝用「模拟实体」试运行本体级服务。</p>
               </div>
               <div class="field">
                 <label>服务 <span class="req">*</span></label>
@@ -1795,9 +1968,28 @@ watch(nowTick, () => {
                   <option v-for="s in svcServices" :key="s.id" :value="s.id">{{ s.name }}</option>
                 </select>
               </div>
+              <!-- 服务入参说明：需要什么参数、什么类型、是否必填 -->
+              <div class="field" v-if="selectedSvcParams.length">
+                <label>服务入参（{{ selectedSvcParams.length }} 个）</label>
+                <div class="svc-params-box">
+                  <div v-for="p in selectedSvcParams" :key="p.name" class="svc-param-row">
+                    <code class="svc-param-name">{{ p.name }}</code>
+                    <span v-if="p.label && p.label !== p.name" class="svc-param-label">{{ p.label }}</span>
+                    <span class="svc-param-type" :data-t="p.type">{{ p.type }}</span>
+                    <span v-if="p.required" class="svc-param-req">必填</span>
+                  </div>
+                  <div class="field-hint">参数值用 <code v-pre>{{节点.字段}}</code> 引用上游输出；array / object 类型直接引用对应字段（如 <code v-pre>{{http节点.data.items}}</code>），不要手工转字符串。</div>
+                </div>
+              </div>
+              <div class="field" v-if="!selectedConfig.entity_id">
+                <label>模拟实体（JSON，选填）</label>
+                <textarea :value="jsonText('mock_entity')" @input="setJson('mock_entity', $event.target.value)" rows="3" placeholder='{"name":"模拟实体","properties":{}}'></textarea>
+              </div>
               <div class="field">
                 <label>参数（JSON，可用变量）</label>
                 <textarea :value="jsonText('params')" @input="setJson('params', $event.target.value)" rows="4" placeholder='{"ticker":"HUAWEI"}'></textarea>
+                <span class="var-btn" v-if="selectedSvcParams.length" @click="genSvcParamsTemplate">⊕ 按入参生成参数模板</span>
+                <p v-for="msg in svcParamIssues" :key="msg" class="field-error">⚠ {{ msg }}</p>
               </div>
             </template>
 
@@ -2470,6 +2662,21 @@ watch(nowTick, () => {
       </div>
     </div>
 
+    <!-- 画布内人工审批弹窗：点击待处理的人工节点弹出，提交后自动续跑 -->
+    <div class="modal-mask" v-if="humanModalNodeId && humanModalTask" @click.self="closeHumanModal">
+      <div class="modal human-modal">
+        <div class="hm-head">
+          <span class="hm-title">👤 人工{{ humanModalTask.mode === 'form' ? '填写' : '审批' }} · {{ humanModalNode?.data?.title || humanModalNodeId }}</span>
+          <button class="btn sm" @click="closeHumanModal">关闭</button>
+        </div>
+        <HumanTaskForm
+          v-bind="humanModalTask"
+          :submitting="!!submittingTask[humanModalNodeId]"
+          @submit="p => handleHumanSubmit(humanModalNodeId, p)"
+        />
+      </div>
+    </div>
+
     <!-- 高级条件规则编辑弹窗 -->
     <div class="modal-mask" v-if="conditionModalOpen">
       <div class="modal modal-condition">
@@ -2540,6 +2747,11 @@ watch(nowTick, () => {
   border: 1px dashed #d97706; background: rgba(217,119,6,.07);
 }
 .hp-title { font-size: 11.5px; font-weight: 700; color: #b45309; margin-bottom: 8px; }
+
+/* 画布内人工审批弹窗 */
+.human-modal { width: 520px; max-width: 92vw; max-height: 82vh; overflow-y: auto; }
+.hm-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.hm-title { font-size: 13.5px; font-weight: 700; color: #b45309; }
 
 /* 人工节点配置：待审项 / 表单字段编辑器 */
 .df-row, .ff-line { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
@@ -2845,6 +3057,24 @@ watch(nowTick, () => {
 .field-hint { font-size: 11px; color: var(--c-secondary); line-height: 1.5; margin: -6px 0 6px; }
 .var-btn { display: inline-flex; align-items: center; gap: 3px; margin-top: 5px; font-size: 11px; font-weight: 600; color: var(--c-accent); cursor: pointer; padding: 2px 8px; border: 1px dashed var(--c-accent); border-radius: 4px; width: fit-content; }
 .var-btn:hover { background: var(--c-accent-weak, rgba(161,98,7,.10)); }
+.svc-params-box { border: 1px solid var(--c-border); border-radius: 6px; padding: 8px 10px; background: var(--c-panel); display: flex; flex-direction: column; gap: 5px; }
+.svc-param-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.svc-param-name { font-size: 12px; color: var(--c-fg); background: var(--c-border); padding: 1px 6px; border-radius: 4px; }
+.svc-param-label { font-size: 11.5px; color: var(--c-secondary); }
+.svc-param-type { font-size: 10.5px; font-weight: 700; color: var(--c-accent); border: 1px solid currentColor; border-radius: 10px; padding: 0 7px; line-height: 16px; }
+.svc-param-type[data-t="array"], .svc-param-type[data-t="object"] { color: #d97706; }
+.svc-param-type[data-t="string"], .svc-param-type[data-t="text"] { color: var(--c-secondary); }
+.svc-param-req { font-size: 10.5px; font-weight: 700; color: var(--c-danger); }
+.field-error { font-size: 11px; color: var(--c-danger); line-height: 1.5; margin: 4px 0 0; }
+/* 配置抽屉顶部的运行输出区块 */
+.run-out-head { display: flex; align-items: center; gap: 8px; }
+.run-out-badge { font-size: 11px; font-weight: 700; }
+.run-out-dur { font-size: 11px; color: var(--c-secondary); }
+.run-out-pre {
+  margin: 6px 0 10px; padding: 9px; max-height: 240px; overflow: auto;
+  border: 1px solid var(--c-border); border-radius: 7px; background: var(--c-bg-soft, rgba(255,255,255,.03));
+  font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5; color: var(--c-fg); white-space: pre-wrap; word-break: break-all;
+}
 
 .skill-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .skill-chip { padding: 4px 10px; border-radius: 20px; font-size: 12px; border: 1px solid var(--c-border); background: var(--c-panel); color: var(--c-secondary); cursor: pointer; }

@@ -7,6 +7,12 @@
 - stdout/stderr 与结果 JSON 截断。
 
 代码契约：用户代码定义 `def run(params, entity, context) -> dict`，异常直接 raise。
+
+两种执行模式共用同一运行时：
+- 动作代码模式 / 编排 code 节点：本执行器直接跑动作代码；
+- 编排 function 节点：主进程查库后仍走本执行器执行函数代码。
+动作代码里可通过 `call_function(code, params)` 直接调用本体函数（沙箱注入注册表），
+因此编排图生成的代码在代码模式下同样真实可执行——并非两套语义。
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import re
 import sys
 import time
 
@@ -68,6 +75,37 @@ def main():
             "__name__": "__sandbox__",
             "var": lambda node, field=None, default=None: _var(context, node, field, default),
         }
+        # 预加载动作代码引用的本体函数：code -> 独立命名空间（与编排模式执行同一份函数代码）
+        fn_registry = {}
+        for fcode, fsrc in (payload.get("functions") or {}).items():
+            fns = {"__name__": "__sandbox_fn__"}
+            try:
+                exec(compile(str(fsrc or ""), f"<fn:{fcode}>", "exec"), fns)
+            except BaseException as e:
+                raise RuntimeError(f"加载引用函数 {fcode} 失败：{type(e).__name__}: {e}") from None
+            fn_registry[str(fcode)] = fns
+
+        def call_function(function_code, fn_params=None, fn_entity=None, fn_context=None):
+            # 代码模式 / 编排模式共享的函数调用入口：按函数 code 调用其 run()
+            ns = fn_registry.get(str(function_code))
+            if ns is None:
+                raise NameError(
+                    f"call_function：函数 {function_code!r} 未注册（不存在、已停用或名称写错）")
+            f = ns.get("run")
+            if not callable(f):
+                raise RuntimeError(f"函数 {function_code} 未定义 run() 函数")
+            fp = fn_params if isinstance(fn_params, dict) else {}
+            fe = entity if fn_entity is None else fn_entity
+            fc = fn_context if isinstance(fn_context, dict) else (dict(context) if isinstance(context, dict) else {})
+            fc.setdefault("function_code", str(function_code))
+            n = len(inspect.signature(f).parameters)
+            if n <= 1:
+                return f(fp)
+            if n == 2:
+                return f(fp, fe)
+            return f(fp, fe, fc)
+
+        g["call_function"] = call_function
         with redirect_stdout(buf):
             exec(compile(code, "<service>", "exec"), g)
             fn = g.get("run")
@@ -121,6 +159,15 @@ def check_code(code_text: str) -> str | None:
     return None
 
 
+# 提取动作 / code 节点代码中 call_function("code", ...) 引用的函数 code
+_CALL_FN_RE = re.compile(r"""\bcall_function\s*\(\s*["']([^"']+)["']""")
+
+
+def referenced_function_codes(code_text: str) -> list[str]:
+    """提取代码中 call_function(...) 引用的函数 code（去重、保序）。"""
+    return list(dict.fromkeys(_CALL_FN_RE.findall(code_text or "")))
+
+
 def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -135,8 +182,13 @@ async def execute_service(
     entity: dict,
     context: dict,
     timeout_seconds: int,
+    functions: dict[str, str] | None = None,
 ) -> dict:
-    """执行动作代码，返回统一结果结构。"""
+    """执行动作代码，返回统一结果结构。
+
+    functions：{函数code: 函数code_text} 注册表，注入沙箱供 call_function 调用；
+    与编排模式执行同一份函数代码，安全模型一致（同样过 check_code 白名单）。
+    """
     if language != "python":
         return {"success": False, "data": None, "error": f"暂不支持 {language}", "stdout": "", "duration_ms": 0}
 
@@ -144,10 +196,17 @@ async def execute_service(
     if err:
         return {"success": False, "data": None, "error": err, "stdout": "", "duration_ms": 0}
 
+    fn_map = functions or {}
+    for fcode, fsrc in fn_map.items():
+        ferr = check_code(fsrc or "")
+        if ferr:
+            return {"success": False, "data": None,
+                    "error": f"引用函数 {fcode} 代码校验失败：{ferr}", "stdout": "", "duration_ms": 0}
+
     timeout = max(1, min(120, timeout_seconds or 30))
     payload = json.dumps(
         {"code": code_text, "params": params or {}, "entity": entity or {},
-         "context": context or {}},
+         "context": context or {}, "functions": fn_map},
         ensure_ascii=False, default=str,
     ).encode("utf-8")
 
@@ -218,10 +277,22 @@ def coerce_params(params_schema: list[dict], raw: dict) -> tuple[dict | None, st
                 if isinstance(value, str):
                     value = value.strip().lower() in ("1", "true", "yes", "on")
                 value = bool(value)
+            elif ptype in ("array", "object"):
+                # 容器类型：字符串时按 JSON 解析，list/dict 原样保留（禁止 str() 兜底）
+                if isinstance(value, str):
+                    value = json.loads(value)
+                if ptype == "array" and not isinstance(value, list):
+                    raise ValueError("not array")
+                if ptype == "object" and not isinstance(value, dict):
+                    raise ValueError("not object")
             else:
                 value = str(value)
         except (TypeError, ValueError):
-            return None, f"参数 {p.get('label') or name} 需要 {ptype} 类型"
+            preview = value[:60] if isinstance(value, str) else type(value).__name__
+            return None, (
+                f"参数 {p.get('label') or name} 需要 {ptype} 类型"
+                f"（实际收到：{preview}）；请检查参数绑定表达式是否取到了正确数据"
+            )
         out[name] = value
     # 透传未在 schema 中声明的额外参数（便于灵活调试）
     for k, v in (raw or {}).items():

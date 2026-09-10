@@ -5,6 +5,7 @@ import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFileP
 import { marked } from 'marked'
 import ServiceInvokeDialog from './ServiceInvokeDialog.vue'
 import ConfirmDialog from '../common/ConfirmDialog.vue'
+import { useEscClose } from '../../composables/useEscClose'
 
 const props = defineProps({
   entityId: { type: String, required: true },
@@ -640,6 +641,11 @@ async function openSourcePreview() {
     previewLoading.value = false
   }
 }
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [!!previewAsset.value, closePreview],
+])
 
 function closePreview() {
   previewAsset.value = null

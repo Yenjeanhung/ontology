@@ -8,6 +8,8 @@ import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
 import ConditionRuleBuilder from '../workflow/ConditionRuleBuilder.vue'
+import { flowToCode, fnReturns } from '../../utils/flowToCode'
+import { useEscClose } from '../../composables/useEscClose'
 
 const props = defineProps({
   /** 编排图 {schema_version, nodes, edges, layout} */
@@ -16,9 +18,11 @@ const props = defineProps({
   functions: { type: Array, default: () => [] },
   /** 测试运行 trace：用于节点着色 */
   trace: { type: Array, default: () => [] },
+  /** 动作名称（生成代码预览用） */
+  serviceName: { type: String, default: '' },
 })
 
-const emit = defineEmits(['update:modelValue'])
+const emit = defineEmits(['update:modelValue', 'apply-to-code'])
 
 const NODE_META = {
   start: { name: '开始', color: '#64748b', icon: '▶' },
@@ -41,6 +45,11 @@ const seq = ref(0)
 const edgeSeq = ref(0)
 const keyword = ref('')
 const loading = ref(false)
+const expandedFn = ref('')   // 当前展开详情的函数 id
+
+function toggleFn(id) {
+  expandedFn.value = expandedFn.value === id ? '' : id
+}
 
 const selectedNode = computed(() => nodes.value.find(n => n.id === selectedId.value) || null)
 const selectedType = computed(() => selectedNode.value?.data?.nodeType || '')
@@ -335,10 +344,33 @@ function nodeSubtitle(node) {
   if (t === 'end') return cfg.mode === 'abort' ? '中止动作' : '输出结果 / 写回'
   return '入口'
 }
+
+// ===== 编排 → 生成代码预览（可执行：call_function 与代码模式共用同一运行时；实现见 utils/flowToCode.js） =====
+
+const showCode = ref(false)
+const generatedCode = computed(() => flowToCode(serialize(), props.functions, props.serviceName))
+
+function openCodeModal() { showCode.value = true }
+function applyToCode() {
+  showCode.value = false
+  emit('apply-to-code', generatedCode.value)
+}
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showCode.value, () => { showCode.value = false }],
+])
+
 </script>
 
 <template>
   <div class="afc">
+    <div class="afc-toolbar">
+      <span class="afc-tb-title">编排画布</span>
+      <span class="afc-tb-hint">拖拽 / 点击左侧函数与逻辑节点组合动作</span>
+      <button class="btn sm" @click="openCodeModal">查看生成代码</button>
+    </div>
+    <div class="afc-body">
     <!-- 左：节点面板 -->
     <aside class="afc-palette">
       <div class="afc-pal-title">可用函数</div>
@@ -351,9 +383,30 @@ function nodeSubtitle(node) {
           draggable="true" @dragstart="onPaletteDragStart($event, { kind: 'function', function_id: fn.id })"
           @click="addNode('function', fn.id, null)"
         >
-          <span class="afc-pal-ico" :style="{ background: NODE_META.function.color }">ƒ</span>
-          <span class="afc-pal-name">{{ fn.name }}</span>
-          <span class="afc-pal-code">{{ fn.code }}</span>
+          <div class="afc-pal-top">
+            <span class="afc-pal-ico" :style="{ background: NODE_META.function.color }">ƒ</span>
+            <span class="afc-pal-name">{{ fn.name }}</span>
+            <button class="afc-pal-info" :class="{ on: expandedFn === fn.id }"
+              @click.stop="toggleFn(fn.id)" :title="expandedFn === fn.id ? '收起入参/出参' : '查看入参/出参'">ⓘ</button>
+          </div>
+          <div class="afc-pal-code" :title="fn.code">{{ fn.code }}</div>
+          <div v-if="expandedFn === fn.id" class="afc-pal-detail" @click.stop>
+            <div class="afc-detail-row">
+              <span class="afc-detail-key">入参</span>
+              <span v-if="!fnParams(fn).length" class="afc-detail-val">无</span>
+              <span v-else class="afc-detail-val">
+                <span v-for="p in fnParams(fn)" :key="p.name" class="afc-chip">
+                  {{ p.label || p.name }}<i v-if="p.required">*</i>
+                  <em>{{ p.type }}</em>
+                </span>
+              </span>
+            </div>
+            <div class="afc-detail-row">
+              <span class="afc-detail-key">出参</span>
+              <span class="afc-detail-val"><code>{{ fnReturns(fn) }}</code></span>
+            </div>
+            <div v-if="fn.description" class="afc-detail-desc">{{ fn.description }}</div>
+          </div>
         </div>
         <div v-if="!filteredFunctions.length" class="afc-pal-empty">暂无函数</div>
       </div>
@@ -450,8 +503,16 @@ function nodeSubtitle(node) {
             <div v-if="selectedFn?.description" class="afc-fn-desc">{{ selectedFn.description }}</div>
             <div v-if="fnParams(selectedFn).length" class="afc-sub">入参（可用 <code v-pre>{{ }}</code> 引用）</div>
             <div v-for="p in fnParams(selectedFn)" :key="p.name" class="afc-field">
-              <label>{{ p.label || p.name }}<i v-if="p.required" class="req">*</i></label>
+              <label>{{ p.label || p.name }}<i v-if="p.required" class="req">*</i> <em class="afc-ptype">{{ p.type }}</em></label>
               <input type="text" v-model="selectedNode.data.config.params[p.name]" :placeholder="p.description || String(p.default ?? '')">
+            </div>
+            <div v-if="fnParams(selectedFn).length" class="afc-field">
+              <label>入参示例</label>
+              <pre class="afc-example">{{ JSON.stringify(selectedNode.data.config.params, null, 2) }}</pre>
+            </div>
+            <div class="afc-field">
+              <label>出参 <code>.value</code>（引用写法 <code v-pre>{{ {{ selectedNode.id }}.value }}</code>）</label>
+              <pre class="afc-example afc-returns">{{ fnReturns(selectedFn) }}</pre>
             </div>
             <div class="afc-field">
               <label>失败时</label>
@@ -532,23 +593,57 @@ function nodeSubtitle(node) {
         </div>
       </template>
     </aside>
+    </div>
+
+    <!-- 编排生成代码预览 -->
+    <div v-if="showCode" class="afc-code-modal" @click.self="showCode = false">
+      <div class="afc-code-box">
+        <div class="afc-code-head">
+          <span>编排生成代码预览（可执行，与代码模式共用函数运行时）</span>
+          <button class="afc-close" @click="showCode = false" title="关闭">×</button>
+        </div>
+        <pre class="afc-code-pre">{{ generatedCode }}</pre>
+        <div class="afc-code-foot">
+          <span class="afc-code-note">切换为代码模式后「查看生成代码」不可用；点右下方按钮可直接进入代码模式并写入。</span>
+          <button class="btn primary sm" @click="applyToCode">填充到代码模式</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.afc { display: flex; gap: 10px; height: 460px; border: 1px solid var(--c-border); border-radius: var(--radius, 8px); overflow: hidden; }
+.afc { position: relative; display: flex; flex-direction: column; height: 500px; border: 1px solid var(--c-border); border-radius: var(--radius, 8px); overflow: hidden; }
+
+/* 顶部工具条 */
+.afc-toolbar { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-bottom: 1px solid var(--c-border); background: var(--c-panel); flex-shrink: 0; }
+.afc-tb-title { font-size: 12px; font-weight: 700; color: var(--c-fg); }
+.afc-tb-hint { font-size: 10.5px; color: var(--c-secondary); flex: 1; }
+.afc-body { display: flex; gap: 10px; flex: 1; min-height: 0; padding: 10px; }
 
 /* 左侧面板 */
-.afc-palette { width: 190px; flex-shrink: 0; border-right: 1px solid var(--c-border); padding: 8px; overflow-y: auto; background: var(--c-panel); }
+.afc-palette { width: 224px; flex-shrink: 0; border-right: 1px solid var(--c-border); padding: 8px; overflow-y: auto; background: var(--c-panel); }
 .afc-pal-title { font-size: 11px; font-weight: 700; color: var(--c-secondary); margin: 4px 0 6px; }
 .afc-search { width: 100%; padding: 4px 6px; font-size: 11.5px; border: 1px solid var(--c-border); border-radius: 5px; background: var(--c-bg); color: var(--c-fg); margin-bottom: 6px; }
 .afc-pal-list { display: flex; flex-direction: column; gap: 4px; }
-.afc-pal-item { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border: 1px solid var(--c-border); border-radius: 6px; cursor: grab; background: var(--c-bg-soft, var(--c-panel)); }
+.afc-pal-item { display: flex; flex-direction: column; gap: 2px; padding: 6px 7px; border: 1px solid var(--c-border); border-radius: 6px; cursor: grab; background: var(--c-bg-soft, var(--c-panel)); }
 .afc-pal-item:hover { border-color: var(--c-accent); }
 .afc-pal-item.disabled { opacity: .45; cursor: not-allowed; }
+.afc-pal-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .afc-pal-ico { width: 18px; height: 18px; border-radius: 5px; color: #fff; font-size: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.afc-pal-name { font-size: 11.5px; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.afc-pal-code { margin-left: auto; font-size: 9.5px; color: var(--c-secondary); font-family: ui-monospace, monospace; }
+.afc-pal-name { flex: 1; min-width: 0; font-size: 11.5px; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.afc-pal-code { font-size: 9.5px; line-height: 1.4; color: var(--c-secondary); font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 24px; }
+.afc-pal-info { flex-shrink: 0; width: 16px; height: 16px; border: 1px solid var(--c-border); border-radius: 50%; background: var(--c-bg); color: var(--c-secondary); font-size: 9px; line-height: 14px; padding: 0; cursor: pointer; }
+.afc-pal-info:hover, .afc-pal-info.on { color: var(--c-accent); border-color: var(--c-accent); }
+.afc-pal-detail { margin-top: 4px; padding: 6px; border: 1px solid var(--c-border); border-radius: 6px; background: var(--c-bg-soft, rgba(0,0,0,.03)); display: flex; flex-direction: column; gap: 5px; }
+.afc-detail-row { display: flex; gap: 6px; align-items: flex-start; }
+.afc-detail-key { font-size: 10.5px; font-weight: 700; color: var(--c-secondary); flex-shrink: 0; width: 30px; }
+.afc-detail-val { font-size: 10.5px; color: var(--c-fg); display: flex; flex-wrap: wrap; gap: 4px; }
+.afc-detail-val code { font-size: 10px; color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 10%, transparent); padding: 1px 5px; border-radius: 4px; }
+.afc-chip { font-size: 10px; color: var(--c-fg); background: var(--c-bg); border: 1px solid var(--c-border); border-radius: 4px; padding: 1px 5px; }
+.afc-chip i { color: var(--c-danger); font-style: normal; }
+.afc-chip em { color: var(--c-secondary); font-style: normal; margin-left: 3px; }
+.afc-detail-desc { font-size: 10px; line-height: 1.5; color: var(--c-secondary); }
 .afc-pal-empty { font-size: 11px; color: var(--c-secondary); padding: 4px; }
 .afc-pal-hint { margin-top: 10px; font-size: 10.5px; line-height: 1.5; color: var(--c-secondary); }
 
@@ -582,8 +677,22 @@ function nodeSubtitle(node) {
 .afc-code { font-family: ui-monospace, monospace; font-size: 10.5px; line-height: 1.5; resize: vertical; }
 .afc-sub { font-size: 10.5px; font-weight: 700; color: var(--c-secondary); margin-top: 2px; }
 .afc-fn-desc { font-size: 10.5px; line-height: 1.5; color: var(--c-secondary); background: var(--c-bg-soft, rgba(0,0,0,.03)); padding: 5px 6px; border-radius: 5px; }
+.afc-ptype { color: var(--c-secondary); font-style: normal; font-size: 9.5px; margin-left: 4px; }
+.afc-example { font-family: ui-monospace, monospace; font-size: 10px; line-height: 1.5; background: var(--c-bg-soft, rgba(0,0,0,.03)); border: 1px solid var(--c-border); border-radius: 5px; padding: 5px 6px; margin: 0; white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow: auto; }
+.afc-example.afc-returns { background: color-mix(in srgb, var(--c-success) 8%, transparent); color: var(--c-success); font-weight: 600; }
+.afc-example code { background: transparent; padding: 0; color: inherit; }
 .afc-vars { display: flex; flex-wrap: wrap; gap: 4px; }
 .afc-vars code { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--c-accent) 10%, transparent); color: var(--c-accent); }
 .danger-ghost { color: var(--c-danger); background: transparent; border: 1px solid color-mix(in srgb, var(--c-danger) 30%, transparent); }
 .req { color: var(--c-danger); font-style: normal; margin-left: 2px; }
+
+/* 生成代码预览弹层 */
+.afc-code-modal { position: absolute; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 20; }
+.afc-code-box { width: min(640px, 92%); max-height: 84%; background: var(--c-panel); border: 1px solid var(--c-border); border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.3); }
+.afc-code-head { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--c-border); font-size: 12px; font-weight: 700; color: var(--c-fg); }
+.afc-close { width: 22px; height: 22px; border: 0; background: transparent; color: var(--c-secondary); font-size: 16px; cursor: pointer; line-height: 1; }
+.afc-close:hover { color: var(--c-fg); }
+.afc-code-pre { flex: 1; overflow: auto; margin: 0; padding: 12px; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.55; color: var(--c-fg); white-space: pre; }
+.afc-code-foot { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-top: 1px solid var(--c-border); }
+.afc-code-note { flex: 1; font-size: 10.5px; color: var(--c-secondary); line-height: 1.4; }
 </style>

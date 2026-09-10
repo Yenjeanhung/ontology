@@ -8,6 +8,7 @@ import {
 } from '../../api'
 import PythonEditor from '../workflow/PythonEditor.vue'
 import { useToast } from '../../composables/useToast'
+import { useEscClose } from '../../composables/useEscClose'
 
 const _toast = useToast()
 // 兼容 toast(msg, 'success' | 'error' | 'warning' | 'info') 的调用风格
@@ -59,6 +60,7 @@ function emptyFnForm() {
     timeout_seconds: 30, is_enabled: true,
     language: 'python',
     params_schema: [],
+    return_schema: { type: 'string', unit: '', description: '' },
     code_text: 'def run(params, entity, context):\n    """只读函数：返回可 JSON 序列化的结果\n\n    params:  调用参数(dict)\n    entity:  当前实体(dict, 含 properties)\n    context: 运行上下文(dict)\n    """\n    return {"echo": params}\n',
   }
 }
@@ -93,6 +95,11 @@ function selectFn(fn) {
     is_enabled: fn.is_enabled !== false,
     language: fn.language || 'python',
     params_schema: (fn.params_schema || []).map(p => ({ ...p })),
+    return_schema: (() => {
+      const r = fn.return_schema
+      if (!r || typeof r !== 'object') return { type: 'string', unit: '', description: '' }
+      return { type: r.type || 'string', unit: r.unit || '', description: r.description || '' }
+    })(),
     code_text: fn.code_text || '',
   }
   const tpl = {}
@@ -128,6 +135,11 @@ async function saveFn() {
     name: f.name, code: f.code, description: f.description,
     ontology_id: ontologyId.value || '',
     params_schema: f.params_schema.filter(p => p.name),
+    return_schema: {
+      type: f.return_schema?.type || 'string',
+      ...(f.return_schema?.unit ? { unit: f.return_schema.unit } : {}),
+      ...(f.return_schema?.description ? { description: f.return_schema.description } : {}),
+    },
     code_text: f.code_text, language: f.language || 'python',
     timeout_seconds: Number(f.timeout_seconds) || 30,
     is_enabled: !!f.is_enabled,
@@ -566,6 +578,13 @@ onMounted(async () => {
   try { await loadCategories(); await loadOntologies(); await loadFunctions() }
   catch (e) { toast(e.message, 'error') }
 })
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showDerivedModal.value, () => { showDerivedModal.value = false }],
+  [showDpTestModal.value, () => { showDpTestModal.value = false }],
+])
+
 </script>
 
 <template>
@@ -642,6 +661,18 @@ onMounted(async () => {
             <button class="danger-btn sm" @click="removeParam(i)">✕</button>
           </div>
           <button class="btn sm" @click="addParam">+ 添加参数</button>
+        </div>
+
+        <div class="sec-sub">返回（return_schema · 编排里用 <code v-pre>{{ f.value }}</code> 引用）</div>
+        <div class="params-box ret-box">
+          <div class="param-row">
+            <select v-model="fnForm.return_schema.type" title="返回类型">
+              <option>string</option><option>number</option><option>boolean</option><option>object</option>
+            </select>
+            <input v-model="fnForm.return_schema.unit" placeholder="单位（可选，如 minutes）" class="grow">
+            <input v-model="fnForm.return_schema.description" placeholder="返回说明（可选）" class="grow">
+          </div>
+          <div class="ret-hint">补充出参描述后，编排面板的函数「ⓘ」与函数节点配置区会显示「出参 .value」的类型 / 单位，配置 <code v-pre>{{ f.value }}</code> 时不再盲猜。</div>
         </div>
 
         <div class="sec-sub code-sub-row">
@@ -944,6 +975,9 @@ onMounted(async () => {
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--c-accent); }
 
 .params-box { display: flex; flex-direction: column; gap: 8px; }
+.ret-box { gap: 6px; }
+.ret-hint { font-size: 10.5px; line-height: 1.5; color: var(--c-secondary); }
+.ret-hint code { font-family: ui-monospace, monospace; font-size: 10px; color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 10%, transparent); padding: 1px 5px; border-radius: 4px; }
 .param-row { display: flex; gap: 6px; align-items: center; }
 .param-row input, .param-row select { padding: 6px 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-fg); font-size: 12px; outline: none; }
 .param-row .grow { flex: 1; min-width: 0; }

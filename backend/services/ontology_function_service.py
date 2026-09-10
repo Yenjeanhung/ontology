@@ -236,6 +236,29 @@ class FunctionService:
         return True
 
     @staticmethod
+    async def registry_for_codes(db: AsyncSession, codes) -> dict[str, str]:
+        """按函数 code 解析启用函数的 {code: code_text} 注册表。
+
+        供动作代码模式 / 编排 code 节点注入沙箱，实现与编排 function 节点
+        共用的 call_function 运行时（执行同一份函数代码）。
+        """
+        wanted = [c for c in {str(c or "").strip() for c in (codes or [])} if c]
+        if not wanted:
+            return {}
+        rows = (await db.execute(
+            select(OntologyFunction).where(
+                OntologyFunction.code.in_(wanted),
+                OntologyFunction.is_enabled == True,  # noqa: E712
+            )
+        )).scalars().all()
+        registry: dict[str, str] = {}
+        for fn in rows:
+            text = fn.code_text
+            if isinstance(text, str) and text:
+                registry[str(fn.code)] = text
+        return registry
+
+    @staticmethod
     async def _run(
         db: AsyncSession, fn: OntologyFunction, entity: Entity | None,
         params_raw: dict, mock_entity: dict | None = None, triggered_by: str = "entity",

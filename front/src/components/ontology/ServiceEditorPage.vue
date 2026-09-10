@@ -11,7 +11,9 @@ import {
 } from '../../api'
 import PythonEditor from '../workflow/PythonEditor.vue'
 import ActionFlowCanvas from './ActionFlowCanvas.vue'
+import { flowToCode } from '../../utils/flowToCode'
 import { useToast } from '../../composables/useToast'
+import { useEscClose } from '../../composables/useEscClose'
 
 const route = useRoute()
 const router = useRouter()
@@ -74,11 +76,16 @@ async function loadFunctions(ontologyId) {
     functions.value = []
   }
 }
-watch(executionMode, (mode) => {
+watch(executionMode, async (mode) => {
   // 两种模式生成的对象不同（代码 / 编排图），切换后清空历史避免误应用
   chatMessages.value = []
   chatInput.value = ''
   if (mode === 'flow' && !functions.value.length) loadFunctions(currentOntologyId.value)
+  // 编排 → 代码：代码为空时自动填充编排预览，避免空代码触发「缺少入口函数」报错
+  if (mode === 'code' && !String(form.code_text || '').trim() && flowGraph.value?.nodes?.length) {
+    if (!functions.value.length) await loadFunctions(currentOntologyId.value)
+    form.code_text = flowToCode(flowGraph.value, functions.value, form.name)
+  }
 })
 
 const owner = computed(() => {
@@ -288,6 +295,12 @@ function applyChatFlow(msg) {
   }
 }
 
+/** 编排模式 → 把生成代码预览填充进代码模式 */
+function onApplyToCode(code) {
+  form.code_text = code
+  executionMode.value = 'code'
+}
+
 function addParam() {
   form.params.push({ name: '', label: '', type: 'string', required: false, default: '', description: '' })
 }
@@ -321,6 +334,27 @@ function buildPayload() {
     execution_mode: executionMode.value,
     flow: executionMode.value === 'flow' ? flowGraph.value : null,
   }
+}
+
+// 代码模式自定义 lint：call_function 与编排模式共用同一沙箱运行时（后端注入函数注册表），
+// 这里校验引用的函数 code 是否存在于本体函数列表——写错名（如把 eta_delay_min 写成 eta_delay_min2）
+// 编辑时即报错，避免保存后执行才发现
+function codeModeLint(text) {
+  const diags = []
+  const known = new Set((functions.value || []).map(f => f.code))
+  String(text || '').split('\n').forEach((ln, i) => {
+    const src = ln.replace(/#.*$/, '')
+    const m = src.match(/\bcall_function\s*\(\s*["']([^"']+)["']/)
+    if (!m) return
+    if (known.size && !known.has(m[1])) {
+      diags.push({
+        line: i,
+        sev: 'error',
+        msg: `call_function 引用的函数 "${m[1]}" 不在本体函数列表中（code 写错、未创建或已停用），执行会失败`,
+      })
+    }
+  })
+  return diags
 }
 
 function resetForm(isEditing, svc) {
@@ -359,7 +393,7 @@ function resetForm(isEditing, svc) {
     flowGraph.value = {}
     currentOntologyId.value = route.query.ontologyId || ''
   }
-  if (executionMode.value === 'flow') loadFunctions(currentOntologyId.value)
+  if (currentOntologyId.value) loadFunctions(currentOntologyId.value)
   Object.keys(testParams).forEach(k => delete testParams[k])
   mockEntity.name = ''
   mockEntity.entity_type = ''
@@ -691,6 +725,13 @@ async function runBatch() {
     batchRunning.value = false
   }
 }
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showRuleModal.value, () => { showRuleModal.value = false }],
+  [showEffectModal.value, () => { showEffectModal.value = false }],
+])
+
 </script>
 
 <template>
@@ -798,6 +839,8 @@ async function runBatch() {
           v-model="flowGraph"
           :functions="functions"
           :trace="flowTrace"
+          :service-name="form.name"
+          @apply-to-code="onApplyToCode"
         />
         <PythonEditor
           v-else
@@ -806,6 +849,7 @@ async function runBatch() {
           :height="380"
           :max-length="50000"
           :params="form.params"
+          :extra-lint="codeModeLint"
           @selection-change="onCodeSelection"
         />
         <div v-if="chatOpen && hasSelection" class="sep-sel-tip">

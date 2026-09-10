@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { createConstraint, updateConstraint, deleteConstraint } from '../../api'
+import { useEscClose } from '../../composables/useEscClose'
 
 const props = defineProps({
   constraints: { type: Array, default: () => [] },
@@ -52,6 +53,12 @@ const submitting = ref(false)
 const addForm = ref({ sourceId: '', relationId: '', targetId: '' })
 const editForm = ref({ relationId: '' })
 const editingEdge = ref(null)
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showAddDialog.value, () => { showAddDialog.value = false }],
+  [showEditDialog.value, () => { showEditDialog.value = false }],
+])
 
 // 右键菜单状态
 const contextMenu = ref({ show: false, x: 0, y: 0, edge: null })

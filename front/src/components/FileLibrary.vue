@@ -5,6 +5,7 @@ import { marked } from 'marked'
 import { useToast } from '../composables/useToast'
 import FolderTreeNode from './FolderTreeNode.vue'
 import Pagination from './common/Pagination.vue'
+import { useEscClose } from '../composables/useEscClose'
 import {
   attachAssetsToKb,
   createCrawlJob,
@@ -704,6 +705,15 @@ onMounted(async () => {
 onUnmounted(() => {
   Object.values(crawlTimers).forEach(clearInterval)
 })
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showFolderModal.value, () => { showFolderModal.value = false }],
+  [!!previewAsset.value, closePreview],
+  [!!sourceDetailAsset.value, closeSourceDetail],
+  [showConfirmDialog.value, confirmDialogCancel],
+])
+
 </script>
 
 <template>

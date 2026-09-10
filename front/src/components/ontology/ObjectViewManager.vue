@@ -4,6 +4,7 @@ import {
   fetchObjectViews, createObjectView, updateObjectView, deleteObjectView, setDefaultObjectView,
   getOntologyCategoryDetail, getOntologyDetail,
 } from '../../api'
+import { useEscClose } from '../../composables/useEscClose'
 
 const props = defineProps({
   categoryId: { type: String, required: true },
@@ -15,6 +16,11 @@ const showEditor = ref(false)
 const editingId = ref('')
 const saving = ref(false)
 const editorMode = ref('visual') // 'visual' | 'json'
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showEditor.value, () => { showEditor.value = false }],
+])
 
 const form = ref(emptyForm())
 const layoutModel = ref({ tabs: [] })

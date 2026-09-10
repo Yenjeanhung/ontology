@@ -4,6 +4,7 @@ import {
   createOntologyService, createEntityService, updateOntologyService, testOntologyService,
   aiAssistServiceCode,
 } from '../../api'
+import { useEscClose } from '../../composables/useEscClose'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -13,6 +14,9 @@ const props = defineProps({
   service: { type: Object, default: null },
 })
 const emit = defineEmits(['update:modelValue', 'saved'])
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [[props.modelValue, () => emit('update:modelValue', false)]])
 
 const PARAM_TYPES = ['string', 'number', 'boolean', 'date', 'datetime', 'text']
 

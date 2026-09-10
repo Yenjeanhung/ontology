@@ -4,6 +4,27 @@ const API = import.meta.env.DEV
 
 export { API }
 
+// 统一把后端错误响应的 detail 转成可读文本，避免 new Error(对象) 把 message
+// 变成字面 "[object Object]"（FastAPI 422 校验错误的 detail 是 [{loc,msg,type}] 数组）。
+// detail 形态：字符串原样；数组逐项格式化为 "loc：msg"；对象取 msg/message/error，否则 JSON 化。
+export function apiDetail(body, fallback = '请求失败') {
+  const d = body?.detail
+  if (typeof d === 'string' && d) return d
+  if (Array.isArray(d)) {
+    const parts = d.map((it) => {
+      if (typeof it === 'string') return it
+      const loc = Array.isArray(it?.loc) ? it.loc.filter((p) => p !== 'body').join('.') : ''
+      return [loc, it?.msg].filter(Boolean).join('：')
+    }).filter(Boolean)
+    if (parts.length) return parts.join('；')
+  } else if (d && typeof d === 'object') {
+    const m = d.msg || d.message || d.error
+    if (typeof m === 'string' && m) return m
+    try { return JSON.stringify(d) } catch { /* circular */ }
+  }
+  return fallback
+}
+
 export async function fetchKbs() {
   return (await (await fetch(`${API}/api/kb`)).json()) || []
 }
@@ -24,7 +45,7 @@ export async function deleteKb(kbId) {
   const res = await fetch(`${API}/api/kb/${kbId}`, { method: 'DELETE' })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Delete kb failed')
+    throw new Error(apiDetail(body, 'Delete kb failed'))
   }
   return res.json()
 }
@@ -37,7 +58,7 @@ export async function batchDeleteKbs(kbIds) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Batch delete failed')
+    throw new Error(apiDetail(body, 'Batch delete failed'))
   }
   return res.json()
 }
@@ -152,7 +173,7 @@ export async function startGraphSync(categoryId, { mode = 'full', dryRun = false
   })
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
-    throw new Error(data.detail || '启动迁入失败')
+    throw new Error(apiDetail(data, '启动迁入失败'))
   }
   return res.json()
 }
@@ -185,7 +206,7 @@ export async function startGraphAnalysis(categoryId, { algorithm, top_n = 20, wr
   })
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
-    throw new Error(data.detail || '启动计算任务失败')
+    throw new Error(apiDetail(data, '启动计算任务失败'))
   }
   return res.json()
 }
@@ -208,7 +229,7 @@ export async function runInference(categoryId) {
   const res = await fetch(`${API}/api/graph-analysis/${categoryId}/inference/run`, { method: 'POST' })
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
-    throw new Error(data.detail || '启动规则推理失败')
+    throw new Error(apiDetail(data, '启动规则推理失败'))
   }
   return res.json()
 }
@@ -218,7 +239,7 @@ async function _insightGet(path, params = {}) {
   const res = await fetch(`${API}/api/graph-analysis/${path}${qs ? `?${qs}` : ''}`)
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
-    throw new Error(data.detail || '查询失败')
+    throw new Error(apiDetail(data, '查询失败'))
   }
   return res.json()
 }
@@ -255,7 +276,7 @@ export async function reviewSuggestion(suggestionId, action) {
   })
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
-    throw new Error(data.detail || '审核失败')
+    throw new Error(apiDetail(data, '审核失败'))
   }
   return res.json()
 }
@@ -410,7 +431,7 @@ export async function createAgentSkill({ name, code, description = '', instructi
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(err, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -431,7 +452,7 @@ export async function updateAgentSkill(skillId, { name, code, description, instr
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(err, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -440,7 +461,7 @@ export async function deleteAgentSkill(skillId) {
   const res = await fetch(`${API}/api/agent/skills/${skillId}`, { method: 'DELETE' })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(err, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -461,7 +482,7 @@ export async function createSkillGroup({ name, parentId = null, sortOrder = 0 } 
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(err, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -478,7 +499,7 @@ export async function updateSkillGroup(groupId, { name, parentId, sortOrder } = 
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(err, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -487,7 +508,7 @@ export async function deleteSkillGroup(groupId) {
   const res = await fetch(`${API}/api/agent/skill-groups/${groupId}`, { method: 'DELETE' })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(err, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -525,7 +546,7 @@ export async function importAgentSkills(skillsArray, { overwrite = false, groupI
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(err, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -538,7 +559,7 @@ export async function importAgentSkillsFromUrl(url, { overwrite = false, groupId
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(err, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -556,7 +577,7 @@ export async function importAgentSkillsFromZip(file, { overwrite = false, groupI
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(err, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -566,7 +587,7 @@ export async function searchSkillMarket(q, page = 1) {
   const res = await fetch(`${API}/api/agent/skills/search-market?${params}`)
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(err, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -587,7 +608,7 @@ export async function createAgent({ name, description = '', kbId, systemPrompt =
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(err, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -607,7 +628,7 @@ export async function updateAgent(agentId, data = {}) {
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(err, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -660,7 +681,7 @@ export async function deleteDirectory(directoryId, cascade = false) {
   const res = await fetch(`${API}/api/file-directories/${directoryId}?cascade=${cascade}`, { method: 'DELETE' })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Delete directory failed')
+    throw new Error(apiDetail(body, 'Delete directory failed'))
   }
   return res.json()
 }
@@ -874,8 +895,8 @@ export async function importOntologyExcel(file, { scope = 'full', dryRun = false
   })
   const data = await res.json().catch(() => null)
   if (!res.ok) {
-    const msg = data?.detail || 'Import ontology excel failed'
-    throw new Error(Array.isArray(msg) ? msg.map(m => m.msg || m).join('; ') : msg)
+    const msg = apiDetail(data, 'Import ontology excel failed')
+    throw new Error(msg)
   }
   return data
 }
@@ -985,7 +1006,7 @@ export async function createSharedProperty(data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Create shared property failed')
+    throw new Error(apiDetail(body, 'Create shared property failed'))
   }
   return res.json()
 }
@@ -997,7 +1018,7 @@ export async function updateSharedProperty(propId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Update shared property failed')
+    throw new Error(apiDetail(body, 'Update shared property failed'))
   }
   return res.json()
 }
@@ -1006,7 +1027,7 @@ export async function deleteSharedProperty(propId) {
   const res = await fetch(`${API}/api/shared-properties/${propId}`, { method: 'DELETE' })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Delete shared property failed')
+    throw new Error(apiDetail(body, 'Delete shared property failed'))
   }
   return res.json()
 }
@@ -1019,7 +1040,7 @@ export async function applySharedProperty(propId, { ontology_ids, overwrite = fa
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Apply shared property failed')
+    throw new Error(apiDetail(body, 'Apply shared property failed'))
   }
   return res.json()
 }
@@ -1032,7 +1053,7 @@ export async function previewApplySharedProperty(propId, ontology_ids) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Preview apply failed')
+    throw new Error(apiDetail(body, 'Preview apply failed'))
   }
   return res.json()
 }
@@ -1045,7 +1066,7 @@ export async function previewDetachSharedProperty(propId, detach_ids) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Preview detach failed')
+    throw new Error(apiDetail(body, 'Preview detach failed'))
   }
   return res.json()
 }
@@ -1064,7 +1085,7 @@ export async function createInterface(categoryId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Create interface failed')
+    throw new Error(apiDetail(body, 'Create interface failed'))
   }
   return res.json()
 }
@@ -1082,7 +1103,7 @@ export async function updateInterface(interfaceId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Update interface failed')
+    throw new Error(apiDetail(body, 'Update interface failed'))
   }
   return res.json()
 }
@@ -1091,7 +1112,7 @@ export async function deleteInterface(interfaceId) {
   const res = await fetch(`${API}/api/interfaces/${interfaceId}`, { method: 'DELETE' })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Delete interface failed')
+    throw new Error(apiDetail(body, 'Delete interface failed'))
   }
   return res.json()
 }
@@ -1104,7 +1125,7 @@ export async function setInterfaceProperties(interfaceId, properties) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Set interface properties failed')
+    throw new Error(apiDetail(body, 'Set interface properties failed'))
   }
   return res.json()
 }
@@ -1116,7 +1137,7 @@ export async function setInterfaceLinks(interfaceId, links) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Set interface links failed')
+    throw new Error(apiDetail(body, 'Set interface links failed'))
   }
   return res.json()
 }
@@ -1129,7 +1150,7 @@ export async function implementInterface(interfaceId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Implement interface failed')
+    throw new Error(apiDetail(body, 'Implement interface failed'))
   }
   return res.json()
 }
@@ -1176,7 +1197,7 @@ export async function createRelation(categoryId, { name, code, description = '' 
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Create relation failed')
+    throw new Error(apiDetail(e, 'Create relation failed'))
   }
   return res.json()
 }
@@ -1210,7 +1231,7 @@ export async function createRelationProperty(categoryId, relationId, { name, cod
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Create relation property failed')
+    throw new Error(apiDetail(e, 'Create relation property failed'))
   }
   return res.json()
 }
@@ -1222,7 +1243,7 @@ export async function updateRelationProperty(propId, data) {
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Update relation property failed')
+    throw new Error(apiDetail(e, 'Update relation property failed'))
   }
   return res.json()
 }
@@ -1256,7 +1277,7 @@ export async function updateConstraint(categoryId, constraintId, data) {
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Update constraint failed')
+    throw new Error(apiDetail(e, 'Update constraint failed'))
   }
   return res.json()
 }
@@ -1404,7 +1425,7 @@ export async function createOntologyService(categoryId, ontologyId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Create service failed')
+    throw new Error(apiDetail(body, 'Create service failed'))
   }
   return res.json()
 }
@@ -1416,7 +1437,7 @@ export async function updateOntologyService(serviceId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Update service failed')
+    throw new Error(apiDetail(body, 'Update service failed'))
   }
   return res.json()
 }
@@ -1434,7 +1455,7 @@ export async function testOntologyService(serviceId, { params, mock_entity } = {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Test service failed')
+    throw new Error(apiDetail(body, 'Test service failed'))
   }
   return res.json()
 }
@@ -1454,7 +1475,7 @@ export async function saveServiceFlow(serviceId, flow) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '保存编排图失败')
+    throw new Error(apiDetail(body, '保存编排图失败'))
   }
   return res.json()
 }
@@ -1466,7 +1487,7 @@ export async function validateServiceFlow(serviceId, flow) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '校验编排图失败')
+    throw new Error(apiDetail(body, '校验编排图失败'))
   }
   return res.json()
 }
@@ -1478,7 +1499,7 @@ export async function testServiceFlow(serviceId, { params, mock_entity } = {}) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '编排测试运行失败')
+    throw new Error(apiDetail(body, '编排测试运行失败'))
   }
   return res.json()
 }
@@ -1492,7 +1513,7 @@ async function _aiAssistCodeSSE(url, payload, onDelta, onThinking, signal) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || `AI assist failed (HTTP ${res.status})`)
+    throw new Error(apiDetail(body, `AI assist failed (HTTP ${res.status})`))
   }
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
@@ -1517,7 +1538,7 @@ async function _aiAssistCodeSSE(url, payload, onDelta, onThinking, signal) {
       } else if (ev.type === 'done') {
         result = ev.data
       } else if (ev.type === 'error') {
-        throw new Error(ev.detail || 'AI 生成失败')
+        throw new Error(apiDetail(ev, 'AI 生成失败'))
       }
     }
   }
@@ -1555,7 +1576,7 @@ export async function createEntityService(entityId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Create service failed')
+    throw new Error(apiDetail(body, 'Create service failed'))
   }
   return res.json()
 }
@@ -1567,7 +1588,7 @@ export async function invokeEntityService(entityId, serviceId, { params } = {}) 
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Invoke service failed')
+    throw new Error(apiDetail(body, 'Invoke service failed'))
   }
   return res.json()
 }
@@ -1576,7 +1597,7 @@ export async function copyServiceToEntity(entityId, serviceId) {
   const res = await fetch(`${API}/api/entities/${entityId}/services/${serviceId}/copy`, { method: 'POST' })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Copy service failed')
+    throw new Error(apiDetail(body, 'Copy service failed'))
   }
   return res.json()
 }
@@ -1609,7 +1630,7 @@ export async function createOntologyFunction(categoryId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '创建函数失败')
+    throw new Error(apiDetail(body, '创建函数失败'))
   }
   return res.json()
 }
@@ -1621,7 +1642,7 @@ export async function updateOntologyFunction(functionId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '更新函数失败')
+    throw new Error(apiDetail(body, '更新函数失败'))
   }
   return res.json()
 }
@@ -1630,7 +1651,7 @@ export async function deleteOntologyFunction(functionId) {
   const res = await fetch(`${API}/api/functions/${functionId}`, { method: 'DELETE' })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '删除函数失败')
+    throw new Error(apiDetail(body, '删除函数失败'))
   }
   return res.json()
 }
@@ -1642,7 +1663,7 @@ export async function testOntologyFunction(functionId, { params, mock_entity } =
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '测试运行失败')
+    throw new Error(apiDetail(body, '测试运行失败'))
   }
   return res.json()
 }
@@ -1654,7 +1675,7 @@ export async function invokeEntityFunction(entityId, functionId, params = {}) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '函数调用失败')
+    throw new Error(apiDetail(body, '函数调用失败'))
   }
   return res.json()
 }
@@ -1681,7 +1702,7 @@ export async function createDerivedProperty(categoryId, ontologyId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '创建派生属性失败')
+    throw new Error(apiDetail(body, '创建派生属性失败'))
   }
   return res.json()
 }
@@ -1693,7 +1714,7 @@ export async function updateDerivedProperty(propId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '更新派生属性失败')
+    throw new Error(apiDetail(body, '更新派生属性失败'))
   }
   return res.json()
 }
@@ -1702,7 +1723,7 @@ export async function deleteDerivedProperty(propId) {
   const res = await fetch(`${API}/api/derived-properties/${propId}`, { method: 'DELETE' })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '删除派生属性失败')
+    throw new Error(apiDetail(body, '删除派生属性失败'))
   }
   return res.json()
 }
@@ -1711,7 +1732,7 @@ export async function materializeDerivedProperty(propId, limit = 1000) {
   const res = await fetch(`${API}/api/derived-properties/${propId}/materialize?limit=${limit}`, { method: 'POST' })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '物化失败')
+    throw new Error(apiDetail(body, '物化失败'))
   }
   return res.json()
 }
@@ -1723,7 +1744,7 @@ export async function testDerivedProperty(propId, entityId, write = true, params
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '测试失败')
+    throw new Error(apiDetail(body, '测试失败'))
   }
   return res.json()
 }
@@ -1743,7 +1764,7 @@ export async function createServiceRule(serviceId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '创建规则失败')
+    throw new Error(apiDetail(body, '创建规则失败'))
   }
   return res.json()
 }
@@ -1755,7 +1776,7 @@ export async function updateServiceRule(ruleId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '更新规则失败')
+    throw new Error(apiDetail(body, '更新规则失败'))
   }
   return res.json()
 }
@@ -1779,7 +1800,7 @@ export async function createServiceEffect(serviceId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '创建副作用失败')
+    throw new Error(apiDetail(body, '创建副作用失败'))
   }
   return res.json()
 }
@@ -1791,7 +1812,7 @@ export async function updateServiceEffect(effectId, data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '更新副作用失败')
+    throw new Error(apiDetail(body, '更新副作用失败'))
   }
   return res.json()
 }
@@ -1815,7 +1836,7 @@ export async function undoServiceInvocation(invocationId, undoneBy = 'user') {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '撤销失败')
+    throw new Error(apiDetail(body, '撤销失败'))
   }
   return res.json()
 }
@@ -1827,7 +1848,7 @@ export async function batchInvokeService(serviceId, entityIds, params = {}) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || '批量执行失败')
+    throw new Error(apiDetail(body, '批量执行失败'))
   }
   return res.json()
 }
@@ -1881,7 +1902,7 @@ export async function createEntity(data) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.detail || 'Create entity failed')
+    throw new Error(apiDetail(body, 'Create entity failed'))
   }
   return res.json()
 }
@@ -1932,7 +1953,7 @@ export async function approveOntologySuggestion(suggestionId, { reviewer } = {})
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Approve suggestion failed')
+    throw new Error(apiDetail(e, 'Approve suggestion failed'))
   }
   return res.json()
 }
@@ -1973,7 +1994,7 @@ export async function applyCleanup({ kbId, merges = [], deleteEntityIds = [], de
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Apply cleanup failed')
+    throw new Error(apiDetail(e, 'Apply cleanup failed'))
   }
   return res.json()
 }
@@ -1986,7 +2007,7 @@ export async function mergeEntities({ canonicalId, mergedIds, kbId } = {}) {
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Merge entities failed')
+    throw new Error(apiDetail(e, 'Merge entities failed'))
   }
   return res.json()
 }
@@ -2007,7 +2028,7 @@ export async function testLLMConfig({ provider, apiKey, baseUrl, model, maxToken
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Test connection failed')
+    throw new Error(apiDetail(e, 'Test connection failed'))
   }
   return res.json()
 }
@@ -2030,7 +2051,7 @@ export async function createLLMPlan({ name, provider, apiKey, baseUrl, model, ma
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Create plan failed')
+    throw new Error(apiDetail(e, 'Create plan failed'))
   }
   return res.json()
 }
@@ -2046,7 +2067,7 @@ export async function updateLLMPlan(planId, { name, provider, apiKey, baseUrl, m
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Update plan failed')
+    throw new Error(apiDetail(e, 'Update plan failed'))
   }
   return res.json()
 }
@@ -2055,7 +2076,7 @@ export async function deleteLLMPlan(planId) {
   const res = await fetch(`${API}/api/config/llm/plans/${planId}`, { method: 'DELETE' })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Delete plan failed')
+    throw new Error(apiDetail(e, 'Delete plan failed'))
   }
   return res.json()
 }
@@ -2064,7 +2085,7 @@ export async function applyLLMPlan(planId) {
   const res = await fetch(`${API}/api/config/llm/plans/${planId}/apply`, { method: 'POST' })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Apply plan failed')
+    throw new Error(apiDetail(e, 'Apply plan failed'))
   }
   return res.json()
 }
@@ -2091,7 +2112,7 @@ export async function createWorkflow({ name, description = '', definition = null
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(e, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -2104,7 +2125,7 @@ export async function updateWorkflow(workflowId, { name, description, definition
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(e, `HTTP ${res.status}`))
   }
   return res.json()
 }
@@ -2143,7 +2164,7 @@ export async function deleteWorkflowRun(workflowId, runId) {
 async function consumeWorkflowStream(res, cb) {
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || `HTTP ${res.status}`)
+    throw new Error(apiDetail(e, `HTTP ${res.status}`))
   }
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
@@ -2239,14 +2260,14 @@ export async function batchDecideHumanTasks(payload) {
     body: JSON.stringify(payload),
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data?.detail || '批量处理失败')
+  if (!res.ok) throw new Error(apiDetail(data, '批量处理失败'))
   return data
 }
 
 export async function cancelWorkflowRun(workflowId, runId) {
   const res = await fetch(`${API}/api/workflows/${workflowId}/runs/${runId}/cancel`, { method: 'POST' })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data?.detail || '取消失败')
+  if (!res.ok) throw new Error(apiDetail(data, '取消失败'))
   return data
 }
 
@@ -2260,7 +2281,7 @@ export async function testHttpNode(config, context = {}) {
     body: JSON.stringify({ config, context }),
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data?.detail || '测试请求失败')
+  if (!res.ok) throw new Error(apiDetail(data, '测试请求失败'))
   return data
 }
 
@@ -2286,7 +2307,7 @@ export async function createSchedule(payload) {
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || '创建计划失败')
+    throw new Error(apiDetail(e, '创建计划失败'))
   }
   return res.json()
 }
@@ -2299,7 +2320,7 @@ export async function updateSchedule(scheduleId, payload) {
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || '更新计划失败')
+    throw new Error(apiDetail(e, '更新计划失败'))
   }
   return res.json()
 }
@@ -2308,7 +2329,7 @@ export async function deleteSchedule(scheduleId) {
   const res = await fetch(`${API}/api/schedules/${scheduleId}`, { method: 'DELETE' })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || '删除计划失败')
+    throw new Error(apiDetail(e, '删除计划失败'))
   }
   return res.json()
 }
@@ -2321,7 +2342,7 @@ export async function toggleSchedule(scheduleId, enabled) {
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || '切换计划状态失败')
+    throw new Error(apiDetail(e, '切换计划状态失败'))
   }
   return res.json()
 }
@@ -2330,7 +2351,7 @@ export async function runScheduleNow(scheduleId) {
   const res = await fetch(`${API}/api/schedules/${scheduleId}/run-now`, { method: 'POST' })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || '立即执行失败')
+    throw new Error(apiDetail(e, '立即执行失败'))
   }
   return res.json()
 }
@@ -2353,7 +2374,7 @@ export async function previewNextRun(trigger, triggerConfig) {
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || '预览失败')
+    throw new Error(apiDetail(e, '预览失败'))
   }
   return res.json()
 }
@@ -2383,7 +2404,7 @@ export async function createObjectView(categoryId, payload) {
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Create object view failed')
+    throw new Error(apiDetail(e, 'Create object view failed'))
   }
   return res.json()
 }
@@ -2395,7 +2416,7 @@ export async function updateObjectView(viewId, payload) {
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Update object view failed')
+    throw new Error(apiDetail(e, 'Update object view failed'))
   }
   return res.json()
 }
@@ -2427,7 +2448,7 @@ export async function createVersion(categoryId, { note = '', source = 'manual', 
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Create version failed')
+    throw new Error(apiDetail(e, 'Create version failed'))
   }
   return res.json()
 }
@@ -2442,7 +2463,7 @@ export async function rollbackVersion(categoryId, versionId) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/versions/${versionId}/rollback`, { method: 'POST' })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Rollback failed')
+    throw new Error(apiDetail(e, 'Rollback failed'))
   }
   return res.json()
 }
@@ -2452,7 +2473,7 @@ export async function deleteVersion(categoryId, versionId) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/versions/${versionId}`, { method: 'DELETE' })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Delete version failed')
+    throw new Error(apiDetail(e, 'Delete version failed'))
   }
   return res.json()
 }
@@ -2470,7 +2491,7 @@ export async function upgradeSuggestion(suggestionId, { note = '', reviewers = '
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Upgrade suggestion failed')
+    throw new Error(apiDetail(e, 'Upgrade suggestion failed'))
   }
   return res.json()
 }
@@ -2482,7 +2503,7 @@ export async function mergeProposal(suggestionId, { note = '', created_by = '' }
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
-    throw new Error(e.detail || 'Merge proposal failed')
+    throw new Error(apiDetail(e, 'Merge proposal failed'))
   }
   return res.json()
 }

@@ -2,6 +2,7 @@
 import { ref, watch, nextTick } from 'vue'
 import { fetchAgentSkills, createAgentSkill, updateAgentSkill, deleteAgentSkill } from '../api'
 import { useToast } from '../composables/useToast'
+import { useEscClose } from '../composables/useEscClose'
 
 const props = defineProps({ visible: Boolean })
 const emit = defineEmits(['close', 'saved'])
@@ -13,6 +14,9 @@ const selectedId = ref(null)
 const editForm = ref({ name: '', code: '', description: '', instructions: '', sort_order: 0, is_enabled: 1 })
 const isNew = ref(false)
 const saving = ref(false)
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [[props.visible, () => emit('close')]])
 
 watch(() => props.visible, (v) => {
   if (v) loadSkills()

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +18,7 @@ from models import Entity, OntologyService
 from services.service_runtime import coerce_params, execute_service
 
 
-PARAM_TYPES = {"string", "number", "boolean", "date", "datetime", "text"}
+PARAM_TYPES = {"string", "number", "boolean", "date", "datetime", "text", "array", "object"}
 EXECUTION_MODES = {"code", "flow"}          # code：Python 代码；flow：函数编排
 DEFAULT_TIMEOUT = 30
 MAX_TIMEOUT = 120
@@ -285,7 +286,9 @@ class OntologyServiceService:
         svc.is_enabled = 1 if req.is_enabled else 0
         svc.sort_order = req.sort_order or 0
         svc.execution_mode = mode
-        svc.flow = OntologyServiceService._flow_json(mode, req.flow)
+        # 仅编排模式更新编排图；代码模式保存不动原编排图（避免误清空，切回编排仍可继续用）
+        if mode == "flow":
+            svc.flow = OntologyServiceService._flow_json(mode, req.flow)
         await db.commit()
         return serialize_service(svc), None
 
@@ -358,6 +361,31 @@ class OntologyServiceService:
 class ServiceRuntimeService:
     """服务执行编排：本体级测试运行 + 实体调用。"""
 
+    _CALL_FN_RE = re.compile(r"""\bcall_function\s*\(\s*["']([^"']+)["']""")
+
+    @staticmethod
+    def _referenced_functions(code_text: str) -> list[str]:
+        """提取代码中 call_function("code", ...) 引用的函数 code（去重、保序）。"""
+        return list(dict.fromkeys(ServiceRuntimeService._CALL_FN_RE.findall(code_text or "")))
+
+    @staticmethod
+    async def _function_registry(db: AsyncSession, code_text: str) -> tuple[dict[str, str], str | None]:
+        """解析代码引用的函数注册表；引用了不存在 / 已停用函数时返回错误。
+
+        注册表注入沙箱后，代码模式的 call_function 与编排模式的函数节点
+        执行同一份函数代码——两种模式共用同一运行时。
+        """
+        from services.ontology_function_service import FunctionService
+
+        codes = ServiceRuntimeService._referenced_functions(code_text)
+        if not codes:
+            return {}, None
+        registry = await FunctionService.registry_for_codes(db, codes)
+        missing = [c for c in codes if c not in registry]
+        if missing:
+            return {}, f"引用的函数不存在或已停用：{'、'.join(missing)}"
+        return registry, None
+
     @staticmethod
     def _entity_payload(entity: Entity | None, mock_entity: dict | None = None) -> dict:
         if entity is None:
@@ -402,6 +430,9 @@ class ServiceRuntimeService:
                 mock_entity=req.mock_entity, triggered_by="test",
             )
         else:
+            functions, ferr = await ServiceRuntimeService._function_registry(db, svc.code_text)
+            if ferr:
+                return None, ferr
             result = await execute_service(
                 code_text=svc.code_text,
                 language=svc.language,
@@ -409,6 +440,7 @@ class ServiceRuntimeService:
                 entity=payload,
                 context={"service_code": svc.code, "triggered_by": "test"},
                 timeout_seconds=svc.timeout_seconds,
+                functions=functions,
             )
         return result, None
 
@@ -433,6 +465,9 @@ class ServiceRuntimeService:
             result = await ActionFlowService.run(
                 db, svc, entity, payload, params, triggered_by="entity")
         else:
+            functions, ferr = await ServiceRuntimeService._function_registry(db, svc.code_text)
+            if ferr:
+                return None, ferr
             result = await execute_service(
                 code_text=svc.code_text,
                 language=svc.language,
@@ -440,5 +475,6 @@ class ServiceRuntimeService:
                 entity=payload,
                 context={"kb_id": entity.kb_id, "service_code": svc.code, "triggered_by": "entity"},
                 timeout_seconds=svc.timeout_seconds,
+                functions=functions,
             )
         return result, None

@@ -55,6 +55,10 @@ ONTOLOGIES: list[dict] = [
      "description": "运行风险分级告警：单事件类（晚关门/超时未落/机组变更）与多维度类"
                     "（晚关门机场聚合/晚关门航线聚合/晚关门组合风险/持续未解除升级），"
                     "按 低/中/高 三级分级响应处置"},
+    {"name": "告警规则", "code": "OpsAlertRule", "group": "监控告警类",
+     "description": "可配置的告警规则资产：每条规则一个实体（阈值/牵头部门/启停都在"
+                    "实体属性上），绑定本体函数形成规则评估服务，供告警扫描工作流引用；"
+                    "调阈值=改实体属性，改逻辑=函数编辑器改一处"},
     {"name": "机位", "code": "Stand", "group": "保障资源类",
      "description": "机场机位，撤轮档与挡轮档的发生位置，分廊桥位与远机位"},
     {"name": "跑道", "code": "Runway", "group": "保障资源类",
@@ -223,6 +227,25 @@ ATTRIBUTES: dict[str, list[dict]] = {
         {"name": "处理状态", "code": "handle_status", "data_type": "string",
          "description": "待处理 / 处置中 / 已解除 / 已升级 / 误报"},
         {"name": "处理人", "code": "handler", "data_type": "string"},
+    ],
+    "告警规则": [
+        {"name": "规则编码", "code": "rule_code", "data_type": "string", "is_required": True,
+         "description": "唯一编码，服务与工作流按此定位规则：late_gate/late_land/"
+                        "crew_change/airport_agg/route_agg/combo_risk/escalate"},
+        {"name": "告警类型", "code": "alert_type", "data_type": "string", "is_required": True,
+         "description": "命中后产生的告警类型（同「运行告警.告警类型」枚举）"},
+        {"name": "低风险阈值", "code": "threshold_low", "data_type": "number",
+         "description": "触发低风险的阈值：时长类规则为分钟，聚合类规则为次数"},
+        {"name": "中风险阈值", "code": "threshold_mid", "data_type": "number",
+         "description": "升级为中风险的阈值"},
+        {"name": "高风险阈值", "code": "threshold_high", "data_type": "number",
+         "description": "升级为高风险的阈值"},
+        {"name": "牵头部门", "code": "handle_dept", "data_type": "string",
+         "description": "该规则告警的默认牵头部门"},
+        {"name": "是否启用", "code": "is_enabled", "data_type": "boolean",
+         "description": "停用后规则评估服务直接返回空结果，无需改工作流"},
+        {"name": "规则说明", "code": "rule_desc", "data_type": "text",
+         "description": "业务口径描述：判定逻辑与阈值含义"},
     ],
     "机位": [
         {"name": "机位号", "code": "stand_no", "data_type": "string", "is_required": True,

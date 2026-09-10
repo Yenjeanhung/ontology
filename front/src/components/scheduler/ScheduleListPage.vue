@@ -7,6 +7,7 @@ import {
 import { useToast } from '../../composables/useToast'
 import ModalDialog from '../common/ModalDialog.vue'
 import Pagination from '../common/Pagination.vue'
+import { useEscClose } from '../../composables/useEscClose'
 
 const router = useRouter()
 const toast = useToast()
@@ -50,6 +51,9 @@ async function openRunDetail(run) {
   }
 }
 function closeRunDetail() { historyDetail.value = null }
+
+// 抽屉支持按 ESC 关闭
+useEscClose(() => [[!!historyDetail.value, closeRunDetail]])
 
 function fmtStatusText(s) {
   return s === 'succeeded' ? '成功' : s === 'failed' ? '失败' : s === 'cancelled' ? '已取消' : (s || '未知')

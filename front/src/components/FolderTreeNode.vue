@@ -1,5 +1,6 @@
 <script setup>
 import { ref } from 'vue'
+import { useEscClose } from '../composables/useEscClose'
 
 const props = defineProps({
   node: { type: Object, required: true },
@@ -13,6 +14,9 @@ const props = defineProps({
 const emit = defineEmits(['toggle', 'select', 'edit', 'delete', 'dragstart', 'dragend', 'dragover', 'dragleave', 'drop'])
 const showMenu = ref(false)
 const menuPosition = ref({ x: 0, y: 0 })
+
+// 右键菜单支持按 ESC 关闭
+useEscClose(() => [[showMenu.value, closeMenu]])
 
 function handleDragStart(e) {
   e.dataTransfer.setData('application/json', JSON.stringify({ id: props.node.id, name: props.node.name }))

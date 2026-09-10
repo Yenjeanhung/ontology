@@ -251,6 +251,7 @@ import {
   setInterfaceProperties, implementInterface, removeImplementation,
   fetchOntologies, getOntologyDetail, fetchSharedProperties, resolveInterfaceObjects,
 } from '../../api'
+import { useEscClose } from '../../composables/useEscClose'
 
 const props = defineProps({ categoryId: { type: String, required: true } })
 
@@ -301,6 +302,12 @@ const polyPropFilters = ref({})   // {接口属性code: 关键字}
 const showCreate = ref(false)
 const newName = ref(''); const newCode = ref(''); const newKind = ref('functional'); const newDesc = ref('')
 const creating = ref(false)
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showPoly.value, () => { showPoly.value = false }],
+  [showCreate.value, () => { showCreate.value = false }],
+])
 
 async function load() {
   loading.value = true

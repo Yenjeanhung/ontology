@@ -5,6 +5,7 @@ import { fetchKbs, updateKb, deleteKb as apiDeleteKb, batchDeleteKbs, getKb } fr
 import CreateKbModal from './CreateKbModal.vue'
 import SearchableSelect from './common/SearchableSelect.vue'
 import Pagination from './common/Pagination.vue'
+import { useEscClose } from '../composables/useEscClose'
 
 const router = useRouter()
 // 搜索草稿（输入框）与已应用查询（点「查询」/回车后生效）
@@ -244,6 +245,14 @@ function onKbCreated(kbId) { showCreateModal.value = false; router.push('/kb/' +
 function goDetail(kbId) { router.push('/kb/' + kbId) }
 
 onMounted(loadKbs)
+
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showEditModal.value, () => { showEditModal.value = false }],
+  [showConfirmDialog.value, confirmDialogCancel],
+  [showAlertDialog.value, closeAlertDialog],
+])
+
 </script>
 
 <template>
