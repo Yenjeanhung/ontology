@@ -1,0 +1,46 @@
+D:\myWorkspace\AI_project\ontology\backend\providers\vector_store\milvus.py:75: PyMilvusDeprecationWarning: `connections.connect` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  connections.connect(
+D:\myWorkspace\AI_project\ontology\backend\providers\vector_store\milvus.py:83: PyMilvusDeprecationWarning: `utility.has_collection` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  has_default = utility.has_collection("default", using="monitor_health")
+D:\myWorkspace\AI_project\ontology\backend\providers\vector_store\milvus.py:89: PyMilvusDeprecationWarning: `connections.disconnect` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  connections.disconnect("monitor_health")
+INFO:     Started server process [25840]
+INFO:     Waiting for application startup.
+2026-09-09 22:49:35 - __main__ - INFO - Checking components...
+2026-09-09 22:49:35 - __main__ - INFO - Component preflight: PostgreSQL=ok, 图存储(neo4j)=ok, 向量库(milvus)=ok, 嵌入模型=ok, Tika(可选)=ok
+2026-09-09 22:49:35 - __main__ - INFO - Initializing database...
+2026-09-09 22:49:35 - __main__ - INFO - Loading embedding provider...
+2026-09-09 22:49:35 - providers.embedding - INFO - 加载本地嵌入模型: BAAI/bge-small-zh-v1.5, 缓存目录: C:\Users\Administrator\.cache\huggingface\hub (离线模式)
+2026-09-09 22:49:45 - sentence_transformers.base.model - INFO - No device provided, using cuda:0
+2026-09-09 22:49:45 - sentence_transformers.base.model - INFO - Loading SentenceTransformer model from BAAI/bge-small-zh-v1.5.
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 10701.68it/s]
+2026-09-09 22:49:46 - __main__ - INFO - Loading LLM provider...
+2026-09-09 22:49:46 - __main__ - INFO - Ensuring graph store schema...
+2026-09-09 22:49:46 - neo4j.notifications - INFO - Received notification from DBMS server: {severity: INFORMATION} {code: Neo.ClientNotification.Schema.IndexOrConstraintAlreadyExists} {category: SCHEMA} {title: `CREATE CONSTRAINT kb_id IF NOT EXISTS FOR (e:KnowledgeBase) REQUIRE (e.id) IS UNIQUE` has no effect.} {description: `CONSTRAINT kb_id FOR (e:KnowledgeBase) REQUIRE (e.id) IS UNIQUE` already exists.} {position: None} for query: 'CREATE CONSTRAINT kb_id IF NOT EXISTS FOR (n:KnowledgeBase) REQUIRE n.id IS UNIQUE'
+2026-09-09 22:49:46 - neo4j.notifications - INFO - Received notification from DBMS server: {severity: INFORMATION} {code: Neo.ClientNotification.Schema.IndexOrConstraintAlreadyExists} {category: SCHEMA} {title: `CREATE CONSTRAINT document_id IF NOT EXISTS FOR (e:Document) REQUIRE (e.id) IS UNIQUE` has no effect.} {description: `CONSTRAINT document_id FOR (e:Document) REQUIRE (e.id) IS UNIQUE` already exists.} {position: None} for query: 'CREATE CONSTRAINT document_id IF NOT EXISTS FOR (n:Document) REQUIRE n.id IS UNIQUE'
+2026-09-09 22:49:46 - neo4j.notifications - INFO - Received notification from DBMS server: {severity: INFORMATION} {code: Neo.ClientNotification.Schema.IndexOrConstraintAlreadyExists} {category: SCHEMA} {title: `CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (e:Chunk) REQUIRE (e.id) IS UNIQUE` has no effect.} {description: `CONSTRAINT chunk_id FOR (e:Chunk) REQUIRE (e.id) IS UNIQUE` already exists.} {position: None} for query: 'CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (n:Chunk) REQUIRE n.id IS UNIQUE'
+2026-09-09 22:49:46 - neo4j.notifications - INFO - Received notification from DBMS server: {severity: INFORMATION} {code: Neo.ClientNotification.Schema.IndexOrConstraintAlreadyExists} {category: SCHEMA} {title: `CREATE CONSTRAINT entity_id IF NOT EXISTS FOR (e:Entity) REQUIRE (e.id) IS UNIQUE` has no effect.} {description: `CONSTRAINT entity_id FOR (e:Entity) REQUIRE (e.id) IS UNIQUE` already exists.} {position: None} for query: 'CREATE CONSTRAINT entity_id IF NOT EXISTS FOR (n:Entity) REQUIRE n.id IS UNIQUE'
+2026-09-09 22:49:46 - neo4j.notifications - INFO - Received notification from DBMS server: {severity: INFORMATION} {code: Neo.ClientNotification.Schema.IndexOrConstraintAlreadyExists} {category: SCHEMA} {title: `CREATE CONSTRAINT relation_id IF NOT EXISTS FOR (e:Relation) REQUIRE (e.id) IS UNIQUE` has no effect.} {description: `CONSTRAINT relation_id FOR (e:Relation) REQUIRE (e.id) IS UNIQUE` already exists.} {position: None} for query: 'CREATE CONSTRAINT relation_id IF NOT EXISTS FOR (n:Relation) REQUIRE n.id IS UNIQUE'
+2026-09-09 22:49:46 - __main__ - INFO - Cleaning up zombie processing tasks...
+2026-09-09 22:49:46 - services.file_service - INFO - No zombie processing tasks found
+2026-09-09 22:49:46 - __main__ - INFO - Seeding preset agent skills...
+2026-09-09 22:49:46 - __main__ - INFO - Syncing skill files to disk...
+2026-09-09 22:49:46 - __main__ - INFO - Starting scheduler engine...
+2026-09-09 22:49:46 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2026-09-09 22:49:46 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2026-09-09 22:49:46 - apscheduler.scheduler - INFO - Added job "_on_trigger" to job store "default"
+2026-09-09 22:49:46 - apscheduler.scheduler - INFO - Added job "_on_trigger" to job store "default"
+2026-09-09 22:49:46 - apscheduler.scheduler - INFO - Scheduler started
+2026-09-09 22:49:46 - scheduler_engine - INFO - 调度引擎已启动，已加载 2 个启用计划
+2026-09-09 22:49:46 - __main__ - INFO - KnowSource started.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-09-09 22:49:47 - access - INFO - 127.0.0.1 GET /docs -> 200 0.2ms
+2026-09-09 22:54:46 - access - WARNING - 127.0.0.1 POST /api/derived-properties/b72ea4bd46ae/materialize -> 200 298780.6ms（慢请求）
+2026-09-09 22:55:21 - services.workflow_engine - INFO - [run 4ef53aaabd13] 工作流开始执行 workflow=0fa49dc025ac, 6 节点, 5 边, inputs=[]
+2026-09-09 22:55:21 - services.workflow_engine - INFO - [run 4ef53aaabd13] 建图: 6 节点, 5 边
+2026-09-09 22:55:21 - services.workflow_engine - INFO - [run 4ef53aaabd13] 图编译完成
+2026-09-09 22:55:21 - services.workflow_engine - INFO - [run 4ef53aaabd13] 节点开始 start (开始)
+2026-09-09 22:55:21 - services.workflow_engine - INFO - [run 4ef53aaabd13] 节点完成 start (开始) 0ms
+2026-09-09 22:55:21 - services.workflow_engine - INFO - [run 4ef53aaabd13] 节点开始 http_mat_1 (物化-预计飞行时长)
+2026-09-09 22:55:21 - services.workflow_engine - INFO - [http] → POST http://127.0.0.1:8000/api/derived-properties/b72ea4bd46ae/materialize/stream params={'limit': 5000} body=None

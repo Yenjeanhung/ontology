@@ -4,12 +4,12 @@ import logging
 import shutil
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from config import settings
-from models import KnowledgeBase
+from models import Entity, KnowledgeBase, Relation
 from providers.graph_store import delete_kb_graph
 from providers.vector_store import delete_kb_collection
 from services.file_service import FileService
@@ -129,6 +129,11 @@ class KBService:
             delete_kb_graph(kb_id)
         except Exception:  # noqa: BLE001
             logger.exception("删除知识库图谱失败（忽略）：%s", kb_id)
+
+        # 实体/关系无 ORM 级联，必须显式删除，否则成为孤儿数据
+        # （派生属性物化按本体查实体、不分知识库，孤儿会被持续误算）
+        await db.execute(delete(Relation).where(Relation.kb_id == kb_id))
+        await db.execute(delete(Entity).where(Entity.kb_id == kb_id))
 
         await db.delete(kb)
         await db.commit()

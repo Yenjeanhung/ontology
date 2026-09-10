@@ -227,12 +227,15 @@ def gen_legs(small: bool = False) -> list[dict]:
         free_at: dict[str, datetime] = {}          # 注册号 -> 空闲时刻
         prev_key: dict[str, str] = {}              # 注册号 -> 上一航段临时key
         order = sorted(flights, key=lambda f: f["sobt_min"])
-        RNG.shuffle(order)
 
         for f in order:
             leg_seq += 1
             key = f"T{leg_seq:05d}"
-            reg = RNG.choice([r for r, t in FLEET.items() if t == f["actype"]])
+            # 贪心指派最早空闲的同型机（贴近真实排班衔接口径）。随机指派会让
+            # 同机时刻大面积冲突，撤轮档被迫推迟到上一航段落地之后，造出
+            # 「预计 vs 计划」相差数小时的失真延误数据。
+            same_type = [r for r, t in FLEET.items() if t == f["actype"]]
+            reg = min(same_type, key=lambda r: free_at.get(r, datetime.min))
 
             sobt = base + timedelta(minutes=f["sobt_min"])
             # 计划过站：同机衔接时取 ready-sobt 与 55min 的合理值
@@ -360,8 +363,12 @@ def finalize_legs(legs: list[dict]) -> None:
         leg["status"] = st
         aobt, atot, aldt, aibt = leg["aobt"], leg["atot"], leg["aldt"], leg["aibt"]
         if st in ("计划", "登机"):            # 未撤轮档：全部为预计
+            # 滚动预计 = 计划时刻 + 运行预测偏差（出发 0~60 分钟、到达再加 0~20 分钟），
+            # 贴近真实 OCC 预测口径；不直接取模拟实际值（链式推迟会造出数小时的离谱延误）
+            shift = RNG.choice([0, 0, 0, 5, 10, 15, 20, 25, 30, 45, 60])
             leg.update(aobt=None, atot=None, aldt=None, aibt=None,
-                       etd=aobt, eta=aibt)
+                       etd=leg["sobt"] + timedelta(minutes=shift),
+                       eta=leg["sibt"] + timedelta(minutes=shift + RNG.randrange(0, 21)))
         elif st in ("滑出", "巡航"):          # 已撤轮档未落地
             leg.update(aldt=None, aibt=None, etd=None, eta=aibt)
         else:                                  # 滑入/到达：全实际
