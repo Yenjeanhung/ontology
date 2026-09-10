@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount, reactive, markRaw } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, reactive, markRaw, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -773,6 +773,11 @@ function selectNode(id) {
 function onNodeClick({ node }) {
   selectNode(node.id)
   drawerCollapsed.value = false  // 点击节点自动展开配置抽屉，保证「运行输出」立即可见
+  // 运行输出分区位于抽屉滚动区顶部：重置滚动位置，避免上次看配置滚下去后运行输出被卷走看不见
+  nextTick(() => {
+    const body = document.querySelector('.wf-drawer .dr-body')
+    if (body) body.scrollTop = 0
+  })
   // 人工节点等待处理：点击直接弹出审批框（工作流内闭环处理，不必去待办中心）
   if (node.type === 'human' && node.data?.status === 'waiting' && pendingTasks[node.id]) {
     humanModalNodeId.value = node.id
