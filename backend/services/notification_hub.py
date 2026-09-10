@@ -167,10 +167,12 @@ async def compute_summary(db) -> dict[str, Any]:
             select(func.count()).where(File.status == "failed")
         )).scalar() or 0
     )
-    # 定时调度：已达告警阈值且未静默的计划数
+    # 定时调度：已达告警阈值且未静默、仍处于启用状态的计划数
+    # （已停用的计划不会再执行、无法自愈清零，不计入告警）
     schedule_alerts = int(
         (await db.execute(
             select(func.count()).where(
+                Schedule.enabled == 1,
                 Schedule.alert_on_failure == 1,
                 Schedule.muted == 0,
                 Schedule.consecutive_failures >= Schedule.max_failures_alert,

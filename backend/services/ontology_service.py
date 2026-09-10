@@ -1357,6 +1357,11 @@ class OntologySuggestionService:
             "reviewed_at": s.reviewed_at,
             "reviewer": s.reviewer,
             "suggestion_data": data,
+            # S7 提案化字段：前端靠 proposal_type 渲染「变更提案」徽标与「合并并打版本」按钮
+            "proposal_type": s.proposal_type or "suggestion",
+            "base_version": s.base_version or 0,
+            "reviewers": s.reviewers or "",
+            "merged_version_id": s.merged_version_id or "",
         }
 
     @staticmethod

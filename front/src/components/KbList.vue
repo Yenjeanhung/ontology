@@ -74,6 +74,13 @@ function closeAlertDialog() {
   showAlertDialog.value = false
 }
 
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showEditModal.value, () => { showEditModal.value = false }],
+  [showConfirmDialog.value, confirmDialogCancel],
+  [showAlertDialog.value, closeAlertDialog],
+])
+
 // 知识库状态：处理中 > 异常 > 待处理 > 已就绪 > 空
 function kbStatus(kb) {
   if (kb.processing_files) return 'processing'
@@ -245,14 +252,6 @@ function onKbCreated(kbId) { showCreateModal.value = false; router.push('/kb/' +
 function goDetail(kbId) { router.push('/kb/' + kbId) }
 
 onMounted(loadKbs)
-
-// 弹窗支持按 ESC 关闭
-useEscClose(() => [
-  [showEditModal.value, () => { showEditModal.value = false }],
-  [showConfirmDialog.value, confirmDialogCancel],
-  [showAlertDialog.value, closeAlertDialog],
-])
-
 </script>
 
 <template>

@@ -3,7 +3,6 @@ import { computed, ref, watch, nextTick } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { TYPE_META } from './nodeMeta.js'
 import { marked } from 'marked'
-import { useEscClose } from '../../composables/useEscClose'
 
 const FIXED_KEYS = ['answer', 'chunks', 'entities', 'subgraph', 'success', 'data', 'error', 'stdout', 'duration_ms', 'text', 'result',
   // 人工节点固定输出
@@ -303,10 +302,6 @@ async function copyOutputJson() {
     alert('复制失败：' + (e?.message || '未知错误'))
   }
 }
-
-// 弹窗支持按 ESC 关闭
-useEscClose(() => [[outOpen.value, () => { outOpen.value = false }]])
-
 </script>
 
 <template>

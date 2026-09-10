@@ -253,6 +253,7 @@ async def update_schedule(schedule_id: str, data: dict) -> dict:
         s = (await db.execute(select(Schedule).where(Schedule.id == schedule_id))).scalar_one_or_none()
         if not s:
             raise ValueError("计划不存在")
+        was_enabled = bool(s.enabled)
 
         # 可更新字段
         for f in ("name", "description", "muted", "max_failures_alert", "alert_on_failure", "enabled"):
@@ -293,7 +294,13 @@ async def update_schedule(schedule_id: str, data: dict) -> dict:
                 raise ValueError(err)
             s.input_params = json.dumps(data["input_params"], ensure_ascii=False)
 
-        s.next_run_at = compute_next_run(s.trigger, _parse_json(s.trigger_config))
+        if s.enabled:
+            s.next_run_at = compute_next_run(s.trigger, _parse_json(s.trigger_config))
+        else:
+            s.next_run_at = None
+            # 编辑停用与 set_enabled 停用行为保持一致：人工介入清零连续失败计数
+            if was_enabled:
+                s.consecutive_failures = 0
         s.updated_at = datetime.now().isoformat()
         await db.commit()
         await db.refresh(s)
@@ -319,6 +326,9 @@ async def set_enabled(schedule_id: str, enabled: bool) -> dict:
             s.next_run_at = compute_next_run(s.trigger, _parse_json(s.trigger_config))
         else:
             s.next_run_at = None
+            # 手动停用视为人工介入：清零连续失败计数，
+            # 否则停用后计划不再执行，计数永远无法通过成功运行清零，告警会一直挂着
+            s.consecutive_failures = 0
         await db.commit()
         await db.refresh(s)
         return _schedule_to_dict(s)

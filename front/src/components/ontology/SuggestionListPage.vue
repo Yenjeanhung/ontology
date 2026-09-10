@@ -7,8 +7,8 @@ import SuggestionReviewEditor from './SuggestionReviewEditor.vue'
 import SearchableSelect from '../common/SearchableSelect.vue'
 import Pagination from '../common/Pagination.vue'
 
-const STATUS_MAP = { ready: '待审核', approved: '已通过', rejected: '已拒绝', generating: '生成中' }
-const STATUS_COLORS = { ready: 'var(--c-accent)', approved: '#4caf50', rejected: '#ef5350', generating: '#ff9800' }
+const STATUS_MAP = { ready: '待审核', approved: '已通过', rejected: '已拒绝', generating: '生成中', pending: '提案待审' }
+const STATUS_COLORS = { ready: 'var(--c-accent)', approved: '#4caf50', rejected: '#ef5350', generating: '#ff9800', pending: '#7e57c2' }
 const SOURCE_MAP = { free_extraction: '自由抽取', auto_cluster: '自动聚类' }
 
 const suggestions = ref([])
@@ -21,6 +21,7 @@ const kbs = ref([])
 const statusOptions = [
   { value: '', label: '全部状态' },
   { value: 'ready', label: '待审核' },
+  { value: 'pending', label: '提案待审' },
   { value: 'approved', label: '已通过' },
   { value: 'rejected', label: '已拒绝' },
 ]

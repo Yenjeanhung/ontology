@@ -116,6 +116,14 @@ function confirmDialogCancel() {
   confirmDialogCallback(false)
 }
 
+// 弹窗支持按 ESC 关闭
+useEscClose(() => [
+  [showFolderModal.value, () => { showFolderModal.value = false }],
+  [!!previewAsset.value, closePreview],
+  [!!sourceDetailAsset.value, closeSourceDetail],
+  [showConfirmDialog.value, confirmDialogCancel],
+])
+
 // 构建文件夹树
 const directoryTree = computed(() => {
   const children = new Map()
@@ -705,15 +713,6 @@ onMounted(async () => {
 onUnmounted(() => {
   Object.values(crawlTimers).forEach(clearInterval)
 })
-
-// 弹窗支持按 ESC 关闭
-useEscClose(() => [
-  [showFolderModal.value, () => { showFolderModal.value = false }],
-  [!!previewAsset.value, closePreview],
-  [!!sourceDetailAsset.value, closeSourceDetail],
-  [showConfirmDialog.value, confirmDialogCancel],
-])
-
 </script>
 
 <template>
