@@ -304,8 +304,14 @@ onMounted(() => {
   }
 
   const savedTheme = localStorage.getItem(THEME_STORAGE_KEY)
-  if (THEMES.some(t => t.key === savedTheme)) {
-    applyTheme(savedTheme)
+  // 旧版曾未经用户操作就把默认金色(dark)写入 localStorage；首次用新版打开时一次性重置为新默认青蓝
+  let effectiveTheme = savedTheme
+  if (savedTheme === 'dark' && !localStorage.getItem('knowsource.theme.v2')) {
+    try { localStorage.setItem('knowsource.theme.v2', '1') } catch { /* 忽略隐私模式 */ }
+    effectiveTheme = null
+  }
+  if (THEMES.some(t => t.key === effectiveTheme)) {
+    applyTheme(effectiveTheme)
   } else {
     applyTheme('platform-dark')
   }

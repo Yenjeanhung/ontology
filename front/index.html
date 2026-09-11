@@ -9,6 +9,12 @@
     (function () {
       try {
         var t = localStorage.getItem('knowsource.theme');
+        // 旧版曾未经用户操作就把默认金色(dark)写入 localStorage；
+        // 升级后首次打开时一次性重置为新默认青蓝（写入 v2 标记后不再干预用户选择）
+        if (t === 'dark' && !localStorage.getItem('knowsource.theme.v2')) {
+          localStorage.setItem('knowsource.theme.v2', '1');
+          t = null;
+        }
         if (t !== 'light' && t !== 'dark' && t !== 'platform-dark') t = 'platform-dark';
       } catch (e) { t = 'platform-dark'; }
       document.documentElement.dataset.theme = t;
