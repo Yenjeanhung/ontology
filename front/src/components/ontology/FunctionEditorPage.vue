@@ -8,7 +8,6 @@ import {
 } from '../../api'
 import PythonEditor from '../workflow/PythonEditor.vue'
 import { useToast } from '../../composables/useToast'
-import { useEscClose } from '../../composables/useEscClose'
 
 const _toast = useToast()
 // 兼容 toast(msg, 'success' | 'error' | 'warning' | 'info') 的调用风格
@@ -578,13 +577,6 @@ onMounted(async () => {
   try { await loadCategories(); await loadOntologies(); await loadFunctions() }
   catch (e) { toast(e.message, 'error') }
 })
-
-// 弹窗支持按 ESC 关闭
-useEscClose(() => [
-  [showDerivedModal.value, () => { showDerivedModal.value = false }],
-  [showDpTestModal.value, () => { showDpTestModal.value = false }],
-])
-
 </script>
 
 <template>
