@@ -185,6 +185,21 @@ class Settings(BaseSettings):
     # 不织入的类名（逗号分隔，支持 fnmatch 通配），如 NotificationChannel
     SERVICE_TRACE_EXCLUDE: str = "NotificationChannel"
 
+    # ───────────────────────── 用户与权限（Auth / RBAC）──────────────────────────
+    # JWT 签名密钥：留空时首次启动自动生成并持久化到 data/.auth_secret_key，之后复用
+    AUTH_SECRET_KEY: str = ""
+    AUTH_ENABLED: bool = True              # 总开关：false 时全站免登录（本地调试用）
+    ACCESS_TOKEN_TTL_MINUTES: int = 120    # access token 有效期
+    REFRESH_TOKEN_TTL_DAYS: int = 7        # refresh token 有效期
+    # 会话状态缓存 TTL（秒）：决定"踢人"在多副本间的生效延迟上限
+    AUTH_CACHE_TTL_SECONDS: int = 10
+    # 审计日志异步落库：批量大小与刷写间隔
+    AUDIT_BATCH_SIZE: int = 100
+    AUDIT_FLUSH_INTERVAL_SECONDS: float = 1.0
+    AUDIT_QUEUE_MAXSIZE: int = 5000
+    # CORS 白名单（逗号分隔，留空 = 沿用 *）；开启鉴权后建议显式配置
+    CORS_ALLOW_ORIGINS: str = ""
+
     # ───────────────────────── HTTP 访问日志 ──────────────────────────
     # 由中间件统一记录：IP 方法 路径 -> 状态码 耗时（等价于 AOP 的请求切面）
     ACCESS_LOG_ENABLED: bool = True

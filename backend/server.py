@@ -24,8 +24,11 @@ from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from core.preflight import failed_required, has_run, render_report, run_preflight
-from database import DatabaseUnavailableError, init_db
+from database import DatabaseUnavailableError, get_db, init_db
 from middleware.access_log import AccessLogMiddleware
+from middleware.audit import AuditMiddleware
+from middleware.auth import AuthMiddleware
+from middleware.permission import PermissionMiddleware
 
 # 日志目录配置
 LOG_DIR = Path(__file__).parent.parent / "logs"
@@ -183,13 +186,18 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to sync skill files to disk")
 
-    # 服务层方法日志：AOP 式织入（放在调度启动前，使调度链路同样可追踪）
+    # 用户与权限：建权限点/内置角色/初始管理员（幂等），并启动审计异步落库
+    logger.info("Bootstrapping auth and permissions...")
     try:
-        from core.tracing import instrument_services
+        from services.auth_bootstrap import bootstrap
+        from services.audit_service import AuditService
 
-        instrument_services()
+        async for db in get_db():
+            await bootstrap(db)
+            break
+        AuditService.start()
     except Exception:
-        logger.exception("Failed to instrument services")
+        logger.exception("Failed to bootstrap auth module")
 
     # 启动定时调度引擎（从历史计划恢复启用任务；失败不阻断主服务启动）
     logger.info("Starting scheduler engine...")
@@ -203,6 +211,14 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("KnowSource stopped.")
 
+    # 关闭审计异步落库（给在途日志一个收尾窗口）
+    try:
+        from services.audit_service import AuditService
+
+        await AuditService.stop()
+    except Exception:
+        logger.exception("Failed to stop audit service")
+
     # 关闭调度引擎
     try:
         from services.scheduler_engine import shutdown as scheduler_shutdown
@@ -213,17 +229,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="KnowSource", lifespan=lifespan)
 
+# CORS：配置了白名单时收紧（并允许携带凭证）；留空则沿用 * 以兼容本地开发
+_cors_origins = [o.strip() for o in (settings.CORS_ALLOW_ORIGINS or "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins or ["*"],
+    allow_credentials=bool(_cors_origins),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 访问日志：后加的更靠外，因此放在 CORS 之后以包住全部请求（含异常响应）
+# 中间件栈：Starlette 的 add_middleware 会把后加的放在更外层，
+# 因此下面的 add 顺序对应「外层 → 内层」= AccessLog → Auth → Audit → Permission → CORS。
+# 顺序要点：
+#   - Auth 必须在 Audit / Permission 之前，否则后者读不到 scope["auth_user"]；
+#   - Audit 在 Permission 之前，这样被 403 拒绝的越权尝试同样会留下审计记录。
+app.add_middleware(PermissionMiddleware)
+app.add_middleware(AuditMiddleware)
+app.add_middleware(AuthMiddleware)
 app.add_middleware(AccessLogMiddleware)
 
-from routers import agent, config, entity, files, graph, graph_analysis, graph_sync, kb, library, monitor, notifications, ontology, ontology_function, ontology_interface, ontology_service, ontology_version, ontology_view, query, scheduler, vector_data, workflow
+from routers import agent, audit, auth, config, entity, files, graph, graph_analysis, graph_sync, kb, library, monitor, notifications, ontology, ontology_function, ontology_interface, ontology_service, ontology_version, ontology_view, query, role, scheduler, session, user, vector_data, workflow
 
 app.include_router(kb.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
@@ -246,6 +272,11 @@ app.include_router(config.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(scheduler.router, prefix="/api")
 app.include_router(monitor.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
+app.include_router(user.router, prefix="/api")
+app.include_router(role.router, prefix="/api")
+app.include_router(session.router, prefix="/api")
+app.include_router(audit.router, prefix="/api")
 
 front_dist = Path(__file__).parent.parent / "front" / "dist"
 if front_dist.exists():

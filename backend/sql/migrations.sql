@@ -446,3 +446,183 @@ ALTER TABLE ontology_services ADD COLUMN IF NOT EXISTS flow TEXT DEFAULT NULL;
 
 -- migration_028: 工作流归属本体类别（顶层模块维度管理；空串 = 未分类）
 ALTER TABLE workflows ADD COLUMN category_id VARCHAR DEFAULT '';
+
+-- migration_029: 用户与权限体系（用户 / 用户组 / 角色 / 权限 / 会话 / 认证日志 / 操作日志 / 安全策略）
+-- 约定：与既有 45 张表一致，无数据库外键（service 层维护逻辑关联）；布尔用 INTEGER；时间用 VARCHAR(ISO8601)
+CREATE TABLE IF NOT EXISTS users (
+    id                   VARCHAR PRIMARY KEY,
+    username             VARCHAR(64)  NOT NULL UNIQUE,
+    password_hash        VARCHAR(255) NOT NULL,
+    nickname             VARCHAR(64)  DEFAULT '',
+    email                VARCHAR(128) DEFAULT '',
+    phone                VARCHAR(32)  DEFAULT '',
+    avatar               VARCHAR(255) DEFAULT '',
+    status               VARCHAR(20)  DEFAULT 'active',
+    token_version        INTEGER      NOT NULL DEFAULT 1,
+    is_system            INTEGER      NOT NULL DEFAULT 0,
+    failed_attempts      INTEGER      NOT NULL DEFAULT 0,
+    locked_until         VARCHAR,
+    last_login_at        VARCHAR,
+    last_login_ip        VARCHAR(64)  DEFAULT '',
+    password_changed_at  VARCHAR,
+    must_change_password INTEGER      NOT NULL DEFAULT 0,
+    remark               VARCHAR(500) DEFAULT '',
+    created_by           VARCHAR(64)  DEFAULT '',
+    created_at           VARCHAR,
+    updated_at           VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+
+CREATE TABLE IF NOT EXISTS user_groups (
+    id         VARCHAR PRIMARY KEY,
+    name       VARCHAR(100) NOT NULL,
+    code       VARCHAR(64)  DEFAULT '',
+    parent_id  VARCHAR      DEFAULT NULL,
+    sort_order INTEGER      NOT NULL DEFAULT 0,
+    is_system  INTEGER      NOT NULL DEFAULT 0,
+    remark     VARCHAR(500) DEFAULT '',
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS user_group_members (
+    id         VARCHAR PRIMARY KEY,
+    group_id   VARCHAR NOT NULL,
+    user_id    VARCHAR NOT NULL,
+    created_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_ugm_group ON user_group_members(group_id);
+CREATE INDEX IF NOT EXISTS idx_ugm_user  ON user_group_members(user_id);
+
+CREATE TABLE IF NOT EXISTS roles (
+    id          VARCHAR PRIMARY KEY,
+    code        VARCHAR(64)  NOT NULL UNIQUE,
+    name        VARCHAR(100) NOT NULL,
+    description VARCHAR(500) DEFAULT '',
+    is_system   INTEGER      NOT NULL DEFAULT 0,
+    sort_order  INTEGER      NOT NULL DEFAULT 0,
+    created_at  VARCHAR,
+    updated_at  VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS permissions (
+    id         VARCHAR PRIMARY KEY,
+    code       VARCHAR(100) NOT NULL UNIQUE,
+    name       VARCHAR(100) NOT NULL,
+    module     VARCHAR(50)  NOT NULL,
+    type       VARCHAR(20)  NOT NULL DEFAULT 'api',
+    resource   VARCHAR(200) DEFAULT '',
+    is_system  INTEGER      NOT NULL DEFAULT 0,
+    sort_order INTEGER      NOT NULL DEFAULT 0,
+    created_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_perm_module ON permissions(module);
+
+CREATE TABLE IF NOT EXISTS role_permissions (
+    id            VARCHAR PRIMARY KEY,
+    role_id       VARCHAR NOT NULL,
+    permission_id VARCHAR NOT NULL,
+    created_at    VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_rp_role ON role_permissions(role_id);
+
+CREATE TABLE IF NOT EXISTS user_roles (
+    id         VARCHAR PRIMARY KEY,
+    user_id    VARCHAR NOT NULL,
+    role_id    VARCHAR NOT NULL,
+    created_by VARCHAR DEFAULT '',
+    created_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_ur_user ON user_roles(user_id);
+CREATE INDEX IF NOT EXISTS idx_ur_role ON user_roles(role_id);
+
+CREATE TABLE IF NOT EXISTS group_roles (
+    id         VARCHAR PRIMARY KEY,
+    group_id   VARCHAR NOT NULL,
+    role_id    VARCHAR NOT NULL,
+    created_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_gr_group ON group_roles(group_id);
+
+CREATE TABLE IF NOT EXISTS user_permissions (
+    id            VARCHAR PRIMARY KEY,
+    user_id       VARCHAR NOT NULL,
+    permission_id VARCHAR NOT NULL,
+    effect        VARCHAR(10) NOT NULL DEFAULT 'allow',
+    created_by    VARCHAR DEFAULT '',
+    created_at    VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_up_user ON user_permissions(user_id);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id             VARCHAR PRIMARY KEY,
+    user_id        VARCHAR NOT NULL,
+    username       VARCHAR(64)  DEFAULT '',
+    status         VARCHAR(20)  NOT NULL DEFAULT 'online',
+    ip             VARCHAR(64)  DEFAULT '',
+    user_agent     VARCHAR(500) DEFAULT '',
+    device         VARCHAR(100) DEFAULT '',
+    login_at       VARCHAR,
+    last_active_at VARCHAR,
+    logout_at      VARCHAR,
+    expires_at     VARCHAR,
+    kicked_by      VARCHAR(64)  DEFAULT '',
+    kick_reason    VARCHAR(200) DEFAULT '',
+    created_at     VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_sess_user   ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sess_status ON user_sessions(status);
+
+CREATE TABLE IF NOT EXISTS auth_logs (
+    id         VARCHAR PRIMARY KEY,
+    user_id    VARCHAR DEFAULT '',
+    username   VARCHAR(64) DEFAULT '',
+    action     VARCHAR(32) NOT NULL,
+    result     VARCHAR(16) NOT NULL,
+    reason     VARCHAR(200) DEFAULT '',
+    session_id VARCHAR DEFAULT '',
+    ip         VARCHAR(64)  DEFAULT '',
+    user_agent VARCHAR(500) DEFAULT '',
+    created_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_authlog_user ON auth_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_authlog_time ON auth_logs(created_at);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id            VARCHAR PRIMARY KEY,
+    user_id       VARCHAR DEFAULT '',
+    username      VARCHAR(64)  DEFAULT '',
+    nickname      VARCHAR(64)  DEFAULT '',
+    session_id    VARCHAR DEFAULT '',
+    module        VARCHAR(50)  DEFAULT '',
+    action        VARCHAR(64)  DEFAULT '',
+    action_label  VARCHAR(100) DEFAULT '',
+    target_type   VARCHAR(64)  DEFAULT '',
+    target_id     VARCHAR      DEFAULT '',
+    target_name   VARCHAR(200) DEFAULT '',
+    method        VARCHAR(10)  DEFAULT '',
+    path          VARCHAR(300) DEFAULT '',
+    params        TEXT,
+    before_value  TEXT,
+    after_value   TEXT,
+    result        VARCHAR(16)   DEFAULT 'success',
+    status_code   INTEGER       DEFAULT 0,
+    error_msg     VARCHAR(1000) DEFAULT '',
+    ip            VARCHAR(64)   DEFAULT '',
+    user_agent    VARCHAR(500)  DEFAULT '',
+    request_id    VARCHAR(64)   DEFAULT '',
+    duration_ms   INTEGER       DEFAULT 0,
+    source        VARCHAR(20)   DEFAULT 'http',
+    created_at    VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_audit_time   ON audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_user   ON audit_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_module ON audit_logs(module);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
+
+CREATE TABLE IF NOT EXISTS security_settings (
+    key        VARCHAR(64) PRIMARY KEY,
+    value      VARCHAR(500) DEFAULT '',
+    updated_by VARCHAR(64)  DEFAULT '',
+    updated_at VARCHAR
+);

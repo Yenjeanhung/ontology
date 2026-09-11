@@ -30,8 +30,17 @@ import ServiceEditorPage from '../components/ontology/ServiceEditorPage.vue'
 import ScheduleListPage from '../components/scheduler/ScheduleListPage.vue'
 import ScheduleEditorPage from '../components/scheduler/ScheduleEditorPage.vue'
 import HumanTaskCenterPage from '../components/workflow/HumanTaskCenter.vue'
+// 用户与权限
+import LoginView from '../components/LoginView.vue'
+import UserListView from '../components/system/UserListView.vue'
+import RoleListView from '../components/system/RoleListView.vue'
+import SessionListView from '../components/system/SessionListView.vue'
+import AuditLogView from '../components/system/AuditLogView.vue'
+import { auth, hasPerm, isAuthed, loadAuthStatus, loadMe } from '../stores/auth'
+import { clearTokens, isLoggedIn } from '../api/auth'
 
 const routes = [
+  { path: '/login', name: 'login', component: LoginView, meta: { public: true, fullscreen: true } },
   { path: '/', name: 'home', component: HomeView },
   // 本体管理（大菜单）
   { path: '/ontology/templates', name: 'ontology-templates', component: AttributeTemplateList, meta: { keepAlive: true } },
@@ -76,6 +85,11 @@ const routes = [
   { path: '/config/models', name: 'config-models', component: ModelConfigPage, meta: { keepAlive: true } },
   { path: '/config/monitor', name: 'config-monitor', component: MonitorPage, meta: { keepAlive: true } },
   { path: '/config/api-docs', name: 'config-api-docs', component: ApiDocsPage, meta: { keepAlive: true } },
+  // 系统管理（用户与权限）
+  { path: '/system/users', name: 'system-users', component: UserListView, meta: { perm: 'system:user:manage' } },
+  { path: '/system/roles', name: 'system-roles', component: RoleListView, meta: { perm: 'system:role:manage' } },
+  { path: '/system/sessions', name: 'system-sessions', component: SessionListView, meta: { perm: 'system:session:manage' } },
+  { path: '/system/audit', name: 'system-audit', component: AuditLogView, meta: { perm: 'system:audit:view' } },
 ]
 
 const router = createRouter({
@@ -83,4 +97,42 @@ const router = createRouter({
   routes,
 })
 
+router.beforeEach(async (to) => {
+  if (!auth.statusLoaded) await loadAuthStatus()
+
+  // 后端关闭鉴权时不做任何拦截（本地调试模式）
+  if (!auth.enabled) return to.path === '/login' ? '/' : true
+
+  if (to.path === '/login') return true
+
+  if (!isLoggedIn()) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  if (!auth.loaded) {
+    try {
+      await loadMe()
+    } catch {
+      return { path: '/login', query: { redirect: to.fullPath } }
+    }
+  }
+  const perm = to.meta?.perm
+  if (perm && !hasPerm(perm)) return '/'
+  return true
+})
+
+// 令牌失效 / 被强制下线：统一跳登录页并给出原因
+window.addEventListener('ks-auth-expired', (e) => {
+  clearTokens()
+  auth.user = null
+  auth.permissions = []
+  auth.roles = []
+  auth.loaded = false
+  const msg = e?.detail?.message || '登录已失效，请重新登录'
+  sessionStorage.setItem('ks.login.reason', msg)
+  if (router.currentRoute.value.path !== '/login') {
+    router.replace('/login')
+  }
+})
+
 export default router
+export { isAuthed }

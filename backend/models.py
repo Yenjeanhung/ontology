@@ -848,3 +848,222 @@ class Schedule(Base):
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
+
+# ===== 用户与权限体系（migration_029，无外键）=====
+
+
+class User(Base):
+    """系统用户。status: active / disabled / locked。"""
+
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    username = Column(String(64), nullable=False, unique=True)
+    password_hash = Column(String(255), nullable=False)
+    nickname = Column(String(64), default="")
+    email = Column(String(128), default="")
+    phone = Column(String(32), default="")
+    avatar = Column(String(255), default="")
+    status = Column(String(20), default="active")
+    token_version = Column(Integer, nullable=False, default=1)
+    is_system = Column(Integer, nullable=False, default=0)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+    locked_until = Column(String, nullable=True)
+    last_login_at = Column(String, nullable=True)
+    last_login_ip = Column(String(64), default="")
+    password_changed_at = Column(String, nullable=True)
+    must_change_password = Column(Integer, nullable=False, default=0)
+    remark = Column(String(500), default="")
+    created_by = Column(String(64), default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class UserGroup(Base):
+    """用户组（部门/团队）：授权推荐挂到组上，而非逐人授权。"""
+
+    __tablename__ = "user_groups"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String(100), nullable=False)
+    code = Column(String(64), default="")
+    parent_id = Column(String, nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_system = Column(Integer, nullable=False, default=0)
+    remark = Column(String(500), default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class UserGroupMember(Base):
+    """用户组成员（用户可属多组）。"""
+
+    __tablename__ = "user_group_members"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    group_id = Column(String, nullable=False)
+    user_id = Column(String, nullable=False)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class Role(Base):
+    """角色 = 权限集合（非层级，对标 Palantir Foundry 的 Roles）。"""
+
+    __tablename__ = "roles"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    code = Column(String(64), nullable=False, unique=True)
+    name = Column(String(100), nullable=False)
+    description = Column(String(500), default="")
+    is_system = Column(Integer, nullable=False, default=0)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class Permission(Base):
+    """权限点：type = menu（菜单可见）/ api（接口）/ action（按钮）。
+
+    resource 用于接口匹配，形如 `POST /api/kb/*`，支持 `*` 单段与 `**` 多段通配。
+    """
+
+    __tablename__ = "permissions"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    code = Column(String(100), nullable=False, unique=True)
+    name = Column(String(100), nullable=False)
+    module = Column(String(50), nullable=False)
+    type = Column(String(20), nullable=False, default="api")
+    resource = Column(String(200), default="")
+    is_system = Column(Integer, nullable=False, default=0)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class RolePermission(Base):
+    """角色 ↔ 权限。"""
+
+    __tablename__ = "role_permissions"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    role_id = Column(String, nullable=False)
+    permission_id = Column(String, nullable=False)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class UserRole(Base):
+    """用户 ↔ 角色（直接授权，推荐优先用组授权）。"""
+
+    __tablename__ = "user_roles"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    user_id = Column(String, nullable=False)
+    role_id = Column(String, nullable=False)
+    created_by = Column(String(64), default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class GroupRole(Base):
+    """用户组 ↔ 角色（推荐授权方式）。"""
+
+    __tablename__ = "group_roles"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    group_id = Column(String, nullable=False)
+    role_id = Column(String, nullable=False)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class UserPermission(Base):
+    """例外授权：直接给某个用户加减权限点（effect: allow / deny）。"""
+
+    __tablename__ = "user_permissions"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    user_id = Column(String, nullable=False)
+    permission_id = Column(String, nullable=False)
+    effect = Column(String(10), nullable=False, default="allow")
+    created_by = Column(String(64), default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class UserSession(Base):
+    """登录会话：支撑在线用户查看与强制下线（JWT 无状态之外的服务端权威状态）。"""
+
+    __tablename__ = "user_sessions"
+
+    id = Column(String, primary_key=True)                       # sid
+    user_id = Column(String, nullable=False)
+    username = Column(String(64), default="")
+    status = Column(String(20), nullable=False, default="online")  # online/offline/kicked/expired
+    ip = Column(String(64), default="")
+    user_agent = Column(String(500), default="")
+    device = Column(String(100), default="")
+    login_at = Column(String, nullable=True)
+    last_active_at = Column(String, nullable=True)
+    logout_at = Column(String, nullable=True)
+    expires_at = Column(String, nullable=True)
+    kicked_by = Column(String(64), default="")
+    kick_reason = Column(String(200), default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class AuthLog(Base):
+    """认证日志：登录/登出/失败/被踢/过期/改密/锁定等安全事件。"""
+
+    __tablename__ = "auth_logs"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    user_id = Column(String(64), default="")
+    username = Column(String(64), default="")
+    action = Column(String(32), nullable=False)
+    result = Column(String(16), nullable=False)
+    reason = Column(String(200), default="")
+    session_id = Column(String(64), default="")
+    ip = Column(String(64), default="")
+    user_agent = Column(String(500), default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class AuditLog(Base):
+    """操作审计日志：业务增删改、权限变更、配置变更等。"""
+
+    __tablename__ = "audit_logs"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    user_id = Column(String(64), default="")
+    username = Column(String(64), default="")
+    nickname = Column(String(64), default="")
+    session_id = Column(String(64), default="")
+    module = Column(String(50), default="")
+    action = Column(String(64), default="")
+    action_label = Column(String(100), default="")
+    target_type = Column(String(64), default="")
+    target_id = Column(String, default="")
+    target_name = Column(String(200), default="")
+    method = Column(String(10), default="")
+    path = Column(String(300), default="")
+    params = Column(Text, nullable=True)
+    before_value = Column(Text, nullable=True)
+    after_value = Column(Text, nullable=True)
+    result = Column(String(16), default="success")
+    status_code = Column(Integer, default=0)
+    error_msg = Column(String(1000), default="")
+    ip = Column(String(64), default="")
+    user_agent = Column(String(500), default="")
+    request_id = Column(String(64), default="")
+    duration_ms = Column(Integer, default=0)
+    source = Column(String(20), default="http")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class SecuritySetting(Base):
+    """安全与登录策略（key-value，运行时可改）。"""
+
+    __tablename__ = "security_settings"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(String(500), default="")
+    updated_by = Column(String(64), default="")
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+

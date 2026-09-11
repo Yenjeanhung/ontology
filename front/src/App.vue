@@ -2,6 +2,8 @@
 import { computed, onMounted, onBeforeUnmount, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchConfig } from './api'
+import { authApi, isLoggedIn } from './api/auth'
+import { auth, clearAuth, hasPerm, loadAuthStatus, loadMe } from './stores/auth'
 import { bindVisibilityRefresh, notifications, refreshNotifications, startNotificationStream, stopNotificationStream } from './stores/notifications'
 import ToastContainer from './components/ToastContainer.vue'
 
@@ -68,6 +70,41 @@ function selectTheme(key) {
   themeMenuOpen.value = false
 }
 
+/* ── 当前用户（顶栏头像 / 改密 / 退出） ── */
+const userMenuOpen = ref(false)
+const pwdOpen = ref(false)
+const pwdForm = ref({ old_password: '', new_password: '' })
+const pwdError = ref('')
+
+const currentUser = computed(() => auth.user)
+const displayName = computed(() => currentUser.value?.nickname || currentUser.value?.username || '未登录')
+const avatarText = computed(() => (displayName.value || 'U').trim().charAt(0).toUpperCase())
+const roleSummary = computed(() => {
+  if (auth.isSuperAdmin) return '超级管理员'
+  return (auth.roles || []).join('、') || '-'
+})
+
+async function onLogout() {
+  try { await authApi.logout() } catch { /* 后端已失效时也要清本地 */ }
+  clearAuth()
+  userMenuOpen.value = false
+  router.push('/login')
+}
+
+async function submitPassword() {
+  pwdError.value = ''
+  try {
+    await authApi.changePassword(pwdForm.value.old_password, pwdForm.value.new_password)
+    pwdOpen.value = false
+    pwdForm.value = { old_password: '', new_password: '' }
+    // 改密会使全部已签发令牌失效，直接回到登录页
+    clearAuth()
+    router.push('/login')
+  } catch (err) {
+    pwdError.value = err.message || '修改失败'
+  }
+}
+
 /* ── 侧栏菜单 ── */
 const menuIcons = {
   ontology: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="8.5" y="14" width="7" height="7" rx="1.5"/><path d="M6.5 10v1.5h4M17.5 10v1.5h-4"/></svg>',
@@ -81,6 +118,10 @@ const menuIcons = {
   workflow: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h6a3 3 0 0 1 3 3v6"/><path d="M6 9v9"/></svg>',
   schedule: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 1.8"/><path d="M9.5 3.2h5M9.5 20.8h5"/></svg>',
   human: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><polyline points="16 11 17.5 12.5 21 9"/></svg>',
+  users: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.75 20a6.25 6.25 0 0 1 12.5 0"/><path d="M16.5 5.2a3.5 3.5 0 0 1 0 6.6"/><path d="M18 14.4A6.25 6.25 0 0 1 21.25 20"/></svg>',
+  shield: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6l7-3z"/><path d="M9.5 12l1.8 1.8L15 10"/></svg>',
+  online: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M6.8 6.8a7.3 7.3 0 0 0 0 10.4"/><path d="M17.2 6.8a7.3 7.3 0 0 1 0 10.4"/><path d="M3.8 3.8a11.6 11.6 0 0 0 0 16.4"/><path d="M20.2 3.8a11.6 11.6 0 0 1 0 16.4"/></svg>',
+  logs: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4.5h8a1.5 1.5 0 0 1 1.5 1.5v13A1.5 1.5 0 0 1 16 20.5H8A1.5 1.5 0 0 1 6.5 19V6A1.5 1.5 0 0 1 8 4.5z"/><path d="M10 3h4v3h-4z"/><path d="M9.5 11h5M9.5 14.5h5"/></svg>',
 }
 
 // 分组标题图标（侧栏分区：定义 / 生产 / 应用）
@@ -88,6 +129,7 @@ const groupIcons = {
   groupDef: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.5C10.2 5.1 7.8 4.5 5 4.5v13c2.8 0 5.2.6 7 2 1.8-1.4 4.2-2 7-2v-13c-2.8 0-5.2.6-7 2Z"/><path d="M12 6.5v13"/></svg>',
   groupProd: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2.5 5 13.5h5L9 21.5l8-11h-5l1-8Z"/></svg>',
   groupApp: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></svg>',
+  groupAdmin: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.2 5.2l2.1 2.1M16.7 16.7l2.1 2.1M18.8 5.2l-2.1 2.1M7.3 16.7l-2.1 2.1"/></svg>',
 }
 
 const menuItems = [
@@ -143,7 +185,30 @@ const menuItems = [
       { to: '/config/api-docs', label: 'API 文档' },
     ],
   },
+  { type: 'group', label: '系统管理', icon: 'groupAdmin' },
+  { key: 'system-users', label: '用户管理', icon: 'users', to: '/system/users', perm: 'system:user:manage' },
+  { key: 'system-roles', label: '角色权限', icon: 'shield', to: '/system/roles', perm: 'system:role:manage' },
+  { key: 'system-sessions', label: '在线用户', icon: 'online', to: '/system/sessions', perm: 'system:session:manage' },
+  { key: 'system-audit', label: '操作日志', icon: 'logs', to: '/system/audit', perm: 'system:audit:view' },
 ]
+
+// 菜单按权限过滤：超级管理员看全部，其余按 perm 声明控制
+const visibleMenu = computed(() => {
+  if (!auth.enabled) return menuItems
+  const walk = (item) => {
+    if (item.type === 'group') return true
+    if (item.perm && !hasPerm(item.perm)) return false
+    return true
+  }
+  return menuItems.filter(walk).filter((item, idx, arr) => {
+    // 去掉连续重复的分组标题（组内子项全部无权限时）
+    if (item.type === 'group') {
+      const next = arr[idx + 1]
+      return next && next.type !== 'group'
+    }
+    return true
+  })
+})
 
 // 手风琴展开状态（展开态用）
 const openKeys = ref([])
@@ -195,12 +260,15 @@ function toggleSidebar() {
 function onPointerDown(e) {
   if (bellOpen.value && !e.target.closest('.bell-menu')) bellOpen.value = false
   if (themeMenuOpen.value && !e.target.closest('.theme-menu')) themeMenuOpen.value = false
+  if (userMenuOpen.value && !e.target.closest('.user-menu')) userMenuOpen.value = false
 }
 
 function onKeydown(e) {
   if (e.key === 'Escape') {
     bellOpen.value = false
     themeMenuOpen.value = false
+    userMenuOpen.value = false
+    pwdOpen.value = false
   }
 }
 
@@ -247,6 +315,13 @@ onMounted(() => {
     graphProvider.value = cfg.graph_provider || ''
   }).catch(() => {})
 
+  // 登录态：先取总开关，已登录时再拉当前用户（菜单按权限过滤）
+  loadAuthStatus().then(async () => {
+    if (auth.enabled && isLoggedIn()) {
+      try { await loadMe() } catch { /* 登录失效时由拦截器统一跳登录页 */ }
+    }
+  })
+
   // 消息计数：首屏拉一次；之后由 SSE 长连接推送变更，不再定时轮询
   refreshNotifications()
   startNotificationStream()
@@ -288,7 +363,7 @@ onBeforeUnmount(() => {
       </div>
 
       <nav class="nav">
-        <template v-for="item in menuItems" :key="item.key || item.label">
+        <template v-for="item in visibleMenu" :key="item.key || item.label">
           <div v-if="item.type === 'group'" class="nav-group-label">
             <span class="nav-group-icon" v-html="groupIcons[item.icon]"></span>
             <span class="nav-group-text">{{ item.label }}</span>
@@ -450,7 +525,61 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
+
+        <!-- 当前用户 -->
+        <div v-if="auth.enabled" class="user-menu" :class="{ 'is-open': userMenuOpen }">
+          <button
+            class="user-btn"
+            type="button"
+            aria-haspopup="menu"
+            :aria-expanded="userMenuOpen"
+            :title="displayName"
+            @click="userMenuOpen = !userMenuOpen"
+          >
+            <span class="user-avatar">{{ avatarText }}</span>
+            <span class="user-name">{{ displayName }}</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="user-dropdown" role="menu">
+            <div class="ud-head">
+              <span class="ud-avatar">{{ avatarText }}</span>
+              <div class="ud-meta">
+                <div class="ud-name">{{ displayName }}</div>
+                <div class="ud-roles">{{ roleSummary }}</div>
+              </div>
+            </div>
+            <button class="ud-item" type="button" role="menuitem" @click="userMenuOpen = false; pwdOpen = true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
+              修改密码
+            </button>
+            <button class="ud-item danger" type="button" role="menuitem" @click="onLogout">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h10"/></svg>
+              退出登录
+            </button>
+          </div>
+        </div>
       </header>
+
+      <!-- 修改密码 -->
+      <div v-if="pwdOpen" class="ks-mask" @click.self="pwdOpen = false">
+        <div class="ks-modal">
+          <h3 class="ks-modal-title">修改密码</h3>
+          <p class="ks-modal-desc">修改成功后所有已登录设备将退出，需要重新登录。</p>
+          <label class="ks-field">
+            <span>原密码</span>
+            <input v-model="pwdForm.old_password" class="ks-input" type="password" autocomplete="current-password" />
+          </label>
+          <label class="ks-field">
+            <span>新密码</span>
+            <input v-model="pwdForm.new_password" class="ks-input" type="password" autocomplete="new-password" />
+          </label>
+          <p v-if="pwdError" class="ks-error">{{ pwdError }}</p>
+          <footer class="ks-modal-foot">
+            <button class="ks-btn" @click="pwdOpen = false">取消</button>
+            <button class="ks-btn primary" @click="submitPassword">确认修改</button>
+          </footer>
+        </div>
+      </div>
 
       <div class="main-content">
         <router-view v-slot="{ Component, route }">
@@ -1133,4 +1262,50 @@ onBeforeUnmount(() => {
   .main-area.home-main .main-content { padding-bottom: 0; }
   .topbar { padding: 0 14px; }
 }
+
+/* ── 顶栏用户菜单 ── */
+.user-menu { position: relative; }
+.user-btn {
+  display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 8px 0 4px;
+  border: 1px solid transparent; border-radius: 999px; background: transparent;
+  color: var(--c-fg); cursor: pointer; font-family: var(--font); font-size: 13px;
+}
+.user-btn:hover { background: var(--c-muted); border-color: var(--c-border); }
+.user-avatar, .ud-avatar {
+  display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--c-btn-primary-bg, var(--c-accent)); color: #fff; font-size: 12px; font-weight: 700;
+}
+.user-name { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.user-dropdown {
+  position: absolute; right: 0; top: calc(100% + 8px); min-width: 210px; z-index: 50;
+  background: var(--c-panel-elevated); border: 1px solid var(--c-border);
+  border-radius: 10px; padding: 6px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+  opacity: 0; visibility: hidden; transform: translateY(-4px); transition: opacity 140ms, transform 140ms;
+}
+.user-menu.is-open .user-dropdown { opacity: 1; visibility: visible; transform: translateY(0); }
+.ud-head { display: flex; align-items: center; gap: 9px; padding: 8px 10px 10px; border-bottom: 1px solid var(--c-border); }
+.ud-avatar { width: 30px; height: 30px; font-size: 13px; }
+.ud-name { font-size: 13px; font-weight: 700; }
+.ud-roles { font-size: 11.5px; color: var(--c-secondary); }
+.ud-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 4px; padding: 8px 10px;
+  border: none; border-radius: 7px; background: transparent; color: var(--c-fg);
+  font-size: 13px; font-family: var(--font); cursor: pointer; text-align: left;
+}
+.ud-item:hover { background: var(--c-muted); }
+.ud-item.danger { color: var(--c-danger); }
+
+/* ── 修改密码弹窗 ── */
+.ks-mask { position: fixed; inset: 0; background: var(--c-overlay); display: flex; align-items: center; justify-content: center; z-index: 80; padding: 20px; }
+.ks-modal { width: 100%; max-width: 360px; background: var(--c-panel); border: 1px solid var(--c-border); border-radius: 12px; padding: 20px 22px; }
+.ks-modal-title { font-size: 15px; font-weight: 700; }
+.ks-modal-desc { margin: 6px 0 14px; font-size: 12px; color: var(--c-secondary); line-height: 1.6; }
+.ks-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; font-size: 12px; font-weight: 600; color: var(--c-secondary); }
+.ks-input { height: 34px; padding: 0 10px; font-size: 13px; font-family: var(--font); border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-fg); outline: none; }
+.ks-input:focus { border-color: var(--c-accent); }
+.ks-error { margin-bottom: 10px; padding: 7px 10px; font-size: 12.5px; color: var(--c-danger); border: 1px solid color-mix(in srgb, var(--c-danger) 30%, transparent); background: color-mix(in srgb, var(--c-danger) 10%, transparent); border-radius: var(--radius-sm); }
+.ks-modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.ks-btn { height: 32px; padding: 0 14px; font-size: 13px; font-weight: 600; font-family: var(--font); border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-bg); color: var(--c-fg); cursor: pointer; }
+.ks-btn:hover { background: var(--c-muted); }
+.ks-btn.primary { background: var(--c-btn-primary-bg, var(--c-accent)); border-color: transparent; color: #fff; }
 </style>
