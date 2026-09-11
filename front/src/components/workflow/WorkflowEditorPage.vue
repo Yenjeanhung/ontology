@@ -45,6 +45,7 @@ const DEFAULT_CONFIG = {
     structured_outputs: [],
   },
   human: {
+    require_approval: true,     // 是否需要人工审批：新建默认开启；关闭时自动通过，不产生待办
     mode: 'approve',            // approve = 审批（通过/驳回）| form = 表单填写
     description: '',            // 给处理人的说明，支持 {{变量}}
     display_fields: [],         // 只读待审内容：{ label, value, type }
@@ -224,6 +225,8 @@ function hideVarTooltip() {
 
 const wfName = ref('')
 const wfDesc = ref('')
+const wfCategory = ref('')       // 所属本体类别 id（''=未分类）
+const wfCategories = ref([])     // 本体类别列表（顶层模块）
 const nodes = ref([])
 const edges = ref([])
 const selectedNodeId = ref(null)
@@ -332,6 +335,7 @@ onMounted(async () => {
     const [wf, pal] = await Promise.all([getWorkflow(wfId), fetchWorkflowPalette()])
     wfName.value = wf.name
     wfDesc.value = wf.description || ''
+    wfCategory.value = wf.category_id || ''
     palette.value = pal
     const def = wf.definition || { nodes: [], edges: [] }
     nodes.value = (def.nodes || []).map(toFlowNode)
@@ -546,6 +550,7 @@ function toggleRejectRequired(e) {
 /** 保存前规范化人工节点配置：optionsText ↔ options、缺省补齐、表单模式清空 decisions */
 function normalizeHumanConfig(cfg) {
   const c = cfg || {}
+  c.require_approval = !!c.require_approval
   c.mode = c.mode === 'form' ? 'form' : 'approve'
   if (!c.comment) c.comment = { label: '处理意见', placeholder: '', required: false, required_on: ['rejected'] }
   if (!Array.isArray(c.comment.required_on)) c.comment.required_on = ['rejected']
@@ -621,6 +626,7 @@ const ontoCascadeCat = reactive({})  // 行级 UI 状态：row._id → 已选类
 async function loadOntologyOptions() {
   try {
     const cats = await fetchOntologyCategories()
+    wfCategories.value = cats || []
     const groups = await Promise.all((cats || []).map(async c => {
       const list = await fetchOntologies(c.id).catch(() => [])
       return { id: c.id, label: c.name, options: (list || []).map(o => ({ value: o.id, label: o.name })) }
@@ -770,7 +776,7 @@ function selectNode(id) {
     if (n?.type === 'service') loadSvc(n.data.config)
   }
 }
-function onNodeClick({ node }) {
+function onNodeClick({ node, event }) {
   selectNode(node.id)
   drawerCollapsed.value = false  // 点击节点自动展开配置抽屉，保证「运行输出」立即可见
   // 运行输出分区位于抽屉滚动区顶部：重置滚动位置，避免上次看配置滚下去后运行输出被卷走看不见
@@ -778,8 +784,11 @@ function onNodeClick({ node }) {
     const body = document.querySelector('.wf-drawer .dr-body')
     if (body) body.scrollTop = 0
   })
-  // 人工节点等待处理：点击直接弹出审批框（工作流内闭环处理，不必去待办中心）
-  if (node.type === 'human' && node.data?.status === 'waiting' && pendingTasks[node.id]) {
+  // 人工节点等待处理：仅点击节点上的「点击处理」按钮才弹出审批框；点其他位置只展开右侧配置抽屉
+  if (
+    node.type === 'human' && node.data?.status === 'waiting' && pendingTasks[node.id] &&
+    event?.target?.closest?.('.wf-waiting-btn')
+  ) {
     humanModalNodeId.value = node.id
   }
 }
@@ -1310,7 +1319,7 @@ async function save() {
     edges: edges.value.map(fromFlowEdge),
   }
   try {
-    await updateWorkflow(wfId, { name: wfName.value, description: wfDesc.value, definition })
+    await updateWorkflow(wfId, { name: wfName.value, description: wfDesc.value, definition, category_id: wfCategory.value || '' })
     saved.value = true
     toast.success('已保存')
     setTimeout(() => { saved.value = false }, 2000)
@@ -1687,7 +1696,7 @@ function endConsoleResize() {
 // ── 抽屉宽度拖拽（左边缘把手，280–560px，记忆到 localStorage） ──
 const DRAWER_W_KEY = 'knowsource.workflow.drawerWidth'
 const drawerWidth = ref(parseInt(localStorage.getItem(DRAWER_W_KEY) || '', 10) || 340)
-const drawerCollapsed = ref(false)
+const drawerCollapsed = ref(true)  // 刚进入页面默认收起，点节点或点把手再展开
 let resizing = false
 function startDrawerResize(e) {
   resizing = true
@@ -1795,6 +1804,10 @@ watch(nowTick, () => {
     <div class="wf-toolbar">
       <button class="btn" @click="router.push('/workflows')">← 返回</button>
       <input class="wf-name" v-model="wfName" placeholder="工作流名称">
+      <select v-if="wfCategories.length" class="wf-cat-select" v-model="wfCategory" title="所属本体类别">
+        <option value="">未分类</option>
+        <option v-for="c in wfCategories" :key="c.id" :value="c.id">{{ c.name }}</option>
+      </select>
       <span v-if="saved" class="wf-saved">已保存</span>
       <div class="spacer"></div>
       <button class="btn" @click="autoLayout" title="按拓扑层级自动排列节点">一键整理</button>
@@ -2104,25 +2117,17 @@ watch(nowTick, () => {
 
             <!-- 人工 -->
             <template v-else-if="selectedType === 'human'">
-              <!-- 运行中挂起：直接在抽屉里处理 -->
-              <div class="human-pending" v-if="pendingTasks[selectedNodeId]">
-                <div class="hp-title">👤 待处理</div>
-                <HumanTaskForm
-                  :mode="pendingTasks[selectedNodeId].mode"
-                  :description="pendingTasks[selectedNodeId].description"
-                  :form-data="pendingTasks[selectedNodeId].form_data"
-                  :form-fields="pendingTasks[selectedNodeId].form_fields"
-                  :decisions="pendingTasks[selectedNodeId].decisions"
-                  :submit-text="pendingTasks[selectedNodeId].submit_text"
-                  :comment-label="pendingTasks[selectedNodeId].comment_label"
-                  :comment-placeholder="pendingTasks[selectedNodeId].comment_placeholder"
-                  :comment-required="pendingTasks[selectedNodeId].comment_required"
-                  :task-id="pendingTasks[selectedNodeId].task_id"
-                  :assignee="pendingTasks[selectedNodeId].assignee"
-                  :due-at="pendingTasks[selectedNodeId].due_at"
-                  :submitting="!!submittingTask[selectedNodeId]"
-                  @submit="p => handleHumanSubmit(selectedNodeId, p)"
-                />
+              <!-- 是否需要人工审批：关闭时运行直接自动通过 -->
+              <div class="field">
+                <label class="approval-switch">
+                  <input type="checkbox" v-model="selectedConfig.require_approval" />
+                  <span class="as-track"><span class="as-thumb"></span></span>
+                  <span class="as-text">需要人工审批</span>
+                </label>
+                <p class="field-hint">
+                  开启：运行到本节点挂起，等待人工处理（通过 / 驳回）；<br />
+                  关闭：自动通过并继续，不产生待办。
+                </p>
               </div>
 
               <div class="field">
@@ -2783,6 +2788,8 @@ watch(nowTick, () => {
 .wf-toolbar { display: flex; align-items: center; gap: 10px; }
 .wf-name { flex: 0 0 auto; width: 240px; padding: 7px 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px); font-size: 14px; font-weight: 600; font-family: var(--font); outline: none; background: var(--c-panel); color: var(--c-fg); }
 .wf-name:focus { border-color: var(--c-accent); }
+.wf-cat-select { flex: 0 0 auto; max-width: 160px; padding: 7px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px); font-size: 12px; font-family: var(--font); outline: none; background: var(--c-panel); color: var(--c-secondary); }
+.wf-cat-select:focus { border-color: var(--c-accent); color: var(--c-fg); }
 .wf-saved { font-size: 12px; color: var(--c-success); font-weight: 600; }
 .spacer { flex: 1; }
 
@@ -2793,12 +2800,20 @@ watch(nowTick, () => {
   background: rgba(217,119,6,.12); border: 1px solid #d97706;
 }
 
-/* 抽屉内的人工任务处理卡 */
-.human-pending {
-  margin-bottom: 12px; padding: 10px; border-radius: 8px;
-  border: 1px dashed #d97706; background: rgba(217,119,6,.07);
+/* 「需要人工审批」开关 */
+.approval-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.approval-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.approval-switch .as-track {
+  width: 34px; height: 18px; border-radius: 999px; flex: none;
+  background: var(--c-border); position: relative; transition: background 150ms;
 }
-.hp-title { font-size: 11.5px; font-weight: 700; color: #b45309; margin-bottom: 8px; }
+.approval-switch .as-thumb {
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; transition: transform 150ms;
+}
+.approval-switch input:checked + .as-track { background: var(--c-success, #16a34a); }
+.approval-switch input:checked + .as-track .as-thumb { transform: translateX(16px); }
+.approval-switch .as-text { font-size: 13px; font-weight: 600; color: var(--c-fg); }
 
 /* 画布内人工审批弹窗 */
 .human-modal { width: 520px; max-width: 92vw; max-height: 82vh; overflow-y: auto; }
@@ -2899,6 +2914,11 @@ watch(nowTick, () => {
 
 /* 画布 */
 .wf-canvas-wrap { flex: 1; position: relative; border: 1px solid var(--c-border); border-radius: 12px; overflow: hidden; background: var(--c-bg); }
+/* 连线样式：圆头加粗、hover/选中高亮，配合 smoothstep 圆角路由 */
+.wf-canvas-wrap .vue-flow__edge-path { stroke: #5b6472; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transition: stroke 150ms; }
+.wf-canvas-wrap .vue-flow__edge:hover .vue-flow__edge-path { stroke: var(--c-accent, #4f8ef7); }
+.wf-canvas-wrap .vue-flow__edge.selected .vue-flow__edge-path { stroke: var(--c-accent, #4f8ef7); stroke-width: 2.2; }
+.wf-canvas-wrap .vue-flow__connection-path { stroke: #5b6472; stroke-width: 1.6; stroke-linecap: round; }
 .wf-console { position: relative; flex-shrink: 0; height: 220px; display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: 10px; background: var(--c-panel); overflow: hidden; }
 /* 顶边缘拖拽把手：hover/拖动时高亮横线 */
 .console-resizer {

@@ -1750,10 +1750,30 @@ def _make_node_fn(rt: _Runtime, node: dict):
         rt.node_states[nid] = {"status": "running", "input": input_view, "title": title, "started_at": datetime.now().isoformat()}
         t0 = time.monotonic()
 
-        # ── 人工节点：挂起等待人工处理（不进入常规执行分支）──
+        # ── 人工节点 ──
         if node.get("type") == "human":
-            await _suspend_at_human_node(rt, node, context, input_view, state)
-            # 正常不会返回：内部抛 _NodeSuspended 终止整图
+            if (node.get("config") or {}).get("require_approval"):
+                # 需要人工审批：挂起等待人工处理（不进入常规执行分支）
+                await _suspend_at_human_node(rt, node, context, input_view, state)
+                # 正常不会返回：内部抛 _NodeSuspended 终止整图
+            # 免审批模式：自动通过，输出结构与人工审批一致，下游分支照常按 approved 路由
+            out = _project_output(node, {
+                "approved": True, "decision": "approved", "data": {},
+                "comment": "", "operator": "system",
+                "decided_at": datetime.now().isoformat(),
+            })
+            dur = int((time.monotonic() - t0) * 1000)
+            rt.node_states[nid] = {
+                "status": "succeeded", "output": out, "duration_ms": dur,
+                "summary": "免审批 · 自动通过", "title": title,
+            }
+            logger.info("[run %s] 人工节点免审批自动通过 %s (%s)", rt.run_id, nid, title)
+            rt.emit({
+                "type": "node_finished", "node_id": nid, "title": title,
+                "summary": "免审批 · 自动通过", "duration_ms": dur,
+                "output": _truncate_output(out),
+            })
+            return {"outputs": {nid: out}}
 
         # 智能体节点流式执行：token / reasoning 实时下发，同时保持最终 result 一致
         accumulated: list[str] = []

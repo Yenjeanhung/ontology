@@ -55,6 +55,7 @@ class WorkflowSaveRequest(BaseModel):
     name: str
     description: str = ""
     definition: dict | None = None  # {nodes: [...], edges: [...]}
+    category_id: str | None = None  # 所属本体类别 id；空串 = 未分类
 
 
 class RunWorkflowRequest(BaseModel):

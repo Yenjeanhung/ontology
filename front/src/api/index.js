@@ -2104,11 +2104,11 @@ export async function getWorkflow(workflowId) {
   return res.json()
 }
 
-export async function createWorkflow({ name, description = '', definition = null }) {
+export async function createWorkflow({ name, description = '', definition = null, category_id = '' }) {
   const res = await fetch(`${API}/api/workflows`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, definition }),
+    body: JSON.stringify({ name, description, definition, category_id }),
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
@@ -2117,11 +2117,11 @@ export async function createWorkflow({ name, description = '', definition = null
   return res.json()
 }
 
-export async function updateWorkflow(workflowId, { name, description, definition }) {
+export async function updateWorkflow(workflowId, { name, description, definition, category_id }) {
   const res = await fetch(`${API}/api/workflows/${workflowId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, definition }),
+    body: JSON.stringify({ name, description, definition, category_id }),
   })
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))

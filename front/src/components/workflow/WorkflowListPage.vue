@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, onActivated, ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchWorkflows, createWorkflow, deleteWorkflow } from '../../api'
+import { fetchWorkflows, createWorkflow, deleteWorkflow, fetchOntologyCategories } from '../../api'
 import { useToast } from '../../composables/useToast'
 import ModalDialog from '../common/ModalDialog.vue'
 import Pagination from '../common/Pagination.vue'
@@ -10,15 +10,23 @@ const router = useRouter()
 const toast = useToast()
 
 const workflows = ref([])
+const categories = ref([])            // 本体类别（顶层模块）
+const selectedCategory = ref('')      // ''=全部 | 类别id | '__none__'=未分类
 const loading = ref(true)
 const page = ref(1)
 const pageSize = ref(10)
+const catNameMap = computed(() => Object.fromEntries(categories.value.map(c => [c.id, c.name])))
+const filteredWorkflows = computed(() => {
+  if (!selectedCategory.value) return workflows.value
+  if (selectedCategory.value === '__none__') return workflows.value.filter(w => !w.category_id)
+  return workflows.value.filter(w => w.category_id === selectedCategory.value)
+})
 const pagedWorkflows = computed(() =>
-  workflows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
+  filteredWorkflows.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
 )
-watch(workflows, () => { page.value = 1 }, { deep: true })
+watch([filteredWorkflows, selectedCategory], () => { page.value = 1 })
 
-const createDialog = ref({ visible: false, name: '', loading: false })
+const createDialog = ref({ visible: false, name: '', category_id: '', loading: false })
 const deleteDialog = ref({ visible: false, id: null, name: '', loading: false })
 
 onMounted(loadAll)
@@ -27,12 +35,16 @@ onActivated(loadAll)
 
 async function loadAll() {
   loading.value = true
-  try { workflows.value = await fetchWorkflows() } catch { toast.error('加载工作流失败') }
+  try {
+    const [list, cats] = await Promise.all([fetchWorkflows(), fetchOntologyCategories().catch(() => [])])
+    workflows.value = list
+    categories.value = cats || []
+  } catch { toast.error('加载工作流失败') }
   loading.value = false
 }
 
 function openCreate() {
-  createDialog.value = { visible: true, name: '', loading: false }
+  createDialog.value = { visible: true, name: '', category_id: selectedCategory.value === '__none__' ? '' : selectedCategory.value, loading: false }
 }
 
 async function doCreate() {
@@ -40,7 +52,7 @@ async function doCreate() {
   if (!name) { toast.error('名称不能为空'); return }
   createDialog.value.loading = true
   try {
-    const created = await createWorkflow({ name })
+    const created = await createWorkflow({ name, category_id: createDialog.value.category_id || '' })
     toast.success('工作流已创建')
     createDialog.value.visible = false
     await loadAll()
@@ -81,6 +93,16 @@ async function doDelete() {
       </div>
     </div>
 
+    <!-- 本体类别筛选（顶层模块维度） -->
+    <div class="cat-filter" v-if="categories.length">
+      <label for="wf-cat-select">所属类别</label>
+      <select id="wf-cat-select" v-model="selectedCategory">
+        <option value="">全部</option>
+        <option v-for="c in categories" :key="c.id" :value="c.id">{{ c.name }}</option>
+        <option value="__none__">未分类</option>
+      </select>
+    </div>
+
     <div class="wf-grid">
       <div v-for="w in pagedWorkflows" :key="w.id" class="wf-card" @click="router.push(`/workflows/${w.id}`)">
         <div class="wf-card-top">
@@ -89,18 +111,19 @@ async function doDelete() {
         </div>
         <div class="wf-card-desc" v-if="w.description">{{ w.description }}</div>
         <div class="wf-card-meta">
+          <span class="meta-tag cat" v-if="w.category_id && catNameMap[w.category_id]">{{ catNameMap[w.category_id] }}</span>
           <span class="meta-tag">节点 {{ w.node_count }}</span>
           <span class="meta-tag">连线 {{ w.edge_count }}</span>
           <span class="meta-tag time">{{ w.updated_at || w.created_at }}</span>
         </div>
       </div>
 
-      <div class="wf-empty" v-if="!loading && !workflows.length">
-        暂无工作流，点击右上角「新建工作流」开始编排
+      <div class="wf-empty" v-if="!loading && !filteredWorkflows.length">
+        {{ selectedCategory ? '该类别下暂无工作流' : '暂无工作流，点击右上角「新建工作流」开始编排' }}
       </div>
       <div class="wf-empty" v-if="loading">加载中...</div>
     </div>
-    <Pagination v-if="workflows.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="workflows.length" />
+    <Pagination v-if="filteredWorkflows.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="filteredWorkflows.length" />
 
     <ModalDialog
       v-model="createDialog.visible"
@@ -113,6 +136,13 @@ async function doDelete() {
         <div class="field">
           <label>名称 <span class="req">*</span></label>
           <input type="text" v-model="createDialog.name" placeholder="如：财务智能分析" @keydown.enter="doCreate">
+        </div>
+        <div class="field" v-if="categories.length">
+          <label>所属本体类别</label>
+          <select v-model="createDialog.category_id">
+            <option value="">未分类</option>
+            <option v-for="c in categories" :key="c.id" :value="c.id">{{ c.name }}</option>
+          </select>
         </div>
       </div>
     </ModalDialog>
@@ -153,9 +183,22 @@ async function doDelete() {
 
 .form { padding: 4px 0; }
 .field { display: flex; flex-direction: column; gap: 5px; }
+.field + .field { margin-top: 12px; }
 .field label { font-size: 12px; font-weight: 600; color: var(--c-secondary); }
 .field input { padding: 8px 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px); font-size: 13px; font-family: var(--font); outline: none; background: var(--c-bg); color: var(--c-fg); }
 .field input:focus { border-color: var(--c-accent); }
+.field select { padding: 8px 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px); font-size: 13px; font-family: var(--font); outline: none; background: var(--c-bg); color: var(--c-fg); }
+.field select:focus { border-color: var(--c-accent); }
+
+.cat-filter { display: flex; align-items: center; gap: 8px; }
+.cat-filter label { font-size: 12px; font-weight: 600; color: var(--c-secondary); }
+.cat-filter select {
+  min-width: 180px; padding: 6px 12px; font-size: 13px; font-family: var(--font);
+  border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px);
+  background: var(--c-panel); color: var(--c-fg); outline: none; cursor: pointer;
+}
+.cat-filter select:focus { border-color: var(--c-accent); }
+.meta-tag.cat { color: var(--c-accent); background: transparent; border: 1px solid var(--c-accent); }
 .req { color: var(--c-danger); }
 .del-body { font-size: 13px; color: var(--c-fg); line-height: 1.6; }
 </style>

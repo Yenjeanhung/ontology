@@ -443,3 +443,6 @@ ALTER TABLE ontology_attributes ADD COLUMN is_shared_created INTEGER NOT NULL DE
 -- migration_027: 动作编排（execution_mode / flow），只加列、不回填历史数据
 ALTER TABLE ontology_services ADD COLUMN IF NOT EXISTS execution_mode VARCHAR(10) NOT NULL DEFAULT 'code';
 ALTER TABLE ontology_services ADD COLUMN IF NOT EXISTS flow TEXT DEFAULT NULL;
+
+-- migration_028: 工作流归属本体类别（顶层模块维度管理；空串 = 未分类）
+ALTER TABLE workflows ADD COLUMN category_id VARCHAR DEFAULT '';

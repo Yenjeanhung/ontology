@@ -762,6 +762,8 @@ class Workflow(Base):
     name = Column(String(100), nullable=False)
     description = Column(Text, default="")
     definition = Column(Text, nullable=False, default='{"nodes":[],"edges":[]}')
+    # 所属本体类别（顶层模块，逻辑关联 ontology_categories.id，无外键；空串 = 未分类）
+    category_id = Column(String, nullable=False, default="")
     is_published = Column(Integer, nullable=False, default=0)  # 预留：发布为端点（v2）
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())

@@ -69,7 +69,8 @@ async def create_workflow(req: WorkflowSaveRequest, db: AsyncSession = Depends(g
     if err and definition.get("nodes"):
         raise HTTPException(400, err)
     return await WorkflowService.create(
-        db, {"name": name, "description": req.description or "", "definition": definition},
+        db, {"name": name, "description": req.description or "",
+             "category_id": (req.category_id or "").strip(), "definition": definition},
     )
 
 
@@ -87,6 +88,9 @@ async def update_workflow(workflow_id: str, req: WorkflowSaveRequest, db: AsyncS
     if not name:
         raise HTTPException(400, "工作流名称不能为空")
     data = {"name": name, "description": req.description or ""}
+    # 类别：显式传入才更新（None = 不修改；空串 = 清除为未分类）
+    if req.category_id is not None:
+        data["category_id"] = req.category_id.strip()
     if req.definition is not None:
         err = validate_definition(req.definition)
         if err:
