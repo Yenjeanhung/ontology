@@ -189,6 +189,15 @@ onMounted(load)
         <footer class="modal-foot"><button class="btn" @click="detail = null">关闭</button></footer>
       </div>
     </div>
+
+    <!-- 统一确认弹窗 -->
+    <ConfirmDialog
+      v-model="confirmDlg.visible"
+      :title="confirmDlg.title"
+      :message="confirmDlg.message"
+      :confirm-text="confirmDlg.confirmText"
+      @confirm="runConfirm"
+    />
   </div>
 </template>
 

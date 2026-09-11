@@ -141,15 +141,25 @@ async def set_user_status(user_id: str, req: Request, db: AsyncSession = Depends
 @router.post("/users/{user_id}/reset-password")
 async def reset_password(user_id: str, req: Request, db: AsyncSession = Depends(get_db)):
     current = get_current_user(req)
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    new_password = (body.get("new_password") or "").strip()
     target = await db.get(User, user_id)
     if not target:
         raise HTTPException(status_code=404, detail="用户不存在")
-    result = await UserService.reset_password(db, user_id, operator=current.get("username") or "")
+    try:
+        result = await UserService.reset_password(
+            db, user_id, operator=current.get("username") or "", new_password=new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     from middleware.permission import invalidate_user
 
     invalidate_user(user_id)
     AuditService.record(
-        **audit_ctx(req), module="system", action="update", action_label="重置密码",
+        **audit_ctx(req), module="system", action="update",
+        action_label="修改密码" if new_password else "重置密码",
         target_type="user", target_id=user_id, target_name=target.username,
     )
     return result

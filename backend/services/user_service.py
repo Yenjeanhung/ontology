@@ -202,6 +202,16 @@ class UserService:
         for field in ("nickname", "email", "phone", "avatar", "remark"):
             if field in payload and payload[field] is not None:
                 setattr(user, field, str(payload[field]))
+        # 重设密码：填写了 password 才更新，并走强度校验（不满足时抛 ValueError）
+        new_password = payload.get("password")
+        if new_password:
+            validate_password(new_password)
+            user.password_hash = await hash_password_async(new_password)
+            user.must_change_password = 0
+            user.failed_attempts = 0
+            user.locked_until = None
+            user.password_changed_at = now_iso()
+            user.token_version = int(user.token_version or 1) + 1
         user.updated_at = now_iso()
         if "role_ids" in payload and payload["role_ids"] is not None:
             await UserService.set_roles(db, user_id, payload["role_ids"], operator)
@@ -249,13 +259,21 @@ class UserService:
         await db.flush()
 
     @staticmethod
-    async def reset_password(db: AsyncSession, user_id: str, operator: str = "") -> dict:
+    async def reset_password(db: AsyncSession, user_id: str, operator: str = "", new_password: str = "") -> dict:
         user = await db.get(User, user_id)
         if not user:
             raise ValueError("用户不存在")
-        temp = generate_temp_password()
+        if new_password:
+            # 管理员指定新密码：走强度校验，无需首次登录再改
+            validate_password(new_password)
+            temp = new_password
+            must_change = 0
+        else:
+            # 随机重置：首次登录需修改
+            temp = generate_temp_password()
+            must_change = 1
         user.password_hash = await hash_password_async(temp)
-        user.must_change_password = 1
+        user.must_change_password = must_change
         user.failed_attempts = 0
         user.locked_until = None
         user.password_changed_at = now_iso()

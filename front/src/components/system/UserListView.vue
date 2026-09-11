@@ -26,6 +26,7 @@ async function runConfirm() {
 /* ESC 关闭：按弹窗层级从上到下（越靠后优先级越高） */
 useEscClose(() => [
   [pwdResult.value != null, closePwdResult],
+  [pwdEditing.value, () => { pwdEditing.value = false }],
   [confirmDlg.value.visible, () => { confirmDlg.value.visible = false }],
   [editing.value, () => { editing.value = false }],
   [groupEditing.value, () => { groupEditing.value = false }],
@@ -156,19 +157,44 @@ async function toggleStatus(row) {
   } catch (err) { errorMsg.value = err.message }
 }
 
+/* ── 修改密码弹窗（管理员为用户设置新密码，支持随机生成） ── */
+const pwdEditing = ref(false)
+const pwdForm = ref({ id: '', username: '', password: '' })
+const pwdError = ref('')
+
 function resetPwd(row) {
-  askConfirm({
-    title: '重置密码',
-    message: `确认重置 ${row.username} 的密码？\n重置后该用户所有登录态失效。`,
-    confirmText: '重置',
-    action: async () => {
-      try {
-        const res = await userApi.resetPassword(row.id)
-        pwdResult.value = { title: '密码已重置', username: res.username, password: res.temp_password }
-        await loadUsers()
-      } catch (err) { errorMsg.value = err.message }
-    },
-  })
+  pwdForm.value = { id: row.id, username: row.username, password: '' }
+  pwdError.value = ''
+  pwdEditing.value = true
+}
+
+/* 随机生成兼容各复杂度策略的密码（大小写 + 数字 + 特殊字符，避开易混淆字符） */
+function genPassword() {
+  const sets = ['abcdefghjkmnpqrstuvwxyz', 'ABCDEFGHJKLMNPQRSTUVWXYZ', '23456789', '!@#$%^&*']
+  const all = sets.join('')
+  const rand = (n) => crypto.getRandomValues(new Uint32Array(1))[0] % n
+  const chars = [...sets.map((s) => s[rand(s.length)]), ...Array.from({ length: 8 }, () => all[rand(all.length)])]
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = rand(i + 1)
+    ;[chars[i], chars[j]] = [chars[j], chars[i]]
+  }
+  pwdForm.value.password = chars.join('')
+}
+
+async function savePassword() {
+  pwdError.value = ''
+  if (!pwdForm.value.password) {
+    pwdError.value = '请输入新密码，或点击「随机生成」'
+    return
+  }
+  try {
+    const res = await userApi.resetPassword(pwdForm.value.id, pwdForm.value.password)
+    pwdEditing.value = false
+    pwdResult.value = {
+      title: '密码已修改', username: res.username, password: res.temp_password,
+      pwdLabel: '新密码', tip: '密码已生效，该用户所有登录态已失效，请将新密码告知用户。',
+    }
+  } catch (err) { pwdError.value = err.message }
 }
 
 function removeUser(row) {
@@ -320,7 +346,7 @@ onMounted(async () => {
               <td class="dim">{{ (u.last_login_at || '').replace('T', ' ').slice(0, 16) || '-' }}</td>
               <td class="ta-r ops">
                 <button class="link" @click="openEdit(u)">编辑</button>
-                <button class="link" @click="resetPwd(u)">重置密码</button>
+                <button class="link" @click="resetPwd(u)">修改密码</button>
                 <button class="link" :disabled="u.is_system" @click="toggleStatus(u)">
                   {{ u.status === 'active' ? '停用' : '启用' }}
                 </button>
@@ -443,7 +469,39 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- 初始密码展示（创建/重置成功后一次性显示，点击遮罩不关闭） -->
+    <!-- 修改密码弹窗（点击遮罩不关闭） -->
+    <div v-if="pwdEditing" class="mask">
+      <div class="modal modal-sm">
+        <header class="modal-head">
+          <h3 class="modal-title">修改密码</h3>
+          <button class="modal-close" title="关闭" @click="pwdEditing = false">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </header>
+        <div class="modal-body">
+          <p class="pwd-warn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /></svg>
+            修改后该用户所有登录态立即失效，需使用新密码重新登录。
+          </p>
+          <div class="grid">
+            <label class="f"><span>用户名</span><input class="input" :value="pwdForm.username" disabled /></label>
+            <label class="f span2"><span>新密码 <b>*</b></span>
+              <div class="pwd-input">
+                <input v-model="pwdForm.password" class="input" type="text" autocomplete="off" placeholder="输入新密码，或点击随机生成" />
+                <button class="btn gen" @click="genPassword">随机生成</button>
+              </div>
+            </label>
+          </div>
+        </div>
+        <p v-if="pwdError" class="err-bar modal-err">{{ pwdError }}</p>
+        <footer class="modal-foot">
+          <button class="btn" @click="pwdEditing = false">取消</button>
+          <button class="btn primary" @click="savePassword">确认修改</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- 密码展示（创建用户/修改密码成功后一次性显示，点击遮罩不关闭） -->
     <div v-if="pwdResult" class="mask">
       <div class="modal modal-sm">
         <header class="modal-head">
@@ -455,11 +513,11 @@ onMounted(async () => {
         <div class="modal-body">
           <p class="pwd-warn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /></svg>
-            初始密码仅显示一次，请复制保存并通知用户首次登录后修改。
+            {{ pwdResult.tip || '初始密码仅显示一次，请复制保存并通知用户首次登录后修改。' }}
           </p>
           <div class="pwd-rows">
             <div class="pwd-row"><span>用户名</span><code>{{ pwdResult.username }}</code></div>
-            <div class="pwd-row"><span>初始密码</span><code>{{ pwdResult.password }}</code></div>
+            <div class="pwd-row"><span>{{ pwdResult.pwdLabel || '初始密码' }}</span><code>{{ pwdResult.password }}</code></div>
           </div>
         </div>
         <footer class="modal-foot">
@@ -620,4 +678,8 @@ onMounted(async () => {
   background: var(--c-bg); border: 1px dashed var(--c-border); border-radius: var(--radius-sm);
   color: var(--c-fg); user-select: all;
 }
+/* 修改密码弹窗：输入框 + 随机生成按钮同行 */
+.pwd-input { display: flex; gap: 8px; }
+.pwd-input .input { flex: 1; }
+.pwd-input .gen { flex: none; white-space: nowrap; }
 </style>

@@ -121,7 +121,7 @@ export const userApi = {
   remove: (id) => del(`/api/users/${id}`),
   batchDelete: (ids) => post('/api/users/batch-delete', { ids }),
   setStatus: (id, status) => patch(`/api/users/${id}/status`, { status }),
-  resetPassword: (id) => post(`/api/users/${id}/reset-password`),
+  resetPassword: (id, newPassword) => post(`/api/users/${id}/reset-password`, newPassword ? { new_password: newPassword } : {}),
   setRoles: (id, roleIds) => post(`/api/users/${id}/roles`, { role_ids: roleIds }),
 }
 
