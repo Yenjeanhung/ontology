@@ -36,9 +36,11 @@ const humanResult = computed(() => {
   const decision = out.decision
   if (!decision) return null
   const map = { approved: '通过', rejected: '驳回', submitted: '已提交' }
+  // 系统自动通过（免审批模式）时明确标注，不与人工审批混淆
+  const isAuto = (out.operator || '') === 'system'
   return {
     decision,
-    label: map[decision] || decision,
+    label: decision === 'approved' && isAuto ? '自动通过' : (map[decision] || decision),
     operator: out.operator || '',
     comment: out.comment || '',
   }
@@ -64,6 +66,20 @@ const status = computed(() => props.data?.status || '')
 const elapsedText = computed(() => props.data?.elapsedText || '')
 const currentStep = computed(() => props.data?.step || '')
 const runningSteps = computed(() => props.data?.steps || [])
+// 完成后保留步骤，并把表述转为「已完成」式：去省略号；"思考中"→"思考完成"；其余前缀"已"
+function doneStepText(s) {
+  const t = String(s || '').trim().replace(/[….]+$/u, '').trim()
+  if (!t) return t
+  if (t.endsWith('中')) return t.slice(0, -1) + '完成'
+  if (t.startsWith('已')) return t
+  return '已' + t
+}
+const doneSteps = computed(() => {
+  const arr = runningSteps.value
+  if (status.value === 'succeeded') return arr.map(doneStepText)
+  if (status.value === 'failed') return arr.map((s, i) => (i === arr.length - 1 ? `${s}（未完成）` : doneStepText(s)))
+  return []
+})
 
 const STATUS_LABEL = { running: '运行中', succeeded: '完成', failed: '失败', skipped: '跳过', waiting: '待处理' }
 
@@ -377,6 +393,12 @@ async function copyOutputJson() {
         </div>
       </div>
       <template v-else-if="status !== 'running'">
+        <div class="wf-out-steps" v-if="doneSteps.length">
+          <div v-for="(s, i) in doneSteps" :key="i" class="wf-step-line wf-step-done">
+            <span class="wf-step-dot"></span>
+            <span class="wf-step-label">{{ s }}</span>
+          </div>
+        </div>
         <div class="wf-out-kvs" v-if="customOuts.length">
           <span v-for="o in customOuts" :key="o.k" class="wf-out-kv" @click.stop="outOpen = !outOpen" :title="`${o.k}（点击查看完整输出）`">
             <i>{{ o.k }}</i><b>{{ o.v }}</b>
@@ -555,6 +577,9 @@ async function copyOutputJson() {
   font-size: 10px; line-height: 1.4; color: var(--c-secondary);
 }
 .wf-step-line.wf-step-current { color: var(--c-fg); }
+.wf-step-line.wf-step-done { color: var(--c-secondary); }
+.wf-step-done .wf-step-dot { background: #34d399; opacity: 1; animation: none; }
+.wf-out-steps { margin-bottom: 4px; padding-bottom: 4px; border-bottom: 1px dashed var(--c-border, rgba(255,255,255,.08)); }
 .wf-step-dot {
   flex-shrink: 0; width: 5px; height: 5px; border-radius: 50%;
   background: var(--c-accent); opacity: .7;

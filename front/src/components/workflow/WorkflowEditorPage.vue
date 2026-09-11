@@ -1375,11 +1375,10 @@ function setStatus(nodeId, status, durationMs = null) {
       n.data.step = ''
       n.data.steps = []
     }
-    // succeeded/failed：定格最终耗时（durationMs 优先，缺省用本地计时）
+    // succeeded/failed：定格最终耗时（durationMs 优先，缺省用本地计时）；保留 steps，卡片继续展示已执行步骤
     else if (status === 'succeeded' || status === 'failed') {
       n.data.elapsedText = fmtElapsed(durationMs ?? (runningSince[nodeId] ? Date.now() - runningSince[nodeId] : null))
       n.data.step = ''
-      n.data.steps = []
     }
     else {
       n.data.elapsedText = ''
@@ -1521,8 +1520,14 @@ function streamCallbacks() {
 function restorePendingTask(n, st, runId) {
   if (!n || n.type !== 'human' || st.status !== 'waiting' || !st.task_id) return
   if (pendingTasks[n.id]) return
-  n.data.taskId = st.task_id
   const cfg = n.data?.config || {}
+  // 该节点已切为免审批：旧运行遗留的待办不再恢复成审批弹窗（否则「关了开关还一直弹审批」）
+  if (cfg.require_approval === false) {
+    n.data.status = ''
+    n.data.output = null
+    return
+  }
+  n.data.taskId = st.task_id
   pendingTasks[n.id] = {
     task_id: st.task_id,
     mode: st.mode || cfg.mode || 'approve',
@@ -1591,7 +1596,10 @@ async function startRun() {
   lastRunOk.value = false
   expandedLog.value = -1
   consoleCollapsed.value = false
+  // 运行的是库里已保存的定义：先自动保存，确保画布当前配置（如刚关掉的「需要人工审批」）生效
+  if (!wfName.value.trim()) { toast.error('名称不能为空，无法运行'); running.value = false; return }
   try {
+    await save()
     await runWorkflowStream(wfId, { ...runInputs }, streamCallbacks())
   } catch (err) {
     toast.error(`运行失败: ${err.message}`)
