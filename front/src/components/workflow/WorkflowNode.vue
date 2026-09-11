@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { TYPE_META } from './nodeMeta.js'
 import { marked } from 'marked'
@@ -248,9 +248,26 @@ function togglePopKey(key) {
   expandedPopKey.value = expandedPopKey.value === key ? '' : key
 }
 
+// 浮层打开期间持续跟随节点：拖动节点 / 平移缩放画布 / 窗口变化都不会错位
+let popRafId = 0
+function popFollowLoop() {
+  updatePopPos()
+  popRafId = requestAnimationFrame(popFollowLoop)
+}
+function stopPopFollow() {
+  if (popRafId) cancelAnimationFrame(popRafId)
+  popRafId = 0
+}
 watch(outOpen, (open) => {
-  if (open) updatePopPos()
+  if (open) {
+    updatePopPos()
+    stopPopFollow()
+    popRafId = requestAnimationFrame(popFollowLoop)
+  } else {
+    stopPopFollow()
+  }
 })
+onBeforeUnmount(stopPopFollow)
 let copiedTimer = null
 
 function isMultiLine(v) {
