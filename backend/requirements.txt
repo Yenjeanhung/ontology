@@ -20,7 +20,8 @@ openpyxl>=3.1.0        # 本体 Excel 导入/导出（services/ontology_import_s
 
 # LangChain 核心
 langchain-core>=0.3.0
-langchain-text-splitters>=0.3.0
+langchain-text-splitters>=0.3.0        # CHUNK_BACKEND=langchain 时的 recursive / heading(markdown) 切分
+langchain-experimental>=0.3.0          # CHUNK_BACKEND=langchain + 策略 semantic（SemanticChunker，基于 embedding 断点）
 
 # 工作流引擎（调度层，services/workflow_engine.py）
 langgraph>=0.2.0
@@ -53,6 +54,10 @@ sentence-transformers>=2.2.0
 # 关键词检索（BM25）
 rank-bm25>=0.2.2
 jieba>=0.42.1
+
+# Rerank 精排（RERANK_ENABLED=true 时按需启用）
+langchain-community>=0.3.0           # CrossEncoderReranker / HuggingFaceCrossEncoder 封装
+# sentence-transformers 已随本地嵌入模型安装，cross-encoder 直接复用其 CrossEncoder
 
 # 用户与权限（认证 / JWT / 密码哈希）
 PyJWT>=2.8.0                # JWT 签发与校验

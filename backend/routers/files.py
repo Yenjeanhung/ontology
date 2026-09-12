@@ -18,6 +18,19 @@ class BatchDeleteRequest(BaseModel):
     file_ids: list[str]
 
 
+class ProcessRequest(BaseModel):
+    """处理请求体（可选）：携带用户确认的分片策略与参数。"""
+    strategy: str | None = None
+    params: dict | None = None
+    use_recommendation: bool = True
+
+
+class ChunkPreviewRequest(BaseModel):
+    strategy: str | None = None
+    params: dict | None = None
+    limit: int | None = None
+
+
 @router.post("/upload/chunk")
 async def upload_chunk(
     file_id: str = Form(...),
@@ -35,13 +48,59 @@ async def upload_chunk(
     )
 
 
+@router.post("/files/{file_id}/analyze")
+async def analyze_file(
+    file_id: str,
+    force: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """触发（或重新触发）文档分析，异步执行；状态经 SSE/轮询获取。"""
+    ok = await FileService.start_analysis(file_id, db, force=force)
+    if not ok:
+        raise HTTPException(400, "File not ready for analysis")
+    return {"status": "analyzing"}
+
+
+@router.get("/files/{file_id}/recommendation")
+async def file_recommendation(file_id: str, db: AsyncSession = Depends(get_db)):
+    """获取文档特征与分片策略推荐（未分析时 analysis 为 null）。"""
+    result = await FileService.get_recommendation(db, file_id)
+    if not result:
+        raise HTTPException(404, "File not found")
+    return result
+
+
+@router.post("/files/{file_id}/chunk-preview")
+async def chunk_preview(
+    file_id: str,
+    request: ChunkPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """按指定策略 dry-run 分片，返回前 N 块预览与统计（不落库）。"""
+    result = await FileService.preview_chunks(
+        db, file_id, request.strategy, request.params, request.limit
+    )
+    if not result:
+        raise HTTPException(404, "File not found or not parseable")
+    return result
+
+
 @router.post("/files/{file_id}/process")
 async def process_file(
     file_id: str,
     extract_graph: bool = True,
+    request: ProcessRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    ok = await FileService.start_processing(file_id, db, extract_graph=extract_graph)
+    payload = request or ProcessRequest()
+    ok = await FileService.start_processing(
+        file_id,
+        db,
+        extract_graph=extract_graph,
+        strategy=payload.strategy,
+        params=payload.params,
+        use_recommendation=payload.use_recommendation,
+    )
     if not ok:
         raise HTTPException(400, "File not ready for processing")
     return {"status": "processing"}
@@ -51,9 +110,18 @@ async def process_file(
 async def reprocess_file(
     file_id: str,
     extract_graph: bool = True,
+    request: ProcessRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    ok = await FileService.restart_processing(file_id, db, extract_graph=extract_graph)
+    payload = request or ProcessRequest()
+    ok = await FileService.restart_processing(
+        file_id,
+        db,
+        extract_graph=extract_graph,
+        strategy=payload.strategy,
+        params=payload.params,
+        use_recommendation=payload.use_recommendation,
+    )
     if not ok:
         raise HTTPException(400, "File not ready for reprocessing")
     return {"status": "processing"}

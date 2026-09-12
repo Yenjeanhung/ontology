@@ -209,21 +209,30 @@ KnowledgeBase          File                Chunk
 
 ### 4.4 文本分块 (`core/chunker.py`)
 
-使用 `langchain-text-splitters` 的 `RecursiveCharacterTextSplitter`：
+自研实现，提供 5 种策略（由 `CHUNK_STRATEGY` 选择）：
 
-```
-原文档
-  │
-  ├── 按段落分隔符 (\n\n) 分割
-  │     ├── 块大小 <= CHUNK_SIZE (500字符) → 保留
-  │     └── 块大小 > CHUNK_SIZE → 按句子/字符继续分割
-  │
-  └── 添加 CHUNK_OVERLAP (50字符) 重叠
-        │
-        └── 输出: [{ index, content, metadata }]
-```
+| 策略 | 说明 |
+|------|------|
+| `fixed` | 固定长度，优先在句读/空白处收边 |
+| `sentence` | 按句读切分后按 `CHUNK_SIZE` 聚合 |
+| `recursive` | 分隔符优先级递归下钻（段落 → 行 → 句 → 子句 → 字符） |
+| `semantic` | 按 `\n\n` 段落聚合，超限下钻句子 |
+| `heading` | 识别标题层级（markdown / 中文章节 / 数字编号）后按小节合并 |
 
-**中文优化**：分隔符优先级：`["\n\n", "。", "！", "？", ".", " "]`
+**中文优化**：分隔符优先级 `["\n\n", "\n", "。", "！", "？", "；", ...]`
+
+输出：`[{ index, content, start_offset, end_offset, page_number, metadata }]`，
+`page_number` 由 PDF 解析器产出的 `page_map` 回填，用于来源定位。
+
+**可选 LangChain 后端**（`CHUNK_BACKEND=langchain`，见 `core/splitter_langchain.py`）：
+
+| 策略 | LangChain 实现 | 说明 |
+|------|----------------|------|
+| `recursive` | `RecursiveCharacterTextSplitter` | 与自研等价，行为更标准 |
+| `heading` | `MarkdownHeaderTextSplitter` | 仅 ATX 标题生效；非 markdown 文档回落自研 |
+| `semantic` | `SemanticChunker`（需 langchain-experimental） | 基于 embedding 相似度断点的真语义切分 |
+
+依赖缺失 / 无产出 / 抛错时一律回落自研实现，分片链路不会中断。
 
 ### 4.5 向量嵌入 (`services/embedding_service.py`)
 
@@ -405,7 +414,7 @@ chunks/                 # 临时分片（合并后删除）
        │
        ▼
  文本分块 (chunker.py)
-  └── RecursiveCharacterTextSplitter
+  └── 自研 5 策略（CHUNK_BACKEND=langchain 时可切 LangChain 切分器）
        │
        ▼
  向量嵌入 (embedding_service.py)

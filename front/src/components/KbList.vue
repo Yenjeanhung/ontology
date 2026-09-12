@@ -6,6 +6,7 @@ import CreateKbModal from './CreateKbModal.vue'
 import SearchableSelect from './common/SearchableSelect.vue'
 import Pagination from './common/Pagination.vue'
 import { useEscClose } from '../composables/useEscClose'
+import { hasPerm } from '../stores/auth'
 
 const router = useRouter()
 // 搜索草稿（输入框）与已应用查询（点「查询」/回车后生效）
@@ -263,7 +264,7 @@ onMounted(loadKbs)
         <div class="page-desc">将文件组织为知识库，完成分片、向量索引与关系抽取</div>
       </div>
       <div class="page-actions">
-        <button class="btn primary" @click="showCreateModal = true">
+        <button v-if="hasPerm('kb:create')" class="btn primary" @click="showCreateModal = true">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           新建知识库
         </button>
@@ -349,8 +350,8 @@ onMounted(loadKbs)
             <td class="time">{{ fmtTime(kb.updated_at || kb.created_at) }}</td>
             <td>
               <button class="btn link" @click.stop="goDetail(kb.id)">详情</button>
-              <button class="btn link" @click.stop="openEdit(kb, $event)">编辑</button>
-              <button class="btn link danger" @click.stop="removeKb(kb.id, $event)">删除</button>
+              <button v-if="hasPerm('kb:update')" class="btn link" @click.stop="openEdit(kb, $event)">编辑</button>
+              <button v-if="hasPerm('kb:delete')" class="btn link danger" @click.stop="removeKb(kb.id, $event)">删除</button>
             </td>
           </tr>
         </tbody>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 import uuid
 from datetime import datetime
@@ -13,6 +14,8 @@ from sqlalchemy.orm import selectinload
 
 from config import settings
 from models import File, FileAsset, FileDirectory, KnowledgeBase
+
+logger = logging.getLogger(__name__)
 
 UPLOAD_DIR = Path(settings.UPLOAD_DIR)
 ASSET_DIR = UPLOAD_DIR / "_assets"
@@ -483,6 +486,15 @@ class LibraryService:
             attached.append(kb_file)
 
         await db.commit()
+
+        # 加入知识库后自动分析文档结构与分片策略（失败不阻塞加入流程）
+        if settings.CHUNK_AUTO_ANALYZE:
+            for kb_file in attached:
+                if kb_file.status == "uploaded":
+                    try:
+                        await FileService.start_analysis(kb_file.id, db)
+                    except Exception:
+                        logger.exception("Auto analysis dispatch failed: file_id=%s", kb_file.id)
 
         if auto_process:
             for kb_file in attached:

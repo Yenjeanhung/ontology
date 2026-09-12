@@ -49,6 +49,17 @@ function normalizeDetail(body, status, fallback) {
   return fallback || `请求失败（${status}）`
 }
 
+/* 403 统一提示：3 秒内同一权限码只派发一次，避免并发请求重复打扰 */
+let lastForbiddenAt = 0
+let lastForbiddenPerm = ''
+function notifyForbidden(message, perm) {
+  const now = Date.now()
+  if (perm && perm === lastForbiddenPerm && now - lastForbiddenAt < 3000) return
+  lastForbiddenAt = now
+  lastForbiddenPerm = perm
+  window.dispatchEvent(new CustomEvent('ks-forbidden', { detail: { message, permission: perm } }))
+}
+
 /**
  * 统一请求封装：自动注入 token、解析错误、处理登录态失效。
  * 抛出 Error，并附带 err.status / err.code。
@@ -87,7 +98,19 @@ export async function request(path, { method = 'GET', body, params, skipAuth = f
       clearTokens()
       window.dispatchEvent(new CustomEvent('ks-auth-expired', { detail: { code, message: normalizeDetail(data, res.status, '登录已失效，请重新登录') } }))
     }
-    const err = new Error(normalizeDetail(data, res.status))
+    // 403：错误信息附上缺失权限码，并派发全局事件由 App.vue 统一弹窗
+    let forbiddenPerm = ''
+    if (res.status === 403) {
+      forbiddenPerm = data?.required_permission || ''
+      notifyForbidden(
+        `${normalizeDetail(data, res.status, '没有操作权限，请联系管理员')}${forbiddenPerm ? `（需要权限：${forbiddenPerm}）` : ''}`,
+        forbiddenPerm,
+      )
+    }
+    const err = new Error(
+      normalizeDetail(data, res.status)
+      + (res.status === 403 && forbiddenPerm ? `（需要权限：${forbiddenPerm}）` : ''),
+    )
     err.status = res.status
     err.code = code
     throw err

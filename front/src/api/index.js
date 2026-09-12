@@ -93,15 +93,57 @@ export async function cancelProcessing(fileId) {
   return res.json()
 }
 
-export async function processFile(fileId, { extractGraph = true } = {}) {
-  const res = await fetch(`${API}/api/files/${fileId}/process?extract_graph=${extractGraph}`, { method: 'POST' })
+export async function processFile(fileId, { extractGraph = true, strategy = null, params = null, useRecommendation = true } = {}) {
+  const body = { use_recommendation: useRecommendation }
+  if (strategy) body.strategy = strategy
+  if (params) body.params = params
+  const res = await fetch(`${API}/api/files/${fileId}/process?extract_graph=${extractGraph}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
   if (!res.ok) throw new Error('Process failed')
   return res.json()
 }
 
-export async function reprocessFile(fileId, { extractGraph = true } = {}) {
-  const res = await fetch(`${API}/api/files/${fileId}/reprocess?extract_graph=${extractGraph}`, { method: 'POST' })
+export async function reprocessFile(fileId, { extractGraph = true, strategy = null, params = null, useRecommendation = true } = {}) {
+  const body = { use_recommendation: useRecommendation }
+  if (strategy) body.strategy = strategy
+  if (params) body.params = params
+  const res = await fetch(`${API}/api/files/${fileId}/reprocess?extract_graph=${extractGraph}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
   if (!res.ok) throw new Error('Reprocess failed')
+  return res.json()
+}
+
+// 触发（或重新触发）文档分析：解析 → 特征提取 → 分片策略推荐
+export async function analyzeFile(fileId, { force = false } = {}) {
+  const res = await fetch(`${API}/api/files/${fileId}/analyze?force=${force}`, { method: 'POST' })
+  if (!res.ok) throw new Error('Analyze failed')
+  return res.json()
+}
+
+// 获取文档特征与分片策略推荐；未分析时返回 null
+export async function fetchRecommendation(fileId) {
+  const res = await fetch(`${API}/api/files/${fileId}/recommendation`)
+  if (!res.ok) {
+    if (res.status === 404) return null
+    throw new Error('Recommendation failed')
+  }
+  return res.json()
+}
+
+// 分片预览（dry-run，不落库）：按指定策略返回前 N 块与统计
+export async function previewChunks(fileId, { strategy = null, params = null, limit = 8 } = {}) {
+  const res = await fetch(`${API}/api/files/${fileId}/chunk-preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ strategy, params, limit }),
+  })
+  if (!res.ok) throw new Error('Chunk preview failed')
   return res.json()
 }
 

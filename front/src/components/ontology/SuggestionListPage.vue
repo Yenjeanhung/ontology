@@ -334,7 +334,7 @@ onActivated(async () => {
 }
 .sl-card-stats { display: flex; align-items: center; gap: 12px; }
 .sl-stat { font-size: 12px; color: var(--c-secondary); }
-.sl-card-time { font-size: 12px; color: var(--c-muted); }
+.sl-card-time { font-size: 12px; color: var(--c-secondary); }
 .sl-card-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
 .sl-empty { text-align: center; padding: 48px 20px; color: var(--c-secondary); }

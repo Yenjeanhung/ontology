@@ -75,9 +75,20 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.7
 
     # 分块
-    CHUNK_STRATEGY: Literal["fixed", "semantic", "sentence"] = "fixed"
-    CHUNK_SIZE: int
-    CHUNK_OVERLAP: int
+    CHUNK_STRATEGY: Literal["fixed", "semantic", "sentence", "recursive", "heading"] = "fixed"
+    # 以下为全局兜底默认值：仅在文件未分析 / 批量处理未确认时使用；
+    # 正常流程的分片策略与参数由「上传后自动分析 + 处理确认弹窗」按文件决定并持久化
+    CHUNK_SIZE: int = 500
+    CHUNK_OVERLAP: int = 50
+    # 上传完成后自动分析文档并推荐分片策略（推荐结果在处理确认框中展示）
+    CHUNK_AUTO_ANALYZE: bool = True
+    # 分析时是否启用 embedding 抽样计算语义突变密度（成本较高，默认关闭）
+    CHUNK_ANALYZE_SEMANTIC: bool = False
+    # 分片预览默认返回块数上限
+    CHUNK_PREVIEW_LIMIT: int = 20
+    # 分片后端：self = 自研实现（默认）；langchain = 优先使用 langchain_text_splitters，
+    # 依赖缺失或运行异常时自动回落 self，行为不中断。
+    CHUNK_BACKEND: Literal["self", "langchain"] = "self"
 
     # 召回
     SIMILARITY_THRESHOLD: float = 0.3
@@ -98,6 +109,22 @@ class Settings(BaseSettings):
     BM25_RECALL_K: int = 50          # BM25 召回候选数（参与 RRF 融合）
     HYBRID_TOP_N: int = 12           # 融合后最终来源分片数
     HYBRID_RRF_K: int = 60           # RRF 融合常数
+
+    # 查询改写（Multi-Query）：用 LLM 生成同义查询变体，多路召回后统一 RRF 融合。
+    # 关闭时行为与旧版完全一致（仅原始 query 单路召回）。
+    QUERY_REWRITE_ENABLED: bool = False
+    QUERY_REWRITE_COUNT: int = 3     # 生成变体数（不含原始 query）
+
+    # Rerank 精排：RRF 融合后用 cross-encoder / LLM 二次打分再截断。
+    # 默认关闭：cross-encoder 需首次下载模型，开启前请确认 RERANK_MODEL 可访问。
+    RERANK_ENABLED: bool = False
+    RERANK_PROVIDER: Literal["cross-encoder", "llm"] = "cross-encoder"
+    RERANK_MODEL: str = "BAAI/bge-reranker-base"
+    RERANK_CANDIDATE_K: int = 30     # 送入精排的候选数（从 RRF 结果头部截取）
+    RERANK_TOP_N: int = 12           # 精排后保留的分片数
+    RERANK_MIN_SCORE: float = 0.0    # cross-encoder 分数下限（bge 输出可为负），低于此值丢弃
+    RERANK_MAX_CHARS: int = 1024     # 单个候选送入精排的最大字符数（超长截断）
+    RERANK_LLM_BATCH: int = 10       # llm 精排时单批候选数（控制单次提示长度）
 
     # 技能指令
     AGENT_SKILL_CHAR_BUDGET: int = 24000   # 技能指令总字符软上限（市场技能包 SKILL.md 常见 8-15K）

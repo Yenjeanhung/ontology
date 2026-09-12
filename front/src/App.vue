@@ -6,6 +6,7 @@ import { authApi, isLoggedIn } from './api/auth'
 import { auth, clearAuth, hasPerm, loadAuthStatus, loadMe } from './stores/auth'
 import { bindVisibilityRefresh, notifications, refreshNotifications, startNotificationStream, stopNotificationStream } from './stores/notifications'
 import ToastContainer from './components/ToastContainer.vue'
+import { useToast } from './composables/useToast'
 
 const router = useRouter()
 const route = useRoute()
@@ -105,6 +106,13 @@ async function submitPassword() {
   }
 }
 
+/* ── 无权限操作（403）统一弹窗提示 ── */
+const toast = useToast()
+function onForbidden(e) {
+  toast.error(e.detail?.message || '没有操作权限，请联系管理员')
+}
+window.addEventListener('ks-forbidden', onForbidden)
+
 /* ── 侧栏菜单 ── */
 const menuIcons = {
   ontology: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="8.5" y="14" width="7" height="7" rx="1.5"/><path d="M6.5 10v1.5h4M17.5 10v1.5h-4"/></svg>',
@@ -137,52 +145,52 @@ const menuItems = [
   {
     key: 'ontology', label: '本体管理', icon: 'ontology',
     children: [
-      { to: '/ontology/templates', label: '本体模板' },
-      { to: '/ontology/shared-properties', label: '共享属性' },
-      { to: '/ontology/ontologies', label: '本体管理' },
-      { to: '/ontology/functions', label: '函数与派生属性' },
-      { to: '/ontology/relations-dict', label: '关系字典' },
-      { to: '/ontology/constraints', label: '本体关系' },
-      { to: '/ontology/suggestions', label: '本体建议', badgeKey: 'suggestions' },
+      { to: '/ontology/templates', label: '本体模板', perm: 'ontology:view' },
+      { to: '/ontology/shared-properties', label: '共享属性', perm: 'ontology:view' },
+      { to: '/ontology/ontologies', label: '本体管理', perm: 'ontology:view' },
+      { to: '/ontology/functions', label: '函数与派生属性', perm: 'ontology:view' },
+      { to: '/ontology/relations-dict', label: '关系字典', perm: 'ontology:view' },
+      { to: '/ontology/constraints', label: '本体关系', perm: 'ontology:view' },
+      { to: '/ontology/suggestions', label: '本体建议', badgeKey: 'suggestions', perm: 'ontology:view' },
     ],
   },
-  { key: 'entities', label: '实体', icon: 'entities', to: '/entities' },
+  { key: 'entities', label: '实体', icon: 'entities', to: '/entities', perm: 'entity:view' },
   { type: 'group', label: '知识生产', icon: 'groupProd' },
-  { key: 'files', label: '文件管理', icon: 'files', to: '/files', badgeKey: 'files' },
+  { key: 'files', label: '文件管理', icon: 'files', to: '/files', badgeKey: 'files', perm: 'file:view' },
   {
     key: 'kb', label: '知识库', icon: 'kb',
     children: [
-      { to: '/kb', label: '知识库列表' },
-      { to: '/query', label: '知识库检索' },
+      { to: '/kb', label: '知识库列表', perm: 'kb:view' },
+      { to: '/query', label: '知识库检索', perm: 'kb:query' },
     ],
   },
   {
     key: 'graph', label: '知识图谱', icon: 'graph',
     children: [
-      { to: '/graph', label: '图谱浏览' },
-      { to: '/graph-cleanup', label: '图谱清洗' },
-      { to: '/graph-analysis', label: '图分析' },
+      { to: '/graph', label: '图谱浏览', perm: 'graph:view' },
+      { to: '/graph-cleanup', label: '图谱清洗', perm: 'entity:view' },
+      { to: '/graph-analysis', label: '图分析', perm: 'graph:view' },
     ],
   },
-  { key: 'data', label: '向量数据', icon: 'data', to: '/vectors' },
+  { key: 'data', label: '向量数据', icon: 'data', to: '/vectors', perm: 'vector:view' },
   { type: 'group', label: '应用', icon: 'groupApp' },
   {
     key: 'agent', label: '智能体', icon: 'agent',
     children: [
-      { to: '/agent/skills', label: '技能管理' },
-      { to: '/agent/configs', label: '智能体配置' },
-      { to: '/agent', label: '智能体问答' },
+      { to: '/agent/skills', label: '技能管理', perm: 'agent:view' },
+      { to: '/agent/configs', label: '智能体配置', perm: 'agent:view' },
+      { to: '/agent', label: '智能体问答', perm: 'agent:view' },
     ],
   },
-  { key: 'workflow', label: '工作流', icon: 'workflow', to: '/workflows' },
-  { key: 'human-tasks', label: '待办', icon: 'human', to: '/human-tasks', badgeKey: 'human_tasks' },
-  { key: 'schedule', label: '定时管理', icon: 'schedule', to: '/schedules', badgeKey: 'schedule_alerts' },
+  { key: 'workflow', label: '工作流', icon: 'workflow', to: '/workflows', perm: 'workflow:view' },
+  { key: 'human-tasks', label: '待办', icon: 'human', to: '/human-tasks', badgeKey: 'human_tasks', perm: 'workflow:view' },
+  { key: 'schedule', label: '定时管理', icon: 'schedule', to: '/schedules', badgeKey: 'schedule_alerts', perm: 'schedule:view' },
   {
     key: 'config', label: '系统配置', icon: 'config',
     children: [
-      { to: '/config/models', label: '模型配置' },
-      { to: '/config/monitor', label: '系统监控' },
-      { to: '/config/api-docs', label: 'API 文档' },
+      { to: '/config/models', label: '模型配置', perm: 'config:view' },
+      { to: '/config/monitor', label: '系统监控', perm: 'config:view' },
+      { to: '/config/api-docs', label: 'API 文档', perm: 'config:view' },
     ],
   },
   { type: 'group', label: '系统管理', icon: 'groupAdmin' },
@@ -192,21 +200,25 @@ const menuItems = [
   { key: 'system-audit', label: '操作日志', icon: 'logs', to: '/system/audit', perm: 'system:audit:view' },
 ]
 
-// 菜单按权限过滤：超级管理员看全部，其余按 perm 声明控制
+// 菜单按权限过滤：超级管理员看全部；顶层按 perm 控制；分支菜单按子项过滤，子项全无权限时整项隐藏
 const visibleMenu = computed(() => {
   if (!auth.enabled) return menuItems
-  const walk = (item) => {
-    if (item.type === 'group') return true
-    if (item.perm && !hasPerm(item.perm)) return false
-    return true
-  }
-  return menuItems.filter(walk).filter((item, idx, arr) => {
-    // 去掉连续重复的分组标题（组内子项全部无权限时）
-    if (item.type === 'group') {
-      const next = arr[idx + 1]
-      return next && next.type !== 'group'
+  const filterItem = (item) => {
+    if (item.type === 'group') return item
+    if (item.perm && !hasPerm(item.perm)) return null
+    if (item.children) {
+      const children = item.children.filter(c => !c.perm || hasPerm(c.perm))
+      if (!children.length) return null
+      return { ...item, children }
     }
-    return true
+    return item
+  }
+  const list = menuItems.map(filterItem).filter(Boolean)
+  // 去掉后面没有可见菜单项的分组标题
+  return list.filter((item, idx) => {
+    if (item.type !== 'group') return true
+    const next = list[idx + 1]
+    return next && next.type !== 'group'
   })
 })
 
@@ -342,6 +354,7 @@ onBeforeUnmount(() => {
   if (unbindVisibility) unbindVisibility()
   window.removeEventListener('pointerdown', onPointerDown)
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('ks-forbidden', onForbidden)
 })
 </script>
 

@@ -22,7 +22,10 @@ import {
   fetchOntologyCategories,
   getOntologyCategoryDetail,
   fetchOntologySuggestions,
+  fetchRecommendation,
+  previewChunks,
 } from '../api'
+import { hasPerm } from '../stores/auth'
 
 const CHUNK_SIZE = 512 * 1024
 const uuid = () => ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(
@@ -33,6 +36,8 @@ const uuid = () => ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(
 const props = defineProps({ kbId: { type: String, required: true } })
 const router = useRouter()
 const toast = useToast()
+// 无 file:upload 权限时隐藏整个上传区（拖拽/点击上传、从文件管理选择）
+const canUpload = computed(() => hasPerm('file:upload'))
 
 const kb = ref(null)
 const files = ref([])
@@ -76,6 +81,23 @@ const pendingFileId = ref('')
 const pendingFileName = ref('')
 const pendingProcessMode = ref('process')
 const isBatchProcess = ref(false)
+// ── 分片策略确认 ──────────────────────────────
+const strategyOptions = [
+  { value: 'fixed', label: '固定长度切分', desc: '滑动窗口逐块硬切，块大小与重叠可手动调节，适合数据类文本', overlap: true },
+  { value: 'sentence', label: '句子/段落切分', desc: '按标点断句累积成块，语义边界完整', overlap: false },
+  { value: 'recursive', label: '递归字符切分', desc: '按段落→行→句子逐级降级切分，块大小与语义平衡', overlap: true },
+  { value: 'semantic', label: '语义切分', desc: '段落语义聚合，单块主题聚焦，成本较高', overlap: false },
+  { value: 'heading', label: '层级/标题切分', desc: '按标题章节结构切分，可设单节字符上限，适合教材/手册/带目录文档', overlap: false },
+]
+const recommendation = ref(null)   // { file_id, status, analysis }
+const recSuggestions = ref({})     // 各策略建议参数：切换策略时联动应用
+const recLoading = ref(false)
+const selStrategy = ref('recursive')
+const selChunkSize = ref(800)
+const selOverlap = ref(80)
+const chunkPreview = ref(null)
+const previewLoading = ref(false)
+let previewTimer = null
 const showAssetPicker = ref(false)
 const assetPickerSearch = ref('')
 const assetOptions = ref([])
@@ -125,8 +147,16 @@ const confirmDialogConfirmText = ref('确定')
 const confirmDialogCancelText = ref('取消')
 let confirmDialogCallback = null
 
-const uploadedCount = computed(() => files.value.filter(item => item.status === 'uploaded' || item.status === 'failed').length)
+const uploadedCount = computed(() => files.value.filter(item => ['uploaded', 'analyzed', 'failed'].includes(item.status)).length)
 const selectedCount = computed(() => selectedFileIds.value.size)
+
+// 当前文件的分析推荐（批量处理时不展示单文件推荐）
+const recStrategy = computed(() => {
+  if (isBatchProcess.value) return null
+  const analysis = recommendation.value?.analysis
+  if (!analysis || analysis.error) return null
+  return analysis.recommendation || null
+})
 
 function toggleSelectFile(fileId) {
   if (selectedFileIds.value.has(fileId)) {
@@ -182,7 +212,7 @@ onMounted(async () => {
     files.value = (kb.value.files || []).map(normalizeFile)
     const initialCollapsed = new Set()
     for (const file of files.value) {
-      if (file.status === 'processing') {
+      if (file.status === 'processing' || file.status === 'analyzing') {
         processing.value[file.id] = file.progress || 0
         if (file.detail) syncStageTimers(file.id, file.detail)
         startStatusWatch(file.id)
@@ -274,6 +304,10 @@ function fmtSize(value) {
 }
 
 function triggerUpload() {
+  if (!canUpload.value) {
+    toast.error('没有操作权限，请联系管理员（需要权限：file:upload）')
+    return
+  }
   const el = document.getElementById('fileInput')
   if (el) el.click()
 }
@@ -388,6 +422,8 @@ async function uploadFile(fileId, file) {
       target.status = 'uploaded'
       target.message = '上传完成，等待开始处理'
     }
+    // 后端上传完成后自动分析文档结构，监听分析状态推送
+    startStatusWatch(fileId)
   } catch {
     const target = files.value.find(item => item.id === fileId)
     if (target) target.status = 'error'
@@ -430,6 +466,7 @@ function openProcessDialog(file) {
   pendingProcessMode.value = 'process'
   isBatchProcess.value = false
   showProcessDialog.value = true
+  loadRecommendation(file.id)
 }
 
 function openReprocessDialog(file) {
@@ -438,6 +475,7 @@ function openReprocessDialog(file) {
   pendingProcessMode.value = 'reprocess'
   isBatchProcess.value = false
   showProcessDialog.value = true
+  loadRecommendation(file.id)
 }
 
 function openBatchProcessDialog() {
@@ -448,17 +486,130 @@ function openBatchProcessDialog() {
   showProcessDialog.value = true
 }
 
+async function loadRecommendation(fileId) {
+  recLoading.value = true
+  recommendation.value = null
+  chunkPreview.value = null
+  try {
+    const data = await fetchRecommendation(fileId)
+    recommendation.value = data
+    const rec = data?.analysis?.recommendation
+    recSuggestions.value = rec?.suggestions || {}
+    if (rec?.strategy) {
+      selStrategy.value = rec.strategy
+      const params = rec.params || {}
+      selChunkSize.value = params.chunk_size || 800
+      selOverlap.value = params.overlap ?? Math.round((params.chunk_size || 800) * 0.1)
+      schedulePreview()
+    }
+  } catch {
+    recommendation.value = null
+  } finally {
+    recLoading.value = false
+  }
+}
+
+// 策略/参数变化后防抖刷新分片预览
+function schedulePreview() {
+  if (previewTimer) clearTimeout(previewTimer)
+  previewTimer = setTimeout(refreshPreview, 500)
+}
+
+async function refreshPreview() {
+  const fileId = pendingFileId.value
+  if (!fileId || isBatchProcess.value) return
+  previewLoading.value = true
+  try {
+    chunkPreview.value = await previewChunks(fileId, {
+      strategy: selStrategy.value,
+      params: { chunk_size: selChunkSize.value, overlap: effectiveOverlap() },
+      limit: 5,
+    })
+  } catch {
+    chunkPreview.value = null
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+function strategyLabel(value) {
+  return strategyOptions.find(opt => opt.value === value)?.label || value
+}
+
+function strategyDesc(value) {
+  return strategyOptions.find(opt => opt.value === value)?.desc || ''
+}
+
+// 仅依赖重叠窗口的策略（fixed/sentence/recursive）才展示重叠参数
+function strategySupportsOverlap(value) {
+  return strategyOptions.find(opt => opt.value === value)?.overlap || false
+}
+
+const maxOverlap = computed(() => Math.max(0, Math.floor(selChunkSize.value / 2)))
+
+// 各策略下 chunk_size 的语义不同，滑块标签按语义命名，避免统一写成"块大小"造成误解
+const CHUNK_SIZE_LABELS = {
+  fixed: '块大小',
+  sentence: '累积上限',
+  recursive: '目标块大小',
+  semantic: '聚合上限',
+  heading: '章节上限',
+}
+
+// 各策略上限参数的实际含义（含是否可能超过上限）
+const CHUNK_PARAM_HINTS = {
+  fixed: '含义：滑动窗口逐块硬切，无分隔符时按字符切，严格不超过该值',
+  sentence: '含义：句子逐个累积，超过该值即成块；单个超长句子不切分，可能超过该值',
+  recursive: '含义：按段落→行→句→字符逐级降级，达到该值即成块；重叠取上一块结尾字符',
+  semantic: '含义：相邻段落聚合，超过该值则下钻到句子；单个超长句子不切分，可能超过该值',
+  heading: '含义：单个章节超过该字符数时按句子递归细分，相邻小节能合并时不超过该字符数',
+}
+
+const chunkSizeLabel = computed(() => CHUNK_SIZE_LABELS[selStrategy.value] || '块大小')
+const paramHint = computed(() => CHUNK_PARAM_HINTS[selStrategy.value] || '')
+
+function onParamInput() {
+  if (selOverlap.value > maxOverlap.value) selOverlap.value = maxOverlap.value
+  schedulePreview()
+}
+
+// 切换策略时联动应用该策略的建议参数（旧分析数据无 suggestions 时仅做显隐）
+function onStrategyChange() {
+  const sug = recSuggestions.value[selStrategy.value]
+  if (sug?.chunk_size) {
+    selChunkSize.value = sug.chunk_size
+    selOverlap.value = strategySupportsOverlap(selStrategy.value) ? (sug.overlap || 0) : 0
+  }
+  onParamInput()
+}
+
+// heading/semantic 不消费重叠，提交与预览时统一置 0
+function effectiveOverlap() {
+  return strategySupportsOverlap(selStrategy.value) ? selOverlap.value : 0
+}
+
 function closeProcessDialog() {
   showProcessDialog.value = false
   pendingFileId.value = ''
   pendingFileName.value = ''
   pendingProcessMode.value = 'process'
   isBatchProcess.value = false
+  recommendation.value = null
+  recSuggestions.value = {}
+  chunkPreview.value = null
+  // 重置为默认值，避免下次打开弹窗时残留上次的策略与参数
+  selStrategy.value = 'recursive'
+  selChunkSize.value = 800
+  selOverlap.value = 80
+  if (previewTimer) {
+    clearTimeout(previewTimer)
+    previewTimer = null
+  }
 }
 
 async function confirmProcess(extractGraph) {
   showProcessDialog.value = false
-  
+
   if (isBatchProcess.value) {
     await batchProcess(extractGraph)
   } else {
@@ -466,7 +617,12 @@ async function confirmProcess(extractGraph) {
     if (!fileId) return
     try {
       const runner = pendingProcessMode.value === 'reprocess' ? reprocessFile : processFile
-      await runner(fileId, { extractGraph })
+      // 用户确认的策略与参数（decided_by=user）；批量场景由后端自动采用各文件推荐
+      await runner(fileId, {
+        extractGraph,
+        strategy: selStrategy.value || null,
+        params: { chunk_size: selChunkSize.value, overlap: effectiveOverlap() },
+      })
       const target = files.value.find(item => item.id === fileId)
       if (target) {
         target.status = 'processing'
@@ -510,11 +666,12 @@ async function confirmProcess(extractGraph) {
 }
 
 async function batchProcess(extractGraph = true) {
-  for (const file of files.value.filter(item => item.status === 'uploaded' || item.status === 'failed')) {
+  for (const file of files.value.filter(item => ['uploaded', 'analyzed', 'failed'].includes(item.status))) {
     try {
       const isReprocess = file.status === 'failed'
       const runner = isReprocess ? reprocessFile : processFile
-      await runner(file.id, { extractGraph })
+      // 批量处理不带具体策略：后端自动采用每个文件的分析推荐（decided_by=auto）
+      await runner(file.id, { extractGraph, useRecommendation: true })
       const target = files.value.find(item => item.id === file.id)
       if (target) {
         target.status = 'processing'
@@ -575,6 +732,20 @@ async function syncFileStatus(fileId, timer = null) {
   try {
     const data = await getFileStatus(fileId)
     const target = applyStatusData(fileId, data)
+    // 分析完成：停止监听，等待用户确认分片策略
+    if (data.status === 'analyzed') {
+      if (timer) clearInterval(timer)
+      if (pollTimers[fileId]) {
+        clearInterval(pollTimers[fileId])
+        delete pollTimers[fileId]
+      }
+      if (statusStreams[fileId]) {
+        statusStreams[fileId].close()
+        delete statusStreams[fileId]
+      }
+      delete processing.value[fileId]
+      return true
+    }
     if (data.status === 'indexed' || data.status === 'failed') {
       if (timer) clearInterval(timer)
       if (pollTimers[fileId]) {
@@ -641,6 +812,13 @@ function startStatusWatch(fileId) {
     try {
       const data = JSON.parse(event.data)
       const target = applyStatusData(fileId, data)
+      // 分析完成：关闭监听，等待用户确认分片策略
+      if (data.status === 'analyzed') {
+        stream.close()
+        delete statusStreams[fileId]
+        delete processing.value[fileId]
+        return
+      }
       if (data.status === 'indexed' || data.status === 'failed') {
         stream.close()
         delete statusStreams[fileId]
@@ -762,6 +940,8 @@ function getStatusTitle(status) {
   const titles = {
     uploading: '上传中',
     uploaded: '等待处理',
+    analyzing: '文档分析中',
+    analyzed: '待确认分片策略',
     processing: '处理中',
     indexed: '已完成',
     failed: '处理失败'
@@ -851,6 +1031,7 @@ function stageIconClass(file, stageName) {
     </div>
 
     <div
+      v-if="canUpload"
       class="dropzone"
       @click="triggerUpload"
       @dragover.prevent="$event.currentTarget.classList.add('drag')"
@@ -867,7 +1048,7 @@ function stageIconClass(file, stageName) {
       <input id="fileInput" type="file" multiple accept=".txt,.pdf,.md,.csv,.json,.docx,.html" @change="handleFilePick" style="display:none">
     </div>
 
-    <div class="source-actions">
+    <div v-if="canUpload" class="source-actions">
       <button class="source-btn" @click="openAssetPicker">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M3.75 7.25A2.25 2.25 0 0 1 6 5h4.25c.57 0 1.12.22 1.54.62l1.14 1.1c.42.4.97.63 1.55.63H18A2.25 2.25 0 0 1 20.25 9.6v7.15A2.25 2.25 0 0 1 18 19H6a2.25 2.25 0 0 1-2.25-2.25Z" />
@@ -996,12 +1177,23 @@ function stageIconClass(file, stageName) {
             <div class="mini-bar"><div class="mini-fill" :style="{ width: `${getUploadProgress(file.id)}%` }"></div></div>
             <span class="tag tag-up">{{ getUploadProgress(file.id) }}%</span>
           </template>
-          <template v-else-if="file.status === 'uploaded'">
+          <template v-else-if="file.status === 'uploaded' || file.status === 'analyzed'">
             <button class="proc-btn" @click="openProcessDialog(file)">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="13 2 3 14 12 14 19 8" />
               </svg>
-              处理
+              {{ file.status === 'analyzed' ? '确认策略' : '处理' }}
+            </button>
+            <span v-if="file.status === 'analyzed'" class="tag tag-analyzed" title="文档分析完成，点击确认分片策略">待确认</span>
+          </template>
+          <template v-else-if="file.status === 'analyzing'">
+            <span class="tag tag-analyzing">分析中…</span>
+            <button class="cancel-btn" @click="handleCancel(file.id)" title="取消分析">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <line x1="9" y1="9" x2="15" y2="15" />
+                <line x1="15" y1="9" x2="9" y2="15" />
+              </svg>
             </button>
           </template>
           <template v-else-if="file.status === 'processing'">
@@ -1197,39 +1389,99 @@ function stageIconClass(file, stageName) {
               </svg>
             </button>
           </div>
-          <div class="dialog-body">
-            <button class="mode-btn" @click="confirmProcess(true)">
-              <div class="mode-icon">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                  <circle cx="6.5" cy="6.5" r="2.25" />
-                  <circle cx="17.5" cy="6.5" r="2.25" />
-                  <circle cx="12" cy="17.5" r="2.25" />
-                  <path d="M8.75 6.5h6.5" />
-                  <path d="M8.2 8.1 10.3 15.2" />
-                  <path d="m15.8 8.1-2.1 7.1" />
-                </svg>
+          <div class="dialog-body chunk-confirm">
+            <!-- 文档分析结果 / 策略推荐 -->
+            <div class="rec-loading" v-if="recLoading && !isBatchProcess">正在分析文档结构…</div>
+            <template v-else-if="!isBatchProcess">
+              <div class="rec-card" v-if="recStrategy">
+                <div class="rec-head">
+                  <span class="rec-badge">推荐</span>
+                  <strong>{{ strategyLabel(recStrategy.strategy) }}</strong>
+                  <span class="rec-conf" v-if="recStrategy.confidence">置信度 {{ Math.round(recStrategy.confidence * 100) }}%</span>
+                </div>
+                <ul class="rec-reasons" v-if="recStrategy.reasons?.length">
+                  <li v-for="reason in recStrategy.reasons" :key="reason">{{ reason }}</li>
+                </ul>
               </div>
-              <div class="mode-text">
-                <strong>{{ isBatchProcess ? '分片 + 抽取图谱' : (pendingProcessMode === 'reprocess' ? '重新分片 + 抽取图谱' : '分片 + 抽取图谱') }}</strong>
-                <span>切分文本、生成向量，并调用 LLM 抽取实体与关系写入图数据库</span>
+              <div class="rec-card rec-none" v-else>
+                <span>暂无分析结果，请选择切分策略（未选择时使用全局默认策略）</span>
               </div>
-              <span class="mode-arrow">&rarr;</span>
-            </button>
-            <button class="mode-btn mode-simple" @click="confirmProcess(false)">
-              <div class="mode-icon">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                  <polyline points="14 2 14 8 20 8" />
-                  <line x1="16" y1="13" x2="8" y2="13" />
-                  <line x1="16" y1="17" x2="8" y2="17" />
-                </svg>
+            </template>
+            <div class="rec-card rec-none" v-else>
+              <span>批量处理将自动采用每个文件的分析推荐策略（未分析的文件使用全局默认策略）</span>
+            </div>
+
+            <!-- 策略与参数调整 + 预览（单个文件时展示） -->
+            <template v-if="!isBatchProcess">
+              <div class="chunk-params">
+                <label class="param-row">
+                  <span class="param-label">切分策略</span>
+                  <select v-model="selStrategy" @change="onStrategyChange">
+                    <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+                  </select>
+                </label>
+                <div class="param-hint">{{ strategyDesc(selStrategy) }}</div>
+                <label class="param-row">
+                  <span class="param-label">{{ chunkSizeLabel }}</span>
+                  <input type="range" min="200" max="2000" step="50" v-model.number="selChunkSize" @input="onParamInput" />
+                  <span class="param-value">{{ selChunkSize }} 字符</span>
+                </label>
+                <label class="param-row" v-if="strategySupportsOverlap(selStrategy)">
+                  <span class="param-label">重叠</span>
+                  <input type="range" min="0" :max="maxOverlap" step="10" v-model.number="selOverlap" @input="onParamInput" />
+                  <span class="param-value">{{ selOverlap }} 字符</span>
+                </label>
+                <div class="param-hint">{{ paramHint }}</div>
               </div>
-              <div class="mode-text">
-                <strong>{{ isBatchProcess ? '仅分片（更快）' : (pendingProcessMode === 'reprocess' ? '重新分片（更快）' : '仅分片（更快）') }}</strong>
-                <span>只切分文本并生成向量，不调用 LLM，速度更快</span>
+
+              <div class="chunk-preview" v-if="chunkPreview">
+                <div class="preview-head">
+                  <span>预览（前 {{ chunkPreview.preview.length }} 块）</span>
+                  <span class="preview-meta">预计 {{ chunkPreview.stats.chunk_count }} 块 · 平均 {{ chunkPreview.stats.avg_chunk_len }} 字符</span>
+                </div>
+                <div class="preview-item" v-for="item in chunkPreview.preview" :key="item.index">
+                  <span class="preview-idx">#{{ item.index + 1 }}</span>
+                  <span class="preview-len">{{ item.length }}字</span>
+                  <span class="preview-text">{{ item.content }}</span>
+                </div>
+                <div class="preview-loading" v-if="previewLoading">刷新预览中…</div>
               </div>
-              <span class="mode-arrow">&rarr;</span>
-            </button>
+            </template>
+
+            <div class="mode-actions">
+              <button class="mode-btn" @click="confirmProcess(true)">
+                <div class="mode-icon">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                    <circle cx="6.5" cy="6.5" r="2.25" />
+                    <circle cx="17.5" cy="6.5" r="2.25" />
+                    <circle cx="12" cy="17.5" r="2.25" />
+                    <path d="M8.75 6.5h6.5" />
+                    <path d="M8.2 8.1 10.3 15.2" />
+                    <path d="m15.8 8.1-2.1 7.1" />
+                  </svg>
+                </div>
+                <div class="mode-text">
+                  <strong>{{ isBatchProcess ? '分片 + 抽取图谱' : (pendingProcessMode === 'reprocess' ? '重新分片 + 抽取图谱' : '分片 + 抽取图谱') }}</strong>
+                  <span>切分文本、生成向量，并调用 LLM 抽取实体与关系写入图数据库</span>
+                </div>
+                <span class="mode-arrow">&rarr;</span>
+              </button>
+              <button class="mode-btn mode-simple" @click="confirmProcess(false)">
+                <div class="mode-icon">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                    <line x1="16" y1="13" x2="8" y2="13" />
+                    <line x1="16" y1="17" x2="8" y2="17" />
+                  </svg>
+                </div>
+                <div class="mode-text">
+                  <strong>{{ isBatchProcess ? '仅分片（更快）' : (pendingProcessMode === 'reprocess' ? '重新分片（更快）' : '仅分片（更快）') }}</strong>
+                  <span>只切分文本并生成向量，不调用 LLM，速度更快</span>
+                </div>
+                <span class="mode-arrow">&rarr;</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -2416,7 +2668,7 @@ h1 { font-size: 18px; font-weight: 700; }
 }
 
 .file-count {
-  color: var(--c-muted);
+  color: var(--c-secondary);
   font-size: 12px;
   flex-shrink: 0;
 }
@@ -2462,5 +2714,216 @@ h1 { font-size: 18px; font-weight: 700; }
 @keyframes banner-glow {
   0%, 100% { box-shadow: 0 0 0 0 rgba(99, 140, 220, 0); }
   50% { box-shadow: 0 0 12px 2px rgba(99, 140, 220, 0.15); }
+}
+
+/* ── 分片策略确认 ─────────────────────────── */
+.status-lamp.analyzing {
+  background: #4f8ef7;
+  animation: lamp-pulse 1.2s ease-in-out infinite;
+}
+
+.status-lamp.analyzed {
+  background: #f5a623;
+  box-shadow: 0 0 6px rgba(245, 166, 35, 0.6);
+}
+
+.tag-analyzed {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 16px;
+  color: #8a5a00;
+  background: rgba(245, 166, 35, 0.14);
+  border: 1px solid rgba(245, 166, 35, 0.4);
+  white-space: nowrap;
+}
+
+.tag-analyzing {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 16px;
+  color: #2b5aa8;
+  background: rgba(79, 142, 247, 0.12);
+  border: 1px solid rgba(79, 142, 247, 0.35);
+  white-space: nowrap;
+}
+
+.chunk-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rec-loading {
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #5a6b8c;
+  background: rgba(79, 142, 247, 0.06);
+}
+
+.rec-card {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(79, 142, 247, 0.07);
+  border: 1px solid rgba(79, 142, 247, 0.22);
+  font-size: 13px;
+}
+
+.rec-card.rec-none {
+  background: rgba(140, 150, 170, 0.07);
+  border-color: rgba(140, 150, 170, 0.22);
+  color: #6b7690;
+}
+
+.rec-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rec-badge {
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: #4f8ef7;
+}
+
+.rec-conf {
+  margin-left: auto;
+  font-size: 12px;
+  color: #8a94ab;
+}
+
+.rec-reasons {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #5a6b8c;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.chunk-params {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.param-row select {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid #d8dfeb;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+}
+
+.param-row input[type='range'] {
+  flex: 1;
+}
+
+.param-label {
+  width: 56px;
+  flex-shrink: 0;
+  color: var(--c-fg);
+}
+
+.param-value {
+  width: 78px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.param-hint {
+  margin-left: 66px;
+  font-size: 11px;
+  color: var(--c-secondary);
+}
+
+.chunk-preview {
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  max-height: 180px;
+  overflow-y: auto;
+  background: rgba(140, 150, 170, 0.06);
+}
+
+.preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #97a1b5;
+  margin-bottom: 6px;
+  position: sticky;
+  top: 0;
+  background: var(--c-panel);
+}
+
+.preview-meta {
+  font-weight: 400;
+  color: #8a94ab;
+}
+
+.preview-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+  border-top: 1px dashed rgba(140, 150, 170, 0.18);
+  font-size: 12px;
+}
+
+.preview-idx {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: #4f8ef7;
+  font-weight: 600;
+}
+
+.preview-len {
+  flex-shrink: 0;
+  width: 46px;
+  text-align: right;
+  color: #8a94ab;
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-text {
+  color: #97a1b5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.preview-loading {
+  padding-top: 4px;
+  font-size: 11px;
+  color: #8a94ab;
+}
+
+.mode-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 </style>

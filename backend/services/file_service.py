@@ -12,7 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from core.chunker import iter_text_chunks
+from core.chunker import ChunkParams, iter_text_chunks
+from core.doc_profiler import analyze_document as analyze_document_profile, suggest_params
 from database import async_session
 from models import Chunk, File, KnowledgeBase
 from providers.embedding import create_embeddings
@@ -55,6 +56,7 @@ class FileService:
     _status_subscribers: dict[str, set[asyncio.Queue]] = {}
     _cancel_events: dict[str, asyncio.Event] = {}
     _running_tasks: dict[str, asyncio.Task] = {}
+    _analysis_tasks: dict[str, asyncio.Task] = {}
 
     @staticmethod
     def _build_status_payload(file: File) -> dict:
@@ -455,11 +457,232 @@ class FileService:
             file.path,
             file.size,
         )
+        # 上传完成后自动分析文档结构与分片策略（失败不阻塞上传流程）
+        if settings.CHUNK_AUTO_ANALYZE:
+            try:
+                await FileService.start_analysis(file_id, db)
+            except Exception:
+                logger.exception("Auto analysis dispatch failed: file_id=%s", file_id)
 
     @staticmethod
-    async def start_processing(file_id: str, db: AsyncSession, extract_graph: bool = True) -> bool:
+    async def start_analysis(file_id: str, db: AsyncSession, force: bool = False) -> bool:
+        """触发（或重新触发）文档分析：解析 → 特征提取 → 策略推荐。"""
         file = await db.get(File, file_id)
-        if not file or file.status != "uploaded":
+        if not file or not file.path:
+            logger.warning("Start analysis skipped: file_id=%s not found or no path", file_id)
+            return False
+        if file.status not in ("uploaded", "analyzed", "failed"):
+            logger.warning("Start analysis skipped: file_id=%s status=%s", file_id, file.status)
+            return False
+
+        detail = FileService._read_detail(file)
+        if not force and file.status == "analyzed" and detail.get("analysis"):
+            return True
+        existing = FileService._analysis_tasks.get(file_id)
+        if existing and not existing.done():
+            return True
+
+        file.status = "analyzing"
+        file.progress = 0
+        file.message = "正在分析文档结构"
+        await db.commit()
+        FileService._publish_status(file_id, FileService._build_status_payload(file))
+        logger.info("Start analysis: file_id=%s kb_id=%s file_name=%s force=%s", file_id, file.kb_id, file.name, force)
+        task = asyncio.create_task(FileService._analyze_file_bg(file_id))
+        FileService._analysis_tasks[file_id] = task
+        return True
+
+    @staticmethod
+    async def _analyze_file_bg(file_id: str):
+        started = perf_counter()
+        try:
+            async with async_session() as db:
+                file = await db.get(File, file_id)
+                if not file or not file.path:
+                    return
+                file_path = Path(file.path)
+                if not file_path.exists():
+                    file.status = "uploaded"
+                    file.message = "分析失败：源文件不存在，将使用默认策略"
+                    FileService._append_log(file, "分析失败：源文件不存在", "error")
+                    await db.commit()
+                    FileService._publish_status(file_id, FileService._build_status_payload(file))
+                    return
+
+                parser = get_parser(file_path)
+                result = await asyncio.to_thread(parser.parse, file_path)
+                content = result.content or ""
+                if not content.strip():
+                    detail = FileService._read_detail(file)
+                    detail["analysis"] = {"error": "文档解析内容为空", "created_at": _utc_now_iso()}
+                    FileService._write_detail(file, detail)
+                    file.status = "uploaded"
+                    file.message = "分析失败：文档解析内容为空，将使用默认策略"
+                    FileService._append_log(file, "分析失败：文档解析内容为空", "error")
+                    await db.commit()
+                    FileService._publish_status(file_id, FileService._build_status_payload(file))
+                    return
+
+                analysis = await asyncio.to_thread(
+                    analyze_document_profile,
+                    content,
+                    file_path.suffix.lower().lstrip("."),
+                    settings.CHUNK_ANALYZE_SEMANTIC,
+                )
+                analysis["created_at"] = _utc_now_iso()
+                analysis["duration_ms"] = int((perf_counter() - started) * 1000)
+                detail = FileService._read_detail(file)
+                detail["analysis"] = analysis
+                FileService._write_detail(file, detail)
+                recommended = analysis["recommendation"]["strategy"]
+                file.status = "analyzed"
+                file.message = "分析完成，等待确认分片策略"
+                FileService._append_log(file, f"文档分析完成，推荐分片策略：{recommended}")
+                await db.commit()
+                FileService._publish_status(file_id, FileService._build_status_payload(file))
+                logger.info(
+                    "Document analysis completed: file_id=%s strategy=%s confidence=%s duration_ms=%.0f",
+                    file_id,
+                    recommended,
+                    analysis["recommendation"].get("confidence"),
+                    (perf_counter() - started) * 1000,
+                )
+        except asyncio.CancelledError:
+            logger.info("Analysis task cancelled: file_id=%s", file_id)
+            try:
+                async with async_session() as db:
+                    file = await db.get(File, file_id)
+                    if file and file.status == "analyzing":
+                        file.status = "uploaded"
+                        file.message = "分析已取消"
+                        await db.commit()
+                        FileService._publish_status(file_id, FileService._build_status_payload(file))
+            except Exception:
+                logger.exception("Failed to reset status after analysis cancel: file_id=%s", file_id)
+        except Exception as exc:
+            logger.exception("Document analysis failed: file_id=%s error=%s", file_id, exc)
+            try:
+                async with async_session() as db:
+                    file = await db.get(File, file_id)
+                    if file:
+                        detail = FileService._read_detail(file)
+                        detail["analysis"] = {"error": str(exc)[:200], "created_at": _utc_now_iso()}
+                        FileService._write_detail(file, detail)
+                        file.status = "uploaded"
+                        file.message = "分析失败，将使用默认策略分片"
+                        FileService._append_log(file, f"文档分析失败：{exc}", "error")
+                        await db.commit()
+                        FileService._publish_status(file_id, FileService._build_status_payload(file))
+            except Exception:
+                logger.exception("Failed to record analysis failure: file_id=%s", file_id)
+
+    @staticmethod
+    async def get_recommendation(db: AsyncSession, file_id: str) -> dict | None:
+        """返回文档特征与分片策略推荐（未分析返回 analysis=None）。"""
+        file = await db.get(File, file_id)
+        if not file:
+            return None
+        detail = FileService._read_detail(file)
+        analysis = detail.get("analysis")
+        # 兼容旧数据：推荐结果缺 suggestions 时用持久化特征即时补算，
+        # 保证前端切换策略能联动各策略的建议参数
+        rec = (analysis or {}).get("recommendation")
+        if rec is not None and not rec.get("suggestions"):
+            features = (analysis or {}).get("features") or {}
+            if features:
+                rec["suggestions"] = {
+                    s: suggest_params(features, s)
+                    for s in ("fixed", "sentence", "recursive", "semantic", "heading")
+                }
+        return {
+            "file_id": file.id,
+            "status": file.status,
+            "analysis": analysis,
+        }
+
+    @staticmethod
+    async def preview_chunks(
+        db: AsyncSession,
+        file_id: str,
+        strategy: str | None,
+        params: dict | None,
+        limit: int | None = None,
+    ) -> dict | None:
+        """按给定策略 dry-run 分片，返回前 N 块预览与统计，不落库。"""
+        file = await db.get(File, file_id)
+        if not file or not file.path:
+            return None
+        path = Path(file.path)
+        if not path.exists():
+            return None
+        limit = max(1, min(limit or settings.CHUNK_PREVIEW_LIMIT, 50))
+
+        parser = get_parser(path)
+        result = await asyncio.to_thread(parser.parse, path)
+        chunk_params = ChunkParams.coerce(params).clamp()
+        items = list(
+            iter_text_chunks(result.content or "", result.metadata, strategy=strategy, params=chunk_params)
+        )
+        lens = [len(c["content"]) for c in items] or [0]
+        preview = [
+            {
+                "index": c["index"],
+                "content": c["content"][:500],
+                "length": len(c["content"]),
+                "page_number": c.get("page_number"),
+                "headings": (c.get("metadata") or {}).get("headings"),
+            }
+            for c in items[:limit]
+        ]
+        return {
+            "strategy": strategy or settings.CHUNK_STRATEGY,
+            "params": {"chunk_size": chunk_params.chunk_size, "overlap": chunk_params.overlap},
+            "stats": {
+                "chunk_count": len(items),
+                "avg_chunk_len": int(sum(lens) / len(lens)),
+                "max_chunk_len": max(lens),
+                "min_chunk_len": min(lens),
+            },
+            "preview": preview,
+        }
+
+    @staticmethod
+    def _resolve_chunk_decision(
+        file: File,
+        strategy: str | None,
+        params: dict | None,
+        use_recommendation: bool,
+    ) -> dict | None:
+        """确定本次处理采用的分片策略：用户指定 > 分析推荐 > 全局默认（None）。"""
+        analysis = (FileService._read_detail(file).get("analysis") or {})
+        recommendation = analysis.get("recommendation") or {}
+        if strategy:
+            return {
+                "strategy": strategy,
+                "params": params or recommendation.get("params"),
+                "decided_by": "user",
+                "decided_at": _utc_now_iso(),
+            }
+        if use_recommendation and recommendation.get("strategy"):
+            return {
+                "strategy": recommendation["strategy"],
+                "params": params or recommendation.get("params"),
+                "decided_by": "auto",
+                "decided_at": _utc_now_iso(),
+            }
+        return None
+
+    @staticmethod
+    async def start_processing(
+        file_id: str,
+        db: AsyncSession,
+        extract_graph: bool = True,
+        strategy: str | None = None,
+        params: dict | None = None,
+        use_recommendation: bool = True,
+    ) -> bool:
+        file = await db.get(File, file_id)
+        if not file or file.status not in ("uploaded", "analyzed"):
             logger.warning(
                 "Start processing skipped: file_id=%s status=%s",
                 file_id,
@@ -467,11 +690,29 @@ class FileService:
             )
             return False
 
+        decision = FileService._resolve_chunk_decision(file, strategy, params, use_recommendation)
+        old_detail = FileService._read_detail(file)
         detail = FileService._empty_detail()
         detail["started_at"] = _utc_now_iso()
         detail["stage"] = "preparing"
+        detail["analysis"] = old_detail.get("analysis")
+        detail["chunking_decision"] = decision
         FileService._write_detail(file, detail)
         FileService._write_logs(file, [])
+        if decision:
+            strategy_name = decision["strategy"]
+            chunk_params = decision.get("params") or {}
+            # heading/semantic 的粒度由文档结构自动决定，chunk_size 仅是内部上限，
+            # 日志按语义展示，避免误解为需要用户手动调参
+            granularity_hint = {"heading": "单节上限", "semantic": "段落聚合上限"}.get(strategy_name)
+            if granularity_hint and chunk_params.get("chunk_size"):
+                decision_label = (
+                    f"策略={strategy_name}（{granularity_hint} {chunk_params['chunk_size']} 字符，粒度自动）"
+                )
+            else:
+                decision_label = f"策略={strategy_name} 参数={chunk_params}"
+        else:
+            decision_label = f"全局默认策略={settings.CHUNK_STRATEGY}"
         await FileService._commit_runtime_state(
             db,
             file,
@@ -479,11 +720,11 @@ class FileService:
             progress=0,
             message="准备开始处理",
             stage="preparing",
-            log_message="处理任务已启动",
+            log_message=f"处理任务已启动，分片策略：{decision_label}",
         )
         logger.info(
-            "Start processing: file_id=%s kb_id=%s file_name=%s extract_graph=%s",
-            file.id, file.kb_id, file.name, extract_graph,
+            "Start processing: file_id=%s kb_id=%s file_name=%s extract_graph=%s chunking=%s",
+            file.id, file.kb_id, file.name, extract_graph, decision_label,
         )
         cancel_event = FileService._create_cancel_event(file_id)
         task = asyncio.create_task(
@@ -493,7 +734,14 @@ class FileService:
         return True
 
     @staticmethod
-    async def restart_processing(file_id: str, db: AsyncSession, extract_graph: bool = True) -> bool:
+    async def restart_processing(
+        file_id: str,
+        db: AsyncSession,
+        extract_graph: bool = True,
+        strategy: str | None = None,
+        params: dict | None = None,
+        use_recommendation: bool = True,
+    ) -> bool:
         file = await db.get(File, file_id)
         if not file or not file.path:
             logger.warning(
@@ -510,11 +758,29 @@ class FileService:
 
         await FileService._delete_index_artifacts(db, file, remove_source_file=False)
 
+        decision = FileService._resolve_chunk_decision(file, strategy, params, use_recommendation)
+        old_detail = FileService._read_detail(file)
         detail = FileService._empty_detail()
         detail["started_at"] = _utc_now_iso()
         detail["stage"] = "preparing"
+        detail["analysis"] = old_detail.get("analysis")
+        detail["chunking_decision"] = decision
         FileService._write_detail(file, detail)
         FileService._write_logs(file, [])
+        if decision:
+            strategy_name = decision["strategy"]
+            chunk_params = decision.get("params") or {}
+            # heading/semantic 的粒度由文档结构自动决定，chunk_size 仅是内部上限，
+            # 日志按语义展示，避免误解为需要用户手动调参
+            granularity_hint = {"heading": "单节上限", "semantic": "段落聚合上限"}.get(strategy_name)
+            if granularity_hint and chunk_params.get("chunk_size"):
+                decision_label = (
+                    f"策略={strategy_name}（{granularity_hint} {chunk_params['chunk_size']} 字符，粒度自动）"
+                )
+            else:
+                decision_label = f"策略={strategy_name} 参数={chunk_params}"
+        else:
+            decision_label = f"全局默认策略={settings.CHUNK_STRATEGY}"
         await FileService._commit_runtime_state(
             db,
             file,
@@ -522,11 +788,11 @@ class FileService:
             progress=0,
             message="准备重新处理",
             stage="preparing",
-            log_message="已清理旧分片、向量和图谱，开始重新处理",
+            log_message=f"已清理旧分片、向量和图谱，开始重新处理，分片策略：{decision_label}",
         )
         logger.info(
-            "Restart processing: file_id=%s kb_id=%s file_name=%s extract_graph=%s",
-            file.id, file.kb_id, file.name, extract_graph,
+            "Restart processing: file_id=%s kb_id=%s file_name=%s extract_graph=%s chunking=%s",
+            file.id, file.kb_id, file.name, extract_graph, decision_label,
         )
         cancel_event = FileService._create_cancel_event(file_id)
         task = asyncio.create_task(
@@ -708,7 +974,20 @@ class FileService:
                     pending_ids.clear()
                     pending_chunk_rows.clear()
 
-                for chunk in iter_text_chunks(result.content, result.metadata):
+                decision = FileService._read_detail(file).get("chunking_decision") or {}
+                decision_strategy = decision.get("strategy")
+                decision_params = decision.get("params")
+                if decision_strategy:
+                    logger.info(
+                        "Using confirmed chunk strategy: file_id=%s strategy=%s params=%s decided_by=%s",
+                        file_id, decision_strategy, decision_params, decision.get("decided_by"),
+                    )
+                for chunk in iter_text_chunks(
+                    result.content,
+                    result.metadata,
+                    strategy=decision_strategy,
+                    params=decision_params,
+                ):
                     FileService._check_cancelled(file_id)
                     generated_chunks += 1
                     last_generated_offset = chunk["end_offset"]
@@ -1276,34 +1555,45 @@ class FileService:
         if not file:
             logger.warning("Cancel processing skipped: file_id=%s not found", file_id)
             return False
-        
-        # 允许在 processing 和 indexed 状态下取消处理（删除已入库的数据）
-        if file.status not in ("processing", "indexed"):
+
+        # 分析中：仅取消分析任务（无入库数据）
+        if file.status == "analyzing":
+            analysis_task = FileService._analysis_tasks.pop(file_id, None)
+            if analysis_task and not analysis_task.done():
+                analysis_task.cancel()
+
+        # 允许在 processing / indexed / analyzing / analyzed 状态下取消
+        if file.status not in ("processing", "indexed", "analyzing", "analyzed"):
             logger.warning("Cancel processing skipped: file_id=%s invalid status=%s", file_id, file.status)
             return False
 
-        # 首先取消正在运行的处理任务，等待其结束（无论是正常结束还是被取消），确保不会有并发的数据库操作冲突
-        running_task = FileService._cancel_running_task(file_id)
-        if running_task:
-            try:
-                await asyncio.wait_for(asyncio.shield(running_task), timeout=1.5)
-            except asyncio.TimeoutError:
-                logger.warning("Processing task did not stop within timeout: file_id=%s", file_id)
-            except asyncio.CancelledError:
-                logger.info("Processing task acknowledged cancellation: file_id=%s", file_id)
-            except Exception:
-                logger.exception("Processing task ended with error while cancelling: file_id=%s", file_id)
+        if file.status in ("processing", "indexed"):
+            # 首先取消正在运行的处理任务，等待其结束（无论是正常结束还是被取消），确保不会有并发的数据库操作冲突
+            running_task = FileService._cancel_running_task(file_id)
+            if running_task:
+                try:
+                    await asyncio.wait_for(asyncio.shield(running_task), timeout=1.5)
+                except asyncio.TimeoutError:
+                    logger.warning("Processing task did not stop within timeout: file_id=%s", file_id)
+                except asyncio.CancelledError:
+                    logger.info("Processing task acknowledged cancellation: file_id=%s", file_id)
+                except Exception:
+                    logger.exception("Processing task ended with error while cancelling: file_id=%s", file_id)
 
-        # 删除已入库的数据（分片、向量、图谱），但保留原文件
-        await FileService._delete_index_artifacts(db, file, remove_source_file=False)
-        
-        # 重置文件状态为 uploaded（等待处理）
+            # 删除已入库的数据（分片、向量、图谱），但保留原文件
+            await FileService._delete_index_artifacts(db, file, remove_source_file=False)
+
+        # 重置文件状态为 uploaded（等待处理），保留分析结果与策略决策供下次使用
+        old_detail = FileService._read_detail(file)
+        detail = FileService._empty_detail()
+        detail["analysis"] = old_detail.get("analysis")
+        detail["chunking_decision"] = old_detail.get("chunking_decision")
         file.status = "uploaded"
         file.progress = 0
         file.message = "处理已取消"
-        FileService._write_detail(file, FileService._empty_detail())
+        FileService._write_detail(file, detail)
         FileService._write_logs(file, [])
-        
+
         await db.commit()
         FileService._publish_status(file.id, FileService._build_status_payload(file))
         logger.info("Processing cancelled: file_id=%s kb_id=%s", file.id, file.kb_id)
@@ -1349,31 +1639,38 @@ class FileService:
 
     @staticmethod
     async def cleanup_zombie_tasks(db: AsyncSession):
-        """清理僵尸任务：后端重启后，状态仍为 processing 的文件实际上没有在处理"""
-        result = await db.execute(select(File).where(File.status == "processing"))
+        """清理僵尸任务：后端重启后，状态仍为 processing/analyzing 的文件实际上没有在处理"""
+        result = await db.execute(select(File).where(File.status.in_(("processing", "analyzing"))))
         zombie_files = result.scalars().all()
-        
+
         if not zombie_files:
             logger.info("No zombie processing tasks found")
             return
-        
+
         logger.info("Found %d zombie processing tasks, cleaning up...", len(zombie_files))
-        
+
         for file in zombie_files:
             try:
+                if file.status == "analyzing":
+                    # 分析中断：直接回 uploaded，保留 detail（无入库数据可删）
+                    file.status = "uploaded"
+                    file.progress = 0
+                    file.message = "服务已重启，请重新处理"
+                    logger.info("Cleaned up zombie analysis: file_id=%s file_name=%s", file.id, file.name)
+                    continue
                 # 删除可能不完整的入库数据
                 await FileService._delete_index_artifacts(db, file, remove_source_file=False)
-                
+
                 # 重置文件状态为 uploaded（等待处理）
                 file.status = "uploaded"
                 file.progress = 0
                 file.message = "服务已重启，请重新处理"
                 FileService._write_detail(file, FileService._empty_detail())
                 FileService._write_logs(file, [])
-                
+
                 logger.info("Cleaned up zombie task: file_id=%s file_name=%s", file.id, file.name)
             except Exception as exc:
                 logger.exception("Failed to cleanup zombie task: file_id=%s error=%s", file.id, exc)
-        
+
         await db.commit()
         logger.info("Zombie tasks cleanup completed")
