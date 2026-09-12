@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useToast } from '../composables/useToast'
 import { useEscClose } from '../composables/useEscClose'
 import FolderTreeNode from './FolderTreeNode.vue'
+import ExtractionReviewPanel from './ExtractionReviewPanel.vue'
 import {
   attachAssetsToKb,
   fetchAssets,
@@ -24,6 +25,10 @@ import {
   fetchOntologySuggestions,
   fetchRecommendation,
   previewChunks,
+  analyzeFile,
+  fetchAppSettings,
+  updateAppSettings,
+  fetchExtractionReviewStats,
 } from '../api'
 import { hasPerm } from '../stores/auth'
 
@@ -82,6 +87,10 @@ const pendingFileName = ref('')
 const pendingProcessMode = ref('process')
 const isBatchProcess = ref(false)
 // ── 分片策略确认 ──────────────────────────────
+// 上传后是否自动分析分片策略（系统偏好，页面开关，默认关闭）
+const autoAnalyze = ref(false)
+const autoAnalyzeSaving = ref(false)
+const analyzing = ref(false) // 确认弹窗中手动触发分析的状态
 const strategyOptions = [
   { value: 'fixed', label: '固定长度切分', desc: '滑动窗口逐块硬切，块大小与重叠可手动调节，适合数据类文本', overlap: true },
   { value: 'sentence', label: '句子/段落切分', desc: '按标点断句累积成块，语义边界完整', overlap: false },
@@ -114,11 +123,20 @@ const showOntologyPicker = ref(false)
 const pickingCategoryId = ref(null)
 const savingOntology = ref(false)
 const pendingSuggestionCount = ref(0) // 待审核的本体建议数量
+const pendingReviewCount = ref(0)      // 待人工复核的抽取实体数量
+const showReviewPanel = ref(false)
 
 async function checkPendingSuggestions() {
   try {
     const list = await fetchOntologySuggestions({ kbId: props.kbId, status: 'ready' })
     pendingSuggestionCount.value = list.length
+  } catch { /* 静默 */ }
+}
+
+async function checkPendingReviews() {
+  try {
+    const res = await fetchExtractionReviewStats(props.kbId)
+    pendingReviewCount.value = res?.by_status?.pending || 0
   } catch { /* 静默 */ }
 }
 
@@ -207,6 +225,7 @@ async function batchDeleteSelected() {
 }
 
 onMounted(async () => {
+  loadAppSettings()
   try {
     kb.value = await getKb(props.kbId)
     files.value = (kb.value.files || []).map(normalizeFile)
@@ -231,6 +250,7 @@ onMounted(async () => {
   }, 1000)
   loadOntologyBinding()
   checkPendingSuggestions()
+  checkPendingReviews()
 })
 
 onUnmounted(() => {
@@ -401,6 +421,27 @@ async function handleFileList(list) {
   }
 }
 
+// 读取 / 保存「上传后自动分析分片策略」开关（系统偏好，全局生效、持久化）
+async function loadAppSettings() {
+  try {
+    const data = await fetchAppSettings()
+    autoAnalyze.value = String(data?.values?.chunk_auto_analyze || 'false').toLowerCase() === 'true'
+  } catch {
+    autoAnalyze.value = false
+  }
+}
+
+async function saveAutoAnalyze() {
+  autoAnalyzeSaving.value = true
+  try {
+    await updateAppSettings({ chunk_auto_analyze: autoAnalyze.value ? 'true' : 'false' })
+  } catch {
+    window.alert('保存自动分析开关失败')
+  } finally {
+    autoAnalyzeSaving.value = false
+  }
+}
+
 async function uploadFile(fileId, file) {
   const total = Math.ceil(file.size / CHUNK_SIZE)
   try {
@@ -509,6 +550,28 @@ async function loadRecommendation(fileId) {
   }
 }
 
+// 手动触发文档分析（自动分析关闭时，在确认弹窗按需获取推荐）
+async function startManualAnalyze() {
+  const fileId = pendingFileId.value
+  if (!fileId || analyzing.value) return
+  analyzing.value = true
+  try {
+    await analyzeFile(fileId)
+    // 轮询等待分析完成（最长约 2 分钟）
+    for (let i = 0; i < 120; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      const data = await getFileStatus(fileId)
+      applyStatusData(fileId, data)
+      if (['analyzed', 'failed', 'indexed', 'processing'].includes(data.status)) break
+    }
+    await loadRecommendation(fileId)
+  } catch {
+    window.alert('分析失败，请稍后重试')
+  } finally {
+    analyzing.value = false
+  }
+}
+
 // 策略/参数变化后防抖刷新分片预览
 function schedulePreview() {
   if (previewTimer) clearTimeout(previewTimer)
@@ -558,9 +621,9 @@ const CHUNK_SIZE_LABELS = {
 
 // 各策略上限参数的实际含义（含是否可能超过上限）
 const CHUNK_PARAM_HINTS = {
-  fixed: '含义：滑动窗口逐块硬切，无分隔符时按字符切，严格不超过该值',
+  fixed: '含义：滑动窗口逐块硬切，无分隔符时按字符切，严格不超过该值；重叠上限为块大小的一半',
   sentence: '含义：句子逐个累积，超过该值即成块；单个超长句子不切分，可能超过该值',
-  recursive: '含义：按段落→行→句→字符逐级降级，达到该值即成块；重叠取上一块结尾字符',
+  recursive: '含义：按段落→行→句→字符逐级降级，达到该值即成块；重叠取上一块结尾字符，上限为块大小的一半',
   semantic: '含义：相邻段落聚合，超过该值则下钻到句子；单个超长句子不切分，可能超过该值',
   heading: '含义：单个章节超过该字符数时按句子递归细分，相邻小节能合并时不超过该字符数',
 }
@@ -1059,6 +1122,12 @@ function stageIconClass(file, stageName) {
       <span>知识库直接上传的文件会自动进入文件管理的默认目录。</span>
     </div>
 
+    <label v-if="canUpload" class="auto-analyze-row">
+      <input type="checkbox" v-model="autoAnalyze" :disabled="autoAnalyzeSaving" @change="saveAutoAnalyze">
+      <span>上传后自动分析分片策略</span>
+      <small>默认关闭：上传完停在「待处理」，进入处理时可在确认框点「开始分析」按需获取推荐；开启后每个文件上传完即自动分析，大文档耗时明显</small>
+    </label>
+
     <!-- 本体建议提示 -->
     <div v-if="pendingSuggestionCount > 0" class="suggestion-banner" @click="router.push('/ontology/suggestions')">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
@@ -1093,6 +1162,24 @@ function stageIconClass(file, stageName) {
       <div v-else class="ob-unbound">
         <span class="ob-unbound-text">未绑定本体类别，抽取将使用自由模式（无类型约束）</span>
         <button class="btn primary ob-btn" @click="openOntologyPicker">绑定本体类别</button>
+      </div>
+    </div>
+
+    <!-- 抽取复核队列：未通过抽取规则、待人工审核后才入库的实体 -->
+    <div v-if="ontologyBinding" class="review-section">
+      <div class="rv-head" @click="showReviewPanel = !showReviewPanel">
+        <span class="rv-title">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          抽取复核
+        </span>
+        <span v-if="pendingReviewCount > 0" class="rv-badge">{{ pendingReviewCount }} 条待审核</span>
+        <span v-else class="rv-tip">暂无待复核实体</span>
+        <span class="rv-spacer"></span>
+        <span class="rv-tip">未通过抽取规则的实体先进这里，审核通过后才入库</span>
+        <svg class="rv-caret" :class="{ open: showReviewPanel }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </div>
+      <div v-if="showReviewPanel" class="rv-body">
+        <ExtractionReviewPanel :kb-id="kbId" @changed="checkPendingReviews" />
       </div>
     </div>
 
@@ -1405,6 +1492,9 @@ function stageIconClass(file, stageName) {
               </div>
               <div class="rec-card rec-none" v-else>
                 <span>暂无分析结果，请选择切分策略（未选择时使用全局默认策略）</span>
+                <button class="rec-analyze-btn" :disabled="analyzing" @click="startManualAnalyze">
+                  {{ analyzing ? '分析中…（大文档可能需要数十秒）' : '开始分析（获取推荐策略）' }}
+                </button>
               </div>
             </template>
             <div class="rec-card rec-none" v-else>
@@ -1424,12 +1514,14 @@ function stageIconClass(file, stageName) {
                 <label class="param-row">
                   <span class="param-label">{{ chunkSizeLabel }}</span>
                   <input type="range" min="200" max="2000" step="50" v-model.number="selChunkSize" @input="onParamInput" />
-                  <span class="param-value">{{ selChunkSize }} 字符</span>
+                  <span class="param-value" title="量程 200 ~ 2000 字符">{{ selChunkSize }} 字符</span>
                 </label>
                 <label class="param-row" v-if="strategySupportsOverlap(selStrategy)">
                   <span class="param-label">重叠</span>
                   <input type="range" min="0" :max="maxOverlap" step="10" v-model.number="selOverlap" @input="onParamInput" />
-                  <span class="param-value">{{ selOverlap }} 字符</span>
+                  <span class="param-value" :title="`量程 0 ~ ${maxOverlap} 字符（块大小的一半）`">
+                    {{ selOverlap }} / {{ maxOverlap }} 字符
+                  </span>
                 </label>
                 <div class="param-hint">{{ paramHint }}</div>
               </div>
@@ -1617,6 +1709,25 @@ h1 { font-size: 18px; font-weight: 700; }
   font-size: 12px;
 }
 
+.auto-analyze-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -8px 0 20px;
+  font-size: 12px;
+  color: var(--c-secondary);
+  cursor: pointer;
+}
+
+.auto-analyze-row input[type='checkbox'] {
+  cursor: pointer;
+}
+
+.auto-analyze-row small {
+  opacity: 0.85;
+}
+
 .source-btn {
   display: inline-flex;
   align-items: center;
@@ -1658,6 +1769,24 @@ h1 { font-size: 18px; font-weight: 700; }
 .ob-btn { font-size: 12px; padding: 5px 12px; }
 .ob-btn.danger { color: var(--c-danger); }
 .ob-btn.danger:hover { background: rgba(220, 38, 38, 0.1); border-color: var(--c-danger); }
+
+/* ===== 抽取复核队列区块 ===== */
+.review-section {
+  border: 1px solid var(--c-border); border-radius: var(--radius-sm);
+  background: var(--c-panel); overflow: hidden;
+}
+.rv-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; }
+.rv-head:hover { background: var(--c-muted); }
+.rv-title { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--c-fg); }
+.rv-badge {
+  font-size: 11.5px; padding: 2px 9px; border-radius: 10px;
+  background: rgba(220, 38, 38, 0.12); color: var(--c-danger);
+}
+.rv-tip { font-size: 11.5px; color: var(--c-secondary); }
+.rv-spacer { flex: 1; }
+.rv-caret { color: var(--c-secondary); transition: transform 150ms; flex-shrink: 0; }
+.rv-caret.open { transform: rotate(90deg); }
+.rv-body { padding: 12px 14px; border-top: 1px solid var(--c-border); }
 
 .ob-picker-modal { width: 420px; max-width: 90vw; }
 .ob-picker-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; margin-bottom: 14px; }
@@ -2774,8 +2903,25 @@ h1 { font-size: 18px; font-weight: 700; }
 .rec-card.rec-none {
   background: rgba(140, 150, 170, 0.07);
   border-color: rgba(140, 150, 170, 0.22);
-  color: #6b7690;
+  color: var(--c-secondary);
 }
+
+.rec-analyze-btn {
+  display: block;
+  margin-top: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-family: var(--font);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  background: var(--c-panel);
+  color: var(--c-accent);
+  cursor: pointer;
+  transition: border-color 150ms;
+}
+
+.rec-analyze-btn:hover:not(:disabled) { border-color: var(--c-accent); }
+.rec-analyze-btn:disabled { opacity: 0.6; cursor: default; }
 
 .rec-head {
   display: flex;
@@ -2840,7 +2986,7 @@ h1 { font-size: 18px; font-weight: 700; }
 }
 
 .param-value {
-  width: 78px;
+  width: 104px;
   flex-shrink: 0;
   text-align: right;
   font-size: 12px;

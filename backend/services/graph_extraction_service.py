@@ -12,6 +12,11 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from config import settings
 from providers.graph_store import ChunkGraphData, GraphEntity, GraphRelation
 from providers.llm import create_llm
+from services.extraction_rule_service import (
+    ExtractionEvidence,
+    ExtractionReport,
+    ExtractionRuleValidator,
+)
 
 ONTOLOGY_SUGGESTION_PROMPT = """你是一个知识建模专家。以下是从文档中抽取的实体类型与关系类型统计：
 
@@ -220,6 +225,8 @@ class GraphExtractionService:
         batch_result_callback: BatchResultCallback | None = None,
         cancel_check: CancelCheck | None = None,
         ontology_constraint: dict | None = None,
+        review_sink: list | None = None,
+        report: ExtractionReport | None = None,
     ) -> list[ChunkGraphData]:
         if cancel_check:
             cancel_check()
@@ -386,7 +393,9 @@ class GraphExtractionService:
                     # 如果是第一个失败的批次，记录错误信息
                     if first_error is None:
                         first_error = f"Graph extraction batch failed: batch={len(batch)} chunks"
-                GraphExtractionService._merge_payload(chunk_map, payload, ontology_constraint)
+                GraphExtractionService._merge_payload(
+                    chunk_map, payload, ontology_constraint, review_sink, report
+                )
                 async with progress_lock:
                     processed_batches += 1
                     processed_chunks += len(batch)
@@ -735,11 +744,23 @@ class GraphExtractionService:
         chunk_map: dict[str, ChunkGraphData],
         payload: dict[str, Any],
         ontology_constraint: dict | None = None,
+        review_sink: list | None = None,
+        report: ExtractionReport | None = None,
     ):
+        """把模型返回的 payload 合并进 chunk_map。
+
+        review_sink 非 None 时，收集未通过规则、待人工复核的实体，
+        元素为 (entity, verdict, chunk_id)；仅在复核队列开关开启时由调用方传入。
+        report 非 None 时，累计规则违规统计（设计文档 §7.2）。
+        """
         has_constraint = bool(ontology_constraint and ontology_constraint.get("ontologies"))
         ontology_by_name = ontology_constraint.get("ontology_by_name", {}) if has_constraint else {}
         constraint_set = ontology_constraint.get("constraint_set", set()) if has_constraint else set()
         relation_id_by_name = ontology_constraint.get("relation_id_by_name", {}) if has_constraint else {}
+
+        # 抽取规则：批内证据聚合一次（跨 chunk 一致性统计），校验器复用正则缓存
+        evidence = ExtractionEvidence(payload) if has_constraint else None
+        validator = ExtractionRuleValidator(ontology_constraint) if has_constraint else None
 
         for item in payload.get("chunks", []):
             chunk_id = str(item.get("chunk_id", "")).strip()
@@ -768,9 +789,29 @@ class GraphExtractionService:
                     ont_code = (ont_def.get("code") or "").strip()
                     if ont_code:
                         entity.entity_type = ont_code
-                    entity.properties = GraphExtractionService._normalize_properties(
-                        entity.properties, ont_def.get("attributes", [])
+                    # 属性级规则校验 + 实体级判决（设计文档 §4）
+                    cleaned, verdict = validator.validate(
+                        entity_name=entity.name,
+                        entity_type=entity.entity_type,
+                        properties=entity.properties,
+                        ont_def=ont_def,
+                        chunk_content=getattr(chunk, "content", "") or "",
+                        evidence=evidence,
                     )
+                    entity.properties = json.dumps(cleaned, ensure_ascii=False) if cleaned else ""
+                    if report is not None:
+                        report.record_entity(
+                            entity_name=entity.name,
+                            entity_type=entity.entity_type,
+                            verdict=verdict,
+                        )
+                    if verdict.verdict == "drop":
+                        continue
+                    if verdict.verdict == "review":
+                        if review_sink is not None:
+                            review_sink.append((entity, verdict, chunk_id))
+                            continue
+                        # 复核队列未接入：照常入库，避免新规则上线即丢数据
 
                 entity_key = (entity.name.lower(), entity.entity_type.lower())
                 if entity_key in seen_entities:
@@ -925,6 +966,11 @@ class GraphExtractionService:
         if ontology_constraint:
             ont_def = ontology_constraint.get("ontology_by_name", {}).get(entity_type)
             if ont_def:
+                # 实体名模式校验（R8）：关系补全的占位实体同样过滤噪声名，
+                # 但跳过 required / min_attributes / 置信度闸门（属性为空是其常态）
+                name_pattern = ont_def.get("_compiled_name_pattern")
+                if name_pattern is not None and not name_pattern.search(entity_name or ""):
+                    return
                 entity.ontology_id = ont_def.get("id")
         entities.append(entity)
         entity_lookup[key] = entity
@@ -962,6 +1008,12 @@ class GraphExtractionService:
                         parts.append("必填")
                     attr_parts.append("、".join(parts))
                 lines.append(f"      属性：{'；'.join(attr_parts)}")
+                # 抽取规则（§9）：仅在配置了规则时才追加，未配置时 Prompt 与改造前完全一致。
+                # 措辞为正向引导，不暴露"违背会被丢弃"等内部处置策略，避免模型因畏惧而少抽。
+                rule_lines = GraphExtractionService._build_rule_lines(attrs)
+                if rule_lines:
+                    lines.append("      抽取要求：")
+                    lines.extend(rule_lines)
             else:
                 lines.append("      属性：（无）")
 
@@ -981,8 +1033,53 @@ class GraphExtractionService:
         else:
             lines.append("  （无三元组约束，不允许抽取任何关系）")
 
+        # 仅开关打开时才要求模型自报置信度（默认关闭，见 §4.5.5）
+        if getattr(settings, "GRAPH_USE_MODEL_CONFIDENCE", False):
+            lines.append("")
+            lines.append(
+                "额外要求：为每个实体输出 confidence 字段（0~1），"
+                "表示你对该实体抽取正确的把握程度。"
+            )
+
         ontology_block = "\n".join(lines)
         return GRAPH_EXTRACTION_CONSTRAINED_SYSTEM_PROMPT.format(ontology_block=ontology_block)
+
+    @staticmethod
+    def _build_rule_lines(attrs: list[dict]) -> list[str]:
+        """把属性上的抽取规则渲染成 Prompt 行（设计文档 §9）。
+
+        无任何规则时返回空列表，保证存量本体的 Prompt 与改造前逐字一致。
+        """
+        lines: list[str] = []
+        for a in attrs:
+            rules: list[str] = []
+            enum_values = a.get("enum_values") or []
+            if enum_values:
+                joined = "|".join(str(v) for v in enum_values)
+                rules.append(f"取值仅限 [{joined}]，请仅在确信时给出")
+            pattern = str(a.get("value_pattern") or "").strip()
+            if pattern:
+                rules.append(f"必须匹配正则 {pattern}")
+            min_value = str(a.get("min_value") or "").strip()
+            max_value = str(a.get("max_value") or "").strip()
+            if min_value or max_value:
+                rules.append(f"取值范围 {min_value or '不限'} ~ {max_value or '不限'}")
+            min_length = int(a.get("min_length") or 0)
+            max_length = int(a.get("max_length") or 0)
+            if min_length or max_length:
+                rules.append(f"长度 {min_length or '不限'} ~ {max_length or '不限'}")
+            examples = a.get("extraction_examples") or []
+            if examples:
+                rules.append(f"示例：{'、'.join(str(v) for v in examples)}")
+            negatives = a.get("negative_examples") or []
+            if negatives:
+                rules.append(f"不要抽取：{'、'.join(str(v) for v in negatives)}")
+            hint = str(a.get("extraction_hint") or "").strip()
+            if hint:
+                rules.append(hint)
+            if rules:
+                lines.append(f"        - {a['name']}：{'；'.join(rules)}")
+        return lines
 
     @staticmethod
     def _constraint_summary(ontology_constraint: dict) -> str:

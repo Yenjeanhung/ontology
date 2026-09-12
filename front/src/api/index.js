@@ -429,7 +429,10 @@ export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, on
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, kb_id: kbId, skill_ids: skillIds || [], agent_id: agentId || null }),
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, `HTTP ${res.status}`))
+  }
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
@@ -803,6 +806,23 @@ export async function attachAssetsToKb(kbId, assetIds, { autoProcess = false, ex
 export async function fetchConfig() {
   const res = await fetch(`${API}/api/config`)
   if (!res.ok) throw new Error('Fetch config failed')
+  return res.json()
+}
+
+// 系统偏好设置（页面开关），如上传后是否自动分析分片策略
+export async function fetchAppSettings() {
+  const res = await fetch(`${API}/api/settings/app`)
+  if (!res.ok) throw new Error('Fetch app settings failed')
+  return res.json()
+}
+
+export async function updateAppSettings(values) {
+  const res = await fetch(`${API}/api/settings/app`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values }),
+  })
+  if (!res.ok) throw new Error('Update app settings failed')
   return res.json()
 }
 
@@ -2055,6 +2075,83 @@ export async function mergeEntities({ canonicalId, mergedIds, kbId } = {}) {
   if (!res.ok) {
     const e = await res.json().catch(() => ({}))
     throw new Error(apiDetail(e, 'Merge entities failed'))
+  }
+  return res.json()
+}
+
+// ===== 实体抽取复核队列（未通过抽取规则、待人工审核的实体）=====
+export async function fetchExtractionReviews({ kb_id = '', status = '', file_id = '', rule = '', page = 1, page_size = 20 } = {}) {
+  const params = new URLSearchParams()
+  params.set('kb_id', kb_id)
+  if (status) params.set('status', status)
+  if (file_id) params.set('file_id', file_id)
+  if (rule) params.set('rule', rule)
+  params.set('page', String(page))
+  params.set('page_size', String(page_size))
+  const res = await fetch(`${API}/api/entities/extraction-reviews?${params.toString()}`)
+  if (!res.ok) throw new Error('Fetch extraction reviews failed')
+  return res.json()
+}
+
+export async function fetchExtractionReviewStats(kb_id, file_id = '') {
+  const params = new URLSearchParams()
+  params.set('kb_id', kb_id || '')
+  if (file_id) params.set('file_id', file_id)
+  const res = await fetch(`${API}/api/entities/extraction-reviews/stats?${params.toString()}`)
+  if (!res.ok) throw new Error('Fetch extraction review stats failed')
+  return res.json()
+}
+
+export async function getExtractionReview(reviewId) {
+  const res = await fetch(`${API}/api/entities/extraction-reviews/${reviewId}`)
+  if (!res.ok) throw new Error('Get extraction review failed')
+  return res.json()
+}
+
+export async function updateExtractionReview(reviewId, data) {
+  const res = await fetch(`${API}/api/entities/extraction-reviews/${reviewId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, 'Update review failed'))
+  }
+  return res.json()
+}
+
+export async function approveExtractionReview(reviewId, data = {}) {
+  const res = await fetch(`${API}/api/entities/extraction-reviews/${reviewId}/approve`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '审核通过失败'))
+  }
+  return res.json()
+}
+
+export async function rejectExtractionReview(reviewId, data = {}) {
+  const res = await fetch(`${API}/api/entities/extraction-reviews/${reviewId}/reject`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '驳回失败'))
+  }
+  return res.json()
+}
+
+export async function batchExtractionReviews(ids, action, reviewer = '') {
+  const res = await fetch(`${API}/api/entities/extraction-reviews/batch`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, action, reviewer }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '批量处理失败'))
   }
   return res.json()
 }

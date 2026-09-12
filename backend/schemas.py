@@ -190,6 +190,10 @@ class CreateOntologyRequest(BaseModel):
     status: str | None = "active"
     visibility: str | None = "public"
     group_name: str | None = ""
+    # 抽取规则（对象类型级，设计文档 §3.3）
+    name_pattern: str | None = ""
+    min_confidence: float | None = None
+    min_valid_attributes: int = 0
 
 
 class UpdateOntologyRequest(BaseModel):
@@ -206,6 +210,10 @@ class UpdateOntologyRequest(BaseModel):
     status: str | None = None
     visibility: str | None = None
     group_name: str | None = None
+    # 抽取规则（对象类型级）
+    name_pattern: str | None = None
+    min_confidence: float | None = None
+    min_valid_attributes: int | None = None
 
 
 class BatchCreateOntologiesRequest(BaseModel):
@@ -226,6 +234,18 @@ class CreateOntologyAttributeRequest(BaseModel):
     format: str | None = ""
     unit: str | None = ""
     shared_property_id: str | None = ""
+    # 抽取规则（属性级，设计文档 §3.2）
+    enum_values: list[str] | None = None
+    value_pattern: str | None = ""
+    min_value: str | None = ""
+    max_value: str | None = ""
+    min_length: int = 0
+    max_length: int = 0
+    confidence_threshold: float | None = None
+    on_violation: str = "drop_attribute"   # drop_attribute / review / drop_entity
+    extraction_hint: str | None = ""
+    extraction_examples: list[str] | None = None
+    negative_examples: list[str] | None = None
 
 
 class UpdateOntologyAttributeRequest(BaseModel):
@@ -241,6 +261,18 @@ class UpdateOntologyAttributeRequest(BaseModel):
     format: str | None = None
     unit: str | None = None
     shared_property_id: str | None = None
+    # 抽取规则（属性级）
+    enum_values: list[str] | None = None
+    value_pattern: str | None = None
+    min_value: str | None = None
+    max_value: str | None = None
+    min_length: int | None = None
+    max_length: int | None = None
+    confidence_threshold: float | None = None
+    on_violation: str | None = None
+    extraction_hint: str | None = None
+    extraction_examples: list[str] | None = None
+    negative_examples: list[str] | None = None
 
 
 # ===== 共享属性 / 本体接口 =====
@@ -437,6 +469,37 @@ class UpdateOntologySuggestionRequest(BaseModel):
 
 
 class ApproveSuggestionRequest(BaseModel):
+    reviewer: str | None = None
+
+
+# ===== 实体抽取复核队列（未通过规则的实体）=====
+
+
+class UpdateExtractionReviewRequest(BaseModel):
+    """修改待复核实体内容（仅 pending 可改）。"""
+    name: str | None = None
+    description: str | None = None
+    properties: dict | None = None
+    review_notes: str | None = None
+
+
+class ApproveExtractionReviewRequest(BaseModel):
+    """审核通过：可同时修正名称/描述/属性后再入库。"""
+    reviewer: str | None = None
+    name: str | None = None
+    description: str | None = None
+    properties: dict | None = None
+    review_notes: str | None = None
+
+
+class RejectExtractionReviewRequest(BaseModel):
+    reviewer: str | None = None
+    review_notes: str | None = None
+
+
+class BatchExtractionReviewRequest(BaseModel):
+    ids: list[str]
+    action: str = "approve"      # approve / reject
     reviewer: str | None = None
 
 

@@ -441,8 +441,11 @@ ALTER TABLE ontology_suggestions ADD COLUMN merged_version_id VARCHAR DEFAULT ''
 ALTER TABLE ontology_attributes ADD COLUMN is_shared_created INTEGER NOT NULL DEFAULT 0;
 
 -- migration_027: 动作编排（execution_mode / flow），只加列、不回填历史数据
-ALTER TABLE ontology_services ADD COLUMN IF NOT EXISTS execution_mode VARCHAR(10) NOT NULL DEFAULT 'code';
-ALTER TABLE ontology_services ADD COLUMN IF NOT EXISTS flow TEXT DEFAULT NULL;
+-- 注意：不可使用 PostgreSQL 方言 `ADD COLUMN IF NOT EXISTS`——SQLite 不支持该语法，
+-- 且会让 database.py 的列检测正则把 "IF" 误认成列名而失去跳过能力。列已存在时
+-- 由 database.py 的 PRAGMA/information_schema 检测自动跳过。
+ALTER TABLE ontology_services ADD COLUMN execution_mode VARCHAR(10) NOT NULL DEFAULT 'code';
+ALTER TABLE ontology_services ADD COLUMN flow TEXT DEFAULT NULL;
 
 -- migration_028: 工作流归属本体类别（顶层模块维度管理；空串 = 未分类）
 ALTER TABLE workflows ADD COLUMN category_id VARCHAR DEFAULT '';
@@ -626,3 +629,58 @@ CREATE TABLE IF NOT EXISTS security_settings (
     updated_by VARCHAR(64)  DEFAULT '',
     updated_at VARCHAR
 );
+
+-- migration_030: 系统偏好设置表（页面开关，运行时可改，如分片自动分析）
+CREATE TABLE IF NOT EXISTS app_settings (
+    key        VARCHAR(64) PRIMARY KEY,
+    value      VARCHAR(500) DEFAULT '',
+    updated_by VARCHAR(64)  DEFAULT '',
+    updated_at VARCHAR
+);
+
+-- migration_031: 实体抽取规则（属性级 + 对象类型级）
+-- 设计见 doc/知识库/实体抽取属性级规则与人工复核设计.md §3
+-- 全部使用兼容默认值：未配置规则的存量本体行为与改造前完全一致
+ALTER TABLE ontology_attributes ADD COLUMN enum_values TEXT DEFAULT NULL;
+ALTER TABLE ontology_attributes ADD COLUMN value_pattern VARCHAR(200) DEFAULT '';
+ALTER TABLE ontology_attributes ADD COLUMN min_value VARCHAR(64) DEFAULT '';
+ALTER TABLE ontology_attributes ADD COLUMN max_value VARCHAR(64) DEFAULT '';
+ALTER TABLE ontology_attributes ADD COLUMN min_length INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ontology_attributes ADD COLUMN max_length INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ontology_attributes ADD COLUMN confidence_threshold REAL DEFAULT NULL;
+ALTER TABLE ontology_attributes ADD COLUMN on_violation VARCHAR(16) NOT NULL DEFAULT 'drop_attribute';
+ALTER TABLE ontology_attributes ADD COLUMN extraction_hint TEXT DEFAULT '';
+ALTER TABLE ontology_attributes ADD COLUMN extraction_examples TEXT DEFAULT NULL;
+ALTER TABLE ontology_attributes ADD COLUMN negative_examples TEXT DEFAULT NULL;
+
+ALTER TABLE ontologies ADD COLUMN name_pattern VARCHAR(200) DEFAULT '';
+ALTER TABLE ontologies ADD COLUMN min_confidence REAL DEFAULT NULL;
+ALTER TABLE ontologies ADD COLUMN min_valid_attributes INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE kb_ontology_bindings ADD COLUMN strict_mode INTEGER NOT NULL DEFAULT 0;
+
+-- migration_032: 实体抽取复核队列（未通过规则、待人工审核的实体）
+CREATE TABLE IF NOT EXISTS extraction_reviews (
+    id            VARCHAR(12) PRIMARY KEY,
+    kb_id         VARCHAR(64)  NOT NULL,
+    file_id       VARCHAR(64)  DEFAULT '',
+    chunk_id      VARCHAR(64)  DEFAULT '',
+    ontology_id   VARCHAR(64)  DEFAULT '',
+    entity_type   VARCHAR(100) NOT NULL,
+    entity_name   VARCHAR(200) NOT NULL,
+    description   TEXT         DEFAULT '',
+    properties    TEXT         DEFAULT NULL,
+    raw_properties TEXT        DEFAULT NULL,
+    confidence    REAL         DEFAULT 1.0,
+    violations    TEXT         NOT NULL DEFAULT '[]',
+    primary_rule  VARCHAR(50)  DEFAULT '',
+    status        VARCHAR(20)  DEFAULT 'pending',
+    reviewer      VARCHAR(64)  DEFAULT '',
+    review_notes  TEXT         DEFAULT '',
+    reviewed_at   VARCHAR(50)  DEFAULT '',
+    created_at    VARCHAR(50),
+    updated_at    VARCHAR(50)
+);
+CREATE INDEX IF NOT EXISTS idx_extraction_reviews_kb_status ON extraction_reviews (kb_id, status);
+CREATE INDEX IF NOT EXISTS idx_extraction_reviews_file ON extraction_reviews (file_id);
+CREATE INDEX IF NOT EXISTS idx_extraction_reviews_created ON extraction_reviews (kb_id, file_id, created_at);

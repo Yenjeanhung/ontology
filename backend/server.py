@@ -253,7 +253,7 @@ app.add_middleware(AuditMiddleware)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(AccessLogMiddleware)
 
-from routers import agent, audit, auth, config, entity, files, graph, graph_analysis, graph_sync, kb, library, monitor, notifications, ontology, ontology_function, ontology_interface, ontology_service, ontology_version, ontology_view, query, role, scheduler, session, user, vector_data, workflow
+from routers import app_settings, agent, audit, auth, config, entity, files, graph, graph_analysis, graph_sync, kb, library, monitor, notifications, ontology, ontology_function, ontology_interface, ontology_service, ontology_version, ontology_view, query, role, scheduler, session, user, vector_data, workflow
 
 app.include_router(kb.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
@@ -281,6 +281,7 @@ app.include_router(user.router, prefix="/api")
 app.include_router(role.router, prefix="/api")
 app.include_router(session.router, prefix="/api")
 app.include_router(audit.router, prefix="/api")
+app.include_router(app_settings.router, prefix="/api")
 
 front_dist = Path(__file__).parent.parent / "front" / "dist"
 if front_dist.exists():

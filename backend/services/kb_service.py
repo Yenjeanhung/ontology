@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from config import settings
-from models import Entity, KnowledgeBase, Relation
+from models import Agent, Entity, KnowledgeBase, Relation
 from providers.graph_store import delete_kb_graph
 from providers.vector_store import delete_kb_collection
 from services.file_service import FileService
@@ -134,6 +134,16 @@ class KBService:
         # （派生属性物化按本体查实体、不分知识库，孤儿会被持续误算）
         await db.execute(delete(Relation).where(Relation.kb_id == kb_id))
         await db.execute(delete(Entity).where(Entity.kb_id == kb_id))
+
+        # 清理引用该 KB 的智能体：kb_id 置空串（列有 NOT NULL 约束；
+        # 悬空引用会让智能体问答 404，置空后回退页面选择的 KB）
+        result_agents = await db.execute(
+            select(Agent).where(Agent.kb_id == kb_id))
+        for agent in result_agents.scalars().all():
+            agent.kb_id = ""
+            logger.info(
+                "KB %s deleted: cleared dangling reference on agent %s (%s)",
+                kb_id, agent.id, agent.name)
 
         await db.delete(kb)
         await db.commit()

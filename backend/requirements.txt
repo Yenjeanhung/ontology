@@ -62,3 +62,6 @@ langchain-community>=0.3.0           # CrossEncoderReranker / HuggingFaceCrossEn
 # 用户与权限（认证 / JWT / 密码哈希）
 PyJWT>=2.8.0                # JWT 签发与校验
 bcrypt>=4.0.0               # 密码哈希（直接用 bcrypt，避免 passlib 与 bcrypt 4.x 的兼容问题）
+
+# RAG 评测（backend/scripts/eval_rag_ragas.py 使用，按需安装，不影响运行时）
+# pip install "ragas>=0.2.6" datasets pandas

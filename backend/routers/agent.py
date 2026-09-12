@@ -628,7 +628,14 @@ async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)
         raise HTTPException(400, "缺少 kb_id 或 agent_id")
     kb = await KBService.get(db, kb_id)
     if not kb:
-        raise HTTPException(404, "Knowledge base not found")
+        # 智能体绑定的 KB 已被删除等场景：回退到页面选择的 KB，避免悬空引用直接 404
+        if agent and req.kb_id and req.kb_id != kb_id:
+            kb = await KBService.get(db, req.kb_id)
+            if kb:
+                kb_id = req.kb_id
+    if not kb:
+        raise HTTPException(
+            404, f"知识库不存在（kb_id={kb_id}）：智能体绑定的知识库可能已被删除，请重新选择知识库或编辑智能体")
 
     # 预加载本体 schema：db 会话在响应返回后释放，SSE 生成器不再持有 db
     try:

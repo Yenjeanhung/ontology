@@ -36,7 +36,8 @@ const selectedAgent = computed(() => agents.value.find(x => x.id === selectedAge
 // 自定义智能体：切换时预填 kb+技能；选回「默认」= 内置行为（kb/技能跟随页面选择）
 function onAgentChange() {
   const a = selectedAgent.value
-  if (a && a.kb_id) {
+  // 仅在智能体绑定的 KB 仍存在时预填；KB 已被删除则保持页面当前选择
+  if (a && a.kb_id && kbs.value.some(k => k.id === a.kb_id)) {
     queryKbId.value = a.kb_id
     selectedSkillIds.value = a.skill_ids || []
   }

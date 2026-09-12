@@ -73,6 +73,28 @@ const RENDER_HINTS = [
   { value: 'badge', label: '徽标' },
 ]
 
+// 常用正则模板：选中即填入，可再手改
+const PATTERN_TEMPLATES = [
+  { label: '自定义 / 不使用模板', value: '' },
+  { label: '手机号', value: '^1[3-9]\\d{9}$' },
+  { label: '邮箱', value: '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$' },
+  { label: '身份证号', value: '^\\d{17}[\\dXx]$' },
+  { label: '日期 YYYY-MM-DD', value: '^\\d{4}-\\d{2}-\\d{2}$' },
+  { label: '纯数字', value: '^\\d+$' },
+  { label: '金额（两位小数）', value: '^\\d+(\\.\\d{1,2})?$' },
+  { label: '统一社会信用代码', value: '^[0-9A-HJ-NPQRTUWXY]{18}$' },
+]
+
+// 违规处置策略
+const ON_VIOLATIONS = [
+  { value: 'drop_attribute', label: '丢弃该属性值（默认）' },
+  { value: 'review', label: '进入人工复核' },
+  { value: 'drop_entity', label: '丢弃整个实体' },
+]
+
+// 抽取规则展开状态（按索引）
+const rulesOpen = ref(new Set())
+
 // 工作副本
 const list = ref([])
 const expandedId = ref(null)
@@ -100,6 +122,18 @@ function syncFromProps() {
       unit: a.unit || '',
       format: a.format || '',
       shared_property_id: a.shared_property_id || '',
+      // 抽取规则（属性级）：不配置即不启用，与接入前行为一致
+      enum_values: Array.isArray(a.enum_values) ? [...a.enum_values] : [],
+      value_pattern: a.value_pattern || '',
+      min_value: a.min_value || '',
+      max_value: a.max_value || '',
+      min_length: a.min_length || 0,
+      max_length: a.max_length || 0,
+      confidence_threshold: (a.confidence_threshold === null || a.confidence_threshold === undefined) ? null : a.confidence_threshold,
+      on_violation: a.on_violation || 'drop_attribute',
+      extraction_hint: a.extraction_hint || '',
+      extraction_examples: Array.isArray(a.extraction_examples) ? [...a.extraction_examples] : [],
+      negative_examples: Array.isArray(a.negative_examples) ? [...a.negative_examples] : [],
       // 来源：'own' 本体自有；'template:xxx' 继承自模板（不可删除；改动只作为自有覆盖）
       _source: a.source || 'own',
       _templateId: (a.source && a.source.startsWith('template:')) ? a.source.slice('template:'.length) : '',
@@ -205,6 +239,14 @@ async function saveAll() {
     saveError.value = `编码重复：${[...new Set(dupes)].join('、')}`
     return
   }
+  // 校验抽取规则正则合法性（前端预校验，避免脏数据入库）
+  for (const a of list.value) {
+    const err = patternError(a)
+    if (err) {
+      saveError.value = `属性「${a.name.trim() || '(未命名)'}」${err}`
+      return
+    }
+  }
   saveError.value = ''
   saving.value = true
   try {
@@ -222,6 +264,18 @@ async function saveAll() {
         unit: (a.unit || '').trim(),
         format: (a.format || '').trim(),
         shared_property_id: a.shared_property_id || '',
+        // 抽取规则（属性级）
+        enum_values: (a.enum_values || []).length ? a.enum_values : null,
+        value_pattern: (a.value_pattern || '').trim(),
+        min_value: (a.min_value || '').trim(),
+        max_value: (a.max_value || '').trim(),
+        min_length: Number(a.min_length) || 0,
+        max_length: Number(a.max_length) || 0,
+        confidence_threshold: normThreshold(a.confidence_threshold),
+        on_violation: a.on_violation || 'drop_attribute',
+        extraction_hint: (a.extraction_hint || '').trim(),
+        extraction_examples: (a.extraction_examples || []).length ? a.extraction_examples : null,
+        negative_examples: (a.negative_examples || []).length ? a.negative_examples : null,
       })),
     }
     const result = await props.saveFn(payload)
@@ -258,6 +312,68 @@ function onSharedPropChange(idx) {
 
 function sharedPropOf(attr) {
   return (props.sharedProperties || []).find(p => p.id === attr.shared_property_id) || null
+}
+
+// ===== 抽取规则辅助 =====
+
+function toggleRules(idx) {
+  const next = new Set(rulesOpen.value)
+  if (next.has(idx)) next.delete(idx)
+  else next.add(idx)
+  rulesOpen.value = next
+}
+
+function isRulesOpen(idx) {
+  return rulesOpen.value.has(idx)
+}
+
+function ruleCount(attr) {
+  let n = 0
+  if ((attr.enum_values || []).length) n += 1
+  if ((attr.value_pattern || '').trim()) n += 1
+  if ((attr.min_value || '').trim() || (attr.max_value || '').trim()) n += 1
+  if (attr.min_length || attr.max_length) n += 1
+  if (attr.confidence_threshold) n += 1
+  if ((attr.extraction_hint || '').trim()) n += 1
+  if ((attr.extraction_examples || []).length) n += 1
+  if ((attr.negative_examples || []).length) n += 1
+  return n
+}
+
+/** 正则合法性校验：返回空串表示合法 */
+function patternError(attr) {
+  const p = (attr.value_pattern || '').trim()
+  if (!p) return ''
+  try {
+    new RegExp(p)
+    return ''
+  } catch (e) {
+    return `正则无效：${e.message}`
+  }
+}
+
+/** 顿号/逗号分隔的字符串 → 数组 */
+function onListInput(idx, field, event) {
+  const raw = event.target.value || ''
+  list.value[idx][field] = raw.split(/[、,，]/).map(s => s.trim()).filter(Boolean)
+  markDirty(idx)
+}
+
+/** 置信度门槛归一化：空值一律转 null（不限） */
+function normThreshold(v) {
+  if (v === '' || v === null || v === undefined) return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+function patternTemplateOf(attr) {
+  const p = (attr.value_pattern || '').trim()
+  return PATTERN_TEMPLATES.find(t => t.value && t.value === p)?.value || ''
+}
+
+function onPatternTemplate(idx, event) {
+  list.value[idx].value_pattern = event.target.value || ''
+  markDirty(idx)
 }
 </script>
 
@@ -464,6 +580,80 @@ function sharedPropOf(attr) {
               </label>
             </div>
           </div>
+
+          <!-- 抽取规则（可选）：不配置任何规则时，行为与既有抽取完全一致 -->
+          <div class="ae-rule-block">
+            <div class="ae-rule-head" @click="toggleRules(idx)">
+              <svg class="ae-rule-caret" :class="{ open: isRulesOpen(idx) }" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+              <span class="ae-rule-title">抽取规则</span>
+              <span v-if="ruleCount(attr)" class="ae-rule-badge">{{ ruleCount(attr) }} 项已配置</span>
+              <span v-else class="ae-rule-none">未配置，不启用</span>
+            </div>
+
+            <div v-if="isRulesOpen(idx)" class="ae-rule-body" :class="{ disabled: attr.is_edit_only }">
+              <div v-if="attr.is_edit_only" class="ae-rule-tip">
+                该属性不参与抽取（仅人工编辑），下列规则不会生效
+              </div>
+              <div class="ae-field">
+                <label>抽取提示（写入 Prompt，引导模型）</label>
+                <input type="text" v-model="attr.extraction_hint" @input="markDirty(idx)" placeholder="如：仅抽取明确写明的资质限制条款">
+              </div>
+              <div class="ae-field-row">
+                <div class="ae-field">
+                  <label>正例</label>
+                  <input type="text" :value="(attr.extraction_examples || []).join('、')" @input="onListInput(idx, 'extraction_examples', $event)" placeholder="用、分隔，如：在职、试用">
+                </div>
+                <div class="ae-field">
+                  <label>反例</label>
+                  <input type="text" :value="(attr.negative_examples || []).join('、')" @input="onListInput(idx, 'negative_examples', $event)" placeholder="用、分隔，如：未知、待定">
+                </div>
+              </div>
+              <div class="ae-field-row">
+                <div class="ae-field">
+                  <label>枚举取值</label>
+                  <input type="text" :value="(attr.enum_values || []).join('、')" @input="onListInput(idx, 'enum_values', $event)" placeholder="用、分隔，留空不校验">
+                </div>
+                <div class="ae-field">
+                  <label>正则约束</label>
+                  <select @change="onPatternTemplate(idx, $event)" :value="patternTemplateOf(attr)">
+                    <option v-for="p in PATTERN_TEMPLATES" :key="p.label" :value="p.value">{{ p.label }}</option>
+                  </select>
+                  <input class="ae-rule-pattern" type="text" v-model="attr.value_pattern" @input="markDirty(idx)" placeholder="留空不校验">
+                  <span v-if="patternError(attr)" class="ae-rule-err">{{ patternError(attr) }}</span>
+                </div>
+              </div>
+              <div class="ae-field-row">
+                <div class="ae-field">
+                  <label>取值范围（数值 / 日期）</label>
+                  <div class="ae-range">
+                    <input type="text" v-model="attr.min_value" @input="markDirty(idx)" placeholder="最小">
+                    <span class="ae-range-sep">~</span>
+                    <input type="text" v-model="attr.max_value" @input="markDirty(idx)" placeholder="最大">
+                  </div>
+                </div>
+                <div class="ae-field">
+                  <label>长度范围（字符数）</label>
+                  <div class="ae-range">
+                    <input type="number" min="0" v-model="attr.min_length" @input="markDirty(idx)" placeholder="最少">
+                    <span class="ae-range-sep">~</span>
+                    <input type="number" min="0" v-model="attr.max_length" @input="markDirty(idx)" placeholder="最多">
+                  </div>
+                </div>
+              </div>
+              <div class="ae-field-row">
+                <div class="ae-field">
+                  <label>置信度门槛（0~1，留空继承对象类型）</label>
+                  <input type="number" min="0" max="1" step="0.05" v-model="attr.confidence_threshold" @input="markDirty(idx)" placeholder="留空 = 不限">
+                </div>
+                <div class="ae-field">
+                  <label>违背时处置</label>
+                  <select v-model="attr.on_violation" @change="markDirty(idx)">
+                    <option v-for="o in ON_VIOLATIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -609,4 +799,39 @@ function sharedPropOf(attr) {
 .switch input:checked + .switch-slider::after { transform: translateX(16px); }
 .switch input:checked + .switch-slider + .switch-label { color: var(--c-fg); }
 .switch-label { font-size: 12px; font-weight: 500; color: var(--c-secondary); min-width: 64px; }
+/* ===== 抽取规则区 ===== */
+.ae-rule-block {
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  background: var(--c-muted);
+  overflow: hidden;
+}
+.ae-rule-head {
+  display: flex; align-items: center; gap: 7px;
+  padding: 8px 12px; cursor: pointer; user-select: none;
+}
+.ae-rule-head:hover { background: rgba(0, 0, 0, 0.03); }
+.ae-rule-caret { color: var(--c-secondary); transition: transform 150ms; flex-shrink: 0; }
+.ae-rule-caret.open { transform: rotate(90deg); }
+.ae-rule-title { font-size: 12.5px; font-weight: 600; color: var(--c-fg); }
+.ae-rule-badge {
+  font-size: 11px; padding: 1px 8px; border-radius: 10px;
+  background: rgba(139, 92, 246, 0.14); color: #7C3AED;
+}
+.ae-rule-none { font-size: 11px; color: var(--c-secondary); }
+.ae-rule-body {
+  padding: 12px; border-top: 1px solid var(--c-border);
+  background: var(--c-panel);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.ae-rule-body.disabled { opacity: 0.55; }
+.ae-rule-tip {
+  font-size: 11.5px; color: var(--c-warning, #B45309);
+  background: rgba(180, 83, 9, 0.08); padding: 5px 9px; border-radius: var(--radius-sm);
+}
+.ae-rule-pattern { margin-top: 5px; }
+.ae-rule-err { display: block; margin-top: 4px; font-size: 11px; color: var(--c-danger); }
+.ae-range { display: flex; align-items: center; gap: 6px; }
+.ae-range input { flex: 1; min-width: 0; }
+.ae-range-sep { color: var(--c-secondary); font-size: 12px; flex-shrink: 0; }
 </style>

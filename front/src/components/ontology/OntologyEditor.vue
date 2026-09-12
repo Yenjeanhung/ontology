@@ -78,6 +78,10 @@ const editIcon = ref('')
 const editStatus = ref('active')
 const editGroup = ref('')
 const editTitleKey = ref('name')
+// 抽取规则（对象类型级）
+const editNamePattern = ref('')
+const editMinConfidence = ref(null)
+const editMinValidAttrs = ref(0)
 
 const STATUS_OPTIONS = [
   { value: 'active', label: '活跃' },
@@ -341,10 +345,24 @@ function syncEditFromDetail(d) {
   editStatus.value = d.status || 'active'
   editGroup.value = d.group_name || ''
   editTitleKey.value = d.title_key || 'name'
+  // 抽取规则（对象类型级）
+  editNamePattern.value = d.name_pattern || ''
+  editMinConfidence.value = (d.min_confidence === null || d.min_confidence === undefined) ? null : d.min_confidence
+  editMinValidAttrs.value = d.min_valid_attributes || 0
 }
 
 async function saveInfo() {
   if (!detail.value || !editName.value.trim()) return
+  // 实体名正则前端预校验，避免脏数据入库
+  const pat = editNamePattern.value.trim()
+  if (pat) {
+    try {
+      new RegExp(pat)
+    } catch (e) {
+      alert('实体名正则无效：' + e.message)
+      return
+    }
+  }
   savingInfo.value = true
   try {
     await updateOntology(props.categoryId, detail.value.id, {
@@ -358,6 +376,10 @@ async function saveInfo() {
       status: editStatus.value,
       group_name: editGroup.value.trim(),
       title_key: editTitleKey.value || 'name',
+      // 抽取规则（对象类型级）
+      name_pattern: editNamePattern.value.trim(),
+      min_confidence: (editMinConfidence.value === '' || editMinConfidence.value === null) ? null : Number(editMinConfidence.value),
+      min_valid_attributes: Number(editMinValidAttrs.value) || 0,
     })
     await refreshAfterChange()
   } catch (e) {
@@ -749,6 +771,26 @@ onActivated(() => { onSvcSaved() })
                       </select>
                     </div>
                   </div>
+
+                  <!-- 抽取规则（对象类型级）：不配置则不启用 -->
+                  <div class="oe-sub-title">抽取规则</div>
+                  <div class="oe-meta-grid">
+                    <div class="oe-field">
+                      <label>实体名正则</label>
+                      <input type="text" v-model="editNamePattern" placeholder="如 ^[\u4e00-\u9fa5]{2,4}$，留空不校验">
+                    </div>
+                    <div class="oe-field">
+                      <label>最低置信度（0~1）</label>
+                      <input type="number" min="0" max="1" step="0.05" v-model="editMinConfidence" placeholder="留空 = 用全局配置">
+                    </div>
+                    <div class="oe-field">
+                      <label>最少有效属性数</label>
+                      <input type="number" min="0" v-model="editMinValidAttrs" placeholder="0 = 不限制">
+                    </div>
+                  </div>
+                  <div class="oe-hint">
+                    不合规的实体不会直接丢弃，而是进入知识库的「抽取复核」队列，人工通过后才入库。
+                  </div>
                 </div>
                 <div class="oe-info-actions">
                   <button class="btn sm" @click="closeDetail">取消</button>
@@ -1049,6 +1091,11 @@ onActivated(() => { onSvcSaved() })
 .oe-field select { width: 100%; padding: 6px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: var(--c-panel); color: var(--c-fg); font-size: 13px; font-family: var(--font); outline: none; }
 .oe-field select:focus { border-color: var(--c-fg); }
 .oe-meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+.oe-sub-title {
+  margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--c-border);
+  font-size: 12px; font-weight: 600; color: var(--c-fg);
+}
+.oe-hint { margin-top: 8px; font-size: 11px; color: var(--c-secondary); line-height: 1.5; }
 .oe-info-code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--c-secondary); background: var(--c-muted); border-radius: 4px; padding: 1px 6px; }
 .oe-status-tag { font-size: 10px; padding: 1px 8px; border-radius: 999px; font-weight: 500; }
 .oe-status-tag.draft { background: rgba(245, 158, 11, 0.15); color: #B45309; }

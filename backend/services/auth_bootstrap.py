@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.security import hash_password_async, now_iso
 from models import Role, User, UserRole
+from services.app_settings_service import AppSettingsService
 from services.role_service import RoleService
 from services.security_settings_service import SecuritySettingsService
 from services.user_service import generate_temp_password
@@ -20,6 +21,7 @@ _INITIAL_PASSWORD_FILE = Path("./data/initial_admin_password.txt")
 
 async def bootstrap(db: AsyncSession) -> None:
     await SecuritySettingsService.ensure_defaults(db)
+    await AppSettingsService.ensure_defaults(db)
     added = await RoleService.sync_permissions(db)
     if added:
         logger.info("同步权限点 %d 项", added)

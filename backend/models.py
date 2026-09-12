@@ -144,6 +144,10 @@ class Ontology(Base):
     status = Column(String, default="active")                 # draft / active / deprecated
     visibility = Column(String, default="public")             # public / restricted（预留权限）
     group_name = Column(String, default="")                   # 对象类型组（前端分组）
+    # ── 抽取规则（对象类型级，设计文档 §3.3）──
+    name_pattern = Column(String(200), default="")            # 实体名必须匹配的正则，空=不限
+    min_confidence = Column(Float, nullable=True)             # 实体级最低置信度，NULL=用全局 GRAPH_MIN_ENTITY_CONFIDENCE
+    min_valid_attributes = Column(Integer, nullable=False, default=0)  # 有效属性数少于此值则进复核，0=不限
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
@@ -167,6 +171,18 @@ class OntologyAttribute(Base):
     unit = Column(String, default="")                           # 单位
     shared_property_id = Column(String, default="")             # 绑定的共享属性（可空）
     is_shared_created = Column(Integer, nullable=False, default=0)  # 由共享属性挂载生成（取消挂载时删除）
+    # ── 抽取规则（属性级，见 doc/知识库/实体抽取属性级规则与人工复核设计.md §3.2）──
+    enum_values = Column(Text, nullable=True)                   # 允许值集合 JSON 数组，NULL=不校验
+    value_pattern = Column(String(200), default="")             # 正则约束（Python re 语法）
+    min_value = Column(String(64), default="")                  # 下界（number 按数值 / date 按 ISO 串比较）
+    max_value = Column(String(64), default="")                  # 上界
+    min_length = Column(Integer, nullable=False, default=0)     # 字符串最小长度，0=不限
+    max_length = Column(Integer, nullable=False, default=0)     # 字符串最大长度，0=不限
+    confidence_threshold = Column(Float, nullable=True)         # 属性值置信度门槛，NULL=继承对象类型级
+    on_violation = Column(String(16), nullable=False, default="drop_attribute")  # drop_attribute/review/drop_entity
+    extraction_hint = Column(Text, default="")                  # 抽取提示，注入 Prompt
+    extraction_examples = Column(Text, nullable=True)           # 正例 JSON 数组
+    negative_examples = Column(Text, nullable=True)             # 反例 JSON 数组
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
@@ -213,6 +229,7 @@ class KbOntologyBinding(Base):
     id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
     kb_id = Column(String, nullable=False)
     category_id = Column(String, nullable=False)
+    strict_mode = Column(Integer, nullable=False, default=0)   # 严格模式：属性级 drop_attribute 升级为 review
     created_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
@@ -564,6 +581,34 @@ class Relation(Base):
     source_file_id = Column(String, nullable=True)
     source_chunk_id = Column(String, nullable=True)
     properties = Column(Text, nullable=True)               # 关系实例属性 JSON（S5：链接可带属性）
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+# ===== 抽取复核队列：未通过规则、待人工审核的实体 =====
+# 设计见 doc/知识库/实体抽取属性级规则与人工复核设计.md §5
+
+
+class ExtractionReview(Base):
+    __tablename__ = "extraction_reviews"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    kb_id = Column(String, nullable=False)
+    file_id = Column(String, default="")
+    chunk_id = Column(String, default="")          # 来源分片，便于回溯原文
+    ontology_id = Column(String, default="")
+    entity_type = Column(String, nullable=False)   # 已归一化的类型 code
+    entity_name = Column(String, nullable=False)
+    description = Column(Text, default="")
+    properties = Column(Text, nullable=True)       # 清洗后（违规值已按策略处理）
+    raw_properties = Column(Text, nullable=True)   # 原始抽取结果，供人工对照
+    confidence = Column(Float, default=1.0)        # 证据计算的实体置信度
+    violations = Column(Text, nullable=False, default="[]")  # JSON 数组
+    primary_rule = Column(String, default="")      # 汇总主因，便于筛选
+    status = Column(String, default="pending")     # pending/approved/rejected/expired
+    reviewer = Column(String, default="")
+    review_notes = Column(Text, default="")
+    reviewed_at = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
@@ -1061,6 +1106,17 @@ class SecuritySetting(Base):
     """安全与登录策略（key-value，运行时可改）。"""
 
     __tablename__ = "security_settings"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(String(500), default="")
+    updated_by = Column(String(64), default="")
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class AppSetting(Base):
+    """系统偏好设置（key-value，运行时可改，页面开关；如分片自动分析）。"""
+
+    __tablename__ = "app_settings"
 
     key = Column(String(64), primary_key=True)
     value = Column(String(500), default="")

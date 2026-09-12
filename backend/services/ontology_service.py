@@ -59,6 +59,25 @@ async def _validate_ontology_code(
 
 # ---------- 辅助序列化 ----------
 
+def _dump_str_list(value: list[str] | None) -> str | None:
+    """字符串列表 → JSON 文本。空列表/None 统一存 NULL（便于 SQL 判空）。"""
+    if not value:
+        return None
+    items = [str(v).strip() for v in value if str(v).strip()]
+    return json.dumps(items, ensure_ascii=False) if items else None
+
+
+def _load_str_list(raw: str | None) -> list[str]:
+    """JSON 文本 → 字符串列表。非法或空一律返回 []（容错，不抛异常）。"""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return [str(v) for v in data] if isinstance(data, list) else []
+
+
 def _serialize_attribute(attr, source: str = "own") -> dict:
     return {
         "id": attr.id,
@@ -74,8 +93,81 @@ def _serialize_attribute(attr, source: str = "own") -> dict:
         "format": getattr(attr, "format", "") or "",
         "unit": getattr(attr, "unit", "") or "",
         "shared_property_id": getattr(attr, "shared_property_id", "") or "",
+        # ── 抽取规则（属性级，设计文档 §3.2）──
+        "enum_values": _load_str_list(getattr(attr, "enum_values", None)),
+        "value_pattern": getattr(attr, "value_pattern", "") or "",
+        "min_value": getattr(attr, "min_value", "") or "",
+        "max_value": getattr(attr, "max_value", "") or "",
+        "min_length": int(getattr(attr, "min_length", 0) or 0),
+        "max_length": int(getattr(attr, "max_length", 0) or 0),
+        "confidence_threshold": getattr(attr, "confidence_threshold", None),
+        "on_violation": getattr(attr, "on_violation", "") or "drop_attribute",
+        "extraction_hint": getattr(attr, "extraction_hint", "") or "",
+        "extraction_examples": _load_str_list(getattr(attr, "extraction_examples", None)),
+        "negative_examples": _load_str_list(getattr(attr, "negative_examples", None)),
         "source": source,
     }
+
+
+# ===== 属性级抽取规则读写（设计文档 §3.2）=====
+
+_ON_VIOLATION_CHOICES = ("drop_attribute", "review", "drop_entity")
+
+
+def _norm_confidence_threshold(value) -> float | None:
+    """置信度门槛归一化：None / <=0 → None（不限），否则 clamp 到 [0, 1]。"""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    return min(1.0, v)
+
+
+def _apply_attribute_rules(attr, req, *, partial: bool = False) -> None:
+    """把属性级抽取规则写入 ORM 对象，供 create / update / batch_save 复用。
+
+    partial=False（新建）：所有字段一律写入，缺失时回落默认值。
+    partial=True（局部更新）：值为 None 表示该字段不修改。
+    """
+    # 纯字符串约束（hint 是长文本，不 strip 内部换行以外的首尾空白即可）
+    for field in ("value_pattern", "min_value", "max_value"):
+        value = getattr(req, field, None)
+        if partial and value is None:
+            continue
+        setattr(attr, field, (value or "").strip())
+    hint = getattr(req, "extraction_hint", None)
+    if not (partial and hint is None):
+        attr.extraction_hint = hint or ""
+
+    # 枚举 / 正例 / 反例：list ↔ JSON 文本
+    for field in ("enum_values", "extraction_examples", "negative_examples"):
+        value = getattr(req, field, None)
+        if partial and value is None:
+            continue
+        setattr(attr, field, _dump_str_list(value))
+
+    # 长度限制：负数归零
+    for field in ("min_length", "max_length"):
+        value = getattr(req, field, None)
+        if partial and value is None:
+            continue
+        setattr(attr, field, max(0, int(value or 0)))
+
+    # 置信度门槛
+    threshold = getattr(req, "confidence_threshold", None)
+    if not (partial and threshold is None):
+        attr.confidence_threshold = _norm_confidence_threshold(threshold)
+
+    # 违规处置策略：非法值回落默认值
+    on_violation = getattr(req, "on_violation", None)
+    if not (partial and on_violation is None):
+        attr.on_violation = (
+            on_violation if on_violation in _ON_VIOLATION_CHOICES else "drop_attribute"
+        )
 
 
 def _serialize_ontology(ont: Ontology, extra: dict | None = None) -> dict:
@@ -96,6 +188,10 @@ def _serialize_ontology(ont: Ontology, extra: dict | None = None) -> dict:
         "status": getattr(ont, "status", "") or "active",
         "visibility": getattr(ont, "visibility", "") or "public",
         "group_name": getattr(ont, "group_name", "") or "",
+        # ── 抽取规则（对象类型级，设计文档 §3.3）──
+        "name_pattern": getattr(ont, "name_pattern", "") or "",
+        "min_confidence": getattr(ont, "min_confidence", None),
+        "min_valid_attributes": int(getattr(ont, "min_valid_attributes", 0) or 0),
     }
     if extra:
         base.update(extra)
@@ -106,6 +202,8 @@ def _serialize_ontology(ont: Ontology, extra: dict | None = None) -> dict:
 _ONTOLOGY_META_FIELDS = (
     "display_name", "plural_name", "title_key", "primary_key", "icon",
     "status", "visibility", "group_name",
+    # 抽取规则（对象类型级，设计文档 §3.3）
+    "name_pattern", "min_confidence", "min_valid_attributes",
 )
 
 
@@ -587,6 +685,7 @@ class OntologyService:
             unit=(getattr(req, "unit", "") or "").strip(),
             shared_property_id=(getattr(req, "shared_property_id", "") or "").strip(),
         )
+        _apply_attribute_rules(attr, req)
         db.add(attr)
         await db.commit()
         await db.refresh(attr)
@@ -629,6 +728,8 @@ class OntologyService:
         for field in ("render_hint", "format", "unit", "shared_property_id"):
             if getattr(req, field, None) is not None:
                 setattr(attr, field, getattr(req, field).strip())
+        # 抽取规则（局部更新：None 表示不修改）
+        _apply_attribute_rules(attr, req, partial=True)
         attr.updated_at = datetime.now().isoformat()
         await db.commit()
         return _serialize_attribute(attr)
@@ -655,7 +756,7 @@ class OntologyService:
         )
         for idx, a in enumerate(attributes):
             code = (a.code or "").strip() or None
-            db.add(OntologyAttribute(
+            attr_obj = OntologyAttribute(
                 ontology_id=ontology_id, name=a.name.strip(), code=code,
                 data_type=a.data_type, description=(a.description or "").strip(),
                 is_required=int(a.is_required), default_value=a.default_value,
@@ -665,7 +766,9 @@ class OntologyService:
                 format=(getattr(a, "format", "") or "").strip(),
                 unit=(getattr(a, "unit", "") or "").strip(),
                 shared_property_id=(getattr(a, "shared_property_id", "") or "").strip(),
-            ))
+            )
+            _apply_attribute_rules(attr_obj, a)
+            db.add(attr_obj)
         await db.commit()
         return {"ontology_id": ontology_id, "count": len(attributes)}
 
@@ -935,6 +1038,8 @@ class OntologyService:
             "kb_id": b.kb_id,
             "category_id": b.category_id,
             "category_name": cat.name if cat else None,
+            # 严格模式：属性级 drop_attribute 升级为 review（设计文档 §3.4）
+            "strict_mode": bool(getattr(b, "strict_mode", 0)),
             "created_at": b.created_at,
         }
 
@@ -1280,19 +1385,45 @@ class OntologyService:
                 continue
             merged = await OntologyService.get_merged_attributes(db, ont["id"])
             attrs = merged.get("attributes", []) if merged else ont.get("attributes", [])
-            # 精简属性，只保留抽取 Prompt 与后处理校验需要的字段；
-            # is_edit_only（仅人工编辑）属性不参与抽取
-            slim_attrs = [
-                {
+            # 精简属性：只保留抽取 Prompt 与后处理校验需要的字段；
+            # is_edit_only（仅人工编辑）属性不参与抽取。
+            # 抽取规则必须在此带出，否则抽取侧拿不到（设计文档 §4.4 关键落点）。
+            slim_attrs = []
+            for a in attrs:
+                if a.get("is_edit_only"):
+                    continue
+                slim = {
                     "name": a["name"],
                     "code": a.get("code"),
                     "data_type": a["data_type"],
                     "is_required": a.get("is_required", False),
                     "description": a.get("description", ""),
+                    # ── 抽取规则（§3.2）──
+                    "enum_values": a.get("enum_values") or [],
+                    "value_pattern": a.get("value_pattern") or "",
+                    "min_value": a.get("min_value") or "",
+                    "max_value": a.get("max_value") or "",
+                    "min_length": int(a.get("min_length") or 0),
+                    "max_length": int(a.get("max_length") or 0),
+                    "confidence_threshold": a.get("confidence_threshold"),
+                    "on_violation": a.get("on_violation") or "drop_attribute",
+                    "extraction_hint": a.get("extraction_hint") or "",
+                    "extraction_examples": a.get("extraction_examples") or [],
+                    "negative_examples": a.get("negative_examples") or [],
                 }
-                for a in attrs
-                if not a.get("is_edit_only")
-            ]
+                # 正则在此预编译一次并缓存：禁止在每个属性值上重复编译（性能，§4.5.7）
+                pattern = str(slim["value_pattern"] or "").strip()
+                if pattern:
+                    try:
+                        slim["_compiled_pattern"] = re.compile(pattern)
+                    except re.error:
+                        logger.warning(
+                            "Invalid value_pattern ignored: ontology=%s attr=%s pattern=%s",
+                            ont.get("name"), a.get("name"), pattern,
+                        )
+                        slim["value_pattern"] = ""  # 非法正则停用该规则，不阻断抽取
+                slim_attrs.append(slim)
+
             entry = {
                 "id": ont["id"],
                 "name": ont["name"],
@@ -1300,7 +1431,22 @@ class OntologyService:
                 # entity_type 改用此值，避免本体改名导致存量数据失配
                 "code": (ont.get("code") or "").strip(),
                 "attributes": slim_attrs,
+                # ── 对象类型级抽取规则（§3.3）──
+                "name_pattern": ont.get("name_pattern") or "",
+                "min_confidence": ont.get("min_confidence"),
+                "min_valid_attributes": int(ont.get("min_valid_attributes") or 0),
             }
+            # 实体名正则同样预编译
+            name_pat = str(entry["name_pattern"] or "").strip()
+            if name_pat:
+                try:
+                    entry["_compiled_name_pattern"] = re.compile(name_pat)
+                except re.error:
+                    logger.warning(
+                        "Invalid name_pattern ignored: ontology=%s pattern=%s",
+                        ont.get("name"), name_pat,
+                    )
+                    entry["name_pattern"] = ""
             ontology_list.append(entry)
             ontology_by_name[ont["name"]] = entry
 
@@ -1325,6 +1471,8 @@ class OntologyService:
         return {
             "category_id": category_id,
             "category_name": binding.get("category_name"),
+            # 严格模式：属性级 drop_attribute 升级为 review（§3.4）
+            "strict_mode": bool(binding.get("strict_mode", False)),
             "ontologies": ontology_list,
             "ontology_by_name": ontology_by_name,
             "relation_names": relation_names,

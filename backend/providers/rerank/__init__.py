@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 
 from config import settings
@@ -50,12 +51,71 @@ def _candidate_text(item: dict) -> str:
     return text[:limit]
 
 
+def _set_offline(offline: bool) -> None:
+    """切换 HF 离线模式；huggingface_hub 导入时固化常量，需同步修改才能运行时生效。"""
+    os.environ["HF_HUB_OFFLINE"] = "1" if offline else "0"
+    try:
+        from huggingface_hub import constants as hf_constants
+
+        hf_constants.HF_HUB_OFFLINE = offline
+    except Exception:
+        pass
+
+
+def _enable_local_cache() -> bool:
+    """配置了 HF_CACHE_DIR 时优先走本地缓存（与嵌入模型 provider 语义一致）。
+
+    嵌入模型通过 SentenceTransformer 的 ``cache_folder`` 参数指向缓存目录，
+    这里改用 ``HF_HUB_CACHE`` 环境变量，对 LangChain 封装和 sentence-transformers
+    两条加载路径都生效。返回是否进入离线优先模式。
+    """
+    if not settings.HF_CACHE_DIR:
+        return False
+    os.environ["HF_HUB_CACHE"] = settings.HF_CACHE_DIR
+    _set_offline(True)
+    return True
+
+
+def _load_via_langchain():
+    try:
+        from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+
+        model = HuggingFaceCrossEncoder(model_name=settings.RERANK_MODEL)
+        logger.info("Rerank: LangChain HuggingFaceCrossEncoder loaded (%s)", settings.RERANK_MODEL)
+        return model
+    except Exception:
+        logger.info(
+            "Rerank: LangChain cross-encoder unavailable, fallback to sentence-transformers",
+            exc_info=True,
+        )
+        return None
+
+
+def _load_via_sentence_transformers():
+    try:
+        from sentence_transformers import CrossEncoder
+
+        model = CrossEncoder(settings.RERANK_MODEL, max_length=512)
+        logger.info("Rerank: sentence-transformers CrossEncoder loaded (%s)", settings.RERANK_MODEL)
+        return model
+    except Exception:
+        logger.warning(
+            "Rerank: cross-encoder unavailable (%s). Install sentence-transformers "
+            "or switch RERANK_PROVIDER=llm.", settings.RERANK_MODEL, exc_info=True,
+        )
+        return None
+
+
 def _load_cross_encoder():
     """加载 cross-encoder 模型（进程级缓存）。
 
     使用 LangChain 的 ``HuggingFaceCrossEncoder`` 封装而非 ``CrossEncoderReranker``：
     后者作为 retriever 压缩器只回传排序后的文档、不暴露原始分值，而
     ``RERANK_MIN_SCORE`` 需要真实分数做过滤。封装不可用时降级 sentence-transformers。
+
+    模型来源与嵌入模型一致，由 ``HF_CACHE_DIR`` 决定：配置后优先从本地缓存
+    离线加载（不访问 huggingface.co）；本地未命中时临时切回在线模式下载一次，
+    下载完恢复离线优先，后续请求仍走本地。
     """
     global _ce_model, _ce_failed
     if _ce_model is not None:
@@ -63,31 +123,29 @@ def _load_cross_encoder():
     if _ce_failed:
         return None
 
-    try:
-        from langchain_community.cross_encoders import HuggingFaceCrossEncoder
-
-        _ce_model = HuggingFaceCrossEncoder(model_name=settings.RERANK_MODEL)
-        logger.info("Rerank: LangChain HuggingFaceCrossEncoder loaded (%s)", settings.RERANK_MODEL)
-        return _ce_model
-    except Exception:
+    offline = _enable_local_cache()
+    if offline:
         logger.info(
-            "Rerank: LangChain cross-encoder unavailable, fallback to sentence-transformers",
-            exc_info=True,
+            "Rerank: 加载本地精排模型 %s, 缓存目录: %s (离线优先模式)",
+            settings.RERANK_MODEL, settings.HF_CACHE_DIR,
         )
+    else:
+        logger.info("Rerank: 加载精排模型 %s (在线下载模式)", settings.RERANK_MODEL)
 
-    try:
-        from sentence_transformers import CrossEncoder
+    _ce_model = _load_via_langchain() or _load_via_sentence_transformers()
 
-        _ce_model = CrossEncoder(settings.RERANK_MODEL, max_length=512)
-        logger.info("Rerank: sentence-transformers CrossEncoder loaded (%s)", settings.RERANK_MODEL)
-        return _ce_model
-    except Exception:
+    if _ce_model is None and offline:
+        # 本地缓存未命中（离线加载失败）：回退在线下载一次，随后恢复离线优先
+        logger.info("Rerank: 本地缓存未命中 %s，回退在线下载", settings.RERANK_MODEL)
+        _set_offline(False)
+        try:
+            _ce_model = _load_via_langchain() or _load_via_sentence_transformers()
+        finally:
+            _set_offline(True)
+
+    if _ce_model is None:
         _ce_failed = True
-        logger.warning(
-            "Rerank: cross-encoder unavailable (%s). Install sentence-transformers "
-            "or switch RERANK_PROVIDER=llm.", settings.RERANK_MODEL, exc_info=True,
-        )
-        return None
+    return _ce_model
 
 
 def _rerank_cross_encoder(query: str, candidates: list[dict], top_n: int):

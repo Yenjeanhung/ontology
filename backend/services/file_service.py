@@ -30,7 +30,10 @@ from providers.vector_store import (
     delete_vector_ids,
     get_vector_store_provider_name,
 )
+from services.app_settings_service import AppSettingsService
 from services.entity_service import EntityService
+from services.extraction_review_service import ExtractionReviewService
+from services.extraction_rule_service import ExtractionReport
 from services.graph_extraction_service import GraphExtractionService
 from services.ontology_service import OntologyService, OntologySuggestionService
 
@@ -466,8 +469,8 @@ class FileService:
             file.path,
             file.size,
         )
-        # 上传完成后自动分析文档结构与分片策略（失败不阻塞上传流程）
-        if settings.CHUNK_AUTO_ANALYZE:
+        # 上传完成后是否自动分析：以页面「自动分析」开关为准（默认关闭），失败不阻塞上传流程
+        if await AppSettingsService.get_bool(db, "chunk_auto_analyze", settings.CHUNK_AUTO_ANALYZE):
             try:
                 await FileService.start_analysis(file_id, db)
             except Exception:
@@ -1094,6 +1097,13 @@ class FileService:
                             len(ontology_constraint.get("ontologies", [])),
                             len(ontology_constraint.get("constraints", [])),
                         )
+                        # 重新处理前让该文件下旧的待复核记录过期，避免与新一轮抽取混淆（§5.3）
+                        try:
+                            await ExtractionReviewService.expire_by_file(db, file.id)
+                        except Exception:  # noqa: BLE001 - 过期失败不阻断主流程
+                            logger.exception(
+                                "Expire stale extraction reviews failed: file_id=%s", file.id
+                            )
 
                     # Set up KB + Document metadata and clear old graph data first
                     await asyncio.to_thread(
@@ -1234,6 +1244,12 @@ class FileService:
                             message=file.message,
                         )
 
+                    # 复核队列：仅本体约束模式且开关开启时收集未通过规则的实体（§5）
+                    review_enabled = bool(
+                        has_constraint and getattr(settings, "GRAPH_EXTRACTION_REVIEW_ENABLED", False)
+                    )
+                    review_sink: list = []
+                    extraction_report = ExtractionReport() if has_constraint else None
                     graph_chunks = await GraphExtractionService.extract(
                         file.name,
                         graph_chunks,
@@ -1242,7 +1258,36 @@ class FileService:
                         batch_result_callback=batch_result_callback,
                         cancel_check=lambda: FileService._check_cancelled(file_id),
                         ontology_constraint=ontology_constraint if has_constraint else None,
+                        review_sink=review_sink if review_enabled else None,
+                        report=extraction_report,
                     )
+                    if extraction_report is not None:
+                        # 抽取报告写入 File.detail（§7.2），供前端展示违规统计与置信度分布
+                        detail = FileService._read_detail(file)
+                        detail["extraction_report"] = extraction_report.to_dict()
+                        FileService._write_detail(file, detail)
+                        await db.commit()
+                        logger.info(
+                            "Extraction report: file_id=%s passed=%s reviewed=%s dropped=%s downgraded=%s",
+                            file.id,
+                            extraction_report.passed,
+                            extraction_report.reviewed,
+                            extraction_report.dropped,
+                            extraction_report.downgraded_attributes,
+                        )
+                    if review_sink:
+                        try:
+                            queued = await ExtractionReviewService.add_from_sink(
+                                db, kb_id=file.kb_id, file_id=file.id, sink=review_sink,
+                            )
+                            logger.info(
+                                "Extraction reviews queued: file_id=%s queued=%s",
+                                file.id, queued,
+                            )
+                        except Exception:  # noqa: BLE001 - 队列写入失败不阻断抽取结果落库
+                            logger.exception(
+                                "Persist extraction reviews failed: file_id=%s", file.id
+                            )
                     FileService._check_cancelled(file_id)
                     entity_count = sum(len(chunk.entities) for chunk in graph_chunks)
                     relation_count = sum(len(chunk.relations) for chunk in graph_chunks)

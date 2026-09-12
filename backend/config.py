@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     # 图谱清洗安全护栏：单次 apply 删除实体/关系占比超过此值则中止（防止误操作清空整个图谱）。
     # 取 0.8：允许对"噪声为主"的脏图一次清掉大多数噪声，同时拦截接近清空的误操作。
     GRAPH_CLEANUP_MAX_DELETE_RATIO: float = 0.8
+    # ── 实体抽取规则（doc/知识库/实体抽取属性级规则与人工复核设计.md）──
+    # 全局兜底实体置信度门槛，0 = 关闭；对象类型 min_confidence > 属性 confidence_threshold 优先
+    GRAPH_MIN_ENTITY_CONFIDENCE: float = 0.0
+    # 复核队列总开关：关闭时未通过规则的实体照常入库（仅计入抽取报告），
+    # 保证新规则上线初期不会丢数据；队列功能就绪后置 true
+    GRAPH_EXTRACTION_REVIEW_ENABLED: bool = False
+    # 可选补充：采用模型自报置信度（默认关闭，用证据计算，见设计文档 §4.5.5）
+    GRAPH_USE_MODEL_CONFIDENCE: bool = False
 
     # LLM
     # openai = OpenAI 兼容（含 DeepSeek / Qwen / 智谱 / 自定义 OpenAI 格式）；anthropic = Anthropic 格式
@@ -80,8 +88,9 @@ class Settings(BaseSettings):
     # 正常流程的分片策略与参数由「上传后自动分析 + 处理确认弹窗」按文件决定并持久化
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50
-    # 上传完成后自动分析文档并推荐分片策略（推荐结果在处理确认框中展示）
-    CHUNK_AUTO_ANALYZE: bool = True
+    # 上传/挂载后自动分析分片策略的兜底默认值；页面「自动分析」开关（app_settings）优先。
+    # 默认关闭：分析需解析全文并统计特征，大文档耗时明显，需要时可在处理确认弹窗手动触发。
+    CHUNK_AUTO_ANALYZE: bool = False
     # 分析时是否启用 embedding 抽样计算语义突变密度（成本较高，默认关闭）
     CHUNK_ANALYZE_SEMANTIC: bool = False
     # 分片预览默认返回块数上限
@@ -117,6 +126,7 @@ class Settings(BaseSettings):
 
     # Rerank 精排：RRF 融合后用 cross-encoder / LLM 二次打分再截断。
     # 默认关闭：cross-encoder 需首次下载模型，开启前请确认 RERANK_MODEL 可访问。
+    # 模型来源与嵌入模型共用 HF_CACHE_DIR：配置后优先本地缓存离线加载，未命中自动在线下载。
     RERANK_ENABLED: bool = False
     RERANK_PROVIDER: Literal["cross-encoder", "llm"] = "cross-encoder"
     RERANK_MODEL: str = "BAAI/bge-reranker-base"

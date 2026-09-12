@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from config import settings
 from models import File, FileAsset, FileDirectory, KnowledgeBase
+from services.app_settings_service import AppSettingsService
 
 logger = logging.getLogger(__name__)
 
@@ -487,8 +488,8 @@ class LibraryService:
 
         await db.commit()
 
-        # 加入知识库后自动分析文档结构与分片策略（失败不阻塞加入流程）
-        if settings.CHUNK_AUTO_ANALYZE:
+        # 加入知识库后是否自动分析：以页面「自动分析」开关为准（默认关闭），失败不阻塞加入流程
+        if await AppSettingsService.get_bool(db, "chunk_auto_analyze", settings.CHUNK_AUTO_ANALYZE):
             for kb_file in attached:
                 if kb_file.status == "uploaded":
                     try:
