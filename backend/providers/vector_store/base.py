@@ -58,6 +58,18 @@ class VectorStoreAdapter(ABC):
         """Best-effort provider-specific enrichment for inspector pages."""
         return records
 
+    def delete_by_ids(
+        self, kb_id: str, ids: list[str], embeddings: Embeddings = None
+    ) -> int:
+        """按 chunk_id 删除向量，返回删除条数。
+
+        默认实现走 LangChain 的 delete(ids=...)，Milvus 因主键类型差异自行实现。
+        """
+        if not ids:
+            return 0
+        self.create_store(kb_id, embeddings).delete(ids=ids)
+        return len(ids)
+
     def list_kb_documents(self, kb_id: str) -> list[dict]:
         """返回 KB 下全部分片 [{id, content, metadata}]，供 BM25 等关键词索引构建。
 

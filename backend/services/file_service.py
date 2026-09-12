@@ -25,7 +25,11 @@ from providers.graph_store import (
     upsert_document_graph,
 )
 from providers.parser import get_parser
-from providers.vector_store import create_vector_store, get_vector_store_provider_name
+from providers.vector_store import (
+    create_vector_store,
+    delete_vector_ids,
+    get_vector_store_provider_name,
+)
 from services.entity_service import EntityService
 from services.graph_extraction_service import GraphExtractionService
 from services.ontology_service import OntologyService, OntologySuggestionService
@@ -169,10 +173,15 @@ class FileService:
 
         if chunks:
             try:
-                vectorstore = create_vector_store(file.kb_id, embeddings)
                 ids_to_delete = [chunk.embedding_id for chunk in chunks if chunk.embedding_id]
                 if ids_to_delete:
-                    await asyncio.to_thread(vectorstore.delete, ids=ids_to_delete)
+                    deleted = await asyncio.to_thread(
+                        delete_vector_ids, file.kb_id, ids_to_delete, embeddings
+                    )
+                    logger.info(
+                        "Vector delete done: file_id=%s kb_id=%s requested=%s reported_deleted=%s",
+                        file.id, file.kb_id, len(ids_to_delete), deleted,
+                    )
             except Exception:
                 logger.exception("Vector delete failed: file_id=%s kb_id=%s", file.id, file.kb_id)
 

@@ -92,6 +92,10 @@ def setup_logging():
     httpx_logger = logging.getLogger("httpx")
     httpx_logger.setLevel(logging.ERROR)
 
+    # neo4j 驱动把服务端通知（如 IndexOrConstraintAlreadyExists）以 INFO 打到
+    # neo4j.notifications，建schema时每条约束都会刷一行，这里只保留 WARNING 以上
+    logging.getLogger("neo4j.notifications").setLevel(logging.WARNING)
+
 # 初始化日志配置
 setup_logging()
 logger = logging.getLogger(__name__)

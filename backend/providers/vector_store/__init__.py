@@ -18,6 +18,7 @@ __all__ = [
     "ChromaAdapter",
     "MilvusAdapter",
     "create_vector_store",
+    "delete_vector_ids",
     "delete_kb_collection",
     "enrich_vector_index_records",
     "list_kb_documents",
@@ -42,6 +43,11 @@ def _get_adapter() -> VectorStoreAdapter:
 
 def create_vector_store(kb_id: str, embeddings: Embeddings):
     return _get_adapter().create_store(kb_id, embeddings)
+
+
+def delete_vector_ids(kb_id: str, ids: list[str], embeddings: Embeddings = None) -> int:
+    """按 chunk_id 删除向量，返回删除条数（各后端自行保证主键匹配）。"""
+    return _get_adapter().delete_by_ids(kb_id, ids, embeddings)
 
 
 def delete_kb_collection(kb_id: str):

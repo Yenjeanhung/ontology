@@ -4,6 +4,8 @@ const API = import.meta.env.DEV
 
 export { API }
 
+import { withToken } from './auth'
+
 // 统一把后端错误响应的 detail 转成可读文本，避免 new Error(对象) 把 message
 // 变成字面 "[object Object]"（FastAPI 422 校验错误的 detail 是 [{loc,msg,type}] 数组）。
 // detail 形态：字符串原样；数组逐项格式化为 "loc：msg"；对象取 msg/message/error，否则 JSON 化。
@@ -682,7 +684,9 @@ export async function deleteAgent(agentId) {
 }
 
 export function getFilePreviewUrl(fileId) {
-  return `${API}/api/files/${fileId}/preview`
+  // iframe / 浏览器直接加载的 URL 无法走 fetch 拦截器注入 Authorization，
+  // 这里显式追加 ?token=（后端 _extract_token 支持查询参数取凭证）
+  return withToken(`${API}/api/files/${fileId}/preview`)
 }
 
 export async function fetchFileContent(fileId) {
@@ -846,7 +850,8 @@ export async function getLatestCrawlJob() {
 }
 
 export function getAssetPreviewUrl(assetId) {
-  return `${API}/api/assets/${assetId}/preview`
+  // iframe 加载不带请求头，需通过 ?token= 传递登录凭证，否则 401 NOT_LOGIN
+  return withToken(`${API}/api/assets/${assetId}/preview`)
 }
 
 export async function fetchAssetContent(assetId) {

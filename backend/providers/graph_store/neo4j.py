@@ -48,14 +48,27 @@ class Neo4jGraphAdapter(GraphStoreAdapter):
 
     def ensure_schema(self):
         statements = [
-            "CREATE CONSTRAINT kb_id IF NOT EXISTS FOR (n:KnowledgeBase) REQUIRE n.id IS UNIQUE",
-            "CREATE CONSTRAINT document_id IF NOT EXISTS FOR (n:Document) REQUIRE n.id IS UNIQUE",
-            "CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (n:Chunk) REQUIRE n.id IS UNIQUE",
-            "CREATE CONSTRAINT entity_id IF NOT EXISTS FOR (n:Entity) REQUIRE n.id IS UNIQUE",
-            "CREATE CONSTRAINT relation_id IF NOT EXISTS FOR (n:Relation) REQUIRE n.id IS UNIQUE",
+            ("kb_id", "CREATE CONSTRAINT kb_id IF NOT EXISTS FOR (n:KnowledgeBase) REQUIRE n.id IS UNIQUE"),
+            ("document_id", "CREATE CONSTRAINT document_id IF NOT EXISTS FOR (n:Document) REQUIRE n.id IS UNIQUE"),
+            ("chunk_id", "CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (n:Chunk) REQUIRE n.id IS UNIQUE"),
+            ("entity_id", "CREATE CONSTRAINT entity_id IF NOT EXISTS FOR (n:Entity) REQUIRE n.id IS UNIQUE"),
+            ("relation_id", "CREATE CONSTRAINT relation_id IF NOT EXISTS FOR (n:Relation) REQUIRE n.id IS UNIQUE"),
         ]
-        for statement in statements:
+        # 已存在的约束直接跳过：IF NOT EXISTS 虽幂等，但服务端仍会返回
+        # IndexOrConstraintAlreadyExists 通知，每次启动刷一屏
+        existing = self._existing_constraint_names()
+        for name, statement in statements:
+            if name in existing:
+                continue
             self._execute(statement)
+
+    def _existing_constraint_names(self) -> set[str]:
+        """当前库已有约束名；查询失败时返回空集（回退为逐条执行建约束语句）。"""
+        try:
+            rows = self._execute_dict("SHOW CONSTRAINTS YIELD name")
+        except Exception:
+            return set()
+        return {row.get("name") for row in rows if row.get("name")}
 
     def delete_document_graph(self, file_id: str):
         # 与 Kùzu 一致：只清本文件分片与文档节点，保留 KB 级共享的实体/关系节点
