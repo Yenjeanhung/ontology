@@ -164,6 +164,18 @@ def _check_llm() -> tuple[bool, str, dict]:
         return False, f"连接失败：{e}", {"provider": provider or "openai", "model": model, "base_url": base_url or "(default)"}
 
 
+def _check_rerank() -> tuple[bool, str, dict]:
+    """Rerank 精排：cross-encoder 加载模型试打分 / llm 档校验配置完整性。"""
+    try:
+        from providers import rerank
+        ok, message, extra = rerank.health_check()
+        extra = dict(extra or {})
+        extra["provider"] = settings.RERANK_PROVIDER
+        return ok, message, extra
+    except Exception as e:
+        return False, f"rerank failed：{e}", {}
+
+
 def _check_parser() -> tuple[bool, str, dict]:
     """文档解析器：专用解析库可导入 + Tika 兜底状态。"""
     extras: dict = {"tika_fallback_enabled": settings.TIKA_FALLBACK_ENABLED}
@@ -326,6 +338,24 @@ _COMPONENTS: list[dict] = [
             "OPENAI_API_KEY": mask_secret(settings.OPENAI_API_KEY),
             "OPENAI_BASE_URL": settings.OPENAI_BASE_URL or "(default)",
             "LLM_MAX_TOKENS": settings.LLM_MAX_TOKENS,
+        },
+    },
+    {
+        "key": "rerank",
+        "name": "Rerank 精排",
+        "category": "ai",
+        "provider_func": lambda: settings.RERANK_PROVIDER,
+        "providers_available": ["cross-encoder", "llm"],
+        "enabled_func": lambda: settings.RERANK_ENABLED,
+        "check_func": _check_rerank,
+        # cross-encoder 本地模型首次加载/下载较慢，超时放宽（与嵌入模型同理）
+        "timeout": 120.0,
+        "config_func": lambda: {
+            "RERANK_PROVIDER": settings.RERANK_PROVIDER,
+            "RERANK_MODEL": settings.RERANK_MODEL,
+            "RERANK_CANDIDATE_K": settings.RERANK_CANDIDATE_K,
+            "RERANK_TOP_N": settings.RERANK_TOP_N,
+            "RERANK_MIN_SCORE": settings.RERANK_MIN_SCORE,
         },
     },
     {

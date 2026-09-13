@@ -14,14 +14,16 @@
   {"question": "...", "reference": "标准答案", "kb_id": "可选，缺省用 --kb-id"}
 
 用法（脚本自动 chdir 到 backend/，相对路径按后端运行目录解析）：
-  python scripts/eval_rag_ragas.py run --kb-id <KB_ID> --testset scripts/eval_data/golden.jsonl
-  python scripts/eval_rag_ragas.py run --kb-id <KB_ID> --testset golden.jsonl --no-bm25 --tag nobm25
-  python scripts/eval_rag_ragas.py score --results eval_out/results_xxx.jsonl
-  python scripts/eval_rag_ragas.py gen-testset --kb-id <KB_ID> --size 20 --out scripts/eval_data/testset_auto.jsonl
+  python scripts/rag_eval/eval_rag_ragas.py run --kb-id <KB_ID> --testset scripts/rag_eval/eval_data/golden.jsonl
+  python scripts/rag_eval/eval_rag_ragas.py run --kb-id <KB_ID> --testset golden.jsonl --no-bm25 --tag nobm25
+  python scripts/rag_eval/eval_rag_ragas.py score --results scripts/rag_eval/eval_out/results_xxx.jsonl
+  python scripts/rag_eval/eval_rag_ragas.py gen-testset --kb-id <KB_ID> --size 20 --out scripts/rag_eval/eval_data/testset_auto.jsonl
 
 依赖：pip install "ragas>=0.2.6" datasets pandas
 """
 from __future__ import annotations
+
+from typing import Sequence
 
 import argparse
 import asyncio
@@ -33,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_BACKEND_DIR = _SCRIPT_DIR.parent
+_BACKEND_DIR = _SCRIPT_DIR.parent.parent
 sys.path.insert(0, str(_BACKEND_DIR))
 # .env / CHROMA_PERSIST_DIR / UPLOAD_DIR 等相对路径均按 backend/ 解析
 import os  # noqa: E402
@@ -47,6 +49,19 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+# ragas 0.4.x × langchain-community>=0.4 兼容 shim：
+# ragas 内部仍 from langchain_community.chat_models.vertexai import ChatVertexAI，
+# 而新版 langchain-community 已移除该模块。评估只用 OpenAI 兼容 LLM，
+# 注入占位模块避免 ImportError，不影响评估逻辑。
+try:
+    import langchain_community.chat_models.vertexai  # noqa: F401
+except ModuleNotFoundError:
+    import types as _types
+
+    _vertexai_stub = _types.ModuleType("langchain_community.chat_models.vertexai")
+    _vertexai_stub.ChatVertexAI = type("ChatVertexAI", (), {})
+    sys.modules["langchain_community.chat_models.vertexai"] = _vertexai_stub
+
 from config import settings  # noqa: E402
 from database import async_session  # noqa: E402
 from providers.embedding import create_embeddings  # noqa: E402
@@ -54,7 +69,20 @@ from providers.llm import create_llm  # noqa: E402
 from providers.vector_store import list_kb_documents  # noqa: E402
 from services.rag_service import RAGService  # noqa: E402
 
-EVAL_OUT_DIR = _BACKEND_DIR / "eval_out"
+EVAL_OUT_DIR = _SCRIPT_DIR / "eval_out"
+
+# ════════════════════════════════════════════════════════════════════════
+# 评测专用 LLM 配置（离线测试脚本，直接填这里最省事，优先级最高）。
+# 填空时依次回退：backend/.env → 数据库 llm_configs 表中页面配置的生效方案。
+#   api_key  ：OpenAI 兼容 API Key
+#   base_url ：如 https://api.deepseek.com/v1（官方 OpenAI 可留空）
+#   model    ：如 deepseek-chat / qwen-plus / glm-4-flash
+EVAL_LLM_CONFIG = {
+    "api_key": "de8904936736404ca34c046c289f71e8.qKEx1xqJGgUaI0mj",
+    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+    "model": "glm-5.3-flash",
+}
+# ════════════════════════════════════════════════════════════════════════
 
 # KB 名称 → id 解析缓存
 _KB_ID_CACHE: dict[str, str] = {}
@@ -72,7 +100,7 @@ async def resolve_kb_name(kb_name: str) -> str:
         rows = await session.execute(
             select(KnowledgeBase).where(KnowledgeBase.name.like(f"%{kb_name}%"))
         )
-        kbs = rows.scalars().all()
+        kbs: Sequence[KnowledgeBase] = rows.scalars().all()
     if not kbs:
         sys.exit(f"[FAIL] 数据库中未找到名称含「{kb_name}」的知识库")
     if len(kbs) > 1:
@@ -123,11 +151,73 @@ def save_jsonl(rows: list[dict], path: str | Path) -> None:
     print(f"[OK] 已保存 {len(rows)} 条 -> {path}")
 
 
-def _require_ragas() -> None:
+def _require_ragas(fatal: bool = True) -> bool:
+    """fatal=True（score/gen-testset 命令）缺 ragas 直接退出；
+    fatal=False（run 顺带评分）只警告——链路采集结果已保存，可用 score 补算。"""
     try:
         import ragas  # noqa: F401
+        return True
     except ImportError:
-        sys.exit('[FAIL] 缺少 ragas：请先安装  pip install "ragas>=0.2.6" datasets pandas')
+        msg = 'pip install "ragas>=0.2.6" datasets pandas'
+        if fatal:
+            sys.exit(f"[FAIL] 缺少 ragas：请先安装  {msg}")
+        print(f"[WARN] 缺少 ragas（{msg}），顺带评估已跳过")
+        print("[WARN] 采集结果已保存，可稍后用 score 子命令补算分数")
+        return False
+
+
+def ensure_llm_config() -> None:
+    """确定评测用 LLM 配置，优先级：脚本内 EVAL_LLM_CONFIG → .env → 数据库页面配置。
+
+    后端运行时 LLM 配置存数据库（页面配置，config_service 持久化），
+    .env 通常没有 OPENAI_API_KEY/LLM_MODEL；评测脚本离线运行需保证最终能拿到配置。
+    注意：查库用独立临时引擎（用后 dispose），不能复用项目全局 async_session——
+    否则其连接池绑定在本函数的短命事件循环上，后续 run_pipeline 新开循环会拿到死连接。
+    """
+    if EVAL_LLM_CONFIG["api_key"] and EVAL_LLM_CONFIG["model"]:
+        settings.LLM_PROVIDER = "openai"
+        settings.OPENAI_API_KEY = EVAL_LLM_CONFIG["api_key"]
+        settings.OPENAI_BASE_URL = EVAL_LLM_CONFIG["base_url"]
+        settings.LLM_MODEL = EVAL_LLM_CONFIG["model"]
+        print(f"[INFO] 使用脚本内置 LLM 配置：{settings.LLM_MODEL}")
+        return
+    if getattr(settings, "OPENAI_API_KEY", "") and getattr(settings, "LLM_MODEL", ""):
+        print(f"[INFO] 使用 .env 中的 LLM 配置：{settings.LLM_MODEL}")
+        return  # .env 已配置
+    try:
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from models import LLMConfig
+
+        async def _load():
+            engine = create_async_engine(settings.DATABASE_URL)
+            try:
+                maker = async_sessionmaker(engine, expire_on_commit=False)
+                async with maker() as session:
+                    row = (await session.execute(
+                        select(LLMConfig).where(LLMConfig.is_active == 1)
+                    )).scalars().first()
+                if row:
+                    settings.LLM_PROVIDER = row.provider or "openai"
+                    settings.OPENAI_API_KEY = row.api_key or ""
+                    settings.OPENAI_BASE_URL = row.base_url or ""
+                    settings.LLM_MODEL = row.model or ""
+                    settings.LLM_MAX_TOKENS = row.max_tokens or 4096
+                    settings.LLM_TEMPERATURE = (
+                        row.temperature if row.temperature is not None else 0.7
+                    )
+            finally:
+                await engine.dispose()
+
+        asyncio.run(_load())
+        if getattr(settings, "OPENAI_API_KEY", "") and getattr(settings, "LLM_MODEL", ""):
+            print(f"[INFO] 已加载页面生效的 LLM 配置：{settings.LLM_MODEL}")
+        else:
+            print("[WARN] 数据库无生效的 LLM 配置（页面未配置且 .env 未配置），"
+                  "生成/评估将不可用")
+    except Exception as exc:
+        print(f"[WARN] 读取页面 LLM 配置失败：{exc}")
 
 
 def resolve_llm(args):
@@ -137,8 +227,9 @@ def resolve_llm(args):
 
         return ChatOpenAI(
             model=args.eval_model,
-            api_key=args.eval_api_key or os.environ.get("OPENAI_API_KEY", "EMPTY"),
-            base_url=args.eval_base_url or None,
+            api_key=args.eval_api_key or EVAL_LLM_CONFIG["api_key"]
+            or os.environ.get("OPENAI_API_KEY", "EMPTY"),
+            base_url=args.eval_base_url or EVAL_LLM_CONFIG["base_url"] or None,
             temperature=0,
         )
     llm = create_llm()
@@ -204,6 +295,7 @@ async def run_pipeline(args) -> list[dict]:
                 sys.exit(f"[FAIL] 第 {i} 条缺少 kb_id/kb_name，且未提供 --kb-id 或 --kb-name")
             t0 = time.perf_counter()
             try:
+                # 测试RAG
                 out = await RAGService.query(session, kb_id, q)
             except Exception as exc:  # 单条失败不中断
                 out = {"query": q, "answer": "", "chunks": [], "error": str(exc)}
@@ -268,8 +360,9 @@ def build_metrics(names: list[str], has_reference: bool):
     return metrics, skipped
 
 
-def score_rows(rows: list[dict], args) -> None:
-    _require_ragas()
+def score_rows(rows: list[dict], args, *, fatal: bool = True) -> None:
+    if not _require_ragas(fatal=fatal):
+        return
     from ragas import EvaluationDataset, RunConfig, evaluate
     from ragas.embeddings import LangchainEmbeddingsWrapper
     from ragas.llms import LangchainLLMWrapper
@@ -284,7 +377,7 @@ def score_rows(rows: list[dict], args) -> None:
 
     evaluator_llm = LangchainLLMWrapper(resolve_llm(args))
     evaluator_emb = LangchainEmbeddingsWrapper(create_embeddings())
-    dataset = EvaluationDataset(build_samples(rows))
+    dataset: EvaluationDataset = EvaluationDataset(build_samples(rows))
 
     print(f"\n[INFO] ragas 评估中：{len(rows)} 条 × {len(metrics)} 指标 ...")
     result = evaluate(
@@ -415,14 +508,15 @@ def main() -> None:
     p_gen.add_argument("--size", type=int, default=20, help="生成问题数")
     p_gen.add_argument("--sample-docs", type=int, default=40, help="送入生成的分片抽样数")
     p_gen.add_argument("--seed", type=int, default=42)
-    p_gen.add_argument("--out", default="scripts/eval_data/testset_auto.jsonl")
+    p_gen.add_argument("--out", default="scripts/rag_eval/eval_data/testset_auto.jsonl")
     add_eval_args(p_gen)
 
     args = parser.parse_args()
+    ensure_llm_config()
     if args.cmd == "run":
         rows = asyncio.run(run_pipeline(args))
         if not args.skip_score:
-            score_rows(rows, args)
+            score_rows(rows, args, fatal=False)
     elif args.cmd == "score":
         score_rows(load_jsonl(args.results), args)
     elif args.cmd == "gen-testset":

@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import time
 
 from config import settings
 
@@ -43,6 +44,10 @@ _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 # cross-encoder 模型进程级缓存（首次加载较慢）
 _ce_model = None
 _ce_failed = False
+_ce_failed_at = 0.0
+# 加载失败后的重试冷却（秒）：冷却期内直接复用失败结论，
+# 避免监控定时检测每次都重新尝试下载模型；冷却过后允许重试实现自愈。
+_CE_RETRY_COOLDOWN = 300.0
 
 
 def _candidate_text(item: dict) -> str:
@@ -117,11 +122,14 @@ def _load_cross_encoder():
     离线加载（不访问 huggingface.co）；本地未命中时临时切回在线模式下载一次，
     下载完恢复离线优先，后续请求仍走本地。
     """
-    global _ce_model, _ce_failed
+    global _ce_model, _ce_failed, _ce_failed_at
     if _ce_model is not None:
         return _ce_model
     if _ce_failed:
-        return None
+        # 冷却期内沿用失败结论；冷却过后清一次失败标记，允许重试（自愈）
+        if (time.time() - _ce_failed_at) < _CE_RETRY_COOLDOWN:
+            return None
+        _ce_failed = False
 
     offline = _enable_local_cache()
     if offline:
@@ -145,6 +153,7 @@ def _load_cross_encoder():
 
     if _ce_model is None:
         _ce_failed = True
+        _ce_failed_at = time.time()
     return _ce_model
 
 
@@ -285,3 +294,38 @@ async def rerank(query: str, candidates: list[dict], top_n: int, llm=None) -> li
     except Exception:
         logger.warning("Rerank failed, keep original order", exc_info=True)
         return None
+
+
+def health_check() -> tuple[bool, str, dict]:
+    """精排连通性检测（供系统监控调用）。
+
+    - ``llm`` 档：仅校验 LLM 配置完整性，真实 LLM 连通性由监控的 LLM 组件负责；
+    - ``cross-encoder`` 档：加载模型并对一个样本对试打分（本地模型首次加载/下载
+      较慢，调用方需放宽超时；失败后受 ``_CE_RETRY_COOLDOWN`` 冷却约束）。
+
+    返回 (ok, message, extra)。
+    """
+    extra: dict = {"provider": settings.RERANK_PROVIDER}
+
+    if settings.RERANK_PROVIDER == "llm":
+        if not settings.LLM_MODEL:
+            return False, "未配置（缺 LLM_MODEL）", extra
+        extra["model"] = settings.LLM_MODEL
+        return True, "llm 打分档就绪（LLM 连通性见 LLM 组件）", extra
+
+    extra["model"] = settings.RERANK_MODEL
+    try:
+        model = _load_cross_encoder()
+    except Exception as e:
+        return False, f"模型加载失败：{e}", extra
+    if model is None:
+        return False, f"cross-encoder 不可用（{settings.RERANK_MODEL}，依赖缺失或模型无法加载）", extra
+
+    try:
+        pairs = [("ping", "ping")]
+        raw = model.score(pairs) if hasattr(model, "score") else model.predict(pairs)
+        score = float(next(iter(raw)))
+        extra["sample_score"] = round(score, 4)
+        return True, f"cross-encoder ok, sample_score={round(score, 4)}", extra
+    except Exception as e:
+        return False, f"试打分失败：{e}", extra

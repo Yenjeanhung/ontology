@@ -166,7 +166,7 @@ class MilvusAdapter(VectorStoreAdapter):
             )
             tmp_col = Collection(tmp_name, using=alias)
             tmp_col.flush()
-            written = int(tmp_col.num_entities)
+            written = self._fetch_entity_count(tmp_name)
             if written < len(ids):
                 raise RuntimeError(
                     f"migration incomplete: {written}/{len(ids)} entities rewritten"
@@ -437,18 +437,27 @@ class MilvusAdapter(VectorStoreAdapter):
         finally:
             self._disconnect(alias)
 
-    def kb_document_count(self, kb_id: str) -> int:
-        from pymilvus import Collection, utility
+    @staticmethod
+    def _fetch_entity_count(name: str) -> int:
+        """统计集合实体数（MilvusClient 版，替代已弃用的 Collection.num_entities）。
 
-        name = _collection_name(kb_id)
-        alias = f"cnt_{id(kb_id) & 0xFFFFFF:X}"
-        self._connect(alias)
+        get_collection_stats 返回已 flush 的行数，与 num_entities 语义一致，
+        且无需将集合加载（load）进内存。
+        """
+        from pymilvus import MilvusClient
+
+        client = MilvusClient(uri=f"http://{settings.MILVUS_HOST}:{settings.MILVUS_PORT}")
         try:
-            if not utility.has_collection(name, using=alias):
-                return 0
-            col = Collection(name, using=alias)
-            return int(col.num_entities)
+            stats = client.get_collection_stats(name) or {}
+            return int(stats.get("row_count") or 0)
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    def kb_document_count(self, kb_id: str) -> int:
+        try:
+            return self._fetch_entity_count(_collection_name(kb_id))
         except Exception:
             return 0
-        finally:
-            self._disconnect(alias)

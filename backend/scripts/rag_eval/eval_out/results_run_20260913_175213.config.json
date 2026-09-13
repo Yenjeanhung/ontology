@@ -1,0 +1,1 @@
+{"bm25_enabled": true, "query_rewrite_enabled": false, "rerank_enabled": true, "hybrid_top_n": 12, "similarity_threshold": 0.4, "llm_model": "glm-5.3-flash", "llm_temperature": 0.7, "embedding_model": "BAAI/bge-small-zh-v1.5"}

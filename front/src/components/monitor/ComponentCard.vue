@@ -20,6 +20,7 @@ const COMP_ICONS = {
   vector_store:  '🔎',
   embedding:     '🧠',
   llm:           '🤖',
+  rerank:        '📊',
   parser:        '📄',
   crawl:         '🕷️',
   search:        '🔍',
@@ -43,6 +44,7 @@ const extraText = computed(() => {
   if (extra.edge_count != null) parts.push(`边 ${extra.edge_count}`)
   if (extra.collection_count != null) parts.push(`集合 ${extra.collection_count}`)
   if (extra.dimension != null) parts.push(`维度 ${extra.dimension}`)
+  if (extra.sample_score != null) parts.push(`样本分 ${extra.sample_score}`)
   if (extra.job_count != null) parts.push(`任务 ${extra.job_count}`)
   return parts.join(' · ')
 })

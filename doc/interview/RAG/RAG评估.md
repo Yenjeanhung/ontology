@@ -60,24 +60,67 @@
 
 **四个指标详解（含计算方法与低分诊断）：**
 
+> **贯穿实例**（评本项目「航班运行处置建议」知识库，脚本 `backend/scripts/rag_eval/eval_rag_ragas.py`，数据取自 2026-09-13 真实评测记录）：
+> - **question**：航班运行告警的风险等级是如何划分的？
+> - **reference（标准答案）**：告警风险分为高风险、中风险、低风险三级。高风险指对航班正常运行构成紧迫威胁、需要立即处置；中风险指已影响航班正常运行但尚有缓冲余地；低风险为一般性提示或波动，暂不影响航班正常运行。
+> - **检索 top5**：chunk1=第二章风险分级标准（高/中/低风险判定）、chunk2=低风险响应要求+第三章通用处置流程、chunk3=知识库封面与总则、chunk4=第五章高风险响应清单、chunk5=第六章处置原则 —— 其中 1/2 与问题相关（1 直接命中分级标准），3/4/5 是弱相关噪声。
+> - **answer（系统生成）**：按三级组织——各等级定义、典型判据（如"流控超 60 分钟""气象低于起降标准"）、响应要求，全程带 `[来源N]` 引用。
+
 1. **Faithfulness（忠实度）**：答案是否忠于检索到的上下文，有没有幻觉。
    - 计算方法：LLM 先把答案**拆成一条条原子声明 (claims)**，逐条判定"能否从检索上下文推断出来"，得分 = 能被支持的声明数 / 总声明数。
+   - 项目实例（逐步，本题实测 faithfulness = 1.0）：LLM 把 answer 拆出 3 条声明，逐条归因到 contexts：
+
+     | 原子声明 | 归因 | 判定 |
+     |---|---|---|
+     | 告警按高/中/低三级划分 | chunk1 | ✓ 支持 |
+     | 高风险指构成紧迫威胁、需立即处置 | chunk1 | ✓ 支持 |
+     | 高风险判据含"流控超60分钟""气象低于起降标准"等 | chunk1 | ✓ 支持 |
+
+     得分 = 3/3 = **1.0**。反例：若答案多编一条 contexts 里没有的"低风险告警须 24 小时内闭环" → 4 条声明 1 条不支持 → 3/4 = **0.75**（幻觉信号）。
    - 得分低 → 答案夹带了上下文中没有的信息，即幻觉。
 2. **Answer Relevancy（答案相关性）**：答案是否真正回答了用户的问题。
    - 计算方法：LLM **从答案反向生成 N 个它可能回答的问题**，计算这些问题与原 query 的**余弦相似度均值**。
+   - 项目实例：LLM 从答案反向生成 3 个问题——"告警风险分几级？" / "高风险的定义是什么？" / "中低风险如何界定？"，各自与原问题算 embedding 余弦相似度取均值。三个反向问题都在问"告警 × 风险等级"，与原问题高度相似（本题实测 0.93）→ 得分高。反例：答案空泛地回"按公司运行手册的分级要求执行"，反向生成的问题会偏向"手册/制度有哪些" → 相似度均值被拉低。
    - 得分低 → 答案跑题、含糊其辞、答非所问（"我不知道"式回避也会拉低分数）。
 3. **Context Relevancy（上下文相关性 / Context Precision）**：检索到的上下文对回答问题是否有用。
    - 计算方法：LLM 判定每个检索 chunk 是否与问题相关，并看**相关 chunk 是否排在候选前面**（排序加权的相关占比）。
-   - 得分低 → 召回混入噪声，或相关内容被排在末尾（Rerank 失效信号）。
+   - 项目实例：LLM 逐 chunk 判相关性得 [1,1,0,0,0]（chunk1/2 相关、3/4/5 无关），指标按"相关 chunk 排得越靠前贡献越大"加权——分级标准 chunk 排第 1 → 得分高。反例：若 Rerank 失效把案例 chunk 排到第 1、分级标准被挤到第 4 → 相关内容位次整体后移 → 得分明显下降（**Rerank 失效信号**，回头看 `RERANK_CANDIDATE_K`/精排配置）。
+   - 得分低 → 召回混入噪声，或相关内容被排在末尾。
 4. **Context Recall（上下文召回）**：生成答案所需的关键信息是否都在检索到的上下文中。
    - 计算方法：拿**标准答案 (ground truth)** 的每条关键声明，检查是否都能归因到检索上下文，得分 = 能归因的声明数 / 标准答案声明总数。
-   - 得分低 → 检索漏了关键内容，答案必然不完整——这是**检索侧 L1 问题**，改生成没有意义。
+   - 项目实例（逐步，本题实测 1.0）：把 reference 拆成 3 条声明，逐条检查 contexts 能否归因：① 分为三级 → chunk1 ✓；② 高风险=紧迫威胁需立即处置 → chunk1 ✓；③ 中风险=尚有缓冲余地 / 低风险=暂不影响 → chunk1 ✓ → 3/3 = **1.0**。反例：若 `SIMILARITY_THRESHOLD` 过滤把含中低风险定义的 chunk 滤掉 → 声明③无法归因 → 2/3 ≈ **0.67** → 典型 **L1 检索问题**（阈值/召回），改生成 prompt 无效。
+   - 得分低 → 检索漏了关键内容，答案必然不完整。
 
 > 记忆：Faithfulness/Answer Relevancy 评 **答案**，Context Relevancy/Context Recall 评 **上下文**。
 >
 > **数据要求**：前三个只需 `question + contexts + answer`；**Context Recall 需要标注的标准答案**——线上没有标注时，用 LLM 基于 chunk 反向生成 QA 对作 golden set（见 Q6）。
 >
 > **诊断映射**：Faithfulness 低 → 改 prompt 约束/降温/换模型（生成侧问题）；Context Recall 低 → 回头改检索（分块/embedding/召回）；Context Precision 低 → 排序问题（上 Rerank）；Answer Relevancy 低 → prompt 或上下文噪声。
+
+### 追问：Context Precision/Recall 和检索侧 Precision@K/Recall@K 是一回事吗？
+
+**精简回答**：**评估对象**上是一回事——都诊断 L1 检索质量（找全没找全、排没排好），低分都归因到检索侧；但**计算方式**不是——RAGAS 是 LLM-as-a-Judge 的适配变体：Precision 用 AP 排序加权（能评精排质量），Recall 按声明归因而非 chunk 计数（只需标准答案文本、无需 chunk 级标注）。
+
+**展开**：先分清两个维度，避免和"这俩指标就是评检索层的"这类常见说法打架：
+
+- **评估对象（评哪一层）——没有分歧**：Context Precision/Recall 诊断的就是检索层质量——Context Recall 低 → 检索漏内容（L1），Context Precision 低 → 排序问题（L1），和检索侧指标回答同一组问题。
+- **计算方式（分数怎么算）——不同**：见下表。
+
+| | 检索侧 Precision@K / Recall@K | RAGAS Context Precision / Recall |
+|---|---|---|
+| "相关"由谁判定 | 人工预先标注（金标 chunk 集合） | 评估 LLM 现场判定 |
+| Precision 算法 | 相关数 / K，**位置无关**，K 越大越被稀释 | **排序加权（AP 平均精度思想）**：相关 chunk 越靠前贡献越大 |
+| Recall 算法 | 数 **chunk**：命中标准 chunk 数 / 标准 chunk 总数 | 数**声明 (claim)**：标准答案拆成 N 条声明，逐条能否归因到 contexts |
+| 需要的标注 | 「query → 标准 chunk 集合」（chunk 级标注，贵） | 只要「question + reference 文本」（便宜） |
+
+两个本质升级：
+
+1. **Context Precision 加了位置因子**：Precision@K 只看集合比例，不关心相关的排第 1 还是第 8（只有 @K 截断带位置效应）；RAGAS 用 **Average Precision** 思想，相关 chunk 排第 1 贡献远大于排第 5——一个指标同时编码"准不准"和"排得靠不靠前"，所以能当 **Rerank 的评估信号**（裸 Precision@K 对内部重排不敏感）。
+2. **Context Recall 从"数 chunk"变成"数声明"**：chunk 级计数有粒度失真——标准答案的 3 个要点可能全挤在 1 个 chunk（Recall@5 = 1/3 但内容其实齐了），也可能 1 个要点要 2 个 chunk 拼起来才完整；按声明归因只问"每条关键信息在检索内容里有没有"，粒度是信息本身而非文档块。
+
+现实原因：传统 Recall@K 必须标注"正确答案在哪个 chunk"；RAGAS 版本只需标准答案**文本**，评估成本断崖式下降——这正是"无标注也能评"卖点的一半（另一半是 LLM 判相关替代了 chunk 相关性标注）。
+
+**一句话**：思想一样，但 RAGAS 做了两个适配——Precision 用 AP 排序加权从而能评精排质量，Recall 从 chunk 计数改成声明归因从而无需 chunk 级标注；判定者从人工标注换成 LLM-as-a-Judge。
 
 ### 结合你的项目，生成质量怎么保障和评估？
 
@@ -88,6 +131,30 @@
 - **强制引用溯源**：要求答案标注 `[来源N]`，一方面方便用户核查，另一方面可以**程序化评估 Faithfulness**——校验答案中的断言是否都有对应来源支撑，无引用的句子占比可作为幻觉的代理指标。
 - **拒答机制**：检索结果为空时直接返回"未找到相关内容"，不走 LLM 生成，从源头避免无上下文幻觉。
 - **评估方式**：用 RAGAS 跑评估集，重点看 Faithfulness 和 Answer Relevancy；若 Faithfulness 低是 prompt/模型问题，若 Context Recall 低则要回头优化检索（说明问题在 L1 不在 L2）。
+
+### 结合项目：RAGAS 评测怎么落地？
+
+**精简回答**：人工/AI 起草 golden set（question + reference 的 JSONL）→ 脚本逐题跑真实 RAG 链路采集 contexts/answer → ragas `evaluate()` 用评估 LLM 自动打分 → 按指标低分归因到检索侧或生成侧。
+
+**展开**（`backend/scripts/rag_eval/`）：
+
+1. **评测集（人工投入的核心）**：`eval_data/flight_ops_advisory_golden.jsonl`，每行 `{"question", "reference", "kb_id"}`，19 条 = 17 条语料内正例（覆盖全部八章与六类告警：分级标准/六步流程/处置原则/微关门/流控/天气/机组超时/保障延误/保留故障/响应清单/升级条件/案例）+ 2 条 KB 外负例（行李赔偿、退改签 → 考察系统拒答而非编造）。question/reference 正规应由人手工编写——AI 起草的 reference 与语料同源会导致 recall/precision 虚高，只能用于冒烟和消融对比，对外报告需人工校对。**实测教训**：首版评测集八成问题超纲（除冰、MEL、签派放行等通用民航知识，语料里根本没有），reference 只能按通用知识编写，把 context_recall 拉低到 0.74；锚定语料逐字核对重写后，同一链路 recall 升到 0.96——**评测集超纲会让"检索差"成为假象**。
+2. **链路采集（run 子命令）**：逐题调用 `RAGService.query()`（查询改写 → 向量+BM25 → RRF → Rerank → 生成），记录 question / contexts / answer / latency 存 JSONL——评估对象是**真实链路输出**，不是模拟。
+3. **打分（score 子命令）**：ragas `evaluate(dataset, metrics, llm, embeddings)` 核心调用，评估 LLM（可与业务 LLM 不同）做 LLM-as-a-Judge，19 条 × 4 指标 = 76 次判分；单条失败记 NaN 不中断（`raise_exceptions=False`，本次 4 个 judge 任务超时即被如此兜住）。
+4. **消融对比（`--ablation`）**：同一评测集跑 full / baseline（纯向量）/ no_bm25 三组，横向对比各指标均值，验证混合检索与 BM25 的收益。关键点：reference 固定不变时，评测集自身的瑕疵对各组是**同向偏移**，组间相对结论依然可信。
+
+### 本项目实测结果（2026-09-13，conda py11env）
+
+| 指标 | 首版集（八成超纲） | 重写集（锚定语料，17正+2负） | 解读 |
+|---|---|---|---|
+| faithfulness | 0.870 | **0.971** | 生成侧几乎无幻觉，17 条正例中 13 条满分 |
+| context_recall | 0.743 | **0.956** | 旧分低的主因是超纲题 reference 无法归因，不是检索差 |
+| answer_relevancy | 0.787 | 0.801 | 17 条正例均值 ≈0.885；2 条负例拒答得 0 分是**正确行为**（LLM 反推不出原问题），拉低了总均值 |
+| llm_context_precision | 0.580 | 0.499* | *76 项 judge 有 4 项超时，precision 仅 2 条有效值，样本不足不具可比性 |
+
+- 结果文件：`backend/scripts/rag_eval/eval_out/`（results JSONL + config 快照 + report CSV）。
+- 一句话结论：**检索没坏，是考卷考了语料里没有的东西**——评测集锚定语料后 recall 0.74→0.96、faithfulness 0.87→0.97。
+- 遗留优化点：跨章节问题（如"微关门处置 + 牵头部门"）的关键信息落在相邻两个 chunk，召回只中一半（该题 recall 0.5）→ 调整分块 overlap 或按小节切块可解；"处置原则"类 chunk 排序偏后 → 复查 Rerank 候选池与 RRF 配比。
 
 ---
 

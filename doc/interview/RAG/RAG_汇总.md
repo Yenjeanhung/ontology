@@ -130,31 +130,32 @@ Recall@K（相关内容有没有找到）、Precision@K（找到的多少相关�
 
 生成侧评估：衡量最终生成的答案质量。
 
+> **贯穿实例**（评「航班运行处置建议」知识库）：q =「签派放行前需要满足哪些天气条件？」，检索 top5 = [放行天气标准, 备降机场选择, 除冰保持时间, 最低油量, 无资料不放行]，其中第 1/2/5 条相关、3/4 是噪声；answer 按 chunks 生成，reference 为标注标准答案。
+
 - **忠实度 (Faithfulness)**：答案是否忠实于检索到的上下文，有没有幻觉
   - 计算方法：LLM 先把答案**拆成一条条原子声明 (claims)**，逐条问"这条能否从检索上下文推断出来"，得分 = 能被支持的声明数 / 总声明数
+  - 例：答案 3 条声明（获天气实况预报 / 不低于最低运行标准 / 无资料不放行）全能从 contexts 推断 → 3/3 = 1.0；若多编一条 contexts 没有的"需 ATC 放行许可" → 3/4 = 0.75
   - 得分低 → 答案里夹带了上下文中没有的信息，即幻觉
 - **答案相关性 (Answer Relevancy)**：答案是否真正回答了用户的问题
   - 计算方法：LLM **从答案反向生成 N 个它可能回答的问题**，算这些问题与原 query 的**余弦相似度均值**
+  - 例：由答案反向生成"签派放行需要哪些天气资料？""没有目的地天气能放行吗？"，与原问题相似度高 → 得分高；若答案空泛回一句"需满足手册要求"，反向问题跑题 → 分被拉低
   - 得分低 → 答案跑题、含糊其辞、答非所问（"我不知道"式回避会拉低分数）
 - **上下文相关性 (Context Relevancy / Context Precision)**：检索到的上下文对回答问题是否有用
   - 计算方法：LLM 判定每个检索 chunk 是否与问题相关，**相关 chunk 是否排在前面**（排序加权的相关占比）
+  - 例：5 个 chunk 判定 [相关,相关,无关,无关,相关]，相关排第 1/2/5 位 → 前排占优得分较高；若 Rerank 失效把除冰 chunk 排到第 1 → 相关位次后移 → 分被拉低
   - 得分低 → 召回混入噪声，或相关内容被排在候选末尾（Rerank 失效信号）
 - **上下文召回 (Context Recall)**：生成答案所需的关键信息是否都在检索到的上下文中
   - 计算方法：拿**标准答案 (ground truth)** 的每条关键声明，检查是否都能归因到检索上下文，得分 = 能归因的声明数 / 标准答案声明总数
+  - 例：reference 拆 3 条声明逐条归因到 contexts 全命中 → 3/3 = 1.0；若相似度阈值把"无资料不放行"的 chunk 滤掉 → 2/3 ≈ 0.67 → 检索 L1 问题
   - 得分低 → 检索漏了关键内容，答案必然不完整——这是**检索侧 L1 问题**，改生成没意义
 
 **记忆点**：前两个评**答案**，后两个评**上下文**；全程 LLM-as-a-Judge 自动打分。
 **数据要求**：前三个只需 `question + context + answer`，**Context Recall 需要标注的标准答案**——没有标注时用 LLM 基于 chunk 反向生成 QA 对作 golden set（呼应 Q21）。
 **诊断映射**：Faithfulness 低→改 prompt 约束/降温/换模型（生成问题）；Context Recall 低→回头改检索（分块/embedding/召回）；Context Precision 低→排序问题（上 Rerank）；Answer Relevancy 低→prompt 或上下文噪声。
 
-## Q18 项目检索链路怎么评估
+## Q18 RAGAS 的 Context Precision/Recall 和检索侧 Precision@K/Recall@K 的区别
 
-先建「问题+标准chunk」评估集；分层测向量单路/BM25 单路/混合的 Recall@50 定位瓶颈（用 `retrieval` 字段统计各通道贡献，`both` 质量最高）；对比 RRF 序 vs Rerank 序的 MRR/NDCG 验证精排收益；`SIMILARITY_THRESHOLD` 是 Precision/Recall 权衡。
-
-
-## Q20 项目生成质量怎么保障
-
-System Prompt 强制"没资料就如实说"；答案强制标 `[来源N]` 引用——可程序化校验 Faithfulness（无引用句子占比=幻觉代理指标）；空检索直接拒答不进 LLM；RAGAS 评估时 Faithfulness 低→改 prompt/模型，Context Recall 低→回头改检索（L1 问题）。
+先分两个维度：**评估对象**是一回事——都诊断 L1 检索质量（找全没找全、排没排好），低分都归因到检索侧；**计算方式**不同——RAGAS 是 LLM-as-a-Judge 的适配变体，三处不同：① **Precision 加了 AP 排序加权**——相关 chunk 越靠前贡献越大，而裸 Precision@K 位置无关只看集合比例（传统检索里管"排没排前面"的是 MRR/NDCG），所以 RAGAS 版本能评 Rerank 精排质量；② **Recall 从"数 chunk"改为"数声明"**——标准答案拆成 N 条声明逐条归因到 contexts，解决 chunk 级计数粒度失真（多个要点挤 1 个 chunk / 1 个要点跨 2 个 chunk）；③ **判定者不同**——人工 chunk 级标注换成 LLM 现场判定，只需 question + reference 文本、无需标注"答案在哪个 chunk"，评估成本断崖式下降。
 
 ## Q21 没有标注数据怎么评
 
