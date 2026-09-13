@@ -26,6 +26,12 @@ class AgentQueryRequest(BaseModel):
     kb_id: str | None = None          # 传 agent_id 时可不传，以智能体为准
     skill_ids: list[str] = []
     agent_id: str | None = None       # 引用已配置智能体（KB + 技能 + 人设）
+    session_id: str | None = None     # 会话 id：传了就续聊（注入历史），不传自动新建会话
+
+
+class ChatSessionRename(BaseModel):
+    """会话重命名请求。"""
+    title: str
 
 
 class AgentCreate(BaseModel):

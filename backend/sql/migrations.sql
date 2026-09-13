@@ -684,3 +684,29 @@ CREATE TABLE IF NOT EXISTS extraction_reviews (
 CREATE INDEX IF NOT EXISTS idx_extraction_reviews_kb_status ON extraction_reviews (kb_id, status);
 CREATE INDEX IF NOT EXISTS idx_extraction_reviews_file ON extraction_reviews (file_id);
 CREATE INDEX IF NOT EXISTS idx_extraction_reviews_created ON extraction_reviews (kb_id, file_id, created_at);
+
+-- migration_033: 智能体会话（短期记忆：会话 + 消息，doc/智能体/智能体会话_功能设计.md）
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id VARCHAR PRIMARY KEY,
+    agent_id VARCHAR DEFAULT '',
+    kb_id VARCHAR DEFAULT '',
+    user_id VARCHAR DEFAULT '',
+    title VARCHAR(200) DEFAULT '',
+    summary TEXT DEFAULT '',
+    summary_until_id VARCHAR DEFAULT '',
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_agent ON chat_sessions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_kb ON chat_sessions(kb_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id VARCHAR PRIMARY KEY,
+    session_id VARCHAR NOT NULL,
+    role VARCHAR NOT NULL,
+    content TEXT NOT NULL,
+    meta TEXT DEFAULT '',
+    created_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);

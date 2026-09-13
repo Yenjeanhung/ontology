@@ -422,12 +422,15 @@ export async function queryRagStream(kbId, query, { onChunks, onToken }) {
   }
 }
 
-// 智能体（OAG）流式问答：比 queryRagStream 多 entities / subgraph 两类事件
-export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, onChunks, onToken, onSkills, skillIds, agentId } = {}) {
+// 智能体（OAG）流式问答：比 queryRagStream 多 entities / subgraph / session 三类事件
+export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, onChunks, onToken, onSkills, onSession, skillIds, agentId, sessionId } = {}) {
   const res = await fetch(`${API}/api/agent/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, kb_id: kbId, skill_ids: skillIds || [], agent_id: agentId || null }),
+    body: JSON.stringify({
+      query, kb_id: kbId, skill_ids: skillIds || [],
+      agent_id: agentId || null, session_id: sessionId || null,
+    }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => null)
@@ -452,7 +455,8 @@ export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, on
       if (payload === '[DONE]') return
       try {
         const data = JSON.parse(payload)
-        if (data.type === 'skills') onSkills?.(data.skills)
+        if (data.type === 'session') onSession?.(data)
+        else if (data.type === 'skills') onSkills?.(data.skills)
         else if (data.type === 'entities') onEntities?.(data.entities)
         else if (data.type === 'subgraph') onSubgraph?.(data)
         else if (data.type === 'chunks') onChunks?.(data.chunks)
@@ -460,6 +464,37 @@ export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, on
       } catch { /* skip malformed lines */ }
     }
   }
+}
+
+// ───────────────────── 智能体会话（短期记忆） ─────────────────────
+
+export async function fetchChatSessions(agentId = null) {
+  const qs = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''
+  const res = await fetch(`${API}/api/chat/sessions${qs}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function fetchSessionMessages(sessionId) {
+  const res = await fetch(`${API}/api/chat/sessions/${sessionId}/messages`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function renameChatSession(sessionId, title) {
+  const res = await fetch(`${API}/api/chat/sessions/${sessionId}/rename`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function deleteChatSession(sessionId) {
+  const res = await fetch(`${API}/api/chat/sessions/${sessionId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
 }
 
 // ───────────────────── 智能体技能（Agent Skill） ─────────────────────

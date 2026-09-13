@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config import settings
 from providers.embedding import create_embeddings
@@ -24,6 +24,7 @@ from providers.graph_store import (
     entity_neighborhood,
     list_kb_entities,
 )
+from providers.bm25 import get_or_build_index, tokenize
 from providers.llm import chunk_text, create_llm, extract_reasoning
 from providers.retrieval import chunk_id_from_vector_metadata, rrf_fuse
 from providers.vector_store import create_vector_store
@@ -100,6 +101,36 @@ OAG_USER_TEMPLATE = """【图谱事实】
 _FACTS_CHAR_BUDGET = 1600
 
 
+def _augment_system_prompt(system_prompt: str, summary: str = "",
+                           memories: list[str] | None = None) -> str:
+    """把会话摘要（P2）与长期记忆事实（P3 mem0）追加到 system prompt 尾部。"""
+    blocks: list[str] = []
+    if summary:
+        blocks.append(f"【会话摘要】\n以下是本会话较早轮次的要点，供延续对话时参考：\n{summary}")
+    if memories:
+        facts = "\n".join(f"- {m}" for m in memories if m)
+        if facts:
+            blocks.append(f"【长期记忆】\n以下是关于该用户/智能体的历史事实，与当前问题相关时参考：\n{facts}")
+    if not blocks:
+        return system_prompt
+    return f"{system_prompt}\n\n" + "\n\n".join(blocks)
+
+
+def _history_messages(history: list[dict] | None) -> list:
+    """历史轮次 → LangChain 消息序列（role 映射：user→Human，assistant→AI）。"""
+    out: list = []
+    for item in history or []:
+        role = item.get("role")
+        content = item.get("content") or ""
+        if not content:
+            continue
+        if role == "user":
+            out.append(HumanMessage(content=content))
+        elif role == "assistant":
+            out.append(AIMessage(content=content))
+    return out
+
+
 def _vector_chunk_id(metadata: dict) -> str | None:
     """从向量分片元数据重建与 Kùzu Chunk.id 一致的 chunk_id（委托共享工具）。"""
     return chunk_id_from_vector_metadata(metadata)
@@ -108,6 +139,30 @@ def _vector_chunk_id(metadata: dict) -> str | None:
 def _rrf_fuse(rank_lists: list[list[str]], k: int | None = None) -> list[tuple[str, float]]:
     """Reciprocal Rank Fusion：多个有序 id 列表 → 按 RRF 分数降序（委托共享工具）。"""
     return rrf_fuse(rank_lists, k=k or settings.OAG_RRF_K)
+
+
+def _keyword_query(query: str, top_k: int = 6) -> str:
+    """元问题改写：jieba 分词（去停用词/标点）后取前 top_k 个关键词，空格拼接。
+
+    「本知识库规定的处置原则有哪些？」→「知识库 规定 处置 原则」，
+    作为空召回兜底的补充查询，使命中词贴近语料用词。
+    """
+    tokens: list[str] = []
+    for t in tokenize(query):
+        if t not in tokens:
+            tokens.append(t)
+    return " ".join(tokens[:top_k])
+
+
+async def _vector_recall(vectorstore, query: str, threshold: float) -> list[tuple]:
+    """单查询向量召回 + 相似度阈值过滤，返回 [(doc, score), ...]（分数降序）。"""
+    docs_with_scores = await asyncio.to_thread(
+        vectorstore.similarity_search_with_score, query, k=settings.OAG_VEC_K,
+    )
+    return [
+        (doc, score) for doc, score in docs_with_scores
+        if (1 - float(score)) >= threshold
+    ]
 
 
 def _format_subgraph_facts(neighborhood: dict) -> str:
@@ -215,36 +270,62 @@ async def _link_entities(kb_id: str, query: str, vector_chunk_ids: list[str]) ->
 
 class OAGService:
     @staticmethod
-    async def query_stream(kb_id: str, query: str, kb_name: str, ontology_schema, skills=None, persona=None):
+    async def query_stream(kb_id: str, query: str, kb_name: str, ontology_schema, skills=None,
+                           persona=None, history=None, summary: str = "", memories=None):
         """智能体查询（SSE 流式）：推理过程 → 流式回答。
 
         ontology_schema 由路由层预加载；skills 由 SkillService.resolve 预加载。
         persona 为智能体自定义人设（覆盖 OAG_SYSTEM_PROMPT），空则用默认人设。
+        history 为会话历史（[{role, content}]，旧→新），summary 为滚动摘要，
+        memories 为 mem0 长期记忆事实；三者拼接为多轮上下文注入 prompt。
         """
         skills = skills or []
         if not settings.OAG_ENABLED:
             # 总开关关闭：完全降级为纯向量
-            async for event in OAGService._stream_vector_only(kb_id, query, skills=skills, persona=persona):
+            async for event in OAGService._stream_vector_only(
+                kb_id, query, skills=skills, persona=persona,
+                history=history, summary=summary, memories=memories,
+            ):
                 yield event
             return
 
         embeddings = create_embeddings()
         llm = create_llm()
 
-        # ===== 2. 向量召回 =====
+        # ===== 2. 向量召回（空召回时兜底：关键词改写 + 降阈值重试一次）=====
+        vectorstore = None
         vec_docs: list[tuple] = []
         try:
             vectorstore = create_vector_store(kb_id, embeddings)
-            docs_with_scores = await asyncio.to_thread(
-                vectorstore.similarity_search_with_score, query, k=settings.OAG_VEC_K,
-            )
-            vec_docs = [
-                (doc, score) for doc, score in docs_with_scores
-                if (1 - float(score)) >= settings.SIMILARITY_THRESHOLD
-            ]
+            vec_docs = await _vector_recall(vectorstore, query, settings.SIMILARITY_THRESHOLD)
         except Exception:
             logger.exception("OAG vector recall failed: kb_id=%s", kb_id)
             vec_docs = []
+
+        empty_recall_retry = False
+        if not vec_docs and vectorstore is not None and settings.OAG_EMPTY_RECALL_THRESHOLD > 0:
+            empty_recall_retry = True
+            kw_query = _keyword_query(query)
+            retry_queries = [query] + ([kw_query] if kw_query else [])
+            seen_ids: set[str] = set()
+            retry_docs: list[tuple] = []
+            for rq in retry_queries:
+                for doc, score in await _vector_recall(
+                    vectorstore, rq, settings.OAG_EMPTY_RECALL_THRESHOLD
+                ):
+                    cid = _vector_chunk_id(doc.metadata or {})
+                    if cid and cid in seen_ids:
+                        continue
+                    if cid:
+                        seen_ids.add(cid)
+                    retry_docs.append((doc, score))
+            retry_docs.sort(key=lambda x: -float(x[1]))
+            vec_docs = retry_docs
+            if vec_docs:
+                logger.info(
+                    "OAG empty-recall retry: kb_id=%s threshold=%.2f kw_query=%r recalled=%d",
+                    kb_id, settings.OAG_EMPTY_RECALL_THRESHOLD, kw_query, len(vec_docs),
+                )
 
         # 构建 vector 分片字典（重建 chunk_id 以对接图谱）
         vector_chunks: list[dict] = []
@@ -266,8 +347,44 @@ class OAGService:
         vector_by_id = {c["chunk_id"]: c for c in vector_chunks if c["chunk_id"]}
         vector_id_set = set(vector_by_id.keys())
 
-        # ===== 3. 实体链接 =====
-        seed_entities = await _link_entities(kb_id, query, vector_chunk_ids)
+        # ===== 2.5 BM25 关键词召回（与向量 / 图谱三路 RRF 融合）=====
+        bm25_by_id: dict[str, dict] = {}
+        bm25_rank: list[str] = []
+        if settings.OAG_BM25_ENABLED:
+            try:
+                index = await asyncio.to_thread(get_or_build_index, kb_id)
+            except Exception:
+                logger.exception("OAG BM25 index load failed: kb_id=%s", kb_id)
+                index = None
+            if index is not None:
+                try:
+                    hits = await asyncio.to_thread(
+                        index.search, query, settings.OAG_BM25_RECALL_K,
+                    )
+                except Exception:
+                    logger.exception("OAG BM25 search failed: kb_id=%s", kb_id)
+                    hits = []
+                for cid, s, doc in hits:
+                    if not cid or cid in bm25_by_id:
+                        continue
+                    meta = doc.get("metadata") or {}
+                    bm25_by_id[cid] = {
+                        "chunk_id": cid,
+                        "file_id": meta.get("file_id", ""),
+                        "file_name": meta.get("file_name", ""),
+                        "content": doc.get("content", ""),
+                        "score": None,
+                        "bm25_score": round(float(s), 4),
+                        "start_offset": meta.get("start_offset"),
+                        "end_offset": meta.get("end_offset"),
+                        "page_number": meta.get("page_number"),
+                        "file_ext": meta.get("file_ext", ""),
+                    }
+                    bm25_rank.append(cid)
+
+        # ===== 3. 实体链接（词面匹配 ∪ 向量+BM25 分片 MENTIONS 反查）=====
+        mention_chunk_ids = list(dict.fromkeys(vector_chunk_ids + bm25_rank))
+        seed_entities = await _link_entities(kb_id, query, mention_chunk_ids)
         seed_entity_ids = [e["id"] for e in seed_entities if e.get("id")]
 
         # ===== 4. 图谱召回 + 子图事实 =====
@@ -304,18 +421,24 @@ class OAGService:
         graph_by_id = {c["chunk_id"]: c for c in graph_chunks}
         graph_id_set = set(graph_by_id.keys())
 
-        # ===== 5. RRF 融合重排 =====
+        # ===== 5. RRF 三路融合重排（向量 + BM25 + 图谱）=====
         vector_rank_list = list(vector_by_id.keys())  # 已按相似度降序
+        bm25_rank_list = list(bm25_rank)              # 已按 BM25 分数降序
         graph_rank_list = list(graph_by_id.keys())
-        fused = _rrf_fuse([vector_rank_list, graph_rank_list])
+        fused = _rrf_fuse([vector_rank_list, bm25_rank_list, graph_rank_list])
         top_n = fused[: settings.OAG_TOP_N]
 
         final_chunks: list[dict] = []
         for idx, (cid, _rrf) in enumerate(top_n):
             in_vec = cid in vector_id_set
+            in_bm25 = cid in bm25_by_id
             in_graph = cid in graph_id_set
-            retrieval = "both" if (in_vec and in_graph) else ("vector" if in_vec else "graph")
-            base = vector_by_id.get(cid) or graph_by_id.get(cid)
+            tags = [
+                t for t, hit in (("vector", in_vec), ("bm25", in_bm25), ("graph", in_graph))
+                if hit
+            ]
+            retrieval = "+".join(tags) if tags else "vector"
+            base = vector_by_id.get(cid) or bm25_by_id.get(cid) or graph_by_id.get(cid)
             if not base:
                 continue
             final_chunks.append({
@@ -332,21 +455,27 @@ class OAGService:
                 "file_ext": base.get("file_ext", ""),
             })
 
-        both_count = sum(1 for c in final_chunks if c["retrieval"] == "both")
+        def _has_tag(tag: str, r: str) -> bool:
+            return tag in r.split("+")
+
         retrieval_path = {
-            "vector": sum(1 for c in final_chunks if c["retrieval"] in ("vector", "both")),
-            "graph": sum(1 for c in final_chunks if c["retrieval"] in ("graph", "both")),
-            "both": both_count,
+            "vector": sum(1 for c in final_chunks if _has_tag("vector", c["retrieval"])),
+            "bm25": sum(1 for c in final_chunks if _has_tag("bm25", c["retrieval"])),
+            "graph": sum(1 for c in final_chunks if _has_tag("graph", c["retrieval"])),
+            "both": sum(1 for c in final_chunks if "+" in c["retrieval"]),
             "entities": len(seed_entities),
             "degraded": len(seed_entity_ids) == 0,
+            "empty_recall_retry": empty_recall_retry,
         }
 
         facts_text = _format_subgraph_facts(neighborhood)
 
         logger.info(
-            "OAG pipeline: kb_id=%s query=%r vec=%d graph=%d fused=%d entities=%d degraded=%s",
-            kb_id, query[:40], len(vector_chunks), len(graph_chunks), len(final_chunks),
-            len(seed_entities), retrieval_path["degraded"],
+            "OAG pipeline: kb_id=%s query=%r vec=%d bm25=%d graph=%d fused=%d entities=%d "
+            "degraded=%s retry=%s",
+            kb_id, query[:40], len(vector_chunks), len(bm25_by_id), len(graph_chunks),
+            len(final_chunks), len(seed_entities), retrieval_path["degraded"],
+            empty_recall_retry,
         )
 
         # ===== 6/7. 下发推理过程事件 + 流式生成 =====
@@ -372,7 +501,9 @@ class OAGService:
             yield "data: [DONE]\n\n"
             return
 
-        system_prompt = build_system_prompt(skills, base_prompt=persona)
+        system_prompt = _augment_system_prompt(
+            build_system_prompt(skills, base_prompt=persona), summary, memories,
+        )
         context_parts = [f"[来源{c['index']}]\n{c['text']}" for c in final_chunks]
         context_with_sources = "\n\n".join(context_parts)
         prompt = OAG_USER_TEMPLATE.format(
@@ -382,6 +513,7 @@ class OAGService:
         )
         messages = [
             SystemMessage(content=system_prompt),
+            *_history_messages(history),
             HumanMessage(content=prompt),
         ]
 
@@ -442,7 +574,8 @@ class OAGService:
         }
 
     @staticmethod
-    async def _stream_vector_only(kb_id: str, query: str, skills=None, persona=None):
+    async def _stream_vector_only(kb_id: str, query: str, skills=None, persona=None,
+                                  history=None, summary: str = "", memories=None):
         """降级路径：仅向量召回 + LLM，事件结构保持一致（entities/subgraph 为空）。"""
         skills = skills or []
         embeddings = create_embeddings()
@@ -497,14 +630,20 @@ class OAGService:
             yield "data: [DONE]\n\n"
             return
 
-        system_prompt = build_system_prompt(skills, base_prompt=persona)
+        system_prompt = _augment_system_prompt(
+            build_system_prompt(skills, base_prompt=persona), summary, memories,
+        )
         context_parts = [f"[来源{c['index']}]\n{c['text']}" for c in final_chunks]
         prompt = OAG_USER_TEMPLATE.format(
             subgraph_facts="（无）",
             context_with_sources="\n\n".join(context_parts),
             question=query,
         )
-        messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
+        messages = [
+            SystemMessage(content=system_prompt),
+            *_history_messages(history),
+            HumanMessage(content=prompt),
+        ]
         try:
             async for chunk in llm.astream(messages):
                 reasoning = extract_reasoning(chunk)

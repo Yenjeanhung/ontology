@@ -342,6 +342,32 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS idx_agents_kb ON agents(kb_id);
 
+-- ===== 智能体会话（短期记忆：会话 + 消息）=====
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id VARCHAR PRIMARY KEY,
+    agent_id VARCHAR DEFAULT '',
+    kb_id VARCHAR DEFAULT '',
+    user_id VARCHAR DEFAULT '',
+    title VARCHAR(200) DEFAULT '',
+    summary TEXT DEFAULT '',
+    summary_until_id VARCHAR DEFAULT '',
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_agent ON chat_sessions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_kb ON chat_sessions(kb_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id VARCHAR PRIMARY KEY,
+    session_id VARCHAR NOT NULL,
+    role VARCHAR NOT NULL,
+    content TEXT NOT NULL,
+    meta TEXT DEFAULT '',
+    created_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+
 -- ===== 工作流（定义 + 运行记录）=====
 CREATE TABLE IF NOT EXISTS workflows (
     id VARCHAR PRIMARY KEY,

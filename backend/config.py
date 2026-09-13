@@ -112,6 +112,9 @@ class Settings(BaseSettings):
     OAG_NEIGHBOR_HOPS: int = 1            # 子图跳数（v1 固定 1 跳）
     OAG_NEIGHBOR_LIMIT: int = 40          # 子图关系条数上限
     OAG_ENTITY_LIST_LIMIT: int = 5000     # 实体链接词面匹配时加载的实体数上限
+    OAG_BM25_ENABLED: bool = True         # OAG 是否启用 BM25 关键词召回（与向量/图谱三路 RRF）
+    OAG_BM25_RECALL_K: int = 50           # OAG BM25 召回候选数（参与 RRF 融合）
+    OAG_EMPTY_RECALL_THRESHOLD: float = 0.1  # 向量路为空时兜底重试的相似度阈值（<=0 关闭兜底）
 
     # 知识问答混合检索（BM25 + 向量）
     BM25_ENABLED: bool = True        # 知识问答是否启用 BM25 关键词召回
@@ -138,6 +141,19 @@ class Settings(BaseSettings):
 
     # 技能指令
     AGENT_SKILL_CHAR_BUDGET: int = 24000   # 技能指令总字符软上限（市场技能包 SKILL.md 常见 8-15K）
+
+    # ───────────────────────── 智能体会话（短期记忆，doc/智能体/智能体会话_功能设计.md）─────────
+    CHAT_SESSION_WINDOW_TURNS: int = 6     # 注入 prompt 的最近轮数（一轮 = 用户一问 + 助手一答）
+    CHAT_SESSION_CHAR_BUDGET: int = 6000   # 历史注入总字符预算（约 2k tokens），超预算从最旧开始丢弃
+    CHAT_SUMMARY_ENABLED: bool = True      # 超长滚动摘要总开关
+    CHAT_SUMMARY_TRIGGER_TURNS: int = 20   # 会话累计用户消息数超过该值时触发滚动摘要
+    CHAT_SUMMARY_MAX_CHARS: int = 1000     # 滚动摘要字符上限
+
+    # ───────────────────────── mem0 长期记忆（默认关闭；需 pip install mem0ai）─────────
+    MEM0_ENABLED: bool = False             # 总开关：false 时不启用长期记忆（自动降级，不影响主链路）
+    MEM0_COLLECTION: str = "agent_memories"  # Milvus 独立 collection（与知识库 collection 隔离）
+    MEM0_SEARCH_LIMIT: int = 5             # 每次检索注入 prompt 的事实条数上限
+    MEM0_HISTORY_DB_PATH: str = "./data/mem0_history.db"  # mem0 操作历史（SQLite，供回溯/调试）
 
     # 工作流
     WORKFLOW_MAX_NODES: int = 100          # 单工作流节点数上限

@@ -120,7 +120,7 @@ python scripts/rag_eval/eval_rag_ragas.py score --results results.jsonl --eval-m
 | +查询改写 | `--no-bm25 --no-rerank --enable-rewrite` | Multi-Query 增益（看 context_recall） |
 | +Rerank | `--no-rewrite --enable-rerank` | 精排增益（看 context_precision） |
 | 完整链路 | 无 | 生产配置 |
-| OAG vs RAG | 调 `services.oag_service`（可在脚本中替换被测入口） | 图谱召回增益 |
+| OAG vs RAG | `scripts/rag_eval/oag_eval/eval_oag_ragas.py`（专用脚本，见第 10 节实测） | 图谱召回增益 |
 
 ## 6. 结果解读 → 调参映射
 
@@ -188,3 +188,122 @@ D:\installedSoftware\anaconda3\envs\py11env\python.exe -u scripts\rag_eval\eval_
 | `eval_out/results_run_20260913_175213.config.json` | 链路配置快照（复现用） |
 | `eval_out/report_score_20260913_181903.csv` | ragas 逐条得分 |
 | `eval_out/run_rerun.log` | 运行日志 |
+
+## 10. OAG vs RAG 横向对比（2026-09-13 实测）
+
+### 10.1 执行命令
+
+OAG 专用脚本 `scripts/rag_eval/oag_eval/eval_oag_ragas.py`：复用 `eval_rag_ragas.py` 的
+LLM 配置与 ragas 评分逻辑，仅把被测入口换成 `OAGService.run()`（含 ontology_schema 预加载），
+结果独立输出到 `oag_eval/eval_out/`：
+
+```powershell
+# 在 backend/ 目录下，conda py11env 环境
+D:\installedSoftware\anaconda3\envs\py11env\python.exe -u scripts\rag_eval\oag_eval\eval_oag_ragas.py run `
+  --kb-id a20a9a0a6492 `
+  --testset scripts\rag_eval\eval_data\flight_ops_advisory_golden.jsonl `
+  --tag oag --llm-temperature 0.1 `
+  > scripts\rag_eval\oag_eval\eval_out\run_oag.log 2>&1
+```
+
+与 RAG 基线（第 9 节）完全同集（19 条）、同库（已绑定 4 个本体）、同 LLM/评估模型/embedding，
+唯一变量是被测链路。KB 已绑定本体，实测 12 条正例实体链接非空、`degraded=False`，图谱通道真实参与。
+
+### 10.2 结果对比
+
+| 指标 | RAG（向量+BM25+重排） | OAG（向量+图谱） | 解读 |
+|---|---|---|---|
+| faithfulness | **0.9707** (n=18) | 0.5244 (n=13) | OAG 被 5 条空检索正例的 0 分拉崩；有产出条目 F≈0.97，与 RAG 持平 |
+| context_recall | **0.9561** | 0.5395 | 同上——空检索条目整条记 0 |
+| answer_relevancy | 0.8014 | 0.5860 | 有产出的 12 条正例均值 ≈0.93，反超 RAG 正例的 0.885 |
+| context_precision | 0.4994 (n=2) | 0.5000 (n=14) | OAG 有效值中 7 个满分 1.0（全来自有产出正例），融合排序质量高 |
+| 平均延迟 | 22.5s | **12.2s** | OAG 无改写/BM25/重排，快约 46% |
+
+（OAG 这轮 judge 超时 6 次 → 6 条 NaN，`raise_exceptions=False` 兜住；RAG 那轮 4 次。）
+
+### 10.3 OAG 失败模式：7 条「全空拒答」
+
+Q5/6/7/16/17 五条正例 + 2 条 KB 外负例，OAG 输出统一为
+「在知识库与图谱中均未找到相关内容。」——`entities=[]`、`chunks=0`、`degraded=True`。
+负例拒答是**正确行为**；五条正例（通用流程/处置原则/适用范围/升级条件/案例三）是该答没答的真实失败。
+
+根因（逐层实测验证）：
+
+1. **向量路全军覆没**：这类「章节级/元问题」与具体条款分片的 embedding 相似度仅 0.15～0.28，
+   全部低于 `SIMILARITY_THRESHOLD=0.4`，k=50 候选过滤后为空——同样的原始 query 在 RAG 链路里向量路也是空的；
+2. **RAG 靠 BM25 兜底**：本次配置（config 快照）BM25=True、Rerank=True、QUERY_REWRITE=False，
+   中文关键词直接命中语料，撑起了全部召回；
+3. **OAG 没有 BM25 路**；图谱通道依赖实体链接，这 5 条问题不含任何具体实体名
+   （微关门/流控/机组超时…），词面匹配与分片 MENTIONS 反查皆为空 → 两路皆空 → 拒答；
+4. **反证**：含实体锚点的问题（雷雨天气/流控/微关门）OAG 图谱通道正常召回并生成，质量不输 RAG。
+
+### 10.4 结论与改进方向
+
+1. **有实体锚点的查询，OAG 不输 RAG 且更快**：F≈0.97、relevancy≈0.93、precision 多为满分、延迟减半——图谱融合的排序增益真实存在；
+2. **OAG 当前召回面窄于 RAG**：无 BM25 兜底，泛化/元类问题全军覆没；KB 外负例两链路都正确拒答；
+3. 改进方向（按性价比排序，**已全部落地并复测，见 10.6**）：
+   - OAG 检索补 BM25 路（复用 RAG 的 jieba+rank_bm25），RRF 三路融合；
+   - 空召回兜底：向量路被阈值清零时降阈值重试一次，或拒答前先试 BM25；
+   - 「本知识库/通用流程」类元问题可经查询改写展开成具体关键词后再走向量路。
+
+### 10.5 结果文件
+
+| 文件 | 内容 |
+|---|---|
+| `oag_eval/eval_out/results_oag_20260913_185227.jsonl` | 逐条明细（含 entities / graph_retrieval_path） |
+| `oag_eval/eval_out/results_oag_20260913_185227.config.json` | OAG 配置快照 |
+| `oag_eval/eval_out/report_oag_20260913_190842.csv` | ragas 逐条得分 |
+| `oag_eval/eval_out/run_oag.log` | 运行日志 |
+
+### 10.6 改进实测：BM25 三路融合 + 空召回兜底（tag=oag2）
+
+按 10.4 方向改造 `services/oag_service.py` 后，同集同库同模型复测：
+
+**改造点**（`config.py` 新增 `OAG_BM25_ENABLED=True` / `OAG_BM25_RECALL_K=50` / `OAG_EMPTY_RECALL_THRESHOLD=0.1`）：
+
+1. **BM25 三路 RRF**：复用 RAG 的 `providers/bm25`（jieba + rank_bm25），与向量、图谱一起 RRF 融合；
+   BM25 命中分片也参与实体链接 MENTIONS 反查；
+2. **空召回兜底**：向量路被阈值（0.4）清零时，降至 0.1 并追加 jieba 关键词改写查询
+   （「本知识库规定的处置原则有哪些？」→「知识库 规定 处置 原则」）重试一次；
+3. `retrieval` 标注扩展为组合式（`vector` / `bm25` / `graph` / `vector+bm25` / …）。
+
+```powershell
+# 在 backend/ 目录下，conda py11env 环境
+D:\installedSoftware\anaconda3\envs\py11env\python.exe -u scripts\rag_eval\oag_eval\eval_oag_ragas.py run `
+  --kb-id a20a9a0a6492 `
+  --testset scripts\rag_eval\eval_data\flight_ops_advisory_golden.jsonl `
+  --tag oag2 --llm-temperature 0.1 `
+  > scripts\rag_eval\oag_eval\eval_out\run_oag2.log 2>&1
+```
+
+**三方对比**：
+
+| 指标 | RAG（第 9 节） | OAG 改前（10.2） | OAG 改后 | 改后 vs RAG |
+|---|---|---|---|---|
+| context_recall | 0.9561 | 0.5395 | **0.9825** | 反超 |
+| faithfulness | **0.9707** (n=18) | 0.5244 (n=13) | 0.8779 (n=8) | 本轮 judge 超时 11 条 NaN，有效样本偏少 |
+| answer_relevancy | **0.8014** | 0.5860 | 0.7679 | 接近 |
+| context_precision | 0.4994 (n=2) | 0.5000 (n=14) | 0.3528 (n=1) | 本轮超时严重仅 1 条有效值，不可比 |
+| 平均延迟 | 22.5s | 12.2s* | 20.1s | 相当 |
+
+**关键变化**：
+
+- **空检索条目 7 → 0**：原 5 条全空拒答的正例全部满额召回 12 chunks；兜底重试在 19 条中触发 13 次；
+  命中路径覆盖 `bm25` / `vector+bm25` / `bm25+graph` / `vector+bm25+graph` 全部组合，实体链接稳定 8 个；
+- **逐条 recall**：Q5/6/7/8/16/17 六条 **0.00 → 1.00**，Q15 0.25 → 1.00——OAG2 是三条链路里唯一在
+  17 条正例上 recall 无盲区的；生成质量同步恢复（原失败条 Q6/Q7 的 answer_relevancy 达 0.99）；
+- **负例行为两链路一致**：Q18/19 均召回了内容但 LLM 正确拒答（A=0 为 RAGAS 对拒答的正常计分）；
+- 延迟 12.2→20.1s：改前均值被 7 条空检索秒拒拉低（*不可比），兜底重试 + 更大上下文后与 RAG（22.5s）相当。
+
+**结论**：三路融合 + 空召回兜底后，OAG 在同集上 **context_recall 反超 RAG（0.9825 vs 0.9561）**，
+生成质量追平（A 0.768 vs 0.801；有产出条目 F≈0.9+），图谱排序增益保留、召回盲区消除，
+代价是平均延迟与 RAG 持平（不再有 46% 的速度优势）。
+
+**结果文件**（`oag_eval/eval_out/`）：
+
+| 文件 | 内容 |
+|---|---|
+| `results_oag2_20260913_*.jsonl` | 逐条明细（含 entities / graph_retrieval_path.empty_recall_retry） |
+| `results_oag2_20260913_*.config.json` | 改造后配置快照（含 OAG_BM25_* / OAG_EMPTY_RECALL_THRESHOLD） |
+| `report_oag2_20260913_204157.csv` | ragas 逐条得分 |
+| `run_oag2.log` | 运行日志 |

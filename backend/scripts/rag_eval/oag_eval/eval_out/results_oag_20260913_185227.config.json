@@ -1,0 +1,1 @@
+{"pipeline": "oag", "oag_enabled": true, "oag_vec_k": 50, "oag_top_n": 12, "oag_seed_entity_limit": 8, "oag_graph_chunk_limit": 12, "oag_rrf_k": 60, "oag_neighbor_hops": 1, "oag_neighbor_limit": 40, "similarity_threshold": 0.4, "llm_model": "glm-5.3-flash", "llm_temperature": 0.1, "embedding_model": "BAAI/bge-small-zh-v1.5"}

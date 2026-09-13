@@ -2,10 +2,12 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, reactive, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { marked } from 'marked'
-import { fetchKbs, queryAgentStream, fetchAgentSkills, fetchAgents } from '../api'
+import { fetchKbs, queryAgentStream, fetchAgentSkills, fetchAgents, fetchChatSessions, fetchSessionMessages, renameChatSession, deleteChatSession } from '../api'
+import { useToast } from '../composables/useToast'
 import PreviewModal from './PreviewModal.vue'
 
 const router = useRouter()
+const toast = useToast()
 const kbs = ref([])
 const queryKbId = ref('')
 
@@ -15,11 +17,6 @@ const selectedSkillIds = ref([])
 const activeSkills = ref([])     // SSE 实际生效的技能
 
 const enabledSkills = computed(() => allSkills.value.filter(s => s.is_enabled))
-function toggleSkill(id) {
-  const idx = selectedSkillIds.value.indexOf(id)
-  if (idx >= 0) selectedSkillIds.value.splice(idx, 1)
-  else selectedSkillIds.value.push(id)
-}
 async function loadSkills() {
   try {
     allSkills.value = await fetchAgentSkills()
@@ -33,6 +30,8 @@ const selectedAgentId = ref('')
 // 下拉只展示自定义且启用的智能体；内置作为默认态不进下拉
 const enabledAgents = computed(() => agents.value.filter(a => a.is_enabled && !a.is_preset))
 const selectedAgent = computed(() => agents.value.find(x => x.id === selectedAgentId.value))
+// 选中自定义智能体：KB/技能/人设完全由智能体配置决定，页面不再重复选择
+const agentPresetActive = computed(() => !!selectedAgent.value)
 // 自定义智能体：切换时预填 kb+技能；选回「默认」= 内置行为（kb/技能跟随页面选择）
 function onAgentChange() {
   const a = selectedAgent.value
@@ -41,10 +40,90 @@ function onAgentChange() {
     queryKbId.value = a.kb_id
     selectedSkillIds.value = a.skill_ids || []
   }
+  // 会话按智能体过滤，切换后重载
+  sessionId.value = ''
+  loadSessions()
 }
 async function loadAgents() {
   try { agents.value = await fetchAgents() } catch {}
 }
+
+// ---------- 会话（短期记忆：多轮上下文 + 历史回放，doc/智能体/智能体会话_功能设计.md） ----------
+const sessionId = ref('')
+const sessions = ref([])
+const sessionsOpen = ref(false)
+const sessionSelectRef = ref(null)
+const historyTurns = ref([])   // 当前会话已完成的历史轮次 [{q, answer}]
+const currentQ = ref('')       // 正在富面板展示的最近一轮问题
+
+const currentSession = computed(() => sessions.value.find(s => s.id === sessionId.value) || null)
+const currentSessionLabel = computed(() => currentSession.value?.title || '历史会话')
+
+function resetTurnPanel() {
+  answerRaw.value = ''
+  chunks.value = []
+  entities.value = []
+  subgraph.value = null
+  activeSkills.value = []
+  thinkBlocks.value = []
+  thinkExpanded.value = false
+  reasonOpen.value = true
+  hoveredChunk.value = null
+  Object.keys(expandedSources).forEach(k => delete expandedSources[k])
+}
+
+const queryInputRef = ref(null)
+
+function startNewSession() {
+  const hadSession = !!sessionId.value
+  sessionId.value = ''
+  historyTurns.value = []
+  currentQ.value = ''
+  resetTurnPanel()
+  queryText.value = ''
+  // 新会话是「懒创建」：提问时才真正建会话，这里给出明确反馈避免像没响应
+  toast.info(hadSession ? '已开始新会话' : '已是新会话，提问后自动保存')
+  nextTick(() => queryInputRef.value?.focus())
+}
+
+async function loadSessions() {
+  try { sessions.value = await fetchChatSessions(selectedAgentId.value || null) } catch {}
+}
+
+async function selectSession(s) {
+  if (querying.value) return
+  sessionsOpen.value = false
+  if (s.id === sessionId.value) return
+  sessionId.value = s.id
+  historyTurns.value = []
+  currentQ.value = ''
+  resetTurnPanel()
+  try {
+    const data = await fetchSessionMessages(s.id)
+    const msgs = data.messages || []
+    // 消息两两折叠为「一问一答」轮次
+    for (let i = 0; i + 1 < msgs.length; i += 2) {
+      if (msgs[i].role === 'user' && msgs[i + 1].role === 'assistant') {
+        historyTurns.value.push({ q: msgs[i].content, answer: msgs[i + 1].content })
+      }
+    }
+  } catch {}
+}
+
+async function renameSession(s) {
+  const t = prompt('重命名会话', s.title || '')
+  if (t === null) return
+  try { await renameChatSession(s.id, t); loadSessions() } catch {}
+}
+
+async function removeSession(s) {
+  if (!confirm(`删除会话「${s.title || '未命名会话'}」？`)) return
+  try { await deleteChatSession(s.id) } catch {}
+  if (s.id === sessionId.value) startNewSession()
+  loadSessions()
+}
+
+watch(selectedAgentId, () => { startNewSession(); loadSessions() })
 
 const queryText = ref('')
 const querying = ref(false)
@@ -80,6 +159,10 @@ const RETRIEVAL_META = {
   bm25: { label: '关键词', color: '#f59e0b' },
   graph: { label: '图谱', color: '#10b981' },
   both: { label: '交集', color: '#8b5cf6' },
+  'vector+bm25': { label: '向量+关键词', color: '#8b7cf6' },
+  'vector+graph': { label: '向量+图谱', color: '#3a9f8f' },
+  'bm25+graph': { label: '关键词+图谱', color: '#cba34a' },
+  'vector+bm25+graph': { label: '三路命中', color: '#7c5cf0' },
 }
 function retrievalMeta(c) { return RETRIEVAL_META[c.retrieval] || RETRIEVAL_META.vector }
 
@@ -208,22 +291,30 @@ async function loadKbs() {
 
 async function runQuery() {
   const q = queryText.value.trim()
-  if (!q || !queryKbId.value) return
+  // 未绑 KB 的智能体（agentPresetActive 且无 kb）允许直接对话
+  if (!q || (!queryKbId.value && !selectedAgentId.value)) return
+  // 上一轮已完整回答：滚入历史气泡，让本轮独占富面板
+  if (currentQ.value && answerRaw.value) {
+    historyTurns.value = [...historyTurns.value, { q: currentQ.value, answer: answerExThink.value || answerRaw.value }]
+  }
+  currentQ.value = q
+  resetTurnPanel()
   querying.value = true
-  answerRaw.value = ''
-  chunks.value = []
-  entities.value = []
-  subgraph.value = null
-  activeSkills.value = []
-  thinkBlocks.value = []
-  thinkExpanded.value = false
-  hoveredChunk.value = null
-  reasonOpen.value = true
-  Object.keys(expandedSources).forEach(k => delete expandedSources[k])
+  nextTick(() => {
+    document.getElementById('chat-current-q')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
   try {
     await queryAgentStream(queryKbId.value, q, {
       skillIds: selectedSkillIds.value,
       agentId: selectedAgentId.value || null,
+      sessionId: sessionId.value || null,
+      onSession(data) {
+        // 新建会话时后端回传 session_id：锚定后续轮次并刷新会话列表
+        if (data?.session_id && data.session_id !== sessionId.value) {
+          sessionId.value = data.session_id
+          loadSessions()
+        }
+      },
       onSkills(data) { activeSkills.value = data || [] },
       onEntities(data) { entities.value = data || [] },
       onSubgraph(data) { subgraph.value = data },
@@ -240,11 +331,13 @@ function toggleKbDropdown() { kbDropdownOpen.value = !kbDropdownOpen.value }
 function selectKb(kbId) { queryKbId.value = kbId; kbDropdownOpen.value = false }
 function onWindowPointerDown(e) {
   if (kbSelectRef.value && !kbSelectRef.value.contains(e.target)) kbDropdownOpen.value = false
+  if (sessionSelectRef.value && !sessionSelectRef.value.contains(e.target)) sessionsOpen.value = false
 }
 
 onMounted(loadKbs)
 onMounted(loadSkills)
 onMounted(loadAgents)
+onMounted(loadSessions)
 onMounted(() => window.addEventListener('pointerdown', onWindowPointerDown))
 onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerDown))
 </script>
@@ -263,10 +356,19 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
         <option value="">系统默认</option>
         <option v-for="a in enabledAgents" :key="a.id" :value="a.id">{{ a.name }}{{ a.kb_name ? ' · ' + a.kb_name : '' }}</option>
       </select>
-      <span class="agent-pick-hint" v-if="selectedAgentId">已按该智能体预填知识库与技能，人设由智能体提供</span>
     </div>
 
-    <div class="kb-select">
+    <!-- 选中自定义智能体：知识库/技能/人设均由智能体配置决定，页面不再重复选择 -->
+    <div class="agent-config-note" v-if="agentPresetActive">
+      <span class="note-main">
+        已使用「{{ selectedAgent.name }}」的配置：
+        {{ selectedAgent.kb_name ? `知识库 ${selectedAgent.kb_name}` : '未绑定知识库' }}
+        · {{ (selectedAgent.skill_ids || []).length }} 项技能 · 人设由智能体提供
+      </span>
+      <router-link to="/agent/configs">去智能体管理修改</router-link>
+    </div>
+
+    <div class="kb-select" v-if="!agentPresetActive">
       <label>选择知识库</label>
       <div class="kb-picker" ref="kbSelectRef">
         <button type="button" class="field-shell select-shell select-trigger" :class="{ open: kbDropdownOpen }" @click="toggleKbDropdown">
@@ -288,34 +390,46 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
       </div>
     </div>
 
-    <!-- 技能选择 -->
-    <div class="skill-row" v-if="enabledSkills.length">
-      <div class="skill-chips">
-        <button
-          v-for="s in enabledSkills" :key="s.id"
-          type="button"
-          class="skill-chip" :class="{ active: selectedSkillIds.includes(s.id) }"
-          :title="s.description"
-          @click="toggleSkill(s.id)"
-        >
-          <span class="skill-chip-icon" v-if="selectedSkillIds.includes(s.id)">✓</span>
-          <span class="skill-chip-icon" v-else>+</span>
-          {{ s.name }}
+    <!-- 会话（短期记忆）：新建 / 切换 / 重命名 / 删除 -->
+    <div class="session-bar">
+      <button type="button" class="session-new" @click="startNewSession" :disabled="querying">＋ 新会话</button>
+      <div class="session-picker" ref="sessionSelectRef" v-if="sessions.length">
+        <button type="button" class="session-trigger" @click="sessionsOpen = !sessionsOpen">
+          <span class="session-trigger-label">{{ sessionId ? currentSessionLabel : '历史会话' }}</span>
+          <svg class="session-caret" :class="{ open: sessionsOpen }" width="10" height="10" viewBox="0 0 10 10"><path d="M2 4l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
         </button>
+        <div v-if="sessionsOpen" class="session-dropdown">
+          <div v-for="s in sessions" :key="s.id" class="session-item" :class="{ active: s.id === sessionId }">
+            <button type="button" class="session-item-title" @click="selectSession(s)">{{ s.title || '未命名会话' }}</button>
+            <span class="session-item-actions">
+              <button type="button" class="session-act" @click.stop="renameSession(s)" title="重命名">✎</button>
+              <button type="button" class="session-act danger" @click.stop="removeSession(s)" title="删除">✕</button>
+            </span>
+          </div>
+        </div>
       </div>
     </div>
 
     <div class="query-row">
-      <div class="field-shell search-shell" :class="{ disabled: !queryKbId || querying }">
+      <div class="field-shell search-shell" :class="{ disabled: (!queryKbId && !selectedAgentId) || querying }">
         <span class="field-icon" aria-hidden="true">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></svg>
         </span>
-        <input type="text" v-model="queryText" placeholder="输入问题，智能体将结合图谱与本体回答..." @keydown.enter="runQuery" :disabled="!queryKbId || querying">
-        <button class="query-submit" @click="runQuery" :disabled="!queryKbId || !queryText.trim() || querying">
+        <input ref="queryInputRef" type="text" v-model="queryText" placeholder="输入问题，智能体将结合图谱与本体回答..." @keydown.enter="runQuery" :disabled="(!queryKbId && !selectedAgentId) || querying">
+        <button class="query-submit" @click="runQuery" :disabled="(!queryKbId && !selectedAgentId) || !queryText.trim() || querying">
           <span class="spinner" v-if="querying"></span>
           <template v-else>提问</template>
         </button>
       </div>
+    </div>
+
+    <!-- 会话历史（短期记忆回放：已完成轮次的简洁气泡；最近一轮见下方富面板） -->
+    <div class="chat-turns" v-if="historyTurns.length || currentQ">
+      <template v-for="(t, i) in historyTurns" :key="`h${i}`">
+        <div class="chat-q">{{ t.q }}</div>
+        <div class="chat-a markdown-body" v-html="renderMd(t.answer)"></div>
+      </template>
+      <div class="chat-q" id="chat-current-q" v-if="currentQ">{{ currentQ }}</div>
     </div>
 
     <div class="results" v-if="answerRaw || chunks.length || hasReasoning">
@@ -326,6 +440,7 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
           <span>推理过程</span>
           <span class="reason-path">
             <span class="rp" v-if="pathInfo.vector != null">向量 {{ pathInfo.vector }}</span>
+            <span class="rp" v-if="pathInfo.bm25 != null">关键词 {{ pathInfo.bm25 }}</span>
             <span class="rp" v-if="pathInfo.graph != null">图谱 {{ pathInfo.graph }}</span>
             <span class="rp rp-both" v-if="pathInfo.both">交集 {{ pathInfo.both }}</span>
             <span class="rp rp-deg" v-if="isDegraded">向量模式（未识别到图谱实体）</span>
@@ -559,21 +674,6 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 .spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── 技能行 ── */
-.skill-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.skill-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
-.skill-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 500;
-  border: 1px solid var(--c-border); background: var(--c-panel); color: var(--c-secondary);
-  cursor: pointer; user-select: none; transition: all 150ms;
-}
-.skill-chip:hover { border-color: var(--c-accent); color: var(--c-fg); }
-.skill-chip.active {
-  background: var(--c-muted); border-color: var(--c-accent); color: var(--c-accent);
-}
-.skill-chip-icon { font-size: 11px; line-height: 1; }
-
 /* ── 推理卡片中的技能标签 ── */
 .skill-chips-inline { display: flex; flex-wrap: wrap; gap: 6px; }
 .skill-tag {
@@ -625,4 +725,39 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 .markdown-body a { color: #7c3aed; }
 .markdown-body strong { font-weight: 600; }
 .markdown-body img { max-width: 100%; border-radius: 4px; }
+
+/* ── 智能体配置摘要（选中智能体后替代页面 KB/技能选择）── */
+.agent-config-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border: 1px dashed #d8d1c2; border-radius: 14px; background: rgba(247, 244, 238, 0.7); font-size: 13px; color: #6f6759; }
+.agent-config-note .note-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-config-note a { flex-shrink: 0; color: #7c3aed; text-decoration: none; font-weight: 600; }
+.agent-config-note a:hover { text-decoration: underline; }
+
+/* ── 会话（短期记忆）── */
+.session-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.session-new { border: 1px dashed #c9c0af; background: transparent; color: #6f6759; border-radius: 12px; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer; transition: border-color 150ms, color 150ms; }
+.session-new:hover:not(:disabled) { border-color: #171717; color: #171717; }
+.session-new:disabled { opacity: 0.5; cursor: not-allowed; }
+.session-picker { position: relative; }
+.session-trigger { display: flex; align-items: center; gap: 8px; border: 1px solid #ebe6dc; background: rgba(255,255,255,0.9); color: var(--c-fg); border-radius: 12px; padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer; max-width: 420px; }
+.session-trigger-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-caret { transition: transform 150ms; color: #9a8f7e; flex-shrink: 0; }
+.session-caret.open { transform: rotate(180deg); }
+.session-dropdown { position: absolute; top: calc(100% + 8px); left: 0; z-index: 20; min-width: 320px; max-width: 460px; max-height: 320px; overflow-y: auto; padding: 8px; border: 1px solid #ebe6dc; border-radius: 14px; background: rgba(255,255,255,0.98); box-shadow: 0 18px 40px rgba(23, 23, 23, 0.08); }
+.session-item { display: flex; align-items: center; gap: 4px; border-radius: 10px; }
+.session-item:hover { background: #f7f4ee; }
+.session-item.active { background: #f3ede3; }
+.session-item-title { flex: 1; min-width: 0; border: 0; background: transparent; text-align: left; padding: 9px 10px; font-size: 13px; color: var(--c-fg); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-item.active .session-item-title { font-weight: 700; }
+.session-item-actions { display: none; flex-shrink: 0; gap: 2px; padding-right: 6px; }
+.session-item:hover .session-item-actions { display: inline-flex; }
+.session-act { border: 0; background: transparent; color: #9a8f7e; cursor: pointer; padding: 4px 6px; border-radius: 6px; font-size: 12px; }
+.session-act:hover { background: #ebe6dc; color: #171717; }
+.session-act.danger:hover { background: #fdecec; color: #c0392b; }
+
+/* ── 会话历史气泡 ── */
+.chat-turns { display: flex; flex-direction: column; gap: 10px; }
+.chat-q { align-self: flex-end; max-width: 78%; background: linear-gradient(135deg, #171717, #3a342b); color: #fff; padding: 9px 16px; border-radius: 16px 16px 4px 16px; font-size: 13.5px; line-height: 1.6; box-shadow: 0 8px 20px rgba(23, 23, 23, 0.12); }
+.chat-a { align-self: flex-start; max-width: 90%; background: rgba(255,255,255,0.9); border: 1px solid #ebe6dc; padding: 6px 16px; border-radius: 16px 16px 16px 4px; font-size: 13.5px; }
+.chat-a :first-child { margin-top: 0; }
+.chat-a :last-child { margin-bottom: 0; }
 </style>

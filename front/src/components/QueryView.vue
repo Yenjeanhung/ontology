@@ -82,6 +82,10 @@ const RETRIEVAL_META = {
   bm25: { label: '关键词', color: '#f59e0b' },
   graph: { label: '图谱', color: '#10b981' },
   both: { label: '交集', color: '#8b5cf6' },
+  'vector+bm25': { label: '向量+关键词', color: '#8b7cf6' },
+  'vector+graph': { label: '向量+图谱', color: '#3a9f8f' },
+  'bm25+graph': { label: '关键词+图谱', color: '#cba34a' },
+  'vector+bm25+graph': { label: '三路命中', color: '#7c5cf0' },
 }
 function retrievalMeta(c) { return RETRIEVAL_META[c.retrieval] || RETRIEVAL_META.vector }
 function accentFor(c, idx) { return isAgent.value ? retrievalMeta(c).color : sourceAccent(idx) }
@@ -389,6 +393,7 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
           <span>推理过程</span>
           <span class="reason-path">
             <span class="rp" v-if="pathInfo.vector != null">向量 {{ pathInfo.vector }}</span>
+            <span class="rp" v-if="pathInfo.bm25 != null">关键词 {{ pathInfo.bm25 }}</span>
             <span class="rp" v-if="pathInfo.graph != null">图谱 {{ pathInfo.graph }}</span>
             <span class="rp rp-both" v-if="pathInfo.both">交集 {{ pathInfo.both }}</span>
             <span class="rp rp-deg" v-if="isDegraded">向量模式（未识别到图谱实体）</span>

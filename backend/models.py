@@ -798,6 +798,39 @@ class Agent(Base):
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
+class ChatSession(Base):
+    """对话会话：智能体短期记忆的载体（doc/智能体/智能体会话_功能设计.md）。
+
+    agent_id 为空 = 未引用智能体的普通 KB 问答会话；
+    summary 为滚动摘要（超长压缩产物，P2），summary_until_id 标记已计入摘要的最后一条消息。
+    """
+
+    __tablename__ = "chat_sessions"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    agent_id = Column(String, default="", index=True)
+    kb_id = Column(String, default="", index=True)
+    user_id = Column(String, default="", index=True)   # 预留多用户
+    title = Column(String(200), default="")            # 默认取首问截断
+    summary = Column(Text, default="")                 # 窗口外旧轮次的滚动摘要
+    summary_until_id = Column(String, default="")      # 已计入摘要的最后一条消息 id
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class ChatMessage(Base):
+    """对话消息：user / assistant 逐条落库，会话内多轮拼接的数据源。"""
+
+    __tablename__ = "chat_messages"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    session_id = Column(String, nullable=False, index=True)
+    role = Column(String, nullable=False)   # "user" | "assistant"
+    content = Column(Text, nullable=False)
+    meta = Column(Text, default="")         # JSON：引用来源、token 数等（可空）
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
 class Workflow(Base):
     """工作流定义：节点 + 边的 DAG 图（definition 存 JSON blob）。"""
 

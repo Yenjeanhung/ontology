@@ -143,15 +143,17 @@ class AgentService:
         """按 agent_id 展开出 OAG 入参 {id, name, kb_id, system_prompt, skill_ids}。
 
         不存在 / 已禁用返回 None；skill_ids 的无效 id 交由 SkillService.resolve 容错过滤。
-        内置「默认智能体」kb 为空 → 回退 fallback_kb_id（页面选的 KB）；
-        技能空 → 回退 fallback_skill_ids（页面勾选），保持原 OAG 行为。
+        内置「默认智能体」（is_preset）kb 为空 → 回退 fallback_kb_id（页面选的 KB），
+        技能空 → 回退 fallback_skill_ids（页面勾选），保持原 OAG 行为；
+        自定义智能体的 KB / 技能以自身配置为准：未绑 KB 即纯 LLM 对话，不再回退页面选择。
         """
         agent = await AgentService.get(db, agent_id)
         if not agent or not agent.is_enabled:
             return None
-        kb_id = agent.kb_id or fallback_kb_id or ""
+        is_preset = bool(getattr(agent, "is_preset", 0))
+        kb_id = agent.kb_id or (fallback_kb_id or "" if is_preset else "")
         skill_ids = _skill_ids_to_list(agent.skill_ids)
-        if not skill_ids and fallback_skill_ids:
+        if not skill_ids and is_preset and fallback_skill_ids:
             skill_ids = fallback_skill_ids
         return {
             "id": agent.id,

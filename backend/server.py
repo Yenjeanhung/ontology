@@ -253,7 +253,7 @@ app.add_middleware(AuditMiddleware)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(AccessLogMiddleware)
 
-from routers import app_settings, agent, audit, auth, config, entity, files, graph, graph_analysis, graph_sync, kb, library, monitor, notifications, ontology, ontology_function, ontology_interface, ontology_service, ontology_version, ontology_view, query, role, scheduler, session, user, vector_data, workflow
+from routers import app_settings, agent, audit, auth, chat, config, entity, files, graph, graph_analysis, graph_sync, kb, library, monitor, notifications, ontology, ontology_function, ontology_interface, ontology_service, ontology_version, ontology_view, query, role, scheduler, session, user, vector_data, workflow
 
 app.include_router(kb.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
@@ -263,6 +263,7 @@ app.include_router(graph_sync.router, prefix="/api")
 app.include_router(graph_analysis.router, prefix="/api")
 app.include_router(query.router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
+app.include_router(chat.router, prefix="/api")
 app.include_router(vector_data.router, prefix="/api")
 app.include_router(ontology.router, prefix="/api")
 app.include_router(ontology_interface.router, prefix="/api")

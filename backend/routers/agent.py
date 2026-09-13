@@ -1,4 +1,7 @@
 """智能体（OAG）路由 + 技能（Skill）管理路由。"""
+import json
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, File, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,11 +18,15 @@ from schemas import (
 )
 from services import skill_import_service
 from services.agent_service import AgentService
+from services.chat_service import ChatService
 from services.kb_service import KBService
+from services.memory_store import MemoryStore
 from services.ontology_service import OntologyService
 from services.oag_service import OAGService
 from services.skill_group_service import SkillGroupService, group_paths
 from services.skill_service import SkillService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -563,9 +570,10 @@ async def test_agent(agent_id: str, req: AgentQueryRequest, db: AsyncSession = D
 # ─────────────────────── 智能体查询 ───────────────────────
 
 
-async def _chat_no_kb(query: str, persona: str | None, skills=None):
+async def _chat_no_kb(query: str, persona: str | None, skills=None,
+                      history=None, summary: str = "", memories=None):
     """未绑 KB 的智能体：无检索直接 LLM 回答（人设 + 技能），事件结构与 OAG 一致。"""
-    from oag_service import build_system_prompt
+    from services.oag_service import _augment_system_prompt, _history_messages, build_system_prompt
 
     skills = skills or []
     yield _sse_evt({"type": "skills", "skills": [{"id": s["id"], "name": s["name"], "code": s["code"]} for s in skills]})
@@ -575,17 +583,18 @@ async def _chat_no_kb(query: str, persona: str | None, skills=None):
     yield _sse_evt({"type": "chunks", "chunks": []})
 
     from providers.llm import chunk_text, create_llm
-    from langchain_core.messages import HumanMessage
+    from langchain_core.messages import HumanMessage, SystemMessage
 
     llm = create_llm()
     if llm is None:
         yield _sse_evt({"type": "token", "content": "尚未配置大模型，请先在「系统配置」中激活 LLM。"})
         yield "data: [DONE]\n\n"
         return
-    system_prompt = build_system_prompt(skills, base_prompt=persona or "") or None
-    messages = [HumanMessage(content=query)]
+    system_prompt = _augment_system_prompt(
+        build_system_prompt(skills, base_prompt=persona or "") or "", summary, memories,
+    ) or None
+    messages = [*_history_messages(history), HumanMessage(content=query)]
     if system_prompt:
-        from langchain_core.messages import SystemMessage
         messages.insert(0, SystemMessage(content=system_prompt))
     try:
         async for chunk in llm.astream(messages):
@@ -602,6 +611,25 @@ def _sse_evt(payload: dict) -> str:
     return f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+async def _persist_turn(session_id: str, query: str, answer: str, agent_scope: str) -> None:
+    """一轮问答收尾：助手消息落库 + 滚动摘要 + 长期记忆后台写入。
+
+    SSE 生成器执行时路由的 db 会话已释放，这里自开新会话；全部尽力而为，
+    失败只记日志，不影响已下发的回答。
+    """
+    try:
+        async for db in get_db():
+            await ChatService.append_message(db, session_id, "assistant", answer)
+            await ChatService.maybe_summarize(db, session_id)
+            break
+    except Exception:
+        logger.exception("会话消息落库失败: session=%s", session_id)
+    try:
+        MemoryStore.add_background(query, answer, agent_id=agent_scope, session_id=session_id)
+    except Exception:
+        logger.exception("长期记忆写入失败: session=%s", session_id)
+
+
 @router.post("/agent/query")
 async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)):
     # 引用智能体（可选）：传 agent_id 时以其 KB / 技能 / 人设为准；
@@ -615,35 +643,9 @@ async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)
         )
         if not agent:
             raise HTTPException(404, "智能体不存在或已禁用")
+    agent_scope = req.agent_id or ""
 
-    kb_id = agent["kb_id"] if agent else req.kb_id
-    if not kb_id:
-        # 未绑 KB 的智能体：不使用知识库，直接 LLM 按人设+技能回答
-        if agent:
-            return StreamingResponse(
-                _chat_no_kb(req.query, agent["system_prompt"] or None, skills=await SkillService.resolve(db, agent["skill_ids"])),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
-        raise HTTPException(400, "缺少 kb_id 或 agent_id")
-    kb = await KBService.get(db, kb_id)
-    if not kb:
-        # 智能体绑定的 KB 已被删除等场景：回退到页面选择的 KB，避免悬空引用直接 404
-        if agent and req.kb_id and req.kb_id != kb_id:
-            kb = await KBService.get(db, req.kb_id)
-            if kb:
-                kb_id = req.kb_id
-    if not kb:
-        raise HTTPException(
-            404, f"知识库不存在（kb_id={kb_id}）：智能体绑定的知识库可能已被删除，请重新选择知识库或编辑智能体")
-
-    # 预加载本体 schema：db 会话在响应返回后释放，SSE 生成器不再持有 db
-    try:
-        ontology_schema = await OntologyService.get_kb_extraction_constraints(db, kb_id)
-    except Exception:
-        ontology_schema = None
-
-    # 预加载技能：db 会话在响应返回后释放
+    # 预加载技能/人设：db 会话在响应返回后释放，SSE 生成器不再持有 db
     if agent:
         skills = await SkillService.resolve(db, agent["skill_ids"])
         persona = agent["system_prompt"] or None
@@ -651,8 +653,80 @@ async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)
         skills = await SkillService.resolve(db, req.skill_ids)
         persona = None
 
+    kb_id = agent["kb_id"] if agent else req.kb_id
+
+    # ── 会话（短期记忆，doc/智能体/智能体会话_功能设计.md）──
+    # 传 session_id 续聊（校验存在，无效 404）；归属智能体变化时自动开新会话。
+    # 不传则新建会话（标题默认取首问截断）。
+    session = None
+    if req.session_id:
+        session = await ChatService.get(db, req.session_id)
+        if not session:
+            raise HTTPException(404, "会话不存在或已被删除")
+        if (session.agent_id or "") != agent_scope:
+            session = None  # 切换智能体：自动开新会话，前端以 SSE session 事件为准
+    if session is None:
+        session = await ChatService.create_session(
+            db, agent_id=agent_scope, kb_id=kb_id or "", title=req.query[:50])
+    await ChatService.append_message(db, session.id, "user", req.query)
+
+    # 预加载历史（近 N 轮 + 字符预算装填，含滚动摘要）与长期记忆事实
+    hist = await ChatService.load_history(db, session.id)
+    memories: list[str] = []
+    if MemoryStore.available():
+        memories = await MemoryStore.search(req.query, agent_id=agent_scope)
+
+    if not kb_id:
+        # 未绑 KB 的智能体：不使用知识库，直接 LLM 按人设+技能回答
+        if not agent:
+            raise HTTPException(400, "缺少 kb_id 或 agent_id")
+        inner = _chat_no_kb(
+            req.query, persona, skills=skills,
+            history=hist["history"], summary=hist["summary"], memories=memories,
+        )
+    else:
+        kb = await KBService.get(db, kb_id)
+        if not kb:
+            # 智能体绑定的 KB 已被删除等场景：回退到页面选择的 KB，避免悬空引用直接 404
+            if agent and req.kb_id and req.kb_id != kb_id:
+                kb = await KBService.get(db, req.kb_id)
+                if kb:
+                    kb_id = req.kb_id
+        if not kb:
+            raise HTTPException(
+                404, f"知识库不存在（kb_id={kb_id}）：智能体绑定的知识库可能已被删除，请重新选择知识库或编辑智能体")
+
+        # 预加载本体 schema：db 会话在响应返回后释放
+        try:
+            ontology_schema = await OntologyService.get_kb_extraction_constraints(db, kb_id)
+        except Exception:
+            ontology_schema = None
+
+        inner = OAGService.query_stream(
+            kb_id, req.query, kb["name"], ontology_schema, skills, persona=persona,
+            history=hist["history"], summary=hist["summary"], memories=memories,
+        )
+
+    async def _stream():
+        # 首事件：会话锚点（新建会话时前端据此记录 session_id 并刷新会话列表）
+        yield _sse_evt({"type": "session", "session_id": session.id, "title": session.title})
+        answer_parts: list[str] = []
+        async for event in inner:
+            # 累积回答正文，流结束后落库 + 写长期记忆
+            if event.startswith("data: "):
+                payload = event[6:].strip()
+                if payload and payload != "[DONE]":
+                    try:
+                        evt = json.loads(payload)
+                        if evt.get("type") == "token":
+                            answer_parts.append(evt.get("content") or "")
+                    except ValueError:
+                        pass
+            yield event
+        await _persist_turn(session.id, req.query, "".join(answer_parts), agent_scope)
+
     return StreamingResponse(
-        OAGService.query_stream(kb_id, req.query, kb["name"], ontology_schema, skills, persona=persona),
+        _stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
