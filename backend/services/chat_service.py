@@ -49,9 +49,21 @@ class ChatService:
         return await db.get(ChatSession, session_id)
 
     @staticmethod
+    async def get_owned(db: AsyncSession, session_id: str, user_id: str) -> ChatSession | None:
+        """取属于指定用户的会话；不存在或不属于该用户一律返回 None（对外统一 404，不暴露存在性）。"""
+        session = await db.get(ChatSession, session_id)
+        if not session or (session.user_id or "") != (user_id or ""):
+            return None
+        return session
+
+    @staticmethod
     async def list_sessions(db: AsyncSession, agent_id: str | None = None,
-                            kb_id: str | None = None, limit: int = 50) -> list[ChatSession]:
+                            kb_id: str | None = None, limit: int = 50,
+                            user_id: str = "") -> list[ChatSession]:
         stmt = select(ChatSession)
+        if user_id:
+            # 会话按属主隔离：只看自己的（存量数据已迁移归属，见 scripts/backfill_chat_sessions_user.py）
+            stmt = stmt.where(ChatSession.user_id == user_id)
         if agent_id is not None:
             if agent_id == DEFAULT_AGENT_ID:
                 # 「系统默认」同时包含旧版本未记录 agent_id（空串）的历史会话（查询兜底）

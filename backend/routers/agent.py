@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, File, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.deps import get_current_user_id
 from database import get_db
 from schemas import (
     AgentCreate,
@@ -659,7 +660,8 @@ def _summarize_background(session_id: str) -> None:
     asyncio.create_task(_run()).add_done_callback(_on_summary_done)
 
 
-async def _persist_turn(session_id: str, query: str, answer: str, agent_scope: str) -> None:
+async def _persist_turn(session_id: str, query: str, answer: str,
+                        agent_scope: str, user_id: str = "") -> None:
     """一轮问答收尾：助手消息落库（同步）+ 滚动摘要/长期记忆（后台）。
 
     SSE 生成器执行时路由的 db 会话已释放，这里自开新会话；全部尽力而为，
@@ -673,13 +675,15 @@ async def _persist_turn(session_id: str, query: str, answer: str, agent_scope: s
     except Exception:
         logger.exception("会话消息落库失败: session=%s", session_id)
     try:
-        MemoryStore.add_background(query, answer, agent_id=agent_scope, session_id=session_id)
+        MemoryStore.add_background(query, answer, agent_id=agent_scope,
+                                   user_id=user_id, session_id=session_id)
     except Exception:
         logger.exception("长期记忆写入失败: session=%s", session_id)
 
 
 @router.post("/agent/query")
-async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)):
+async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db),
+                      user_id: str = Depends(get_current_user_id)):
     # 引用智能体（可选）：传 agent_id 时以其 KB / 技能 / 人设为准；
     # 内置「默认智能体」未绑 KB → 回退页面传的 kb_id；技能以智能体绑定为准（配置页/问答页同一份数据）
     agent = None
@@ -700,25 +704,26 @@ async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)
     kb_id = agent["kb_id"] if agent else req.kb_id
 
     # ── 会话（短期记忆，doc/智能体/智能体会话_功能设计.md）──
-    # 传 session_id 续聊（校验存在，无效 404）；归属智能体变化时自动开新会话。
+    # 传 session_id 续聊（校验存在 + 属主，无效/非本人 404）；归属智能体变化时自动开新会话。
     # 不传则新建会话（标题默认取首问截断）。
     session = None
     if req.session_id:
-        session = await ChatService.get(db, req.session_id)
+        session = await ChatService.get_owned(db, req.session_id, user_id)
         if not session:
             raise HTTPException(404, "会话不存在或已被删除")
         if (session.agent_id or "") != agent_scope:
             session = None  # 切换智能体：自动开新会话，前端以 SSE session 事件为准
     if session is None:
         session = await ChatService.create_session(
-            db, agent_id=agent_scope, kb_id=kb_id or "", title=req.query[:50])
+            db, agent_id=agent_scope, kb_id=kb_id or "",
+            user_id=user_id, title=req.query[:50])
     await ChatService.append_message(db, session.id, "user", req.query)
 
     # 预加载历史（近 N 轮 + 字符预算装填，含滚动摘要）与长期记忆事实
     hist = await ChatService.load_history(db, session.id)
     memories: list[str] = []
     if MemoryStore.available():
-        memories = await MemoryStore.search(req.query, agent_id=agent_scope)
+        memories = await MemoryStore.search(req.query, agent_id=agent_scope, user_id=user_id)
 
     if not kb_id:
         # 未绑 KB 的智能体：不使用知识库，直接 LLM 按人设+技能回答
@@ -767,7 +772,8 @@ async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)
                     except ValueError:
                         pass
             yield event
-        await _persist_turn(session.id, req.query, "".join(answer_parts), agent_scope)
+        await _persist_turn(session.id, req.query, "".join(answer_parts),
+                            agent_scope, user_id)
 
     return StreamingResponse(
         _stream(),

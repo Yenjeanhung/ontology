@@ -100,7 +100,11 @@ class AuthMiddleware:
             return
 
         if not SecuritySettingsService.get_bool("auth_enabled", True):
-            scope.setdefault("auth_user", None)
+            # 免登录模式：注入匿名身份，下游 get_current_user 系依赖照常取到 user_id
+            scope.setdefault("auth_user", {
+                "user_id": "anonymous", "username": "anonymous",
+                "session_id": "", "ip": "", "user_agent": "",
+            })
             await self.app(scope, receive, send)
             return
 

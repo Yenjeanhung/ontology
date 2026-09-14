@@ -6,7 +6,9 @@
 - LLM / Embedder 跟随系统「生效配置」（config_service 载入后的 settings）；
 - disable_graph=True：关闭 graph_store（本地小模型抽三元组质量差且拖慢写入）；
 - 写入走后台任务：每轮 add() 含 2 次 LLM 调用（抽取 + 更新判决），不能阻塞 SSE；
-- user_id 以 agent_id 为隔离维度（每个智能体一套记忆事实）。
+- 记忆按 (user_id, agent_id) 复合隔离：mem0 的 user_id 维度编码为
+  "user:{uid}:agent:{aid}"——不同用户与同一智能体的记忆互不可见；
+  公共知识不进记忆（走 KB/RAG 检索），mem0 只承载个人记忆。
 """
 
 import asyncio
@@ -156,6 +158,15 @@ def _extract_facts(result) -> list[str]:
     return facts
 
 
+def _namespace(user_id: str, agent_id: str) -> str:
+    """mem0 user_id 命名空间：(user_id, agent_id) 双层隔离键。
+
+    mem0 只有 user_id 一个隔离维度，把「终端用户 × 智能体」编码成复合键，
+    保证不同用户与同一智能体的记忆互不可见（公共知识走 KB，不进 mem0）。
+    """
+    return f"user:{(user_id or 'default').strip()}:agent:{(agent_id or 'default').strip()}"
+
+
 class MemoryStore:
     """长期记忆门面：available / search / add_background，全部安全降级。"""
 
@@ -164,8 +175,9 @@ class MemoryStore:
         return _get_memory() is not None
 
     @staticmethod
-    async def search(query: str, agent_id: str = "", limit: int | None = None) -> list[str]:
-        """按当前问题检索相关长期事实（agent_id 为隔离维度）。"""
+    async def search(query: str, agent_id: str = "", user_id: str = "",
+                     limit: int | None = None) -> list[str]:
+        """按当前问题检索相关长期事实（(user_id, agent_id) 复合隔离）。"""
         mem = _get_memory()
         if mem is None or not (query or "").strip():
             return []
@@ -174,7 +186,7 @@ class MemoryStore:
             result = await asyncio.to_thread(
                 mem.search,
                 query=query,
-                filters={"user_id": agent_id or "default"},
+                filters={"user_id": _namespace(user_id, agent_id)},
                 top_k=limit or settings.MEM0_SEARCH_LIMIT,
             )
             return _extract_facts(result)
@@ -183,7 +195,8 @@ class MemoryStore:
             return []
 
     @staticmethod
-    def add_background(query: str, answer: str, agent_id: str = "", session_id: str = "") -> None:
+    def add_background(query: str, answer: str, agent_id: str = "",
+                       user_id: str = "", session_id: str = "") -> None:
         """问答结束后台写入（抽取 + 更新判决约 2 次 LLM 调用，不阻塞主链路）。"""
         mem = _get_memory()
         if mem is None:
@@ -191,11 +204,11 @@ class MemoryStore:
 
         async def _run():
             try:
-                messages = [
+                messages: list[dict[str, str]] = [
                     {"role": "user", "content": query},
                     {"role": "assistant", "content": answer},
                 ]
-                kwargs = {"user_id": agent_id or "default"}
+                kwargs = {"user_id": _namespace(user_id, agent_id)}
                 if session_id:
                     kwargs["metadata"] = {"session_id": session_id}
                 await asyncio.to_thread(mem.add, messages, **kwargs)
