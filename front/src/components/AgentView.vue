@@ -187,6 +187,65 @@ const FACT_PREVIEW_COUNT = 8
 const factsExpanded = ref(false)
 const visibleFacts = computed(() => factsExpanded.value ? factRelations.value : factRelations.value.slice(0, FACT_PREVIEW_COUNT))
 const pathInfo = computed(() => subgraph.value?.retrieval_path || {})
+const pipelineSteps = computed(() => pathInfo.value.steps || [])
+
+// 实体来源标识 → 中文（chip 提示与导出共用）
+const SOURCE_LABEL = { lexical: '词面匹配', mention: '分片反查', 'lexical+mention': '词面+分片反查' }
+function sourceLabel(s) { return SOURCE_LABEL[s] || s || '' }
+
+// ---------- 导出检索流程（Markdown 下载） ----------
+function exportPipeline() {
+  const lines = []
+  const now = new Date()
+  const p2 = n => String(n).padStart(2, '0')
+  const ts = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`
+  lines.push('# 智能体问答 · 检索流程导出', '')
+  lines.push(`- 时间：${ts}`)
+  if (currentQ.value) lines.push(`- 问题：${currentQ.value}`)
+  lines.push(`- 智能体：${selectedAgent.value?.name || '系统默认'}`)
+  if (selectedKb.value) lines.push(`- 知识库：${selectedKb.value.name}`)
+  if (activeSkills.value.length) lines.push(`- 已加载技能：${activeSkills.value.map(s => s.name).join('、')}`)
+  lines.push('')
+  if (pipelineSteps.value.length) {
+    lines.push('## 检索流程', '')
+    pipelineSteps.value.forEach((s, i) => {
+      lines.push(`${i + 1}. **${s.name}**：命中 ${s.count} ${s.unit || ''}`)
+      if (s.detail) lines.push(`   - ${s.detail}`)
+    })
+    lines.push('')
+  }
+  if (entities.value.length) {
+    lines.push('## 识别实体', '')
+    entities.value.forEach(e => {
+      const src = sourceLabel(e.source)
+      lines.push(`- ${e.type ? `[${e.type}] ` : ''}${e.name}${src ? `（来源：${src}）` : ''}`)
+    })
+    lines.push('')
+  }
+  if (factRelations.value.length) {
+    lines.push(`## 图谱事实（${factRelations.value.length} 条）`, '')
+    factRelations.value.forEach(r => lines.push(`- ${r.source_name} ─ ${r.relation_type} → ${r.target_name}`))
+    lines.push('')
+  }
+  if (chunks.value.length) {
+    lines.push(`## 引用来源（${chunks.value.length} 条）`, '')
+    chunks.value.forEach((c, i) => {
+      const score = c.score != null ? `，相似度 ${Math.round(c.score * 100)}%` : ''
+      lines.push(`${i + 1}. ${c.file_name}（${retrievalMeta(c).label}${score}）`)
+    })
+    lines.push('')
+  }
+  if (answerRaw.value) {
+    lines.push('## 回答', '', answerRaw.value, '')
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `agent-pipeline-${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}-${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}.md`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 function renderMd(text) {
   if (!text) return ''
@@ -314,22 +373,6 @@ function onSourceDblClick(c) {
 function gotoEntity(id) {
   if (id) router.push(`/entities/${id}`)
 }
-
-// ---------- 动态高度 ----------
-const answerBoxRef = ref(null)
-const answerMaxH = ref('auto')
-function updateAnswerHeight() {
-  if (!answerBoxRef.value) return
-  const textEl = answerBoxRef.value.querySelector('.answer-text')
-  const rect = answerBoxRef.value.getBoundingClientRect()
-  // 卡片内除回答文本外的固定开销（标题、内边距）
-  const chrome = answerBoxRef.value.offsetHeight - (textEl?.offsetHeight || 0)
-  // 内容自然高度与视口剩余空间取小：内容少时贴内容，内容多时不出屏
-  const contentH = textEl?.scrollHeight || 0
-  const spaceBelow = window.innerHeight - rect.top - 24 - chrome
-  answerMaxH.value = Math.max(120, Math.min(contentH, spaceBelow)) + 'px'
-}
-watch([answerExThink, querying], () => nextTick(updateAnswerHeight))
 
 function pct(c) { return c.score == null ? null : Math.round(c.score * 100) }
 function pctBg(idx, score) {
@@ -536,8 +579,24 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
             <span class="rp rp-both" v-if="pathInfo.both">交集 {{ pathInfo.both }}</span>
             <span class="rp rp-deg" v-if="isDegraded">向量模式（未识别到图谱实体）</span>
           </span>
+          <button type="button" class="export-btn" title="导出检索流程、识别实体、引用来源与回答全文为 Markdown" @click.stop="exportPipeline">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            导出流程
+          </button>
         </div>
         <div class="reason-body" v-show="reasonOpen">
+          <!-- 检索流程 -->
+          <div class="reason-block" v-if="pipelineSteps.length">
+            <div class="reason-label">检索流程</div>
+            <ol class="pipeline-list">
+              <li v-for="(st, i) in pipelineSteps" :key="st.key" class="pipeline-item">
+                <span class="pl-idx">{{ i + 1 }}</span>
+                <span class="pl-name">{{ st.name }}</span>
+                <span class="pl-count">{{ st.count }} {{ st.unit }}</span>
+                <span class="pl-detail">{{ st.detail }}</span>
+              </li>
+            </ol>
+          </div>
           <div class="reason-legend">
             引用标记：<span class="lg-ref">[来源N]</span> = 知识库文档原文片段 ·
             <span class="lg-fact">[事实]</span> = 知识图谱结构化事实（实体属性 / 关系）
@@ -553,7 +612,7 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
           <div class="reason-block" v-if="entities.length">
             <div class="reason-label">识别实体</div>
             <div class="entity-chips">
-              <button v-for="e in entities" :key="e.id" class="entity-chip" :title="`${e.type || ''} · ${e.source || ''}`" @click="gotoEntity(e.id)">
+              <button v-for="e in entities" :key="e.id" class="entity-chip" :title="`${e.type || ''}${e.type && e.source ? ' · ' : ''}${sourceLabel(e.source)}`" @click="gotoEntity(e.id)">
                 <span class="entity-type" v-if="e.type">{{ e.type }}</span>
                 <span class="entity-name">{{ e.name }}</span>
               </button>
@@ -601,12 +660,12 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
       <div class="content-row">
         <!-- Answer -->
         <div class="answer-col">
-          <div class="answer-card" ref="answerBoxRef" :class="{ streaming: querying }">
+          <div class="answer-card" :class="{ streaming: querying }">
             <h4>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/></svg>
               回答
             </h4>
-            <div class="answer-text" v-if="answerExThink" :style="{ maxHeight: answerMaxH }">
+            <div class="answer-text" v-if="answerExThink">
               <div class="markdown-body" v-html="processedAnswerHtml" @click="onAnswerClick" @mouseover="onAnswerHover" @mouseleave="hoveredChunk = null"></div>
             </div>
             <div class="answer-text empty-hint" v-else-if="querying"><span class="spinner"></span> 思考中...</div>
@@ -732,6 +791,14 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 .reason-path { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
 .rp { font-size: 11px; font-weight: 600; color: var(--c-secondary); background: var(--c-muted); padding: 2px 8px; border-radius: 999px; }
 .rp-both { color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 16%, transparent); }
+.export-btn { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 10px; font-size: 11px; font-weight: 600; font-family: var(--font); color: var(--c-secondary); background: transparent; border: 1px solid var(--c-border); cursor: pointer; transition: all 150ms; flex-shrink: 0; }
+.export-btn:hover { color: var(--c-accent); border-color: var(--c-accent); }
+.pipeline-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 7px; }
+.pipeline-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.pl-idx { width: 18px; height: 18px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; flex-shrink: 0; background: var(--c-muted); color: var(--c-accent); border: 1px solid color-mix(in srgb, var(--c-accent) 20%, transparent); align-self: flex-start; }
+.pl-name { font-size: 12px; font-weight: 700; color: var(--c-fg); }
+.pl-count { font-size: 11px; font-weight: 600; color: var(--c-accent); background: var(--c-muted); padding: 1px 8px; border-radius: 999px; }
+.pl-detail { flex-basis: 100%; font-size: 11.5px; line-height: 1.6; color: var(--c-secondary); padding-left: 26px; }
 .rp-deg { color: #f59e0b; background: rgba(245, 158, 11, 0.12); }
 .reason-body { padding: 4px 16px 14px; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--c-border); }
 .reason-block { display: flex; flex-direction: column; gap: 6px; }

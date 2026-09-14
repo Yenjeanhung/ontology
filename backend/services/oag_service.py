@@ -464,6 +464,37 @@ class OAGService:
         def _has_tag(tag: str, r: str) -> bool:
             return tag in r.split("+")
 
+        # ===== 5.5 检索流程明细（随 retrieval_path 下发，前端展示 + 导出）=====
+        lexical_cnt = sum(1 for e in seed_entities if e.get("source") in ("lexical", "lexical+mention"))
+        mention_cnt = sum(1 for e in seed_entities if e.get("source") in ("mention", "lexical+mention"))
+        pipeline_steps = [
+            {
+                "key": "vector", "name": "向量检索", "count": len(vector_chunks), "unit": "条分片",
+                "detail": f"对问题做向量相似度召回（相似度阈值 {settings.SIMILARITY_THRESHOLD}）"
+                          + ("；首次零召回，已降阈值 + 关键词改写重试" if empty_recall_retry else ""),
+            },
+            {
+                "key": "bm25", "name": "全文检索（BM25）", "count": len(bm25_rank), "unit": "条分片",
+                "detail": "关键词全文索引检索，补充向量召回漏掉的精确词面命中"
+                          if settings.OAG_BM25_ENABLED else "BM25 全文检索未启用，已跳过",
+            },
+            {
+                "key": "link", "name": "实体识别（实体链接）", "count": len(seed_entities), "unit": "个实体",
+                "detail": f"通道A 词面匹配（知识库实体名出现在问题文本中）命中 {lexical_cnt} 个 "
+                          f"∪ 通道B 已召回分片反查 MENTIONS 关联 {mention_cnt} 个，去重合并为种子实体",
+            },
+            {
+                "key": "graph", "name": "图谱检索", "count": len(graph_chunks), "unit": "条分片",
+                "detail": f"以种子实体反查 MENTIONS 分片，并展开 {settings.OAG_NEIGHBOR_HOPS} 跳子图"
+                          f"（实体 {len(neighborhood.get('entities') or [])} 个 / 关系 {len(neighborhood.get('relations') or [])} 条）"
+                          "作为图谱事实注入上下文",
+            },
+            {
+                "key": "fuse", "name": "RRF 融合重排", "count": len(final_chunks), "unit": "条引用",
+                "detail": "三路召回按倒数排名融合去重，重排后作为引用上下文交由 LLM 生成回答",
+            },
+        ]
+
         retrieval_path = {
             "vector": sum(1 for c in final_chunks if _has_tag("vector", c["retrieval"])),
             "bm25": sum(1 for c in final_chunks if _has_tag("bm25", c["retrieval"])),
@@ -472,6 +503,7 @@ class OAGService:
             "entities": len(seed_entities),
             "degraded": len(seed_entity_ids) == 0,
             "empty_recall_retry": empty_recall_retry,
+            "steps": pipeline_steps,
         }
 
         facts_text = _format_subgraph_facts(neighborhood)

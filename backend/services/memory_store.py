@@ -99,6 +99,10 @@ def _build_config() -> dict:
                 "collection_name": settings.MEM0_COLLECTION,
                 "embedding_model_dims": _active_embedding_dims(),
                 "url": f"http://{settings.MILVUS_HOST}:{settings.MILVUS_PORT}",
+                # mem0ai 2.0.x 的 MilvusDBConfig.token 标注为 str 但默认 None，
+                # 其内部遥测配置重建时会把 None 显式传回 pydantic 触发校验失败；
+                # 本地无认证场景显式传空串（pymilvus 视为无 token）
+                "token": "",
             },
         }
     else:
@@ -166,11 +170,12 @@ class MemoryStore:
         if mem is None or not (query or "").strip():
             return []
         try:
+            # mem0ai 2.0.x：search 不再接受顶层 user_id/limit，改为 filters + top_k
             result = await asyncio.to_thread(
                 mem.search,
                 query=query,
-                user_id=agent_id or "default",
-                limit=limit or settings.MEM0_SEARCH_LIMIT,
+                filters={"user_id": agent_id or "default"},
+                top_k=limit or settings.MEM0_SEARCH_LIMIT,
             )
             return _extract_facts(result)
         except Exception:
