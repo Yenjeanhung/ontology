@@ -111,6 +111,18 @@ function resetTurnPanel() {
 
 const queryInputRef = ref(null)
 
+// ---------- 会话流滚动：固定高度内部滚动，输入区常驻底部 ----------
+const chatScrollRef = ref(null)
+function scrollChatToBottom(force = false) {
+  nextTick(() => {
+    const el = chatScrollRef.value
+    if (!el) return
+    // 非强制时仅在用户处于底部附近才跟随（避免打断向上翻阅）
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 140
+    if (force || nearBottom) el.scrollTop = el.scrollHeight
+  })
+}
+
 function startNewSession() {
   const hadSession = !!sessionId.value
   sessionId.value = ''
@@ -144,6 +156,8 @@ async function selectSession(s) {
         historyTurns.value.push({ q: msgs[i].content, answer: msgs[i + 1].content })
       }
     }
+    // 历史回放定位到最新一轮
+    scrollChatToBottom(true)
   } catch {}
 }
 
@@ -400,9 +414,7 @@ async function runQuery() {
   currentQ.value = q
   resetTurnPanel()
   querying.value = true
-  nextTick(() => {
-    document.getElementById('chat-current-q')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  })
+  scrollChatToBottom(true)
   try {
     await queryAgentStream(queryKbId.value, q, {
       skillIds: selectedSkillIds.value,
@@ -419,11 +431,12 @@ async function runQuery() {
       onEntities(data) { entities.value = data || [] },
       onSubgraph(data) { subgraph.value = data },
       onChunks(data) { chunks.value = data || [] },
-      onReasoning(piece) { liveThink.value += piece },
+      onReasoning(piece) { liveThink.value += piece; scrollChatToBottom() },
       onToken(token) {
         // 正文首个 token 到达 → 思考结束，自动折叠实时思考
         if (!answerRaw.value && liveThink.value && !liveThinkDone.value) liveThinkDone.value = true
         answerRaw.value += token
+        scrollChatToBottom()
       },
     })
   } catch (err) {
@@ -459,23 +472,16 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 
 <template>
   <div class="agent-section">
-    <div class="agent-head">
-      <h3>智能体 · 本体增强问答</h3>
-      <p>结合知识图谱与本体的结构化事实进行检索与生成，回答更准、过程可追溯。</p>
-    </div>
-
-    <!-- 智能体：不选 = 系统默认行为；有自定义智能体时可选切换 -->
-    <div class="agent-pick" v-if="enabledAgents.length">
-      <label>智能体</label>
-      <select v-model="selectedAgentId" @change="onAgentChange">
-        <option :value="defaultAgentId">系统默认</option>
-        <option v-for="a in enabledAgents" :key="a.id" :value="a.id">{{ a.name }}{{ a.kb_name ? ' · ' + a.kb_name : '' }}</option>
-      </select>
-    </div>
-
-    <!-- 技能：与智能体配置页共用同一份数据，勾选即时写回；两处状态始终一致 -->
-    <div class="agent-pick skill-pick">
-      <label>技能</label>
+    <!-- 紧凑配置区：智能体 + 技能同一行（页面名顶栏已有，不重复大标题） -->
+    <div class="cfg-row">
+      <template v-if="enabledAgents.length">
+        <span class="cfg-label">智能体</span>
+        <select class="cfg-select" v-model="selectedAgentId" @change="onAgentChange">
+          <option :value="defaultAgentId">系统默认</option>
+          <option v-for="a in enabledAgents" :key="a.id" :value="a.id">{{ a.name }}{{ a.kb_name ? ' · ' + a.kb_name : '' }}</option>
+        </select>
+      </template>
+      <span class="cfg-label">技能</span>
       <div class="skill-chips-editor">
         <button v-for="s in enabledSkills" :key="s.id" type="button"
           class="skill-chip" :class="{ active: selectedSkillIds.includes(s.id) }"
@@ -487,28 +493,20 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
         </button>
         <span v-if="!enabledSkills.length" class="skill-empty">暂无启用技能，可在「智能体技能」页启用</span>
       </div>
-      <span class="agent-pick-hint">
-        与「{{ agentPresetActive ? selectedAgent.name : '系统默认' }}」的技能配置实时同步，此处与智能体配置页修改的是同一份数据
+    </div>
+    <div class="cfg-sub">
+      <span class="agent-pick-hint">技能与「{{ agentPresetActive ? selectedAgent.name : '系统默认' }}」配置实时同步（同一份数据）</span>
+      <span v-if="agentPresetActive" class="cfg-note">
+        已使用「{{ selectedAgent.name }}」配置：{{ selectedAgent.kb_name ? `知识库 ${selectedAgent.kb_name}` : '未绑定知识库' }} · 人设由智能体提供 ·
+        <router-link to="/agent/configs">去修改</router-link>
       </span>
     </div>
 
-    <!-- 选中自定义智能体：知识库/人设由智能体配置决定；技能已在上方列出，可就地修改 -->
-    <div class="agent-config-note" v-if="agentPresetActive">
-      <span class="note-main">
-        已使用「{{ selectedAgent.name }}」的配置：
-        {{ selectedAgent.kb_name ? `知识库 ${selectedAgent.kb_name}` : '未绑定知识库' }}
-        · 人设由智能体提供
-      </span>
-      <router-link to="/agent/configs">去智能体管理修改</router-link>
-    </div>
-
-    <div class="kb-select" v-if="!agentPresetActive">
-      <label>选择知识库</label>
+    <!-- 知识库：仅在未选自定义智能体时需要选择 -->
+    <div class="cfg-row" v-if="!agentPresetActive">
+      <span class="cfg-label">知识库</span>
       <div class="kb-picker" ref="kbSelectRef">
         <button type="button" class="field-shell select-shell select-trigger" :class="{ open: kbDropdownOpen }" @click="toggleKbDropdown">
-          <span class="field-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 7.25A2.25 2.25 0 0 1 6 5h4.2c.6 0 1.16.24 1.58.66l1.06 1.09c.42.42.98.66 1.58.66H18A2.25 2.25 0 0 1 20.25 9.66v7.09A2.25 2.25 0 0 1 18 19H6a2.25 2.25 0 0 1-2.25-2.25V7.25Z"/><path d="M3.75 9.25h16.5"/></svg>
-          </span>
           <span class="select-value" :class="{ placeholder: !selectedKb }">{{ selectedKbLabel }}</span>
           <span class="field-caret" aria-hidden="true">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
@@ -524,41 +522,10 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
       </div>
     </div>
 
-    <!-- 会话（短期记忆）：新建 / 切换 / 重命名 / 删除 -->
-    <div class="session-bar">
-      <button type="button" class="session-new" @click="startNewSession" :disabled="querying">＋ 新会话</button>
-      <div class="session-picker" ref="sessionSelectRef" v-if="sessions.length">
-        <button type="button" class="session-trigger" @click="sessionsOpen = !sessionsOpen">
-          <span class="session-trigger-label">{{ sessionId ? currentSessionLabel : '历史会话' }}</span>
-          <svg class="session-caret" :class="{ open: sessionsOpen }" width="10" height="10" viewBox="0 0 10 10"><path d="M2 4l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-        </button>
-        <div v-if="sessionsOpen" class="session-dropdown">
-          <div v-for="s in sessions" :key="s.id" class="session-item" :class="{ active: s.id === sessionId }">
-            <button type="button" class="session-item-title" @click="selectSession(s)">{{ s.title || '未命名会话' }}</button>
-            <span class="session-item-actions">
-              <button type="button" class="session-act" @click.stop="renameSession(s)" title="重命名">✎</button>
-              <button type="button" class="session-act danger" @click.stop="removeSession(s)" title="删除">✕</button>
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="query-row">
-      <div class="field-shell search-shell" :class="{ disabled: (!queryKbId && !selectedAgentId) || querying }">
-        <span class="field-icon" aria-hidden="true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></svg>
-        </span>
-        <input ref="queryInputRef" type="text" v-model="queryText" placeholder="输入问题，智能体将结合图谱与本体回答..." @keydown.enter="runQuery" :disabled="(!queryKbId && !selectedAgentId) || querying">
-        <button class="query-submit" @click="runQuery" :disabled="(!queryKbId && !selectedAgentId) || !queryText.trim() || querying">
-          <span class="spinner" v-if="querying"></span>
-          <template v-else>提问</template>
-        </button>
-      </div>
-    </div>
-
-    <!-- 会话历史（短期记忆回放：已完成轮次的简洁气泡；最近一轮见下方富面板） -->
-    <div class="chat-turns" v-if="historyTurns.length || currentQ">
+    <!-- 会话流：占满剩余高度、内部滚动（右侧滚动条）；输入区固定在下方 -->
+    <div class="chat-scroll" ref="chatScrollRef">
+      <!-- 会话历史（短期记忆回放：已完成轮次的简洁气泡；最近一轮见下方富面板） -->
+      <div class="chat-turns" v-if="historyTurns.length || currentQ">
       <template v-for="(t, i) in historyTurns" :key="`h${i}`">
         <div class="chat-q">{{ t.q }}</div>
         <div class="chat-a markdown-body" v-html="renderMd(t.answer)"></div>
@@ -700,6 +667,40 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
         </div>
       </div>
     </div>
+    </div><!-- /chat-scroll -->
+
+    <!-- 会话（短期记忆）：新建 / 切换 / 重命名 / 删除，与输入框一起固定在底部 -->
+    <div class="session-bar">
+      <button type="button" class="session-new" @click="startNewSession" :disabled="querying">＋ 新会话</button>
+      <div class="session-picker" ref="sessionSelectRef" v-if="sessions.length">
+        <button type="button" class="session-trigger" @click="sessionsOpen = !sessionsOpen">
+          <span class="session-trigger-label">{{ sessionId ? currentSessionLabel : '历史会话' }}</span>
+          <svg class="session-caret" :class="{ open: sessionsOpen }" width="10" height="10" viewBox="0 0 10 10"><path d="M2 4l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+        <div v-if="sessionsOpen" class="session-dropdown">
+          <div v-for="s in sessions" :key="s.id" class="session-item" :class="{ active: s.id === sessionId }">
+            <button type="button" class="session-item-title" @click="selectSession(s)">{{ s.title || '未命名会话' }}</button>
+            <span class="session-item-actions">
+              <button type="button" class="session-act" @click.stop="renameSession(s)" title="重命名">✎</button>
+              <button type="button" class="session-act danger" @click.stop="removeSession(s)" title="删除">✕</button>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="query-row">
+      <div class="field-shell search-shell" :class="{ disabled: (!queryKbId && !selectedAgentId) || querying }">
+        <span class="field-icon" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></svg>
+        </span>
+        <input ref="queryInputRef" type="text" v-model="queryText" placeholder="输入问题，智能体将结合图谱与本体回答..." @keydown.enter="runQuery" :disabled="(!queryKbId && !selectedAgentId) || querying">
+        <button class="query-submit" @click="runQuery" :disabled="(!queryKbId && !selectedAgentId) || !queryText.trim() || querying">
+          <span class="spinner" v-if="querying"></span>
+          <template v-else>提问</template>
+        </button>
+      </div>
+    </div>
 
     <PreviewModal
       :visible="previewVisible"
@@ -716,67 +717,90 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 </template>
 
 <style scoped>
-.agent-section { display: flex; flex-direction: column; gap: 16px; }
-.agent-head h3 { font-size: 18px; font-weight: 700; margin: 0 0 4px; color: var(--c-fg); }
-.agent-head p { font-size: 13px; color: var(--c-secondary); margin: 0; }
+.agent-section {
+  display: flex; flex-direction: column; gap: 10px;
+  /* 视口高度 - 顶栏 52px - 页面上下留白 76px：页面不滚，聊天区内部滚 */
+  height: calc(100dvh - 128px); min-height: 520px;
+}
+.agent-section > * { flex-shrink: 0; }
 
-.kb-select { display: flex; flex-direction: column; gap: 6px; }
-.kb-select label { font-size: 13px; font-weight: 600; color: var(--c-secondary); }
+/* 会话流滚动区：右侧滚动条，消息多时内部滚动，输入区常驻底部 */
+.chat-scroll {
+  flex: 1 1 0; min-height: 220px;
+  display: flex; flex-direction: column; gap: 12px;
+  overflow-y: auto; overscroll-behavior: contain;
+  padding-right: 8px;
+  scrollbar-width: thin; scrollbar-color: var(--c-border) transparent;
+}
+.chat-scroll::-webkit-scrollbar { width: 8px; }
+.chat-scroll::-webkit-scrollbar-track { background: transparent; }
+.chat-scroll::-webkit-scrollbar-thumb { background: var(--c-border); border-radius: 4px; }
+.chat-scroll::-webkit-scrollbar-thumb:hover { background: var(--c-secondary); }
 
-.agent-pick { display: flex; flex-direction: column; gap: 6px; }
-.agent-pick label { font-size: 13px; font-weight: 600; color: var(--c-secondary); }
-.agent-pick select {
-  width: 100%; padding: 8px 12px; border: 1px solid var(--c-border); border-radius: var(--radius-sm, 6px);
-  font-size: 13px; font-family: var(--font); background: var(--c-panel); color: var(--c-fg); outline: none;
+@media (max-width: 640px) {
+  .agent-section { height: calc(100dvh - 112px); }
+  .chat-scroll { padding-right: 4px; }
+}
+/* ── 紧凑配置区：智能体 + 技能一行，知识库一行 ── */
+.cfg-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cfg-label { flex-shrink: 0; font-size: 12px; font-weight: 600; color: var(--c-secondary); }
+.cfg-select {
+  flex-shrink: 0; max-width: 240px; padding: 4px 8px; border: 1px solid var(--c-border); border-radius: 8px;
+  font-size: 12px; font-family: var(--font); background: var(--c-panel); color: var(--c-fg); outline: none;
   transition: border-color 150ms;
 }
-.agent-pick select:focus { border-color: var(--c-accent); }
-.agent-pick-hint { font-size: 11px; color: var(--c-accent); }
+.cfg-select:focus { border-color: var(--c-accent); }
+.cfg-sub { display: flex; align-items: center; gap: 12px; margin-top: -6px; }
+.agent-pick-hint { font-size: 10px; color: var(--c-accent); }
+.cfg-note { font-size: 10px; color: var(--c-secondary); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfg-note a { color: #a78bfa; text-decoration: none; font-weight: 600; }
+.cfg-note a:hover { text-decoration: underline; }
 
-/* ── 技能编辑器（与智能体配置页 skill-chip 同款式，两处视觉一致） ── */
-.skill-chips-editor { display: flex; flex-wrap: wrap; gap: 6px; }
+/* ── 技能编辑器（与智能体配置页 skill-chip 同款式，紧凑版） ── */
+.skill-chips-editor { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
 .skill-chip {
-  display: inline-flex; align-items: center; gap: 4px; padding: 4px 12px;
-  border-radius: 20px; font-size: 12px; font-weight: 500; cursor: pointer; user-select: none;
+  display: inline-flex; align-items: center; gap: 3px; padding: 2px 9px;
+  border-radius: 20px; font-size: 11px; font-weight: 500; cursor: pointer; user-select: none;
   font-family: var(--font);
   border: 1px solid var(--c-border); background: var(--c-panel); color: var(--c-secondary);
   transition: all 150ms;
 }
 .skill-chip:hover { border-color: var(--c-accent); color: var(--c-fg); }
 .skill-chip.active { background: var(--c-muted); border-color: var(--c-accent); color: var(--c-accent); }
-.chip-ic { font-size: 11px; line-height: 1; }
-.skill-empty { font-size: 12px; color: var(--c-secondary); }
+.chip-ic { font-size: 10px; line-height: 1; }
+.skill-empty { font-size: 11px; color: var(--c-secondary); }
 .field-shell {
-  display: flex; align-items: center; gap: 10px;
-  min-height: 52px; border: 1px solid var(--c-border); border-radius: 16px;
+  display: flex; align-items: center; gap: 8px;
+  min-height: 38px; border: 1px solid var(--c-border); border-radius: 10px;
   background: var(--c-panel);
   transition: border-color 180ms, box-shadow 180ms;
 }
 .field-shell:hover { border-color: var(--c-muted-hover); }
 .field-shell:focus-within { border-color: var(--c-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-accent) 14%, transparent); }
 .field-shell.disabled { opacity: 0.72; }
-.field-icon { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; margin-left: 10px; flex-shrink: 0; border-radius: 12px; color: var(--c-secondary); background: var(--c-muted); border: 1px solid var(--c-border); }
+.field-icon { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin-left: 8px; flex-shrink: 0; border-radius: 8px; color: var(--c-secondary); background: var(--c-muted); border: 1px solid var(--c-border); }
 
+.kb-row .kb-picker { flex: 1; min-width: 0; }
 .kb-picker { position: relative; }
-.select-shell { position: relative; padding-right: 12px; }
-.select-trigger { width: 100%; justify-content: flex-start; text-align: left; padding: 0 12px 0 0; cursor: pointer; }
+.select-shell { position: relative; padding-right: 10px; }
+.select-trigger { width: 100%; justify-content: flex-start; text-align: left; padding: 0 12px; cursor: pointer; }
 .select-trigger.open .field-caret { transform: translateY(-50%) rotate(180deg); }
-.select-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; color: var(--c-fg); }
+.select-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--c-fg); }
 .select-value.placeholder { color: var(--c-secondary); opacity: 0.75; }
-.field-caret { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); color: var(--c-secondary); pointer-events: none; transition: transform 180ms ease; }
-.kb-dropdown { position: absolute; top: calc(100% + 8px); left: 0; right: 0; z-index: 20; padding: 8px; border: 1px solid var(--c-border); border-radius: 18px; background: var(--c-panel-elevated); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45); backdrop-filter: blur(10px); }
-.kb-option { width: 100%; border: 0; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 12px; text-align: left; color: var(--c-fg); transition: background 150ms, color 150ms; }
+.field-caret { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--c-secondary); pointer-events: none; transition: transform 180ms ease; }
+.kb-dropdown { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 20; padding: 6px; border: 1px solid var(--c-border); border-radius: 12px; background: var(--c-panel-elevated); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45); backdrop-filter: blur(10px); }
+.kb-option { width: 100%; border: 0; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: 8px; text-align: left; color: var(--c-fg); transition: background 150ms, color 150ms; }
 .kb-option:hover { background: var(--c-muted); }
 .kb-option.active { background: var(--c-muted-hover); color: var(--c-accent); font-weight: 600; }
 .kb-option-placeholder { color: var(--c-secondary); font-weight: 500; }
-.kb-option-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kb-option-meta { flex-shrink: 0; font-size: 12px; color: var(--c-secondary); }
+.kb-option-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.kb-option-meta { flex-shrink: 0; font-size: 11px; color: var(--c-secondary); }
 
 .query-row { display: flex; }
 .search-shell { width: 100%; padding-right: 8px; }
-.query-row input { flex: 1; min-width: 0; border: 0; outline: none; box-shadow: none; background: transparent; padding: 0; font-size: 15px; }
+.query-row input { flex: 1; min-width: 0; border: 0; outline: none; box-shadow: none; background: transparent; padding: 0; font-size: 13.5px; }
 .query-row input::placeholder { color: var(--c-secondary); opacity: 0.75; }
-.query-submit { border: 0; outline: none; cursor: pointer; flex-shrink: 0; min-width: 92px; height: 40px; padding: 0 18px; border-radius: 12px; background: var(--c-accent); color: var(--c-bg); font-size: 14px; font-weight: 700; font-family: var(--font); box-shadow: 0 8px 20px color-mix(in srgb, var(--c-accent) 22%, transparent); transition: transform 150ms, box-shadow 150ms, opacity 150ms, filter 150ms; }
+.query-submit { border: 0; outline: none; cursor: pointer; flex-shrink: 0; min-width: 80px; height: 34px; padding: 0 16px; border-radius: 10px; background: var(--c-accent); color: var(--c-bg); font-size: 13px; font-weight: 700; font-family: var(--font); box-shadow: 0 8px 20px color-mix(in srgb, var(--c-accent) 22%, transparent); transition: transform 150ms, box-shadow 150ms, opacity 150ms, filter 150ms; }
 .query-submit:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.06); box-shadow: 0 12px 26px color-mix(in srgb, var(--c-accent) 28%, transparent); }
 .query-submit:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
 
@@ -920,10 +944,7 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 .markdown-body img { max-width: 100%; border-radius: 4px; }
 
 /* ── 智能体配置摘要（选中智能体后替代页面 KB/技能选择）── */
-.agent-config-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border: 1px dashed var(--c-border); border-radius: 14px; background: var(--c-muted); font-size: 13px; color: var(--c-secondary); }
-.agent-config-note .note-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-config-note a { flex-shrink: 0; color: #a78bfa; text-decoration: none; font-weight: 600; }
-.agent-config-note a:hover { text-decoration: underline; }
+
 
 /* ── 会话（短期记忆）── */
 .session-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -935,7 +956,7 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 .session-trigger-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-caret { transition: transform 150ms; color: var(--c-secondary); flex-shrink: 0; }
 .session-caret.open { transform: rotate(180deg); }
-.session-dropdown { position: absolute; top: calc(100% + 8px); left: 0; z-index: 20; min-width: 320px; max-width: 460px; max-height: 320px; overflow-y: auto; padding: 8px; border: 1px solid var(--c-border); border-radius: 14px; background: var(--c-panel-elevated); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45); }
+.session-dropdown { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 20; min-width: 320px; max-width: 460px; max-height: 320px; overflow-y: auto; padding: 8px; border: 1px solid var(--c-border); border-radius: 14px; background: var(--c-panel-elevated); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45); }
 .session-item { display: flex; align-items: center; gap: 4px; border-radius: 10px; }
 .session-item:hover { background: var(--c-muted); }
 .session-item.active { background: var(--c-muted-hover); }
