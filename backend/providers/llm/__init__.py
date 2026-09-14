@@ -39,6 +39,7 @@ except Exception as _patch_err:  # pragma: no cover
     _logger.debug("failed to patch langchain_openai reasoning_content: %s", _patch_err)
 
 _llm = None
+_summary_llm = None
 
 # ═══════════════ LLM 专用 HTTP 客户端（绕过系统代理 + 连接复用）═══════════════
 # GLM / DeepSeek 等均为国内可直连服务。若后端进程环境带 HTTP_PROXY，httpx 默认
@@ -131,10 +132,41 @@ def create_llm():
     return _llm
 
 
+def create_summary_llm():
+    """摘要压缩专用 LLM 单例。
+
+    压缩是非流式调用（等完整结果才返回），和主对话的要求不同：
+    - 可配独立轻量模型（CHAT_SUMMARY_MODEL），未配则回退主对话模型；
+    - 固定低温度 + 输出上限按摘要字符数给，避免无谓的长生成；
+    - 显式关闭思考模式——GLM 等模型开思考时，非流式等待会被拖到分钟级。
+    """
+    global _summary_llm
+    if _summary_llm is not None:
+        return _summary_llm
+
+    if not settings.OPENAI_API_KEY or not settings.LLM_MODEL:
+        return None
+
+    _summary_llm = build_llm(
+        provider=settings.LLM_PROVIDER,
+        api_key=settings.OPENAI_API_KEY,
+        base_url=settings.OPENAI_BASE_URL,
+        model=settings.CHAT_SUMMARY_MODEL or settings.LLM_MODEL,
+        max_tokens=max(512, settings.CHAT_SUMMARY_MAX_CHARS),
+        temperature=0.3,
+    )
+    if (settings.LLM_PROVIDER or "openai").lower() == "openai":
+        # bind 的 kwargs 会透传到 client.create(extra_body=...)，智谱等
+        # OpenAI 兼容端点据请求体里的 thinking 字段关闭思考
+        _summary_llm = _summary_llm.bind(extra_body={"thinking": {"type": "disabled"}})
+    return _summary_llm
+
+
 def reset_llm():
     """重置 LLM 单例；下次 create_llm 会按最新 settings 重建。"""
-    global _llm
+    global _llm, _summary_llm
     _llm = None
+    _summary_llm = None
 
 
 # ══════════════════════ 流式 chunk 兼容提取 ══════════════════════

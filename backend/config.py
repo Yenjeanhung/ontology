@@ -148,6 +148,7 @@ class Settings(BaseSettings):
     CHAT_SUMMARY_ENABLED: bool = True      # 超长滚动摘要总开关
     CHAT_SUMMARY_TRIGGER_TURNS: int = 20   # 会话累计用户消息数超过该值时触发滚动摘要
     CHAT_SUMMARY_MAX_CHARS: int = 1000     # 滚动摘要字符上限
+    CHAT_SUMMARY_MODEL: str = ""           # 摘要压缩专用模型；空 = 复用主对话模型（LLM_MODEL）
 
     # ───────────────────────── mem0 长期记忆（默认关闭；需 pip install mem0ai）─────────
     MEM0_ENABLED: bool = False             # 总开关：false 时不启用长期记忆（自动降级，不影响主链路）

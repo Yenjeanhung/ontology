@@ -782,13 +782,14 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 
 .kb-row .kb-picker { flex: 1; min-width: 0; }
 .kb-picker { position: relative; }
+.cfg-row .kb-picker { flex: 1 1 auto; min-width: 240px; max-width: 360px; }
 .select-shell { position: relative; padding-right: 10px; }
 .select-trigger { width: 100%; justify-content: flex-start; text-align: left; padding: 0 12px; cursor: pointer; }
 .select-trigger.open .field-caret { transform: translateY(-50%) rotate(180deg); }
 .select-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--c-fg); }
 .select-value.placeholder { color: var(--c-secondary); opacity: 0.75; }
 .field-caret { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--c-secondary); pointer-events: none; transition: transform 180ms ease; }
-.kb-dropdown { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 20; padding: 6px; border: 1px solid var(--c-border); border-radius: 12px; background: var(--c-panel-elevated); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45); backdrop-filter: blur(10px); }
+.kb-dropdown { position: absolute; top: calc(100% + 6px); left: 0; width: max-content; min-width: 100%; max-width: min(360px, calc(100vw - 48px)); z-index: 20; padding: 6px; border: 1px solid var(--c-border); border-radius: 12px; background: var(--c-panel-elevated); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45); backdrop-filter: blur(10px); }
 .kb-option { width: 100%; border: 0; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: 8px; text-align: left; color: var(--c-fg); transition: background 150ms, color 150ms; }
 .kb-option:hover { background: var(--c-muted); }
 .kb-option.active { background: var(--c-muted-hover); color: var(--c-accent); font-weight: 600; }

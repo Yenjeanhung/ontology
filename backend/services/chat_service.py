@@ -194,9 +194,9 @@ class ChatService:
             f"新增对话：\n{transcript}"
         )
         try:
-            from providers.llm import create_llm
+            from providers.llm import create_summary_llm
 
-            llm = create_llm()
+            llm = create_summary_llm()
             if llm is None:
                 return
             resp = await llm.ainvoke(prompt)

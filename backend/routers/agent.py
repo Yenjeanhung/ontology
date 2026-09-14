@@ -1,4 +1,5 @@
 """智能体（OAG）路由 + 技能（Skill）管理路由。"""
+import asyncio
 import json
 import logging
 
@@ -624,8 +625,42 @@ def _sse_evt(payload: dict) -> str:
     return f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+# 会话级摘要互斥锁；只增不清（单锁几十字节，会话量级下可忽略）
+_summary_locks: dict[str, asyncio.Lock] = {}
+
+
+def _on_summary_done(task: asyncio.Task) -> None:
+    """后台摘要任务收尾：吃掉异常并记日志，避免 unhandled task exception。"""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error("后台摘要任务失败: %r", exc)
+
+
+def _summarize_background(session_id: str) -> None:
+    """滚动摘要后台化：非流式 LLM 压缩耗时不阻塞 SSE 响应。
+
+    - maybe_summarize 幂等（summary_until_id 游标），同会话已有压缩在跑时
+      直接跳过，本轮欠下的增量由下一轮收尾自动补压；
+    - 后台任务自开 db 会话（请求级会话此时已释放）。
+    """
+    lock = _summary_locks.setdefault(session_id, asyncio.Lock())
+    if lock.locked():
+        logger.info("Summary in progress, skip: session=%s", session_id)
+        return
+
+    async def _run() -> None:
+        async with lock:
+            async for db in get_db():
+                await ChatService.maybe_summarize(db, session_id)
+                break
+
+    asyncio.create_task(_run()).add_done_callback(_on_summary_done)
+
+
 async def _persist_turn(session_id: str, query: str, answer: str, agent_scope: str) -> None:
-    """一轮问答收尾：助手消息落库 + 滚动摘要 + 长期记忆后台写入。
+    """一轮问答收尾：助手消息落库（同步）+ 滚动摘要/长期记忆（后台）。
 
     SSE 生成器执行时路由的 db 会话已释放，这里自开新会话；全部尽力而为，
     失败只记日志，不影响已下发的回答。
@@ -633,8 +668,8 @@ async def _persist_turn(session_id: str, query: str, answer: str, agent_scope: s
     try:
         async for db in get_db():
             await ChatService.append_message(db, session_id, "assistant", answer)
-            await ChatService.maybe_summarize(db, session_id)
             break
+        _summarize_background(session_id)
     except Exception:
         logger.exception("会话消息落库失败: session=%s", session_id)
     try:
