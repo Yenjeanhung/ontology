@@ -423,7 +423,7 @@ export async function queryRagStream(kbId, query, { onChunks, onToken }) {
 }
 
 // 智能体（OAG）流式问答：比 queryRagStream 多 entities / subgraph / session 三类事件
-export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, onChunks, onToken, onSkills, onSession, skillIds, agentId, sessionId } = {}) {
+export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, onChunks, onToken, onReasoning, onSkills, onSession, skillIds, agentId, sessionId } = {}) {
   const res = await fetch(`${API}/api/agent/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -460,6 +460,7 @@ export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, on
         else if (data.type === 'entities') onEntities?.(data.entities)
         else if (data.type === 'subgraph') onSubgraph?.(data)
         else if (data.type === 'chunks') onChunks?.(data.chunks)
+        else if (data.type === 'reasoning') onReasoning?.(data.content)
         else if (data.type === 'token') onToken?.(data.content)
       } catch { /* skip malformed lines */ }
     }
@@ -678,6 +679,13 @@ export async function searchSkillMarket(q, page = 1) {
 
 export async function fetchAgents() {
   const res = await fetch(`${API}/api/agents`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+// 系统默认人设（智能体人设留空时实际生效的内容）
+export async function fetchDefaultPersona() {
+  const res = await fetch(`${API}/api/agents/default-persona`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }

@@ -49,18 +49,28 @@ def _serialize(
     }
 
 
-# 内置智能体固定 id（保留机制供未来内置智能体使用；当前无内置项）
+# 内置「系统默认」智能体固定 id：seed 生成，不可删除（可改名称/描述/KB/技能/人设）
 DEFAULT_AGENT_ID = "agent_default"
 
+DEFAULT_AGENT_DESCRIPTION = (
+    "内置默认智能体：未绑定知识库/技能时，问答页自动跟随页面选择的知识库与技能"
+    "（技能默认全选启用项）。可修改其配置作为全局默认，不可删除。"
+)
 
-async def cleanup_default_agent(db: AsyncSession) -> int:
-    """清理由旧版本 seed 的「默认智能体」（行为与「系统默认」重复，已废弃）。"""
-    existing = await db.get(Agent, DEFAULT_AGENT_ID)
-    if existing is None:
-        return 0
-    await db.delete(existing)
+
+async def ensure_default_agent(db: AsyncSession) -> bool:
+    """启动 seed：确保内置「系统默认」智能体存在（幂等；已存在则不覆盖用户修改）。"""
+    if await db.get(Agent, DEFAULT_AGENT_ID) is not None:
+        return False
+    db.add(Agent(
+        id=DEFAULT_AGENT_ID,
+        name="系统默认",
+        description=DEFAULT_AGENT_DESCRIPTION,
+        is_preset=1,
+        is_enabled=1,
+    ))
     await db.commit()
-    return 1
+    return True
 
 
 class AgentService:
@@ -117,9 +127,9 @@ class AgentService:
             return None
         if isinstance(data.get("skill_ids"), list):
             data["skill_ids"] = json.dumps(data["skill_ids"], ensure_ascii=False)
-        # 内置智能体：仅允许改名称/描述/KB/技能/人设，禁止禁用（is_enabled 恒为 1）
-        if agent.is_preset and "is_enabled" in data:
-            data = {k: v for k, v in data.items() if k != "is_enabled"}
+        # 内置智能体：允许改名称/描述/KB/技能/人设；禁止禁用、禁止篡改内置标识
+        if agent.is_preset:
+            data = {k: v for k, v in data.items() if k not in ("is_enabled", "is_preset")}
         for key, value in data.items():
             if value is not None:
                 setattr(agent, key, value)
@@ -138,13 +148,12 @@ class AgentService:
         return True
 
     @staticmethod
-    async def resolve(db: AsyncSession, agent_id: str, *, fallback_kb_id: str | None = None,
-                      fallback_skill_ids: list[str] | None = None) -> dict | None:
+    async def resolve(db: AsyncSession, agent_id: str, *, fallback_kb_id: str | None = None) -> dict | None:
         """按 agent_id 展开出 OAG 入参 {id, name, kb_id, system_prompt, skill_ids}。
 
         不存在 / 已禁用返回 None；skill_ids 的无效 id 交由 SkillService.resolve 容错过滤。
-        内置「默认智能体」（is_preset）kb 为空 → 回退 fallback_kb_id（页面选的 KB），
-        技能空 → 回退 fallback_skill_ids（页面勾选），保持原 OAG 行为；
+        内置「默认智能体」（is_preset）kb 为空 → 回退 fallback_kb_id（页面选的 KB）；
+        技能一律以智能体自身绑定为准（未绑定 = 不启用技能），配置页/问答页共用同一份数据；
         自定义智能体的 KB / 技能以自身配置为准：未绑 KB 即纯 LLM 对话，不再回退页面选择。
         """
         agent = await AgentService.get(db, agent_id)
@@ -152,13 +161,10 @@ class AgentService:
             return None
         is_preset = bool(getattr(agent, "is_preset", 0))
         kb_id = agent.kb_id or (fallback_kb_id or "" if is_preset else "")
-        skill_ids = _skill_ids_to_list(agent.skill_ids)
-        if not skill_ids and is_preset and fallback_skill_ids:
-            skill_ids = fallback_skill_ids
         return {
             "id": agent.id,
             "name": agent.name,
             "kb_id": kb_id,
             "system_prompt": agent.system_prompt or "",
-            "skill_ids": skill_ids,
+            "skill_ids": _skill_ids_to_list(agent.skill_ids),
         }

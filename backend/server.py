@@ -172,14 +172,33 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to seed preset agent skills")
 
-    # 清理旧版本 seed 的「默认智能体」（已废弃，行为与系统默认重复）
-    from services.agent_service import cleanup_default_agent
+    # Seed 内置「系统默认」智能体（幂等；不可删除、可修改，行为=问答页页面选择的回退）
+    from services.agent_service import ensure_default_agent
     async for db in get_db():
         try:
-            if await cleanup_default_agent(db):
-                logger.info("Removed deprecated default agent")
+            if await ensure_default_agent(db):
+                logger.info("Seeded built-in default agent")
         except Exception:
-            logger.exception("Failed to cleanup default agent")
+            logger.exception("Failed to seed default agent")
+
+    # 存量迁移：旧版本创建的会话不记录 agent_id（空串），新版按智能体过滤后
+    # 这些历史会话在任何智能体下都不可见 → 统一归入内置「系统默认」（幂等）
+    from sqlalchemy import update
+    from models import ChatSession
+    from services.agent_service import DEFAULT_AGENT_ID
+    async for db in get_db():
+        try:
+            result = await db.execute(
+                update(ChatSession)
+                .where(ChatSession.agent_id == "")
+                .values(agent_id=DEFAULT_AGENT_ID)
+            )
+            if result.rowcount:
+                await db.commit()
+                logger.info("Migrated %d legacy chat sessions (agent_id='') to default agent",
+                            result.rowcount)
+        except Exception:
+            logger.exception("Failed to migrate legacy chat sessions")
 
     # 存量迁移：旧版本把配套文件内容存在数据库里 → 迁到磁盘（幂等，失败不阻断启动）
     logger.info("Syncing skill files to disk...")

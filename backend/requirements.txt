@@ -65,3 +65,7 @@ bcrypt>=4.0.0               # 密码哈希（直接用 bcrypt，避免 passlib �
 
 # RAG 评测（backend/scripts/rag_eval/eval_rag_ragas.py 使用，按需安装，不影响运行时）
 # pip install "ragas>=0.2.6" datasets pandas
+
+# 长期记忆（services/memory_store.py，MEM0_ENABLED=true 时启用；未装时自动降级 no-op）
+mem0ai>=0.1.0
+protobuf>=5.29.3,<6.0    # 约束上限：与 autogen-core / opentelemetry-proto 保持兼容

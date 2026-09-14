@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import {
   fetchAgents, createAgent, updateAgent, deleteAgent,
-  fetchKbs, fetchAgentSkills,
+  fetchKbs, fetchAgentSkills, fetchDefaultPersona,
 } from '../../api'
 import { useToast } from '../../composables/useToast'
 import ModalDialog from '../common/ModalDialog.vue'
@@ -28,6 +28,8 @@ const editForm = ref({
 })
 
 const enabledSkills = computed(() => skills.value.filter(s => s.is_enabled))
+// 系统默认人设（智能体人设留空时实际生效的内容，来自后端 OAG_SYSTEM_PROMPT）
+const defaultPersona = ref('')
 const presetAgents = computed(() => agents.value.filter(a => a.is_preset))
 const customAgents = computed(() => agents.value.filter(a => !a.is_preset))
 
@@ -45,10 +47,11 @@ const selectedIsPreset = () => !!selectedAgent()?.is_preset
 onMounted(async () => {
   loading.value = true
   try {
-    const [ag, kb, sk] = await Promise.all([fetchAgents(), fetchKbs(), fetchAgentSkills()])
+    const [ag, kb, sk, dp] = await Promise.all([fetchAgents(), fetchKbs(), fetchAgentSkills(), fetchDefaultPersona()])
     agents.value = ag
     kbs.value = kb
     skills.value = sk
+    defaultPersona.value = dp?.persona || ''
   } catch {
     toast.error('加载智能体失败')
   }
@@ -274,7 +277,14 @@ async function doRemove() {
                 v-model="editForm.system_prompt" rows="8"
                 placeholder="自定义智能体的角色与行为，例如：你是严谨的财务分析助手，回答时先给结论再给依据…"
               ></textarea>
-              <span class="hint">留空则使用系统默认人设；技能指令会追加在人设之后</span>
+              <template v-if="!editForm.system_prompt && defaultPersona">
+                <span class="hint">留空 = 当前使用系统默认人设；技能指令会追加在人设之后</span>
+                <div class="persona-default">
+                  <span class="pd-label">系统默认人设</span>
+                  <p class="pd-text">{{ defaultPersona }}</p>
+                </div>
+              </template>
+              <span class="hint" v-else>已自定义人设，将覆盖系统默认人设；技能指令会追加在人设之后</span>
             </div>
           </div>
 
@@ -376,6 +386,21 @@ async function doRemove() {
 .field textarea { font-family: var(--font); line-height: 1.5; resize: vertical; min-height: 120px; }
 .hint { font-size: 11px; color: var(--c-secondary); }
 .req { color: var(--c-danger); }
+
+/* 系统默认人设预览：人设留空时展示实际生效内容 */
+.persona-default {
+  margin-top: 6px; padding: 8px 10px;
+  border: 1px dashed var(--c-border, #333); border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.persona-default .pd-label {
+  display: inline-block; margin-bottom: 4px;
+  font-size: 11px; font-weight: 600; color: var(--c-primary, #2dd4a8);
+}
+.persona-default .pd-text {
+  margin: 0; font-size: 12px; line-height: 1.6;
+  color: var(--c-text-2, #aaa); word-break: break-word;
+}
 
 .skill-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .skill-chip {

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from models import ChatMessage, ChatSession
+from services.agent_service import DEFAULT_AGENT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,11 @@ class ChatService:
                             kb_id: str | None = None, limit: int = 50) -> list[ChatSession]:
         stmt = select(ChatSession)
         if agent_id is not None:
-            stmt = stmt.where(ChatSession.agent_id == agent_id)
+            if agent_id == DEFAULT_AGENT_ID:
+                # 「系统默认」同时包含旧版本未记录 agent_id（空串）的历史会话（查询兜底）
+                stmt = stmt.where(ChatSession.agent_id.in_([agent_id, ""]))
+            else:
+                stmt = stmt.where(ChatSession.agent_id == agent_id)
         if kb_id:
             stmt = stmt.where(ChatSession.kb_id == kb_id)
         stmt = stmt.order_by(ChatSession.updated_at.desc()).limit(max(1, min(limit, 200)))

@@ -491,6 +491,13 @@ async def list_agents(db: AsyncSession = Depends(get_db)):
     return await AgentService.list(db)
 
 
+@router.get("/agents/default-persona")
+async def get_default_persona():
+    """系统默认人设：智能体人设（System Prompt）留空时实际生效的内容。"""
+    from services.oag_service import OAG_SYSTEM_PROMPT
+    return {"persona": OAG_SYSTEM_PROMPT}
+
+
 @router.get("/agents/{agent_id}")
 async def get_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
     agent = await AgentService.get_detail(db, agent_id)
@@ -535,7 +542,7 @@ async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
     if not agent:
         raise HTTPException(404, "智能体不存在")
     if agent.is_preset:
-        raise HTTPException(400, "内置智能体不能删除，只能禁用")
+        raise HTTPException(400, "内置智能体不能删除")
     if not await AgentService.delete(db, agent_id):
         raise HTTPException(404, "智能体不存在")
     return {"status": "deleted"}
@@ -572,17 +579,19 @@ async def test_agent(agent_id: str, req: AgentQueryRequest, db: AsyncSession = D
 
 async def _chat_no_kb(query: str, persona: str | None, skills=None,
                       history=None, summary: str = "", memories=None):
-    """未绑 KB 的智能体：无检索直接 LLM 回答（人设 + 技能），事件结构与 OAG 一致。"""
-    from services.oag_service import _augment_system_prompt, _history_messages, build_system_prompt
+    """未绑 KB 的智能体：无检索直接 LLM 回答（人设 + 技能）。
+
+    不下发 entities/subgraph/chunks 事件（无检索过程，避免前端渲染
+    空的「推理过程」卡片与缺失的「来源」引用框），仅 skills + reasoning + token。
+    """
+    from services.oag_service import (
+        CHAT_SYSTEM_PROMPT, _augment_system_prompt, _history_messages, build_system_prompt,
+    )
 
     skills = skills or []
     yield _sse_evt({"type": "skills", "skills": [{"id": s["id"], "name": s["name"], "code": s["code"]} for s in skills]})
-    yield _sse_evt({"type": "entities", "entities": []})
-    yield _sse_evt({"type": "subgraph", "facts": "（无知识库）", "entities": [], "relations": [],
-                    "retrieval_path": {"vector": 0, "graph": 0, "both": 0, "entities": 0, "degraded": True}})
-    yield _sse_evt({"type": "chunks", "chunks": []})
 
-    from providers.llm import chunk_text, create_llm
+    from providers.llm import chunk_text, create_llm, extract_reasoning
     from langchain_core.messages import HumanMessage, SystemMessage
 
     llm = create_llm()
@@ -590,14 +599,18 @@ async def _chat_no_kb(query: str, persona: str | None, skills=None,
         yield _sse_evt({"type": "token", "content": "尚未配置大模型，请先在「系统配置」中激活 LLM。"})
         yield "data: [DONE]\n\n"
         return
+    # 自定义人设优先；未配置时用纯聊天人设（不含 [来源N]/[事实] 引用标注要求）
     system_prompt = _augment_system_prompt(
-        build_system_prompt(skills, base_prompt=persona or "") or "", summary, memories,
+        build_system_prompt(skills, base_prompt=persona or CHAT_SYSTEM_PROMPT) or "", summary, memories,
     ) or None
     messages = [*_history_messages(history), HumanMessage(content=query)]
     if system_prompt:
         messages.insert(0, SystemMessage(content=system_prompt))
     try:
         async for chunk in llm.astream(messages):
+            reasoning = extract_reasoning(chunk)
+            if reasoning:
+                yield _sse_evt({"type": "reasoning", "content": reasoning})
             text = chunk_text(chunk)
             if text:
                 yield _sse_evt({"type": "token", "content": text})
@@ -633,14 +646,10 @@ async def _persist_turn(session_id: str, query: str, answer: str, agent_scope: s
 @router.post("/agent/query")
 async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)):
     # 引用智能体（可选）：传 agent_id 时以其 KB / 技能 / 人设为准；
-    # 内置「默认智能体」kb/技能为空 → 回退页面传的 kb_id / skill_ids（原 OAG 行为）
+    # 内置「默认智能体」未绑 KB → 回退页面传的 kb_id；技能以智能体绑定为准（配置页/问答页同一份数据）
     agent = None
     if req.agent_id:
-        agent = await AgentService.resolve(
-            db, req.agent_id,
-            fallback_kb_id=req.kb_id,
-            fallback_skill_ids=req.skill_ids,
-        )
+        agent = await AgentService.resolve(db, req.agent_id, fallback_kb_id=req.kb_id)
         if not agent:
             raise HTTPException(404, "智能体不存在或已禁用")
     agent_scope = req.agent_id or ""

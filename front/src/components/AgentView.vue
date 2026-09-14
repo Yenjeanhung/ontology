@@ -1,8 +1,8 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watch, reactive, nextTick } from 'vue'
+import { ref, computed, onMounted, onActivated, onBeforeUnmount, watch, reactive, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { marked } from 'marked'
-import { fetchKbs, queryAgentStream, fetchAgentSkills, fetchAgents, fetchChatSessions, fetchSessionMessages, renameChatSession, deleteChatSession } from '../api'
+import { fetchKbs, queryAgentStream, fetchAgentSkills, fetchAgents, updateAgent, fetchChatSessions, fetchSessionMessages, renameChatSession, deleteChatSession } from '../api'
 import { useToast } from '../composables/useToast'
 import PreviewModal from './PreviewModal.vue'
 
@@ -18,31 +18,64 @@ const activeSkills = ref([])     // SSE 实际生效的技能
 
 const enabledSkills = computed(() => allSkills.value.filter(s => s.is_enabled))
 async function loadSkills() {
-  try {
-    allSkills.value = await fetchAgentSkills()
-    selectedSkillIds.value = enabledSkills.value.map(s => s.id)
-  } catch {}
+  try { allSkills.value = await fetchAgentSkills() } catch {}
 }
 
-// ---------- 智能体（下拉只列自定义；不选 = 内置默认智能体） ----------
+// ---------- 智能体（下拉只列自定义；「系统默认」= 内置 agent_default） ----------
 const agents = ref([])
 const selectedAgentId = ref('')
-// 下拉只展示自定义且启用的智能体；内置作为默认态不进下拉
+// 内置「系统默认」智能体（后端 seed，不可删除；配置可在智能体配置页修改）
+const defaultAgentId = computed(() => agents.value.find(a => a.is_preset)?.id || '')
+// 下拉只展示自定义且启用的智能体；「系统默认」作为首选项单独渲染
 const enabledAgents = computed(() => agents.value.filter(a => a.is_enabled && !a.is_preset))
 const selectedAgent = computed(() => agents.value.find(x => x.id === selectedAgentId.value))
-// 选中自定义智能体：KB/技能/人设完全由智能体配置决定，页面不再重复选择
-const agentPresetActive = computed(() => !!selectedAgent.value)
-// 自定义智能体：切换时预填 kb+技能；选回「默认」= 内置行为（kb/技能跟随页面选择）
+// 选中自定义智能体：KB/技能/人设完全由智能体配置决定，页面不再重复选择；
+// 「系统默认」例外：保持页面 KB/技能选择器（其未绑定的项回退页面选择）
+const agentPresetActive = computed(() => !!selectedAgent.value && selectedAgentId.value !== defaultAgentId.value)
+// agents 异步加载完成后，把默认选中值锚到内置智能体（避免 select 与 option 不匹配）
+watch(defaultAgentId, (id) => { if (id && !selectedAgentId.value) selectedAgentId.value = id }, { immediate: true })
+// 自定义智能体：切换时预填 kb+技能；「系统默认」kb 跟随页面选择，技能跟随自身配置
 function onAgentChange() {
   const a = selectedAgent.value
   // 仅在智能体绑定的 KB 仍存在时预填；KB 已被删除则保持页面当前选择
   if (a && a.kb_id && kbs.value.some(k => k.id === a.kb_id)) {
     queryKbId.value = a.kb_id
-    selectedSkillIds.value = a.skill_ids || []
   }
+  applyAgentSkills(a)
   // 会话按智能体过滤，切换后重载
   sessionId.value = ''
   loadSessions()
+}
+// 技能预填 = 选中智能体绑定的 skill_ids（与配置页 editForm.skill_ids 同一份数据；未绑定 = 全不选）
+function applyAgentSkills(a) {
+  selectedSkillIds.value = [...(a?.skill_ids || [])]
+}
+
+// ---------- 问答页技能编辑：勾选即同步写回智能体配置 ----------
+const syncingSkills = ref(false)
+function toggleSkill(id) {
+  if (syncingSkills.value) return
+  selectedSkillIds.value = selectedSkillIds.value.includes(id)
+    ? selectedSkillIds.value.filter(x => x !== id)
+    : [...selectedSkillIds.value, id]
+  syncSkillsToAgent()
+}
+async function syncSkillsToAgent() {
+  if (!selectedAgentId.value) return
+  syncingSkills.value = true
+  try {
+    const updated = await updateAgent(selectedAgentId.value, { skillIds: [...selectedSkillIds.value] })
+    // 同步本地缓存，保持「已使用 N 项技能」等展示即时正确
+    const idx = agents.value.findIndex(x => x.id === selectedAgentId.value)
+    if (idx !== -1 && updated) {
+      agents.value[idx] = { ...agents.value[idx], skill_ids: updated.skill_ids ?? [...selectedSkillIds.value] }
+    }
+    toast.success('技能已同步至智能体配置')
+  } catch (e) {
+    toast.error(`技能同步失败：${e.message}`)
+  } finally {
+    syncingSkills.value = false
+  }
 }
 async function loadAgents() {
   try { agents.value = await fetchAgents() } catch {}
@@ -64,8 +97,12 @@ function resetTurnPanel() {
   chunks.value = []
   entities.value = []
   subgraph.value = null
+  factsExpanded.value = false
   activeSkills.value = []
   thinkBlocks.value = []
+  liveThink.value = ''
+  liveThinkDone.value = false
+  liveThinkExpanded.value = false
   thinkExpanded.value = false
   reasonOpen.value = true
   hoveredChunk.value = null
@@ -146,6 +183,9 @@ const hasReasoning = computed(() => (entities.value.length > 0) || (subgraph.val
 const isDegraded = computed(() => !!subgraph.value?.retrieval_path?.degraded)
 const facts = computed(() => subgraph.value?.facts || '')
 const factRelations = computed(() => subgraph.value?.relations || [])
+const FACT_PREVIEW_COUNT = 8
+const factsExpanded = ref(false)
+const visibleFacts = computed(() => factsExpanded.value ? factRelations.value : factRelations.value.slice(0, FACT_PREVIEW_COUNT))
 const pathInfo = computed(() => subgraph.value?.retrieval_path || {})
 
 function renderMd(text) {
@@ -165,6 +205,20 @@ const RETRIEVAL_META = {
   'vector+bm25+graph': { label: '三路命中', color: '#7c5cf0' },
 }
 function retrievalMeta(c) { return RETRIEVAL_META[c.retrieval] || RETRIEVAL_META.vector }
+
+// ---------- 实时思考（reasoning 事件流式显示） ----------
+const liveThink = ref('')
+const liveThinkDone = ref(false)
+const liveThinkExpanded = ref(false)
+const liveThinkBoxRef = ref(null)
+const liveThinkHtml = computed(() => renderMd(liveThink.value))
+watch(liveThink, () => {
+  if (liveThinkDone.value) return
+  nextTick(() => {
+    const el = liveThinkBoxRef.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+})
 
 // ---------- 思考过程（兼容 <think>） ----------
 const thinkBlocks = ref([])
@@ -263,20 +317,23 @@ function gotoEntity(id) {
 
 // ---------- 动态高度 ----------
 const answerBoxRef = ref(null)
-const answerMaxH = ref('50vh')
+const answerMaxH = ref('auto')
 function updateAnswerHeight() {
   if (!answerBoxRef.value) return
+  const textEl = answerBoxRef.value.querySelector('.answer-text')
   const rect = answerBoxRef.value.getBoundingClientRect()
-  const spaceBelow = window.innerHeight - rect.top - 24
-  answerMaxH.value = Math.max(120, spaceBelow) + 'px'
+  // 卡片内除回答文本外的固定开销（标题、内边距）
+  const chrome = answerBoxRef.value.offsetHeight - (textEl?.offsetHeight || 0)
+  // 内容自然高度与视口剩余空间取小：内容少时贴内容，内容多时不出屏
+  const contentH = textEl?.scrollHeight || 0
+  const spaceBelow = window.innerHeight - rect.top - 24 - chrome
+  answerMaxH.value = Math.max(120, Math.min(contentH, spaceBelow)) + 'px'
 }
-watch([answerExThink, querying], () => {
-  if (!querying.value) nextTick(updateAnswerHeight)
-})
+watch([answerExThink, querying], () => nextTick(updateAnswerHeight))
 
 function pct(c) { return c.score == null ? null : Math.round(c.score * 100) }
 function pctBg(idx, score) {
-  if (score == null) return { background: '#eef2f7', color: '#9a8f7e' }
+  if (score == null) return { background: 'var(--c-muted)', color: 'var(--c-secondary)' }
   const t = Math.max(0.1, Math.min(1, score))
   const total = Math.max(chunks.value.length - 1, 1)
   const i = Math.min(idx / total, 1)
@@ -319,7 +376,12 @@ async function runQuery() {
       onEntities(data) { entities.value = data || [] },
       onSubgraph(data) { subgraph.value = data },
       onChunks(data) { chunks.value = data || [] },
-      onToken(token) { answerRaw.value += token },
+      onReasoning(piece) { liveThink.value += piece },
+      onToken(token) {
+        // 正文首个 token 到达 → 思考结束，自动折叠实时思考
+        if (!answerRaw.value && liveThink.value && !liveThinkDone.value) liveThinkDone.value = true
+        answerRaw.value += token
+      },
     })
   } catch (err) {
     answerRaw.value = `错误: ${err.message}`
@@ -335,9 +397,19 @@ function onWindowPointerDown(e) {
 }
 
 onMounted(loadKbs)
-onMounted(loadSkills)
-onMounted(loadAgents)
+// 技能与智能体都加载完成后按选中智能体预填技能勾选
+onMounted(bootstrapSkills)
 onMounted(loadSessions)
+// keepAlive 缓存页：从配置页/技能页返回时重新拉取，保证两处技能选择同步（同一份数据）
+let skillsPageActivated = false
+onActivated(() => {
+  if (!skillsPageActivated) { skillsPageActivated = true; return }  // 首次激活与 onMounted 重合，跳过
+  bootstrapSkills()
+})
+async function bootstrapSkills() {
+  await Promise.all([loadSkills(), loadAgents()])
+  applyAgentSkills(selectedAgent.value)
+}
 onMounted(() => window.addEventListener('pointerdown', onWindowPointerDown))
 onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerDown))
 </script>
@@ -353,17 +425,36 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
     <div class="agent-pick" v-if="enabledAgents.length">
       <label>智能体</label>
       <select v-model="selectedAgentId" @change="onAgentChange">
-        <option value="">系统默认</option>
+        <option :value="defaultAgentId">系统默认</option>
         <option v-for="a in enabledAgents" :key="a.id" :value="a.id">{{ a.name }}{{ a.kb_name ? ' · ' + a.kb_name : '' }}</option>
       </select>
     </div>
 
-    <!-- 选中自定义智能体：知识库/技能/人设均由智能体配置决定，页面不再重复选择 -->
+    <!-- 技能：与智能体配置页共用同一份数据，勾选即时写回；两处状态始终一致 -->
+    <div class="agent-pick skill-pick">
+      <label>技能</label>
+      <div class="skill-chips-editor">
+        <button v-for="s in enabledSkills" :key="s.id" type="button"
+          class="skill-chip" :class="{ active: selectedSkillIds.includes(s.id) }"
+          :title="s.description || s.name"
+          @click="toggleSkill(s.id)">
+          <span class="chip-ic" v-if="selectedSkillIds.includes(s.id)">✓</span>
+          <span class="chip-ic" v-else>+</span>
+          {{ s.name }}
+        </button>
+        <span v-if="!enabledSkills.length" class="skill-empty">暂无启用技能，可在「智能体技能」页启用</span>
+      </div>
+      <span class="agent-pick-hint">
+        与「{{ agentPresetActive ? selectedAgent.name : '系统默认' }}」的技能配置实时同步，此处与智能体配置页修改的是同一份数据
+      </span>
+    </div>
+
+    <!-- 选中自定义智能体：知识库/人设由智能体配置决定；技能已在上方列出，可就地修改 -->
     <div class="agent-config-note" v-if="agentPresetActive">
       <span class="note-main">
         已使用「{{ selectedAgent.name }}」的配置：
         {{ selectedAgent.kb_name ? `知识库 ${selectedAgent.kb_name}` : '未绑定知识库' }}
-        · {{ (selectedAgent.skill_ids || []).length }} 项技能 · 人设由智能体提供
+        · 人设由智能体提供
       </span>
       <router-link to="/agent/configs">去智能体管理修改</router-link>
     </div>
@@ -470,19 +561,32 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
           </div>
           <!-- 图谱事实 -->
           <div class="reason-block" v-if="factRelations.length">
-            <div class="reason-label">图谱事实</div>
-            <div class="fact-list">
-              <div class="fact-item" v-for="(r, i) in factRelations" :key="i">
+            <div class="reason-label">图谱事实（{{ factRelations.length }}）</div>
+            <div class="fact-list" :class="{ expanded: factsExpanded }">
+              <div class="fact-item" v-for="(r, i) in visibleFacts" :key="i">
                 <span class="fact-node">{{ r.source_name }}</span>
                 <span class="fact-rel">─ {{ r.relation_type }} →</span>
                 <span class="fact-node">{{ r.target_name }}</span>
               </div>
             </div>
+            <button v-if="factRelations.length > FACT_PREVIEW_COUNT" type="button" class="fact-toggle" @click="factsExpanded = !factsExpanded">
+              {{ factsExpanded ? '收起' : `展开全部 ${factRelations.length} 条` }}
+            </button>
           </div>
           <div class="reason-block reason-empty" v-if="!entities.length && !factRelations.length">
             未识别到图谱实体或关系，已使用向量模式回答。
           </div>
         </div>
+      </div>
+
+      <!-- 实时思考（reasoning 事件流式） -->
+      <div class="think-card" v-if="liveThink">
+        <div class="think-toggle" @click="liveThinkExpanded = !liveThinkExpanded">
+          <svg class="think-icon" :class="{ open: liveThinkExpanded || !liveThinkDone }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          <span>{{ liveThinkDone ? '查看思考过程' : '深度思考中' }}</span>
+          <span v-if="!liveThinkDone" class="thinking-dots"><i></i><i></i><i></i></span>
+        </div>
+        <div class="think-content live markdown-body" v-show="liveThinkExpanded || !liveThinkDone" ref="liveThinkBoxRef" v-html="liveThinkHtml"></div>
       </div>
 
       <!-- Think -->
@@ -569,39 +673,52 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 }
 .agent-pick select:focus { border-color: var(--c-accent); }
 .agent-pick-hint { font-size: 11px; color: var(--c-accent); }
+
+/* ── 技能编辑器（与智能体配置页 skill-chip 同款式，两处视觉一致） ── */
+.skill-chips-editor { display: flex; flex-wrap: wrap; gap: 6px; }
+.skill-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 4px 12px;
+  border-radius: 20px; font-size: 12px; font-weight: 500; cursor: pointer; user-select: none;
+  font-family: var(--font);
+  border: 1px solid var(--c-border); background: var(--c-panel); color: var(--c-secondary);
+  transition: all 150ms;
+}
+.skill-chip:hover { border-color: var(--c-accent); color: var(--c-fg); }
+.skill-chip.active { background: var(--c-muted); border-color: var(--c-accent); color: var(--c-accent); }
+.chip-ic { font-size: 11px; line-height: 1; }
+.skill-empty { font-size: 12px; color: var(--c-secondary); }
 .field-shell {
   display: flex; align-items: center; gap: 10px;
-  min-height: 52px; border: 1px solid #e8e5df; border-radius: 16px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(249,247,243,0.98));
-  box-shadow: 0 1px 0 rgba(255,255,255,0.92) inset, 0 10px 28px rgba(23, 23, 23, 0.035);
-  transition: border-color 180ms, box-shadow 180ms, transform 180ms;
+  min-height: 52px; border: 1px solid var(--c-border); border-radius: 16px;
+  background: var(--c-panel);
+  transition: border-color 180ms, box-shadow 180ms;
 }
-.field-shell:hover { border-color: #d9d2c7; box-shadow: 0 1px 0 rgba(255,255,255,0.96) inset, 0 14px 32px rgba(23, 23, 23, 0.05); }
-.field-shell:focus-within { border-color: #c9a46a; box-shadow: 0 1px 0 rgba(255,255,255,0.96) inset, 0 0 0 4px rgba(161, 98, 7, 0.08), 0 16px 36px rgba(161, 98, 7, 0.08); }
+.field-shell:hover { border-color: var(--c-muted-hover); }
+.field-shell:focus-within { border-color: var(--c-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-accent) 14%, transparent); }
 .field-shell.disabled { opacity: 0.72; }
-.field-icon { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; margin-left: 10px; flex-shrink: 0; border-radius: 12px; color: #8b7c67; background: linear-gradient(180deg, #fff, #f4efe6); border: 1px solid rgba(161, 98, 7, 0.12); }
+.field-icon { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; margin-left: 10px; flex-shrink: 0; border-radius: 12px; color: var(--c-secondary); background: var(--c-muted); border: 1px solid var(--c-border); }
 
 .kb-picker { position: relative; }
 .select-shell { position: relative; padding-right: 12px; }
 .select-trigger { width: 100%; justify-content: flex-start; text-align: left; padding: 0 12px 0 0; cursor: pointer; }
 .select-trigger.open .field-caret { transform: translateY(-50%) rotate(180deg); }
 .select-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; color: var(--c-fg); }
-.select-value.placeholder { color: #b3ab9f; }
-.field-caret { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); color: #8b7c67; pointer-events: none; transition: transform 180ms ease; }
-.kb-dropdown { position: absolute; top: calc(100% + 8px); left: 0; right: 0; z-index: 20; padding: 8px; border: 1px solid #ebe6dc; border-radius: 18px; background: rgba(255,255,255,0.98); box-shadow: 0 18px 40px rgba(23, 23, 23, 0.08); backdrop-filter: blur(10px); }
+.select-value.placeholder { color: var(--c-secondary); opacity: 0.75; }
+.field-caret { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); color: var(--c-secondary); pointer-events: none; transition: transform 180ms ease; }
+.kb-dropdown { position: absolute; top: calc(100% + 8px); left: 0; right: 0; z-index: 20; padding: 8px; border: 1px solid var(--c-border); border-radius: 18px; background: var(--c-panel-elevated); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45); backdrop-filter: blur(10px); }
 .kb-option { width: 100%; border: 0; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 12px; text-align: left; color: var(--c-fg); transition: background 150ms, color 150ms; }
-.kb-option:hover { background: #f7f4ee; }
-.kb-option.active { background: #f3ede3; color: #171717; font-weight: 600; }
-.kb-option-placeholder { color: #a8a091; font-weight: 500; }
+.kb-option:hover { background: var(--c-muted); }
+.kb-option.active { background: var(--c-muted-hover); color: var(--c-accent); font-weight: 600; }
+.kb-option-placeholder { color: var(--c-secondary); font-weight: 500; }
 .kb-option-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kb-option-meta { flex-shrink: 0; font-size: 12px; color: #9a8f7e; }
+.kb-option-meta { flex-shrink: 0; font-size: 12px; color: var(--c-secondary); }
 
 .query-row { display: flex; }
 .search-shell { width: 100%; padding-right: 8px; }
 .query-row input { flex: 1; min-width: 0; border: 0; outline: none; box-shadow: none; background: transparent; padding: 0; font-size: 15px; }
-.query-row input::placeholder { color: #b3ab9f; }
-.query-submit { border: 0; outline: none; cursor: pointer; flex-shrink: 0; min-width: 92px; height: 40px; padding: 0 18px; border-radius: 12px; background: linear-gradient(135deg, #171717, #3a342b); color: #fff; font-size: 14px; font-weight: 700; font-family: var(--font); box-shadow: 0 10px 24px rgba(23, 23, 23, 0.16); transition: transform 150ms, box-shadow 150ms, opacity 150ms; }
-.query-submit:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 14px 28px rgba(23, 23, 23, 0.22); }
+.query-row input::placeholder { color: var(--c-secondary); opacity: 0.75; }
+.query-submit { border: 0; outline: none; cursor: pointer; flex-shrink: 0; min-width: 92px; height: 40px; padding: 0 18px; border-radius: 12px; background: var(--c-accent); color: var(--c-bg); font-size: 14px; font-weight: 700; font-family: var(--font); box-shadow: 0 8px 20px color-mix(in srgb, var(--c-accent) 22%, transparent); transition: transform 150ms, box-shadow 150ms, opacity 150ms, filter 150ms; }
+.query-submit:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.06); box-shadow: 0 12px 26px color-mix(in srgb, var(--c-accent) 28%, transparent); }
 .query-submit:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
 
 .results { display: flex; flex-direction: column; gap: 14px; }
@@ -630,38 +747,47 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 .entity-type { font-size: 10px; color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 16%, transparent); padding: 1px 6px; border-radius: 999px; }
 
 .fact-list { display: flex; flex-direction: column; gap: 4px; }
+.fact-list.expanded { max-height: 260px; overflow-y: auto; padding-right: 4px; }
 .fact-item { font-size: 13px; color: var(--c-secondary); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .fact-node { font-weight: 600; color: var(--c-fg); }
 .fact-rel { color: var(--c-accent); font-size: 12px; }
+.fact-toggle { align-self: flex-start; border: 0; background: transparent; color: var(--c-accent); font-size: 12px; font-weight: 600; cursor: pointer; padding: 2px 0; }
+.fact-toggle:hover { text-decoration: underline; }
 
 /* Think */
-.think-card { border: 1px solid #e6ddf5; border-radius: 18px; overflow: hidden; background: linear-gradient(180deg, #fbf8ff, #f6f1ff); box-shadow: 0 10px 30px rgba(124, 58, 237, 0.06); }
-.think-toggle { display: flex; align-items: center; gap: 6px; padding: 12px 16px; cursor: pointer; user-select: none; font-size: 13px; color: #7c3aed; font-weight: 600; transition: background 150ms; }
-.think-toggle:hover { background: rgba(124, 58, 237, 0.04); }
-.think-icon { transition: transform 200ms; color: #7c3aed; }
+.think-card { border: 1px solid color-mix(in srgb, #7c3aed 30%, var(--c-border)); border-radius: 18px; overflow: hidden; background: color-mix(in srgb, #7c3aed 8%, var(--c-panel)); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15); }
+.think-toggle { display: flex; align-items: center; gap: 6px; padding: 12px 16px; cursor: pointer; user-select: none; font-size: 13px; color: #a78bfa; font-weight: 600; transition: background 150ms; }
+.think-toggle:hover { background: rgba(124, 58, 237, 0.14); }
+.think-icon { transition: transform 200ms; color: #a78bfa; }
 .think-icon.open { transform: rotate(180deg); }
-.think-content { padding: 0 16px 14px; font-size: 13px; line-height: 1.65; color: #6b7280; border-top: 1px solid #e6ddf5; padding-top: 12px; }
+.think-content { padding: 0 16px 14px; font-size: 13px; line-height: 1.65; color: var(--c-secondary); border-top: 1px solid color-mix(in srgb, #7c3aed 30%, var(--c-border)); padding-top: 12px; }
+.think-content.live { max-height: 200px; overflow-y: auto; }
+.thinking-dots { display: inline-flex; gap: 3px; align-items: center; margin-left: 2px; }
+.thinking-dots i { width: 4px; height: 4px; border-radius: 50%; background: #7c5cf0; animation: thinkdot 1.2s ease-in-out infinite; }
+.thinking-dots i:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes thinkdot { 0%, 60%, 100% { opacity: 0.25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-2px); } }
 
 .content-row { display: flex; gap: 20px; align-items: flex-start; }
 .answer-col { flex: 1; min-width: 0; }
-.answer-card { border: 1px solid #ebe6dc; border-radius: 22px; padding: 18px 18px 16px; background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,246,241,0.95)); box-shadow: 0 1px 0 rgba(255,255,255,0.95) inset, 0 18px 40px rgba(23, 23, 23, 0.04); }
-.answer-card h4 { font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; color: #7c6f5b; letter-spacing: 0.2px; }
-.answer-card h4 svg { width: 28px; height: 28px; padding: 6px; border-radius: 10px; background: linear-gradient(180deg, #fff, #f3ede3); border: 1px solid rgba(161, 98, 7, 0.12); color: #8b7c67; }
+.answer-card { border: 1px solid var(--c-border); border-radius: 22px; padding: 18px 18px 16px; background: var(--c-panel-elevated); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18); }
+.answer-card h4 { font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; color: var(--c-secondary); letter-spacing: 0.2px; }
+.answer-card h4 svg { width: 28px; height: 28px; padding: 6px; border-radius: 10px; background: var(--c-muted); border: 1px solid var(--c-border); color: var(--c-secondary); }
 .answer-card .answer-text { font-size: 14px; line-height: 1.7; overflow-y: auto; }
 .answer-text.empty-hint { color: var(--c-secondary); font-size: 13px; display: flex; align-items: center; gap: 8px; }
 .answer-card.streaming .markdown-body::after { content: '|'; animation: blink 0.7s step-end infinite; font-weight: 100; color: var(--c-secondary); }
 @keyframes blink { 50% { opacity: 0; } }
 
-.sources-col { width: 280px; flex-shrink: 0; overflow: hidden; max-height: calc(100vh - 200px); display: flex; flex-direction: column; border: 1px solid #ebe6dc; border-radius: 22px; background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,246,241,0.95)); box-shadow: 0 1px 0 rgba(255,255,255,0.95) inset, 0 18px 40px rgba(23, 23, 23, 0.04); }
-.sources-header { display: flex; align-items: center; gap: 8px; padding: 14px 16px; font-size: 12px; color: #7c6f5b; font-weight: 700; border-bottom: 1px solid #eee7da; flex-shrink: 0; }
-.sources-header svg { width: 28px; height: 28px; padding: 6px; border-radius: 10px; background: linear-gradient(180deg, #fff, #f3ede3); border: 1px solid rgba(161, 98, 7, 0.12); color: #8b7c67; }
-.sources-hint { display: flex; align-items: center; gap: 4px; padding: 8px 16px; font-size: 10px; color: #948674; border-bottom: 1px solid #eee7da; background: rgba(255,255,255,0.55); }
+.sources-col { width: 280px; flex-shrink: 0; overflow: hidden; max-height: calc(100vh - 200px); display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: 22px; background: var(--c-panel-elevated); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18); }
+.sources-header { display: flex; align-items: center; gap: 8px; padding: 14px 16px; font-size: 12px; color: var(--c-secondary); font-weight: 700; border-bottom: 1px solid var(--c-border); flex-shrink: 0; }
+.sources-header svg { width: 28px; height: 28px; padding: 6px; border-radius: 10px; background: var(--c-muted); border: 1px solid var(--c-border); color: var(--c-secondary); }
+.sources-hint { display: flex; align-items: center; gap: 4px; padding: 8px 16px; font-size: 10px; color: var(--c-secondary); border-bottom: 1px solid var(--c-border); background: var(--c-muted); }
 .sources-scroll { overflow-y: auto; flex: 1; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 
-.source-chip { border: 1px solid #ece6db; border-radius: 16px; background: rgba(255,255,255,0.82); transition: border-color 150ms, background 150ms, box-shadow 150ms, transform 150ms; border-left: 3px solid var(--src-color); }
-.source-chip:hover { border-color: #d9d2c7; transform: translateY(-1px); }
-.source-chip.active { border-color: var(--src-color); background: #fff; }
-.source-chip.highlight { border-color: var(--src-color); background: #fff; box-shadow: 0 0 0 2px color-mix(in srgb, var(--src-color) 20%, transparent), 0 10px 24px rgba(23, 23, 23, 0.06); }
+.source-chip { border: 1px solid var(--c-border); border-radius: 16px; background: var(--c-panel); transition: border-color 150ms, background 150ms, box-shadow 150ms, transform 150ms; border-left: 3px solid var(--src-color); }
+.source-chip:hover { border-color: var(--c-muted-hover); transform: translateY(-1px); }
+.source-chip.active { border-color: var(--src-color); background: var(--c-muted); }
+.source-chip.highlight { border-color: var(--src-color); background: var(--c-muted); box-shadow: 0 0 0 2px color-mix(in srgb, var(--src-color) 20%, transparent), 0 10px 24px rgba(0, 0, 0, 0.3); }
 .source-chip-top { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 12px; cursor: pointer; user-select: none; }
 .source-idx { width: 20px; height: 20px; border-radius: 6px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #fff; }
 .source-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--c-fg); font-weight: 600; font-size: 11px; }
@@ -669,9 +795,9 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 .source-pct { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; flex-shrink: 0; }
 .source-chevron { flex-shrink: 0; color: var(--c-secondary); transition: transform 200ms; }
 .source-chevron.open { transform: rotate(180deg); }
-.source-text { font-size: 12px; line-height: 1.6; color: var(--c-secondary); padding: 0 12px 12px; border-top: 1px solid #eee7da; padding-top: 10px; white-space: pre-wrap; max-height: 140px; overflow-y: auto; }
+.source-text { font-size: 12px; line-height: 1.6; color: var(--c-secondary); padding: 0 12px 12px; border-top: 1px solid var(--c-border); padding-top: 10px; white-space: pre-wrap; max-height: 140px; overflow-y: auto; }
 
-.spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; display: inline-block; }
+.spinner { width: 14px; height: 14px; border: 2px solid color-mix(in srgb, var(--c-bg) 35%, transparent); border-top-color: var(--c-bg); border-radius: 50%; animation: spin 0.7s linear infinite; display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── 推理卡片中的技能标签 ── */
@@ -714,50 +840,50 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 .markdown-body p { margin: 6px 0; }
 .markdown-body ul, .markdown-body ol { padding-left: 1.5em; margin: 6px 0; }
 .markdown-body li { margin: 2px 0; }
-.markdown-body code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; font-family: var(--font-mono, 'Consolas', monospace); }
+.markdown-body code { background: var(--c-muted); padding: 2px 6px; border-radius: 3px; font-size: 0.9em; font-family: var(--font-mono, 'Consolas', monospace); }
 .markdown-body pre { background: #1e1e1e; color: #d4d4d4; padding: 12px 16px; border-radius: 6px; overflow-x: auto; margin: 8px 0; line-height: 1.5; }
 .markdown-body pre code { background: none; padding: 0; color: inherit; font-size: 13px; }
 .markdown-body table { border-collapse: collapse; width: 100%; margin: 8px 0; }
 .markdown-body th, .markdown-body td { border: 1px solid var(--c-border); padding: 6px 10px; text-align: left; font-size: 13px; }
-.markdown-body th { background: #f9fafb; font-weight: 600; }
-.markdown-body blockquote { border-left: 3px solid #7c3aed; padding: 4px 12px; margin: 8px 0; color: #6b7280; background: #f8f5ff; }
+.markdown-body th { background: var(--c-muted); font-weight: 600; }
+.markdown-body blockquote { border-left: 3px solid #7c3aed; padding: 4px 12px; margin: 8px 0; color: var(--c-secondary); background: color-mix(in srgb, #7c3aed 8%, transparent); }
 .markdown-body hr { border: none; border-top: 1px solid var(--c-border); margin: 12px 0; }
-.markdown-body a { color: #7c3aed; }
+.markdown-body a { color: #a78bfa; }
 .markdown-body strong { font-weight: 600; }
 .markdown-body img { max-width: 100%; border-radius: 4px; }
 
 /* ── 智能体配置摘要（选中智能体后替代页面 KB/技能选择）── */
-.agent-config-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border: 1px dashed #d8d1c2; border-radius: 14px; background: rgba(247, 244, 238, 0.7); font-size: 13px; color: #6f6759; }
+.agent-config-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border: 1px dashed var(--c-border); border-radius: 14px; background: var(--c-muted); font-size: 13px; color: var(--c-secondary); }
 .agent-config-note .note-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-config-note a { flex-shrink: 0; color: #7c3aed; text-decoration: none; font-weight: 600; }
+.agent-config-note a { flex-shrink: 0; color: #a78bfa; text-decoration: none; font-weight: 600; }
 .agent-config-note a:hover { text-decoration: underline; }
 
 /* ── 会话（短期记忆）── */
 .session-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.session-new { border: 1px dashed #c9c0af; background: transparent; color: #6f6759; border-radius: 12px; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer; transition: border-color 150ms, color 150ms; }
-.session-new:hover:not(:disabled) { border-color: #171717; color: #171717; }
+.session-new { border: 1px dashed var(--c-border); background: transparent; color: var(--c-secondary); border-radius: 12px; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer; transition: border-color 150ms, color 150ms; }
+.session-new:hover:not(:disabled) { border-color: var(--c-accent); color: var(--c-fg); }
 .session-new:disabled { opacity: 0.5; cursor: not-allowed; }
 .session-picker { position: relative; }
-.session-trigger { display: flex; align-items: center; gap: 8px; border: 1px solid #ebe6dc; background: rgba(255,255,255,0.9); color: var(--c-fg); border-radius: 12px; padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer; max-width: 420px; }
+.session-trigger { display: flex; align-items: center; gap: 8px; border: 1px solid var(--c-border); background: var(--c-panel); color: var(--c-fg); border-radius: 12px; padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer; max-width: 420px; }
 .session-trigger-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.session-caret { transition: transform 150ms; color: #9a8f7e; flex-shrink: 0; }
+.session-caret { transition: transform 150ms; color: var(--c-secondary); flex-shrink: 0; }
 .session-caret.open { transform: rotate(180deg); }
-.session-dropdown { position: absolute; top: calc(100% + 8px); left: 0; z-index: 20; min-width: 320px; max-width: 460px; max-height: 320px; overflow-y: auto; padding: 8px; border: 1px solid #ebe6dc; border-radius: 14px; background: rgba(255,255,255,0.98); box-shadow: 0 18px 40px rgba(23, 23, 23, 0.08); }
+.session-dropdown { position: absolute; top: calc(100% + 8px); left: 0; z-index: 20; min-width: 320px; max-width: 460px; max-height: 320px; overflow-y: auto; padding: 8px; border: 1px solid var(--c-border); border-radius: 14px; background: var(--c-panel-elevated); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45); }
 .session-item { display: flex; align-items: center; gap: 4px; border-radius: 10px; }
-.session-item:hover { background: #f7f4ee; }
-.session-item.active { background: #f3ede3; }
+.session-item:hover { background: var(--c-muted); }
+.session-item.active { background: var(--c-muted-hover); }
 .session-item-title { flex: 1; min-width: 0; border: 0; background: transparent; text-align: left; padding: 9px 10px; font-size: 13px; color: var(--c-fg); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-item.active .session-item-title { font-weight: 700; }
 .session-item-actions { display: none; flex-shrink: 0; gap: 2px; padding-right: 6px; }
 .session-item:hover .session-item-actions { display: inline-flex; }
-.session-act { border: 0; background: transparent; color: #9a8f7e; cursor: pointer; padding: 4px 6px; border-radius: 6px; font-size: 12px; }
-.session-act:hover { background: #ebe6dc; color: #171717; }
-.session-act.danger:hover { background: #fdecec; color: #c0392b; }
+.session-act { border: 0; background: transparent; color: var(--c-secondary); cursor: pointer; padding: 4px 6px; border-radius: 6px; font-size: 12px; }
+.session-act:hover { background: var(--c-muted-hover); color: var(--c-fg); }
+.session-act.danger:hover { background: rgba(248, 113, 113, 0.12); color: var(--c-danger); }
 
 /* ── 会话历史气泡 ── */
 .chat-turns { display: flex; flex-direction: column; gap: 10px; }
-.chat-q { align-self: flex-end; max-width: 78%; background: linear-gradient(135deg, #171717, #3a342b); color: #fff; padding: 9px 16px; border-radius: 16px 16px 4px 16px; font-size: 13.5px; line-height: 1.6; box-shadow: 0 8px 20px rgba(23, 23, 23, 0.12); }
-.chat-a { align-self: flex-start; max-width: 90%; background: rgba(255,255,255,0.9); border: 1px solid #ebe6dc; padding: 6px 16px; border-radius: 16px 16px 16px 4px; font-size: 13.5px; }
+.chat-q { align-self: flex-end; max-width: 78%; background: color-mix(in srgb, var(--c-accent) 20%, var(--c-panel)); border: 1px solid color-mix(in srgb, var(--c-accent) 32%, transparent); color: var(--c-fg); padding: 9px 16px; border-radius: 16px 16px 4px 16px; font-size: 13.5px; line-height: 1.6; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25); }
+.chat-a { align-self: flex-start; max-width: 90%; background: var(--c-panel); border: 1px solid var(--c-border); padding: 6px 16px; border-radius: 16px 16px 16px 4px; font-size: 13.5px; }
 .chat-a :first-child { margin-top: 0; }
 .chat-a :last-child { margin-bottom: 0; }
 </style>

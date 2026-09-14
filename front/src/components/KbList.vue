@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchKbs, updateKb, deleteKb as apiDeleteKb, batchDeleteKbs, getKb } from '../api'
 import CreateKbModal from './CreateKbModal.vue'
@@ -206,7 +206,34 @@ const stats = computed(() => {
   }
 })
 
-async function loadKbs() { try { kbs.value = await fetchKbs() } catch {} }
+let loadInFlight = false
+async function loadKbs() {
+  if (loadInFlight) return
+  loadInFlight = true
+  try { kbs.value = await fetchKbs() } catch {} finally { loadInFlight = false }
+}
+
+// ── 处理中自动刷新：列表存在处理中任务时轮询，全部完成/页面失活时停止 ──
+const POLL_INTERVAL = 3000
+let pollTimer = null
+
+function hasProcessing() {
+  return kbs.value.some(kb => (kb.processing_files || 0) > 0)
+}
+
+async function pollTick() {
+  await loadKbs()
+  if (!hasProcessing() && pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+
+function syncPolling() {
+  if (hasProcessing() && !pollTimer) pollTimer = setInterval(pollTick, POLL_INTERVAL)
+  else if (!hasProcessing() && pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
 
 async function removeKb(kbId, e) {
   e && e.stopPropagation()
@@ -252,7 +279,17 @@ function onKbCreated(kbId) { showCreateModal.value = false; router.push('/kb/' +
 
 function goDetail(kbId) { router.push('/kb/' + kbId) }
 
-onMounted(loadKbs)
+// 路由 KeepAlive 会缓存本页：首次挂载 onMounted/onActivated 都触发，
+// 从详情页返回时仅触发 onActivated —— 两处都刷新保证数据最新
+onMounted(refresh)
+onActivated(refresh)
+onDeactivated(stopPolling)
+onUnmounted(stopPolling)
+
+async function refresh() {
+  await loadKbs()
+  syncPolling()
+}
 </script>
 
 <template>
