@@ -1,7 +1,7 @@
 """OAG（Ontology-Augmented Generation，本体增强生成）智能体服务。
 
 与纯向量 RAG（rag_service）的差异：
-1. 检索融合：向量召回 + 图谱召回（实体 MENTIONS 反查分片），RRF 融合重排
+1. 检索融合：向量 + BM25 + 图谱（实体 MENTIONS 反查分片）三路 RRF 融合，Rerank 精排后截断
 2. 上下文融合：把命中实体的属性 + 1 跳关系注入 prompt 作为「图谱事实」
 3. 推理过程可视化：先下发 entities / subgraph / chunks，再流式 token
 
@@ -27,6 +27,7 @@ from providers.graph_store import (
 from providers.bm25 import get_or_build_index, tokenize
 from providers.llm import chunk_text, create_llm, extract_reasoning
 from providers.retrieval import chunk_id_from_vector_metadata, rrf_fuse
+from providers.rerank import rerank
 from providers.vector_store import create_vector_store
 
 logger = logging.getLogger(__name__)
@@ -427,15 +428,19 @@ class OAGService:
         graph_by_id = {c["chunk_id"]: c for c in graph_chunks}
         graph_id_set = set(graph_by_id.keys())
 
-        # ===== 5. RRF 三路融合重排（向量 + BM25 + 图谱）=====
+        # ===== 5. RRF 三路融合（向量 + BM25 + 图谱）→ Rerank 精排 =====
         vector_rank_list = list(vector_by_id.keys())  # 已按相似度降序
         bm25_rank_list = list(bm25_rank)              # 已按 BM25 分数降序
         graph_rank_list = list(graph_by_id.keys())
         fused = _rrf_fuse([vector_rank_list, bm25_rank_list, graph_rank_list])
-        top_n = fused[: settings.OAG_TOP_N]
+        # 精排需要更大的候选池，否则只是把 TOP_N 内部重新排序，收益有限（与 rag_service 同策略）
+        candidate_limit = (
+            max(settings.OAG_TOP_N, settings.RERANK_CANDIDATE_K)
+            if settings.RERANK_ENABLED else settings.OAG_TOP_N
+        )
 
-        final_chunks: list[dict] = []
-        for idx, (cid, _rrf) in enumerate(top_n):
+        candidates: list[dict] = []
+        for cid, _rrf in fused[:candidate_limit]:
             in_vec = cid in vector_id_set
             in_bm25 = cid in bm25_by_id
             in_graph = cid in graph_id_set
@@ -447,19 +452,34 @@ class OAGService:
             base = vector_by_id.get(cid) or bm25_by_id.get(cid) or graph_by_id.get(cid)
             if not base:
                 continue
-            final_chunks.append({
+            candidates.append({
                 "chunk_id": cid,
                 "file_id": base.get("file_id", ""),
                 "file_name": base.get("file_name", ""),
                 "text": base.get("content", ""),
                 "score": base.get("score"),
-                "index": idx + 1,
                 "retrieval": retrieval,
                 "start_offset": base.get("start_offset"),
                 "end_offset": base.get("end_offset"),
                 "page_number": base.get("page_number"),
                 "file_ext": base.get("file_ext", ""),
             })
+
+        # Rerank 精排：cross-encoder/LLM 对候选分片与问题逐对打分重排；失败降级保留 RRF 序
+        limit = settings.OAG_TOP_N
+        rerank_applied = False
+        if settings.RERANK_ENABLED and candidates:
+            reranked = await rerank(query, candidates, settings.RERANK_TOP_N, llm)
+            if reranked:
+                candidates = reranked
+                limit = settings.RERANK_TOP_N
+                rerank_applied = True
+            else:
+                logger.info("OAG rerank unavailable, keep RRF order")
+
+        final_chunks = candidates[:limit]
+        for idx, item in enumerate(final_chunks):
+            item["index"] = idx + 1
 
         def _has_tag(tag: str, r: str) -> bool:
             return tag in r.split("+")
@@ -490,8 +510,15 @@ class OAGService:
                           "作为图谱事实注入上下文",
             },
             {
-                "key": "fuse", "name": "RRF 融合重排", "count": len(final_chunks), "unit": "条引用",
-                "detail": "三路召回按倒数排名融合去重，重排后作为引用上下文交由 LLM 生成回答",
+                "key": "fuse", "name": "RRF 融合", "count": len(candidates), "unit": "条候选",
+                "detail": "三路召回按倒数排名融合去重，输出统一候选池",
+            },
+            {
+                "key": "rerank", "name": "Rerank 精排", "count": len(final_chunks), "unit": "条引用",
+                "detail": (
+                    f"cross-encoder/LLM 对候选分片与问题逐对相关性打分重排（{settings.RERANK_PROVIDER}）"
+                    if rerank_applied else "精排未启用或不可用，保留 RRF 融合顺序作为引用"
+                ),
             },
         ]
 
@@ -510,10 +537,10 @@ class OAGService:
 
         logger.info(
             "OAG pipeline: kb_id=%s query=%r vec=%d bm25=%d graph=%d fused=%d entities=%d "
-            "degraded=%s retry=%s",
+            "degraded=%s retry=%s rerank=%s",
             kb_id, query[:40], len(vector_chunks), len(bm25_by_id), len(graph_chunks),
             len(final_chunks), len(seed_entities), retrieval_path["degraded"],
-            empty_recall_retry,
+            empty_recall_retry, rerank_applied,
         )
 
         # ===== 6/7. 下发推理过程事件 + 流式生成 =====

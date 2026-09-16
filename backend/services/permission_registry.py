@@ -90,6 +90,8 @@ EXTRA_PERMISSIONS: list[tuple[str, str, str, str, str]] = [
 # (method, path_pattern, perm_code)
 # 说明：GET 默认不强制鉴权，但显式规则可以覆盖（用于日志/用户等敏感只读接口）。
 EXPLICIT_RULES: list[tuple[str, str, str]] = [
+    # 多智能体研判是只读分析（SSE 走 POST），归 view 而非 create，且对场景无关
+    ("POST", "/api/agent/multi/**", "agent:view"),
     # 系统管理（GET 也需校验，防止绕过页面直接调接口）
     ("GET", "/api/audit/logs/export", "system:audit:export"),
     ("GET", "/api/audit/**", "system:audit:view"),

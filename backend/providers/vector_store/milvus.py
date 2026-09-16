@@ -1,11 +1,16 @@
-"""Milvus 向量库 adapter。"""
+"""Milvus 向量库 adapter。
+
+全部走 pymilvus 的 MilvusClient API（ORM 风格的 Collection/connections/utility
+在 PyMilvus 3.1 中移除，此处统一迁移以消除 PyMilvusDeprecationWarning）。
+"""
 
 from __future__ import annotations
 
 import logging
 import threading
 from itertools import islice
-from uuid import uuid4
+
+from langchain_core.embeddings import Embeddings
 
 from config import settings
 
@@ -39,6 +44,26 @@ def _collection_name(kb_id: str) -> str:
     if name and (name[0].isalpha() or name[0] == "_"):
         return name
     return f"kb_{name}"
+
+
+def _connect_client():
+    """新建 MilvusClient 连接。MilvusClient 持有独立连接，调用方负责 close。"""
+    from pymilvus import MilvusClient
+
+    return MilvusClient(uri=f"http://{settings.MILVUS_HOST}:{settings.MILVUS_PORT}")
+
+
+def _close_client(client) -> None:
+    try:
+        client.close()
+    except Exception:
+        pass
+
+
+def _pk_field_of(desc: dict | None):
+    """从 describe_collection 结果中取主键字段描述。"""
+    fields = (desc or {}).get("fields") or []
+    return next((f for f in fields if f.get("is_primary")), None)
 
 
 class MilvusAdapter(VectorStoreAdapter):
@@ -88,39 +113,34 @@ class MilvusAdapter(VectorStoreAdapter):
                 _checked_collections.add(name)
 
     def _rebuild_int_pk_collection(self, name: str, embeddings: Embeddings) -> None:
-        from pymilvus import Collection, DataType, utility
+        from pymilvus import DataType
 
-        alias = f"mig_{uuid4().hex[:8]}"
-        self._connect(alias)
+        client = _connect_client()
         try:
-            if not utility.has_collection(name, using=alias):
+            if not client.has_collection(name):
                 return
-            col = Collection(name, using=alias)
-            pk_field = next((f for f in col.schema.fields if f.is_primary), None)
-            if pk_field is None or pk_field.dtype != DataType.INT64:
+            pk_field = _pk_field_of(client.describe_collection(name))
+            if pk_field is None or pk_field.get("type") != DataType.INT64:
                 return
-            self._migrate_legacy_collection(col, name, alias, embeddings)
+            self._migrate_legacy_collection(client, name, embeddings)
         finally:
-            self._disconnect(alias)
+            _close_client(client)
 
-    def _migrate_legacy_collection(
-        self, col, name: str, alias: str, embeddings: Embeddings
-    ) -> None:
-        from pymilvus import Collection, utility
-
+    def _migrate_legacy_collection(self, client, name: str, embeddings: Embeddings) -> None:
         logger.warning(
             "Migrating Milvus collection %s: int auto-id pk -> chunk_id varchar pk", name
         )
-        col.load()
+        client.load_collection(name)
 
         ids: list[str] = []
         texts: list[str] = []
         vectors: list = []
         metadatas: list[dict] = []
         seen: set[str] = set()
-        iterator = col.query_iterator(
+        iterator = client.query_iterator(
+            name,
             batch_size=_MIGRATE_BATCH,
-            expr="",
+            filter="",
             output_fields=["pk", "text", "vector", "*"],
         )
         try:
@@ -149,38 +169,40 @@ class MilvusAdapter(VectorStoreAdapter):
                     vectors.append(entity.get("vector"))
                     metadatas.append(metadata)
         finally:
-            iterator.close()
+            try:
+                iterator.close()
+            except Exception:
+                pass
 
         if not ids:
-            utility.drop_collection(name, using=alias)
+            client.drop_collection(name)
             logger.info("Dropped empty legacy Milvus collection: %s", name)
             return
 
         tmp_name = f"{name}__migrate"
-        if utility.has_collection(tmp_name, using=alias):
-            utility.drop_collection(tmp_name, using=alias)
+        if client.has_collection(tmp_name):
+            client.drop_collection(tmp_name)
         try:
             store = self._build_store(tmp_name, embeddings)
             store.add_embeddings(
                 texts=texts, embeddings=vectors, metadatas=metadatas, ids=ids
             )
-            tmp_col = Collection(tmp_name, using=alias)
-            tmp_col.flush()
+            client.flush(tmp_name)
             written = self._fetch_entity_count(tmp_name)
             if written < len(ids):
                 raise RuntimeError(
                     f"migration incomplete: {written}/{len(ids)} entities rewritten"
                 )
-            utility.drop_collection(name, using=alias)
-            utility.rename_collection(tmp_name, name, using=alias)
+            client.drop_collection(name)
+            client.rename_collection(tmp_name, name)
             logger.info(
                 "Migrated Milvus collection %s: %s entities rewritten with chunk_id pk",
                 name,
                 written,
             )
         except Exception:
-            if utility.has_collection(tmp_name, using=alias):
-                utility.drop_collection(tmp_name, using=alias)
+            if client.has_collection(tmp_name):
+                client.drop_collection(tmp_name)
             raise
 
     def delete_by_ids(self, kb_id: str, ids: list[str], embeddings: Embeddings = None) -> int:
@@ -192,19 +214,17 @@ class MilvusAdapter(VectorStoreAdapter):
         if not ids:
             return 0
 
-        from pymilvus import Collection, DataType, utility
+        from pymilvus import DataType
 
         name = _collection_name(kb_id)
-        alias = f"del_{uuid4().hex[:8]}"
-        self._connect(alias)
+        client = _connect_client()
         try:
-            if not utility.has_collection(name, using=alias):
+            if not client.has_collection(name):
                 return 0
-            col = Collection(name, using=alias)
-            pk_field = next((f for f in col.schema.fields if f.is_primary), None)
+            pk_field = _pk_field_of(client.describe_collection(name))
 
             deleted = 0
-            if pk_field is not None and pk_field.dtype == DataType.INT64:
+            if pk_field is not None and pk_field.get("type") == DataType.INT64:
                 file_ids = sorted({cid.rsplit("_", 1)[0] for cid in ids if "_" in cid})
                 if not file_ids:
                     return 0
@@ -213,77 +233,57 @@ class MilvusAdapter(VectorStoreAdapter):
                     "deleting by file_id filter instead",
                     name,
                 )
-                deleted += self._delete_count(col.delete(f"file_id in {file_ids!r}"))
+                deleted += self._delete_count(
+                    client.delete(name, filter=f"file_id in {file_ids!r}")
+                )
             else:
                 iterator = iter(ids)
                 while batch := list(islice(iterator, _PK_EXPR_BATCH)):
-                    deleted += self._delete_count(col.delete(f"pk in {batch!r}"))
+                    deleted += self._delete_count(
+                        client.delete(name, filter=f"pk in {batch!r}")
+                    )
 
             if deleted:
-                col.flush()
+                client.flush(name)
             return deleted
         finally:
-            self._disconnect(alias)
+            _close_client(client)
 
     @staticmethod
     def _delete_count(result) -> int:
-        count = getattr(result, "delete_count", None)
-        if count is None:
-            count = getattr(result, "delete_cnt", None)
+        if isinstance(result, dict):
+            count = result.get("delete_count")
+        else:
+            count = getattr(result, "delete_count", None)
+            if count is None:
+                count = getattr(result, "delete_cnt", None)
         return int(count or 0)
 
-    def _connect(self, alias: str):
-        """建立连接并返回别名，调用方负责在 finally 中断开。"""
-        from pymilvus import connections
-
-        connections.connect(alias=alias, host=settings.MILVUS_HOST, port=settings.MILVUS_PORT)
-        return alias
-
-    @staticmethod
-    def _disconnect(alias: str):
-        from pymilvus import connections
-
-        try:
-            connections.disconnect(alias)
-        except Exception:
-            pass
-
     def delete_collection(self, kb_id: str):
-        from pymilvus import utility
-
         name = _collection_name(kb_id)
-        alias = f"del_{id(kb_id) & 0xFFFFFF:X}"
-        self._connect(alias)
+        client = _connect_client()
         try:
-            if utility.has_collection(name, using=alias):
-                utility.drop_collection(name, using=alias)
+            if client.has_collection(name):
+                client.drop_collection(name)
         finally:
-            self._disconnect(alias)
+            _close_client(client)
 
     def health_check(self) -> tuple[bool, str, dict]:
-        from pymilvus import connections
-
         try:
-            connections.connect(
-                alias="monitor_health",
-                host=settings.MILVUS_HOST,
-                port=settings.MILVUS_PORT,
-            )
+            client = _connect_client()
+        except Exception as e:
+            return False, f"connection failed: {e}", {}
+        try:
             try:
-                from pymilvus import utility
-
-                has_default = utility.has_collection("default", using="monitor_health")
+                has_default = client.has_collection("default")
                 extra = {"has_default_collection": bool(has_default)}
             except Exception:
                 extra = {}
-            finally:
-                try:
-                    connections.disconnect("monitor_health")
-                except Exception:
-                    pass
             return True, f"connected to {settings.MILVUS_HOST}:{settings.MILVUS_PORT}", extra
         except Exception as e:
             return False, f"connection failed: {e}", {}
+        finally:
+            _close_client(client)
 
     def describe_target(self) -> str:
         return f"{settings.MILVUS_HOST}:{settings.MILVUS_PORT}"
@@ -296,20 +296,11 @@ class MilvusAdapter(VectorStoreAdapter):
                 "（Milvus 依赖 etcd/minio，启动较慢请稍候重试）")
 
     def list_collections(self) -> list[str]:
-        from pymilvus import connections, utility
-
-        connections.connect(
-            alias="monitor_list",
-            host=settings.MILVUS_HOST,
-            port=settings.MILVUS_PORT,
-        )
+        client = _connect_client()
         try:
-            return list(utility.list_collections(using="monitor_list"))
+            return list(client.list_collections())
         finally:
-            try:
-                connections.disconnect("monitor_list")
-            except Exception:
-                pass
+            _close_client(client)
 
     def query_collection(
         self,
@@ -340,27 +331,27 @@ class MilvusAdapter(VectorStoreAdapter):
         if not ids:
             return records
 
-        from pymilvus import Collection, DataType, utility
+        from pymilvus import DataType
 
         name = _collection_name(kb_id)
-        alias = f"enr_{uuid4().hex[:8]}"
-        self._connect(alias)
+        client = _connect_client()
         try:
-            if not utility.has_collection(name, using=alias):
+            if not client.has_collection(name):
                 return records
-            col = Collection(name, using=alias)
-            col.load()
-            pk_field = next((f for f in col.schema.fields if f.is_primary), None)
-            if pk_field is not None and pk_field.dtype != DataType.VARCHAR:
+            client.load_collection(name)
+            pk_field = _pk_field_of(client.describe_collection(name))
+            if pk_field is not None and pk_field.get("type") != DataType.VARCHAR:
                 # 存量 int 主键集合：只能按 file_id / chunk_index 回查
-                raw = self._query_legacy_by_file(col, records)
+                raw = self._query_legacy_by_file(client, name, records)
             else:
                 # pk 由 langchain 写入时为字符串（chunk_id），用 in 表达式批量回查
-                raw = col.query(expr=f"pk in {ids!r}", output_fields=["pk", "text"])
+                raw = client.query(
+                    name, filter=f"pk in {ids!r}", output_fields=["pk", "text"]
+                )
         except Exception:
             return records
         finally:
-            self._disconnect(alias)
+            _close_client(client)
 
         store_map = {}
         for entity in raw or []:
@@ -391,13 +382,14 @@ class MilvusAdapter(VectorStoreAdapter):
         ]
 
     @staticmethod
-    def _query_legacy_by_file(col, records: list[dict]) -> list[dict]:
+    def _query_legacy_by_file(client, name: str, records: list[dict]) -> list[dict]:
         """存量 int 主键集合的回查：按 file_id 批量取，再用 chunk_index 对齐。"""
         file_ids = sorted({r.get("file_id") for r in records if r.get("file_id")})
         if not file_ids:
             return []
-        return col.query(
-            expr=f"file_id in {file_ids!r}",
+        return client.query(
+            name,
+            filter=f"file_id in {file_ids!r}",
             output_fields=["file_id", "chunk_index", "text"],
         )
 
@@ -406,55 +398,56 @@ class MilvusAdapter(VectorStoreAdapter):
 
         使用 query_iterator 分批拉取，避免 Milvus 单次 query 的返回条数上限。
         """
-        from pymilvus import Collection, utility
-
         name = _collection_name(kb_id)
-        alias = f"lst_{id(kb_id) & 0xFFFFFF:X}"
-        self._connect(alias)
+        client = _connect_client()
         try:
-            if not utility.has_collection(name, using=alias):
+            if not client.has_collection(name):
                 return []
-            col = Collection(name, using=alias)
-            col.load()
+            client.load_collection(name)
 
             results: list[dict] = []
-            iterator = col.query_iterator(batch_size=1000, expr="", output_fields=["pk", "text"])
-            while True:
-                batch = iterator.next()
-                if not batch:
+            iterator = client.query_iterator(
+                name, batch_size=1000, filter="", output_fields=["pk", "text"]
+            )
+            try:
+                while True:
+                    batch = iterator.next()
+                    if not batch:
+                        break
+                    for entity in batch:
+                        metadata = {
+                            k: v for k, v in entity.items()
+                            if k not in _MILVUS_RESERVED_FIELDS
+                        }
+                        results.append({
+                            "id": entity.get("pk"),
+                            "content": entity.get("text") or "",
+                            "metadata": metadata,
+                        })
+            finally:
+                try:
                     iterator.close()
-                    break
-                for entity in batch:
-                    metadata = {k: v for k, v in entity.items() if k not in _MILVUS_RESERVED_FIELDS}
-                    results.append({
-                        "id": entity.get("pk"),
-                        "content": entity.get("text") or "",
-                        "metadata": metadata,
-                    })
+                except Exception:
+                    pass
             return results
         except Exception:
             return []
         finally:
-            self._disconnect(alias)
+            _close_client(client)
 
     @staticmethod
     def _fetch_entity_count(name: str) -> int:
-        """统计集合实体数（MilvusClient 版，替代已弃用的 Collection.num_entities）。
+        """统计集合实体数。
 
-        get_collection_stats 返回已 flush 的行数，与 num_entities 语义一致，
-        且无需将集合加载（load）进内存。
+        get_collection_stats 返回已 flush 的行数，与旧 Collection.num_entities
+        语义一致，且无需将集合加载（load）进内存。
         """
-        from pymilvus import MilvusClient
-
-        client = MilvusClient(uri=f"http://{settings.MILVUS_HOST}:{settings.MILVUS_PORT}")
+        client = _connect_client()
         try:
             stats = client.get_collection_stats(name) or {}
             return int(stats.get("row_count") or 0)
         finally:
-            try:
-                client.close()
-            except Exception:
-                pass
+            _close_client(client)
 
     def kb_document_count(self, kb_id: str) -> int:
         try:

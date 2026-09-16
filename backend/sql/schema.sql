@@ -305,6 +305,17 @@ CREATE TABLE IF NOT EXISTS agent_skills (
     created_at VARCHAR,
     updated_at VARCHAR
 );
+
+CREATE TABLE IF NOT EXISTS multi_agent_tasks (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    prompt TEXT NOT NULL DEFAULT '',
+    agents TEXT NOT NULL DEFAULT '[]',
+    is_preset INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_skills_code ON agent_skills(code);
 
 -- ===== 技能分组（全局，任意层级嵌套）=====

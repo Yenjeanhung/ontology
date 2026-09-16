@@ -766,6 +766,26 @@ class AgentSkillGroup(Base):
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
+class MultiAgentTask(Base):
+    """多智能体任务库：可配置、可编辑的任务提示词模板（通用团队的任务配置）。
+
+    prompt 为任务提示词模板，支持 ``{question}`` 占位符——运行时用用户输入的
+    具体问题替换；模板未含占位符时，问题拼接在模板之后。agents 为选中该任务
+    时应用的默认团队编制（可选能力智能体 id 的 JSON 数组字符串）。
+    """
+
+    __tablename__ = "multi_agent_tasks"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String(100), nullable=False)
+    prompt = Column(Text, nullable=False, default="")
+    agents = Column(Text, nullable=False, default="[]")  # JSON 数组，如 ["retriever","graph_agent","critic"]
+    is_preset = Column(Integer, nullable=False, default=0)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
 class AgentSkillSeedTombstone(Base):
     """已删除预设技能的 code 墓碑：seed_presets 跳过这些 code，防止重启复活。"""
 

@@ -710,3 +710,15 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at VARCHAR
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+
+-- migration_034: 多智能体任务库（可配置任务提示词模板，doc/智能体/多智能体场景.md §5.5）
+CREATE TABLE IF NOT EXISTS multi_agent_tasks (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    prompt TEXT NOT NULL DEFAULT '',
+    agents TEXT NOT NULL DEFAULT '[]',
+    is_preset INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
