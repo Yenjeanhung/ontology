@@ -1,22 +1,30 @@
 # -*- coding: utf-8 -*-
-"""KnowSource 平台 MCP 服务器（stdio 传输）。
+"""KnowSource 平台 MCP 服务器（stdio / streamable-http 双传输）。
 
 把平台既有数据能力（知识库检索 / 图谱查询 / 台账统计）通过 MCP
 （Model Context Protocol）暴露给外部 Agent 宿主（Claude Desktop、Cursor、
 其它 MCP Client）——与 services/tool_registry.py 的内置工具共用同一批
 handler 实现，一处能力、两种消费方式：
 - 平台内部：ToolAgent 的 Function Calling 循环直接调用；
-- 平台外部：任何 MCP 客户端经 stdio 接入后以工具形式调用。
+- 平台外部：任何 MCP 客户端经 stdio / streamable-http 接入后以工具形式调用。
 
 用法：
     cd backend
-    python scripts/mcp_server.py
+    python scripts/mcp_server.py                          # stdio（默认）
+    python scripts/mcp_server.py --http --port 9800       # streamable-http
+    # 端点：http://<host>:9800/mcp （可填入「MCP 工具管理」注册中心自消费）
+
+鉴权（仅 HTTP 模式）：--token <密钥>（或环境变量 MCP_EXPOSE_TOKEN），
+客户端请求需带 Authorization: Bearer <密钥>；不设置则不鉴权（建议仅内网/反代后使用）。
+stdio 模式由客户端拉起进程，属进程级信任，不涉及鉴权。
 
 客户端接入示例（settings.MCP_SERVERS 或 Claude Desktop 配置）：
     {"name": "knowsource", "transport": "stdio",
      "command": "python", "args": ["scripts/mcp_server.py"]}
 """
 
+import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -57,6 +65,62 @@ async def data_query(keywords: list[str], limit: int = 8) -> dict:
     return await builtin_data_query(keywords=keywords, limit=limit)
 
 
+class BearerMiddleware:
+    """极简 ASGI Bearer Token 校验（HTTP 模式可选鉴权，不引入额外依赖）。"""
+
+    def __init__(self, app, token: str) -> None:
+        self.app = app
+        self.token = str(token).strip()
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            headers = {k.lower(): v for k, v in scope.get("headers", [])}
+            expected = f"Bearer {self.token}".encode()
+            if headers.get(b"authorization") != expected:
+                await send({
+                    "type": "http.response.start", "status": 401,
+                    "headers": [(b"content-type", b"application/json")],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": b'{"error":"unauthorized: invalid or missing bearer token"}',
+                })
+                return
+        await self.app(scope, receive, send)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="KnowSource MCP 服务器（对外提供平台能力）")
+    parser.add_argument("--http", action="store_true",
+                        help="以 streamable-http 启动（默认 stdio）")
+    parser.add_argument("--host", default="0.0.0.0", help="HTTP 监听地址，默认 0.0.0.0")
+    parser.add_argument("--port", type=int, default=9800, help="HTTP 监听端口，默认 9800")
+    parser.add_argument("--token", default=os.getenv("MCP_EXPOSE_TOKEN", ""),
+                        help="Bearer Token（HTTP 模式可选鉴权；缺省读 MCP_EXPOSE_TOKEN）")
+    args = parser.parse_args()
+
+    if not args.http:
+        # stdio 传输：由 MCP 客户端拉起本进程，经标准输入输出通信
+        # （stdout 是协议通道，此处不得 print 任何内容）
+        mcp.run()
+        return
+
+    try:
+        app = mcp.streamable_http_app()
+    except AttributeError as exc:
+        raise SystemExit(
+            "当前 mcp SDK 不支持 streamable-http（需 >=1.8），"
+            "请升级：pip install -U 'mcp>=1.8,<2'"
+        ) from exc
+    if args.token:
+        app = BearerMiddleware(app, args.token)
+        print(f"[mcp_server] streamable-http 已启动: http://{args.host}:{args.port}/mcp （Bearer 鉴权已启用）")
+    else:
+        print(f"[mcp_server] streamable-http 已启动: http://{args.host}:{args.port}/mcp （未鉴权，仅限内网使用）")
+
+    import uvicorn
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+
+
 if __name__ == "__main__":
-    # stdio 传输：由 MCP 客户端拉起本进程，经标准输入输出通信
-    mcp.run()
+    main()

@@ -21,6 +21,12 @@ Examples 结构（LangSmith UI「Datasets & Experiments」中维护，或 --seed
 用法（脚本自动定位 backend/，任意目录可执行）：
   python scripts/langsmith/eval_langsmith.py                          # 全量跑一轮回归
   python scripts/langsmith/eval_langsmith.py --limit 3                # 只取前 3 条（控额度）
+  python scripts/langsmith/eval_langsmith.py --concurrency 1          # 串行跑（本地模型加载慢时用）
+  python scripts/langsmith/eval_langsmith.py --timeout 120            # 单条 120s 超时（卡点定位用）
+  python scripts/langsmith/eval_langsmith.py --no-log                 # 不落盘日志
+
+日志：默认在脚本旁写 eval_时间戳.log，控制台同步输出（用 tqdm.write，不被进度条吞）。
+每条打印 [序号] 开始/完成 → 各节点启动/完成 → 三个评估器得分；卡住时最后一行即卡点。
   python scripts/langsmith/eval_langsmith.py --dataset 我的数据集名    # 指定数据集
   python scripts/langsmith/eval_langsmith.py --seed                   # 数据集不存在时播种示例
 
@@ -42,6 +48,7 @@ import json
 import re
 import sys
 import time
+from datetime import datetime  # noqa: E402
 from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -75,7 +82,7 @@ from langsmith import Client, aevaluate  # noqa: E402
 
 from services.multi_agent.scenarios.universal import UniversalScenario  # noqa: E402
 
-DEFAULT_DATASET = "myTest"   # UI 已建数据集；建议改为语义化名称（如 multi-agent-取证回归）
+DEFAULT_DATASET = "multi-agent-regression"   # UI 已建数据集；建议改为语义化名称（如 multi-agent-取证回归）
 
 # 播种示例（仅当数据集不存在且指定 --seed 时创建；reference 请对照知识库人工修订）
 SEED_SAMPLES = [
@@ -131,7 +138,69 @@ def _extract_task(inputs) -> str:
     return str(raw or "").strip()
 
 
+_run_timeout = 300    # 单条 Example 的整体超时（秒）：见 target() 说明
+_total = 0            # 本轮 Example 总数（main 里设置，仅用于日志编号）
+_seq = 0              # 已完成/正在执行的条数
+_log_path: Path | None = None
+
+
+def log(msg: str) -> None:
+    """统一日志：控制台实时输出 + 同内容落盘。
+
+    控制台用 tqdm.write 而非 print——langsmith 的进度条会吞掉裸 print；
+    同时 flush 保证卡住时也能看到最后一行（定位卡在哪个节点）。
+    """
+    line = f"[{datetime.now():%H:%M:%S}] {msg}"
+    try:
+        from tqdm import tqdm
+        tqdm.write(line)
+    except Exception:
+        print(line, flush=True)
+    if _log_path is not None:
+        try:
+            with _log_path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+
+
+async def _pump_events(engine, stop: asyncio.Event, sink: list) -> None:
+    """边跑边消费引擎事件队列，实时打印节点进度。
+
+    卡住时最后一行日志就是"卡在哪个节点"的直接证据；事件同时存进 sink，
+    供 build_trajectory 组装轨迹（队列只能消费一次）。
+    """
+    while not stop.is_set():
+        try:
+            evt = engine.q.get_nowait()
+        except asyncio.QueueEmpty:
+            await asyncio.sleep(1)
+            continue
+        sink.append(evt)
+        kind = evt.get("type")
+        if kind == "node_start":
+            log(f"    ├ 启动 {evt.get('node')}（{evt.get('role')}）")
+        elif kind == "node_done":
+            log(f"    └ 完成 {evt.get('node')}：{evt.get('summary', '')}")
+
+
 async def target(inputs: dict) -> dict:
+    """单条入口：引擎全流程 + 整体超时兜底。
+
+    引擎内部有同步阻塞调用（向量检索 / 本地模型推理），Milvus 或向量库不可达时
+    可能挂起且不自愈——没有整体超时的话，一条卡死就会拖住整轮（进度条不再前进）。
+    这里给每条设上限，超时抛错由 LangSmith 记为该 run 的 error，整轮继续跑。
+    """
+    try:
+        return await asyncio.wait_for(_run_engine(inputs), timeout=_run_timeout)
+    except asyncio.TimeoutError:
+        raise TimeoutError(
+            f"单条超过 {_run_timeout}s 未完成（引擎节点或向量检索挂起），已放弃该条"
+        )
+
+
+async def _run_engine(inputs: dict) -> dict:
+    global _seq
     task = _extract_task(inputs)
     if not task:
         keys = list(inputs.keys()) if isinstance(inputs, dict) else type(inputs).__name__
@@ -139,23 +208,40 @@ async def target(inputs: dict) -> dict:
             f"Example inputs 缺少任务描述（期望 {{\"task\": \"...\"}}，实际 keys={keys}）。"
             f"请在 LangSmith UI 修正该 Example 的 inputs，或删除数据集后用 --seed 重新播种。"
         )
+    _seq += 1
+    seq = _seq
+    log(f"[{seq}/{_total}] 开始：{task[:48]}…")
+
     scenario = UniversalScenario()
     engine = await scenario.build_engine_from_task(task)
-    final = await engine.run()          # engine.py: run() -> 终态 dict
+
+    events: list[dict] = []
+    stop = asyncio.Event()
+    pump = asyncio.create_task(_pump_events(engine, stop, events))
+    t0 = time.monotonic()
+    try:
+        final = await engine.run()      # engine.py: run() -> 终态 dict
+    finally:
+        stop.set()
+        await pump
+
+    conclusion = final.get("conclusion", "")
+    facts = final.get("facts", [])
+    log(f"[{seq}/{_total}] 完成：{(time.monotonic() - t0):.0f}s｜"
+        f"结论 {len(conclusion)} 字｜事实卡 {len(facts)} 张｜事件 {len(events)} 条")
     return {
-        "conclusion": final.get("conclusion", ""),
-        "facts": final.get("facts", []),
+        "conclusion": conclusion,
+        "facts": facts,
         "verdict": final.get("verdict", {}),
         "elapsed_ms": final.get("elapsed_ms"),
-        "trajectory": build_trajectory(engine, task, final.get("conclusion", "")),
+        "trajectory": build_trajectory(events, task, conclusion),
     }
 
 
-def build_trajectory(engine, task: str, conclusion: str) -> list[dict]:
+def build_trajectory(events: list[dict], task: str, conclusion: str) -> list[dict]:
     """把引擎事件流还原成 agentevals 轨迹（OpenAI messages 形态）。
 
-    引擎把过程事件推入 engine.q（node_start / node_done / evidence / fact…，
-    跑批时无人消费，队列里就是完整过程）。这里映射成：
+    事件由 _pump_events 边跑边收集（队列只能消费一次）。映射规则：
       user               = 用户任务
       assistant+tool_call = 节点启动（工具名=节点名，入参=子任务目标）
       tool               = 节点完成（返回=节点产出摘要）
@@ -163,11 +249,7 @@ def build_trajectory(engine, task: str, conclusion: str) -> list[dict]:
     这样 judge 看到的不是"结论对不对"，而是"这条执行路径合不合理"。
     """
     msgs: list[dict] = [{"role": "user", "content": task}]
-    while True:
-        try:
-            evt = engine.q.get_nowait()
-        except asyncio.QueueEmpty:
-            break
+    for evt in events:
         kind = evt.get("type")
         if kind == "node_start":
             msgs.append({
@@ -193,8 +275,49 @@ def build_trajectory(engine, task: str, conclusion: str) -> list[dict]:
     return msgs
 
 
+def warmup_local_models() -> None:
+    """跑批前先把本地嵌入模型加载好。
+
+    两个坑绑在一起，不预热就会表现为"卡住"：
+    1. 本地嵌入模型是同步加载，会阻塞 event loop，加载期间进度条纹丝不动；
+    2. create_embeddings() 是全局单例但没锁，并发两条 Example 会同时进入加载分支，
+       于是同一份权重被加载两次（控制台能看到两次 Loading weights）。
+    预热放在 asyncio.run 之前，串行加载一次，后续并发直接命中单例。
+    """
+    try:
+        from providers.embedding import create_embeddings
+        create_embeddings().embed_query("预热")
+        log("[warmup] 本地嵌入模型已加载")
+    except Exception as e:
+        log(f"[warn] 嵌入模型预热失败（检索节点会自行降级）：{e}")
+
+
 # ── 3. evaluator ①：引用可溯源（确定性，零成本） ─────────────────────
+def _log_eval(res: dict) -> dict:
+    """评估器统一出口：打一行分，再返回（comment 截断避免刷屏）。"""
+    comment = str(res.get("comment") or "")
+    log(f"    · {res['key']}={res['score']}｜{comment[:110]}")
+    return res
+
+
+def target_failed_reason(run) -> str | None:
+    """target 跑挂（超时/异常）时返回原因，正常返回 None。
+
+    必须显式判：citation_valid 遇到空输出会得出"无事实卡且无引用 → 合规"= 满分，
+    不判的话一条卡死的 Example 反而拿 1.0，把均分抬上去。
+    """
+    err = getattr(run, "error", None)
+    if err:
+        return f"target 执行失败：{err}"
+    if not run.outputs:
+        return "target 无输出（超时或异常）"
+    return None
+
+
 def citation_valid(run, example) -> dict:
+    reason = target_failed_reason(run)
+    if reason:
+        return _log_eval({"key": "citation_valid", "score": 0, "comment": reason})
     outputs = run.outputs or {}
     answer, facts = outputs.get("conclusion", ""), outputs.get("facts", [])
     cited = {int(n) for n in re.findall(r"\[事实(\d+)\]", answer)}
@@ -202,7 +325,8 @@ def citation_valid(run, example) -> dict:
         ok = not cited                                  # 无事实卡时不允许出现引用
     else:
         ok = bool(cited) and max(cited) <= len(facts)
-    return {"key": "citation_valid", "score": int(ok)}
+    return _log_eval({"key": "citation_valid", "score": int(ok),
+                      "comment": f"引用 {sorted(cited) or '无'}｜事实卡 {len(facts)} 张"})
 
 
 # ── 4. evaluator ②：事实正确性（LLM-as-judge） ──────────────────────
@@ -223,7 +347,7 @@ FACTUALITY_PROMPT = (
     "score 为 true 表示事实一致。"
 )
 
-_FACTUALITY_JUDGE = None      # main() 里构造；为 None 时走本地回退
+_factuality_judge = None      # main() 里构造；为 None 时走本地回退
 
 
 def _build_judge_llm():
@@ -239,7 +363,7 @@ def _build_judge_llm():
     from providers.llm import build_llm
 
     class _JsonModeChatOpenAI(ChatOpenAI):
-        def with_structured_output(self, schema, *, include_raw=False, **kwargs):
+        def with_structured_output(self, schema=None, *, include_raw=False, **kwargs):
             kwargs.pop("method", None)
             return super().with_structured_output(
                 schema, method="json_mode", include_raw=include_raw, **kwargs
@@ -261,11 +385,11 @@ def build_openevals_judge():
     try:
         from openevals.llm import create_async_llm_as_judge
     except ImportError:
-        print("[warn] 未安装 openevals（pip install openevals），factuality 走本地手写 judge")
+        log("[warn] 未安装 openevals（pip install openevals），factuality 走本地手写 judge")
         return None
     from providers import create_llm                  # 与业务同一 LLM 工厂
     if create_llm() is None:                          # 工厂可返回 None（未配置时）
-        print("[warn] create_llm() 返回空，factuality 走本地手写 judge："
+        log("[warn] create_llm() 返回空，factuality 走本地手写 judge："
               "复制 scripts/.env.scripts.example 为 .env.scripts 并填写 LLM 配置")
         return None
     return create_async_llm_as_judge(
@@ -303,21 +427,25 @@ async def _legacy_factuality_judge(answer: str, reference: str) -> dict:
 
 async def factuality_judge(run, example) -> dict:
     """langsmith 适配层：把 run/example 映射成 openevals 的 (inputs, outputs, reference_outputs)。"""
+    reason = target_failed_reason(run)
+    if reason:
+        return _log_eval({"key": "factuality", "score": 0, "comment": reason})
     reference = (example.outputs or {}).get("reference", "")
     if not reference:
-        return {"key": "factuality", "score": 0, "comment": "该 Example 未标注 reference，跳过 judge"}
+        return _log_eval({"key": "factuality", "score": 0,
+                          "comment": "该 Example 未标注 reference，跳过 judge"})
     answer = (run.outputs or {}).get("conclusion", "")
-    if _FACTUALITY_JUDGE is None:
-        return await _legacy_factuality_judge(answer, reference)
+    if _factuality_judge is None:
+        return _log_eval(await _legacy_factuality_judge(answer, reference))
     try:
-        return await _FACTUALITY_JUDGE(
+        return _log_eval(await _factuality_judge(
             inputs=_extract_task(run.inputs),
             outputs=answer,
             reference_outputs=reference,
-        )
+        ))
     except Exception as e:
         # judge 故障不静默记 0 分：0 分会被误读成「事实错误」，这里带上原因便于在 UI 排查
-        return {"key": "factuality", "score": 0, "comment": f"judge 失败: {e}"}
+        return _log_eval({"key": "factuality", "score": 0, "comment": f"judge 失败: {e}"})
 
 
 # ── 5. evaluator ③：执行轨迹合理性（agentevals，评"过程"而非"结论"） ──
@@ -338,7 +466,7 @@ TRAJECTORY_PROMPT = (
     "【执行轨迹】\n{outputs}"
 )
 
-_TRAJECTORY_JUDGE = None      # main() 里构造；为 None 时跳过该评估器
+_trajectory_judge = None      # main() 里构造；为 None 时跳过该评估器
 
 
 def build_trajectory_judge():
@@ -346,7 +474,7 @@ def build_trajectory_judge():
     try:
         from agentevals.trajectory.llm import create_async_trajectory_llm_as_judge
     except ImportError:
-        print("[warn] 未安装 agentevals（pip install agentevals），跳过 trajectory 评估")
+        log("[warn] 未安装 agentevals（pip install agentevals），跳过 trajectory 评估")
         return None
     from providers import create_llm
     if create_llm() is None:                          # 提示信息已在 build_openevals_judge 打出
@@ -360,16 +488,20 @@ def build_trajectory_judge():
 
 
 async def trajectory_judge(run, example) -> dict:
-    if _TRAJECTORY_JUDGE is None:
-        return {"key": "trajectory_valid", "score": 0,
-                "comment": "agentevals 不可用（未安装或 LLM 未配置），跳过轨迹评估"}
+    reason = target_failed_reason(run)
+    if reason:
+        return _log_eval({"key": "trajectory_valid", "score": 0, "comment": reason})
+    if _trajectory_judge is None:
+        return _log_eval({"key": "trajectory_valid", "score": 0,
+                          "comment": "agentevals 不可用（未安装或 LLM 未配置），跳过轨迹评估"})
     traj = (run.outputs or {}).get("trajectory") or []
     if len(traj) < 3:                                 # 只有 user + 结论，说明节点没跑起来
-        return {"key": "trajectory_valid", "score": 0, "comment": "轨迹过短（节点未启动），判为异常"}
+        return _log_eval({"key": "trajectory_valid", "score": 0,
+                          "comment": "轨迹过短（节点未启动），判为异常"})
     try:
-        return await _TRAJECTORY_JUDGE(outputs=traj)
+        return _log_eval(await _trajectory_judge(outputs=traj))
     except Exception as e:
-        return {"key": "trajectory_valid", "score": 0, "comment": f"轨迹 judge 失败: {e}"}
+        return _log_eval({"key": "trajectory_valid", "score": 0, "comment": f"轨迹 judge 失败: {e}"})
 
 
 # ── 6. 主流程 ────────────────────────────────────────────────────────
@@ -381,12 +513,28 @@ def main() -> None:
     parser.add_argument("--reseed", action="store_true",
                         help="删除并重建数据集（现有 Example 结构不对时用，如 UI 手建数据）")
     parser.add_argument("--prefix", default="regression", help="实验名前缀（跨轮对比按前缀分组）")
+    parser.add_argument("--concurrency", type=int, default=2,
+                        help="并发条数（默认 2；本地模型加载慢或下游限流时调 1）")
+    parser.add_argument("--timeout", type=int, default=300,
+                        help="单条超时秒数（默认 300；向量检索/引擎挂起时该条记 error 并继续）")
+    parser.add_argument("--no-log", action="store_true",
+                        help="不落盘日志文件（默认在脚本旁写 eval_时间戳.log）")
     args = parser.parse_args()
 
+    # 日志先初始化：预热与 judge 构造的提示也要进文件
+    global _run_timeout, _log_path
+    _run_timeout = args.timeout
+    if not args.no_log:
+        _log_path = _SCRIPT_DIR / f"eval_{datetime.now():%Y%m%d_%H%M%S}.log"
+        log(f"[log] 日志文件：{_log_path}")
+
+    # 本地模型（嵌入/精排）同步加载会阻塞 event loop，先进 event loop 前预热一次
+    warmup_local_models()
+
     # judge 在跑批前构造一次（内部复用 providers 的 LLM 单例），失败则本地回退/跳过
-    global _FACTUALITY_JUDGE, _TRAJECTORY_JUDGE
-    _FACTUALITY_JUDGE = build_openevals_judge()
-    _TRAJECTORY_JUDGE = build_trajectory_judge()
+    global _factuality_judge, _trajectory_judge
+    _factuality_judge = build_openevals_judge()
+    _trajectory_judge = build_trajectory_judge()
 
     client = Client()
     if args.reseed or args.seed or not client.has_dataset(dataset_name=args.dataset):
@@ -411,15 +559,22 @@ def main() -> None:
                  "请执行 --reseed 重建，或在 UI 修正 inputs")
     examples = valid
 
+    global _total
+    _total = len(examples)                            # 供日志编号 [n/总数]
     n_ref = sum(1 for e in examples if (e.outputs or {}).get("reference"))
-    judge_backend = "openevals" if _FACTUALITY_JUDGE is not None else "本地手写（回退）"
+    judge_backend = "openevals" if _factuality_judge is not None else "本地手写（回退）"
     evaluators = [citation_valid, factuality_judge]
-    if _TRAJECTORY_JUDGE is not None:
+    if _trajectory_judge is not None:
         evaluators.append(trajectory_judge)
-    print(f"[eval] 数据集 {args.dataset}：{len(examples)} 条（含 reference {n_ref} 条）｜"
-          f"评估器 {' + '.join(e.__name__ for e in evaluators)}"
-          f"（factuality: {judge_backend}）｜max_concurrency=2")
-    print(f"[eval] 额度提示：预计产生 {len(examples) * 10}~{len(examples) * 50} 条 trace")
+    log(f"[eval] 数据集 {args.dataset}：{len(examples)} 条（含 reference {n_ref} 条）｜"
+        f"评估器 {' + '.join(e.__name__ for e in evaluators)}"
+        f"（factuality: {judge_backend}）｜max_concurrency={args.concurrency}｜"
+        f"单条超时 {args.timeout}s")
+    log(f"[eval] 额度提示：预计产生 {len(examples) * 10}~{len(examples) * 50} 条 trace；"
+        f"预估 {len(examples) * 70 // max(1, args.concurrency)}~"
+        f"{len(examples) * 120 // max(1, args.concurrency)}s")
+    log("[eval] 每条日志格式：[序号] 开始/完成 → 各节点启动/完成 → 三个评估器得分；"
+        "卡住时最后一行即卡点所在")
 
     t0 = time.monotonic()
     # target 是 async 函数（引擎走 ainvoke/astream），langsmith 要求用 aevaluate 而非 evaluate
@@ -428,13 +583,15 @@ def main() -> None:
             target,
             data=examples,
             evaluators=evaluators,
-            max_concurrency=2,          # 控并发：保护免费额度与下游 LLM 限流
+            max_concurrency=args.concurrency,   # 控并发：保护免费额度与下游 LLM 限流
             experiment_prefix=args.prefix,
         )
     )
-    print(f"[done] 用时 {time.monotonic() - t0:.0f}s，实验：{results.experiment_name}")
-    print("[done] 打开 LangSmith → Datasets & Experiments → 该数据集 → Experiments 页签查看得分、"
-          "跨轮对比与图表；截图沉淀到 doc/智能体/智能体评估/")
+    log(f"[done] 用时 {time.monotonic() - t0:.0f}s，实验：{results.experiment_name}")
+    log("[done] 打开 LangSmith → Datasets & Experiments → 该数据集 → Experiments 页签查看得分、"
+        "跨轮对比与图表；截图沉淀到 doc/智能体/智能体评估/")
+    if _log_path is not None:
+        log(f"[done] 日志已落盘：{_log_path}")
 
 
 if __name__ == "__main__":

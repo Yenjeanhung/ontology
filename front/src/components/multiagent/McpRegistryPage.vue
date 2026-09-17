@@ -27,6 +27,9 @@ const statusByName = ref({})
 // 工具清单展开：name → {open: bool, tools: [...]}
 const toolsByName = ref({})
 
+// 「对外提供」说明卡展开态
+const showExpose = ref(false)
+
 // 内置工具（代码注册，不可配置，仅提示）
 const BUILTIN_TOOLS = [
   { name: 'kb_search', desc: '全库向量语义检索（与 Retriever 同源取数）' },
@@ -127,7 +130,7 @@ async function removeServer(server) {
 
 // ── 新增 / 编辑表单 ──
 const emptyForm = () => ({
-  show: true, id: '', name: '', transport: 'stdio',
+  show: false, id: '', name: '', transport: 'stdio',
   command: '', argsText: '[]', envText: '{}', url: '', description: '', enabled: true,
   expanded: false, testing: false, testResult: null,
 })
@@ -245,6 +248,41 @@ onMounted(refresh)
       <span v-for="t in BUILTIN_TOOLS" :key="t.name" class="mp-builtin-item">
         <code>{{ t.name }}</code>{{ t.desc }}
       </span>
+    </div>
+
+    <div class="mp-expose">
+      <button class="mp-expose-head" type="button" @click="showExpose = !showExpose">
+        <span>{{ showExpose ? '▾' : '▸' }} 对外提供本系统能力（作为 MCP 服务器）</span>
+        <span class="mp-expose-sub">把知识库检索 / 图谱 / 台账查询暴露给 Claude Desktop 等外部 AI 客户端</span>
+      </button>
+      <div v-if="showExpose" class="mp-expose-body">
+        <p class="mp-expose-line">
+          <b>方式一 · stdio（本地客户端）</b>：
+          <code>cd backend &amp;&amp; python scripts/mcp_server.py</code>
+        </p>
+        <p class="mp-expose-line">
+          <b>方式二 · streamable-http（远程客户端 / 本页自接入）</b>：
+          <code>cd backend &amp;&amp; python scripts/mcp_server.py --http --port 9800</code>
+          ，端点 <code>http://&lt;host&gt;:9800/mcp</code>（可填回上方注册中心：transport=streamable_http）
+        </p>
+        <p class="mp-expose-line">
+          <b>鉴权（仅 HTTP 模式）</b>：加 <code>--token &lt;密钥&gt;</code>（或环境变量 MCP_EXPOSE_TOKEN），
+          客户端需带 <code>Authorization: Bearer &lt;密钥&gt;</code>；不设置则不鉴权，仅限内网。
+        </p>
+        <p class="mp-expose-line">
+          <b>暴露的工具</b>：<code>kb_search</code> / <code>graph_search</code> / <code>data_query</code>
+          ——与 ToolAgent 内置工具同源取数，口径一致。
+        </p>
+        <pre class="mp-expose-code">// Claude Desktop 配置示例（claude_desktop_config.json）
+{
+  "mcpServers": {
+    "knowsource": {
+      "command": "python",
+      "args": ["D:/path/to/ontology/backend/scripts/mcp_server.py"]
+    }
+  }
+}</pre>
+      </div>
     </div>
 
     <div v-if="loading && !servers.length" class="mp-empty">加载中…</div>
@@ -418,6 +456,62 @@ onMounted(refresh)
   margin-right: 6px;
   font-size: 11.5px;
   color: var(--c-accent);
+}
+
+/* 对外提供说明卡 */
+.mp-expose {
+  border: 1px dashed var(--c-border);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.mp-expose-head {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: none;
+  border: none;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--c-fg);
+  text-align: left;
+}
+.mp-expose-sub {
+  font-size: 11.5px;
+  color: var(--c-secondary);
+}
+.mp-expose-body {
+  padding: 0 12px 10px;
+  display: grid;
+  gap: 6px;
+}
+.mp-expose-line {
+  margin: 0;
+  font-size: 12px;
+  color: var(--c-secondary);
+  line-height: 1.7;
+}
+.mp-expose-line b {
+  color: var(--c-fg);
+}
+.mp-expose-line code {
+  font-size: 11.5px;
+  color: var(--c-accent);
+  word-break: break-all;
+}
+.mp-expose-code {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  background: var(--c-panel);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--c-secondary);
+  overflow-x: auto;
+  line-height: 1.6;
 }
 .mp-empty {
   padding: 28px 16px;
