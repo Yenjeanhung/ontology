@@ -42,6 +42,14 @@ import os  # noqa: E402
 
 os.chdir(_BACKEND_DIR)
 
+# 脚本专用配置层（scripts/.env.scripts，与服务端 backend/.env 分离）：
+# 必须先于 from config import settings 加载；优先级介于内置 EVAL_LLM_CONFIG 与
+# backend/.env 之间（os.environ 注入后 pydantic-settings 天然以环境变量优先）
+sys.path.insert(0, str(_SCRIPT_DIR.parent))   # scripts/ 根：公共 script_env 模块
+from script_env import load_script_env  # noqa: E402
+
+load_script_env()  # noqa: E402
+
 # Windows GBK 控制台兜底
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -73,7 +81,7 @@ EVAL_OUT_DIR = _SCRIPT_DIR / "eval_out"
 
 # ════════════════════════════════════════════════════════════════════════
 # 评测专用 LLM 配置（离线测试脚本，直接填这里最省事，优先级最高）。
-# 填空时依次回退：backend/.env → 数据库 llm_configs 表中页面配置的生效方案。
+# 填空时依次回退：scripts/.env.scripts → backend/.env → 数据库 llm_configs 表中页面配置。
 #   api_key  ：OpenAI 兼容 API Key
 #   base_url ：如 https://api.deepseek.com/v1（官方 OpenAI 可留空）
 #   model    ：如 deepseek-chat / qwen-plus / glm-4-flash

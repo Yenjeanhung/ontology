@@ -110,18 +110,22 @@ LANGSMITH_PROJECT: str = "ontology-multi-agent"
 
 ### 4.3 脚本落位与实现
 
-新建 `backend/scripts/eval_langsmith.py`（依赖 `backend` 包可导入，在 `backend/` 目录下执行）：
+新建 `backend/scripts/langsmith/eval_langsmith.py`（依赖 `backend` 包可导入，在 `backend/` 目录下执行）：
+
+> **脚本 LLM 配置与服务端分离**：脚本（出题 `gen_dataset.py` / 评估 judge / RAG 评测）
+> 一律读 `backend/scripts/.env.scripts`（模板 `.env.scripts.example`，已被 .gitignore
+> 忽略）；服务端运行时配置仍走页面（存数据库）。两边互不影响，脚本离线可跑。
 
 ```python
 """LangSmith 评估脚本：多智能体取证系统回归评估。
 用法：cd backend && python -m scripts.eval_langsmith
-前置：.env 已配置 LANGSMITH_API_KEY；知识库/图谱已导入数据。
+前置：.env.scripts 已配置 LLM（judge 用）；.env 已配置 LANGSMITH_API_KEY；知识库/图谱已导入数据。
 """
 import asyncio
 import re
 
 import langsmith as ls
-from langsmith.evaluation import evaluate
+from langsmith import aevaluate
 
 from scenarios.universal import UniversalScenario   # 按项目实际导入路径调整
 
@@ -192,12 +196,16 @@ if __name__ == "__main__":
         {"task": "……（EXAMPLES 预设或自建用例）……", "reference": "……"},
     ]
     ensure_dataset(samples)
-    evaluate(
-        target,
-        data=DATASET,
-        evaluators=[citation_valid, factuality_judge],
-        max_concurrency=2,        # 控并发：保护免费额度与下游 LLM 限流
-        experiment_prefix="regression",
+    # target 为 async（引擎 ainvoke/astream），langsmith 硬要求 aevaluate（同步 evaluate 会
+    # 直接抛 ValueError: Async functions are not supported）
+    asyncio.run(
+        aevaluate(
+            target,
+            data=DATASET,
+            evaluators=[citation_valid, factuality_judge],
+            max_concurrency=2,    # 控并发：保护免费额度与下游 LLM 限流
+            experiment_prefix="regression",
+        )
     )
 ```
 
@@ -246,7 +254,7 @@ langsmith>=0.2.0
 |---|---|
 | 免费额度 5,000 traces/月刷爆 | 批量操作前关 `LANGSMITH_TRACING`；评估脚本 `max_concurrency=2`；监控 UI 用量页 |
 | trace 14 天过期丢失证据 | 代表性 trace 与评估报告**截图存档**到本目录 |
-| judge 与被评对象同源偏差（同一 LLM 既执行又打分） | 认知局限记录在案；条件允许时 judge 换用另一模型（`.env` 加 judge 专属配置） |
+| judge 与被评对象同源偏差（同一 LLM 既执行又打分） | 认知局限记录在案；条件允许时 judge 换用另一模型（`scripts/.env.scripts` 改 judge 专属配置） |
 | 无 Key 时静默跳过导致"以为在记录" | 启动日志打印一次 tracing 状态；上线检查清单加一条 |
 | 评估脚本对引擎接口的耦合 | target 只依赖 `build_engine_from_task` + `run()` 两个稳定入口，不碰节点内部 |
 

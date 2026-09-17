@@ -14,6 +14,8 @@ venv/
 # Enviroment Variable Files
 .env
 .env.backup.*
+# 脚本专用环境配置（backend/scripts/.env.scripts，含密钥，勿入库）
+.env.scripts
 
 # Generated Docker Compose files (output of setup wizard)
 docker-compose.*.yml
