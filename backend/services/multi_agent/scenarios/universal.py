@@ -16,8 +16,8 @@ Magentic-One）：
 - 全链路降级：LLM / 向量库 / 图谱任一不可用都不中断流水线，裁定与模板
   兜底保证可复现。
 
-业务专属场景（如航班告警复核）以适配器接入（见 flight_alarm.py，默认不
-注册），本场景与引擎、路由、前端页面互不绑定。
+本场景与引擎、路由、前端页面互不绑定；新业务如需专属编排，按
+MultiAgentScenario 适配器范式另行接入。
 """
 
 import asyncio
@@ -443,7 +443,9 @@ class UniversalScenario(MultiAgentScenario):
                     "用户任务的最终成果。无论任务是研判、写作、总结还是问答，直接"
                     "产出任务要求的成果形态。必须用 markdown 且只包含四个小节："
                     "### 最终结果 / ### 关键依据 / ### 风险与存疑 / ### 建议动作。"
-                    "要求：结果直接满足任务；依据逐条标注 [素材N]/[事实] 引用；"
+                    "要求：结果直接满足任务；依据逐条标注引用，编号用素材卡/事实卡的 n——"
+                    "单张写 [素材3] 或 [事实5]，连续多张写 [事实2-9]，离散多张写 [事实2、5]，"
+                    "只用这三种写法，不要发明其它格式；"
                     "风险与存疑逐条列出（无则写「无」）；建议动作 2~3 条。"
                     "全文中文，400 字以内。",
                     _synth_user(task, verdict, evidence, facts),
@@ -770,8 +772,8 @@ def _template_conclusion(task: str, verdict: dict, evidence: dict, facts: list[d
         "",
         "### 关键依据",
     ]
-    for f in facts:
-        lines.append(f"- [事实] {f['title']}：{f['detail']}")
+    for i, f in enumerate(facts, 1):
+        lines.append(f"- [事实{i}] {f['title']}：{f['detail']}")
     idx = 0
     for cards in evidence.values():
         for c in cards:

@@ -16,6 +16,7 @@
 """
 
 import asyncio
+from langgraph.graph.state import CompiledStateGraph
 import time
 from typing import Annotated, Awaitable, Callable, TypedDict
 
@@ -93,7 +94,7 @@ class MultiAgentEngine:
         plan: list[dict],
         node_factory: Callable[["MultiAgentEngine"], dict[str, NodeFunc]],
         pacing: float = 0.05,
-    ):
+    ) -> None:
         self.context = context
         self._team_info = dict(team_info or {})
         self._plan = [dict(step) for step in plan]
@@ -181,7 +182,7 @@ class MultiAgentEngine:
 
     # ── 建图与执行 ────────────────────────────────────────────
 
-    def _build(self):
+    def _build(self) -> CompiledStateGraph[MultiAgentState, None, MultiAgentState, MultiAgentState]:
         self._nodes = dict(self._node_factory(self))
         unknown = [
             s["node"] for s in self._plan

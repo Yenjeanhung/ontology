@@ -80,7 +80,7 @@ def list_scenarios() -> list[dict]:
     return [s.meta() for s in _REGISTRY.values()]
 
 
-# 注册内置场景：仅通用智能体团队（universal），页面即通用团队，不绑定业务。
-# 业务专属场景（如航班告警复核，见 flight_alarm.py，保留作适配器范例）按需
-# 在此追加一行 import 即可接入，路由与引擎零改动。
+# 注册内置场景：仅通用智能体团队（universal）——多智能体是动态的，任意任务
+# 类型皆可跑，不绑定业务。新业务如需专属编排，实现 MultiAgentScenario 适配器
+# 后在此追加一行 import 即可接入，路由与引擎零改动。
 from . import universal as _universal      # noqa: E402,F401  (注册副作用)

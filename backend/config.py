@@ -1,3 +1,5 @@
+import os
+
 from pydantic_settings import BaseSettings
 from typing import Literal
 
@@ -81,6 +83,14 @@ class Settings(BaseSettings):
     LLM_MODEL: str = ""
     LLM_MAX_TOKENS: int = 4096
     LLM_TEMPERATURE: float = 0.7
+
+    # ───────────────────────── LangSmith 可观测与评估 ─────────────────────────
+    # 总开关：true 且配置 API Key 时，LangChain / LangGraph 的 LLM 调用与多智能体图执行
+    # 自动上报 LangSmith 云端 trace（免费 Developer 计划：5k traces/月、14 天保留）；
+    # false 或无 Key 时静默跳过，不影响本地运行。框架原生回调，业务代码零侵入。
+    LANGSMITH_TRACING: bool = False
+    LANGSMITH_API_KEY: str = ""
+    LANGSMITH_PROJECT: str = "ontology-multi-agent"
 
     # 分块
     CHUNK_STRATEGY: Literal["fixed", "semantic", "sentence", "recursive", "heading"] = "fixed"
@@ -264,3 +274,10 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# LangSmith 开关同步到进程环境变量：langchain-core 运行时按 LANGSMITH_* 环境变量决定是否上报，
+# pydantic Settings 只读取不写回，故在此统一注入，使 Settings 成为唯一事实源——
+# .env 设 LANGSMITH_TRACING=true 即开启；关闭或无 Key 时 SDK 静默跳过，不影响本地运行。
+os.environ["LANGSMITH_TRACING"] = "true" if settings.LANGSMITH_TRACING else "false"
+os.environ["LANGSMITH_API_KEY"] = settings.LANGSMITH_API_KEY
+os.environ["LANGSMITH_PROJECT"] = settings.LANGSMITH_PROJECT

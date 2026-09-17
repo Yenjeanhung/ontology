@@ -15,6 +15,9 @@ conflict / token / error / done，`data: [DONE]` 收尾）与业务场景无关�
 services/multi_agent/scenarios/ 注册适配器，本路由零改动。
 """
 
+from backend.services.multi_agent.scenarios import MultiAgentScenario
+
+
 import asyncio
 import inspect
 import json
@@ -45,7 +48,7 @@ async def multi_scenarios():
 @router.get("/scenarios/{scenario_id}/targets")
 async def scenario_targets(scenario_id: str):
     """场景下的可研判目标列表（通用目标卡，含 runnable / 克制边界提示）。"""
-    scenario = get_scenario(scenario_id)
+    scenario: MultiAgentScenario | None = get_scenario(scenario_id)
     if not scenario:
         raise HTTPException(404, f"场景 {scenario_id} 未注册")
     return {"scenario": scenario_id, "targets": await scenario.list_targets()}
@@ -54,7 +57,7 @@ async def scenario_targets(scenario_id: str):
 @router.post("/scenarios/{scenario_id}/targets/{target_id}/run")
 async def run_scenario_target(scenario_id: str, target_id: str):
     """对指定目标发起多智能体研判，SSE 流式返回过程事件与结论。"""
-    scenario = get_scenario(scenario_id)
+    scenario: MultiAgentScenario | None = get_scenario(scenario_id)
     if not scenario:
         raise HTTPException(404, f"场景 {scenario_id} 未注册")
     try:
@@ -72,7 +75,7 @@ class TaskBody(BaseModel):
 @router.post("/scenarios/{scenario_id}/run")
 async def run_scenario_task(scenario_id: str, body: TaskBody):
     """自由任务研判（adhoc 场景）：任务文本 + 智能体编制 → 动态建团，SSE 返回。"""
-    scenario = get_scenario(scenario_id)
+    scenario: MultiAgentScenario | None = get_scenario(scenario_id)
     if not scenario:
         raise HTTPException(404, f"场景 {scenario_id} 未注册")
     if not getattr(scenario, "adhoc", False):
@@ -81,7 +84,7 @@ async def run_scenario_task(scenario_id: str, body: TaskBody):
     if not task:
         raise HTTPException(422, "task 不能为空")
     # 构建以 awaitable 传入：SSE 先开流，Planner 规划（LLM 调用）期间前端可见「规划中」
-    return _stream_engine(scenario.build_engine_from_task(task, agents=body.agents))
+    return _stream_engine(engine_source=scenario.build_engine_from_task(task, agents=body.agents))
 
 
 # ─────────────────────── 任务库（可配置任务提示词） ───────────────────────

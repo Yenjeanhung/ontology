@@ -95,6 +95,7 @@ const evidenceCards = computed(() => evidenceDomains.value.flatMap((d) => d.card
 // ── 素材分类（tab） / 折叠 / 引用定位 ──
 // 后端 _synth_user 的编号约定：[素材N]=证据卡拍平序（与 evidenceCards 同序），
 // [事实N]=事实卡序（facts 数组序，前端即 stance==='fact' 的卡片序）。
+// 引用写法三种：单张 [事实5] / 连续范围 [事实2-9] / 离散列表 [事实2、5]。
 const evTab = ref('all')
 const evCollapsed = ref(false)
 const KIND_META = {
@@ -375,18 +376,49 @@ function gradeLabel(grade) {
   return '有出处文档'
 }
 
+/** 解析引用编号串："5" / "2-9" / "2~9" / "2、5" / "2, 5·7" → 去重升序数组。 */
+function parseCiteNums(s) {
+  const nums = new Set()
+  for (const part of String(s).split(/[、,，·\s]+/)) {
+    const m = part.match(/^(\d+)(?:\s*[-~—至]\s*(\d+))?$/)
+    if (!m) continue
+    const a = Number(m[1])
+    const b = m[2] === undefined ? a : Number(m[2])
+    const lo = Math.min(a, b)
+    const hi = Math.max(a, b)
+    if (hi - lo <= 50) for (let i = lo; i <= hi; i++) nums.add(i)  // 防呆：范围最多展开 50 个
+  }
+  return [...nums].sort((x, y) => x - y)
+}
+
+/** 编号数组 → 紧凑标签：连续段合并（2-9），离散段用 · 连接（2-4·7）。 */
+function fmtCiteNums(nums) {
+  if (!nums.length) return ''
+  const runs = []
+  let s = nums[0]
+  let e = nums[0]
+  for (let i = 1; i < nums.length; i++) {
+    if (nums[i] === e + 1) { e = nums[i]; continue }
+    runs.push(s === e ? `${s}` : `${s}-${e}`)
+    s = e = nums[i]
+  }
+  runs.push(s === e ? `${s}` : `${s}-${e}`)
+  return runs.join('·')
+}
+
 function renderMd(text) {
   try {
     let html = marked.parse(text || '', { breaks: true })
     const nMat = taggedCards.value.length
     const nFact = factCount.value
-    html = html.replace(/\[素材(\d+)\]/g, (_, n) => {
-      const ok = Number(n) >= 1 && Number(n) <= nMat
-      return `<sup class="ma-cite${ok ? '' : ' is-missing'}" data-kind="mat" data-n="${n}" title="${ok ? `点击定位素材卡 ${n}` : '引用编号不存在'}">素材${n}</sup>`
-    })
-    html = html.replace(/\[事实(\d+)\]/g, (_, n) => {
-      const ok = Number(n) >= 1 && Number(n) <= nFact
-      return `<sup class="ma-cite${ok ? '' : ' is-missing'}" data-kind="fact" data-n="${n}" title="${ok ? `点击定位事实卡 ${n}` : '引用编号不存在'}">事实${n}</sup>`
+    // 引用 chip：单张 [素材3]/[事实5]、连续范围 [事实2-9]、离散列表 [事实2、5]；
+    // 范围渲染为一枚组 chip，点击定位到第一张有效卡，title 展示全部编号。
+    html = html.replace(/\[(素材|事实)([0-9、,，·\-~—至\s]+)\]/g, (_, kind, inner) => {
+      const total = kind === '事实' ? nFact : nMat
+      const ok = parseCiteNums(inner).filter((n) => n >= 1 && n <= total)
+      const label = ok.length ? `${kind}${fmtCiteNums(ok)}` : `${kind}${String(inner).trim()}`
+      const title = ok.length ? `点击定位${kind}卡：${ok.join('、')}` : '引用编号不存在'
+      return `<sup class="ma-cite${ok.length ? '' : ' is-missing'}" data-kind="${kind === '事实' ? 'fact' : 'mat'}" data-n="${ok[0] || ''}" title="${title}">${label}</sup>`
     })
     return html
   } catch {
