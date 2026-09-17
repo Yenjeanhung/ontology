@@ -391,9 +391,14 @@ class McpConnection:
                 )
                 read, write = await stack.enter_async_context(stdio_client(params))
             elif transport in ("streamable_http", "http", "sse"):
-                from mcp.client.streamable_http import streamablehttp_client
+                try:
+                    # mcp 1.x：驼峰 http（<2）
+                    from mcp.client.streamable_http import streamablehttp_client
+                except ImportError:      # mcp 2.x：更名 snake_case
+                    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
 
-                read, write, _ = await stack.enter_async_context(
+                # v1 返回 (read, write, get_session_id)，v2 只返回 (read, write)
+                read, write, *_ = await stack.enter_async_context(
                     streamablehttp_client(str(self.server["url"]))
                 )
             else:

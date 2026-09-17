@@ -236,6 +236,8 @@ function handleEvent(evt) {
       }
       break
     case 'token':
+      // reset=true：合成官引用自检未过、重放修正稿——先清空已渲染的草稿再追加
+      if (evt.reset) conclusionMd.value = ''
       conclusionMd.value += evt.content || ''
       break
     case 'done':

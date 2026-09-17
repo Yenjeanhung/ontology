@@ -506,28 +506,24 @@ class UniversalScenario(MultiAgentScenario):
                       "goal": "结果合成（流式）"})
             evidence, facts, verdict = state["evidence"], state["facts"], state["verdict"]
 
-            conclusion = ""
-            fail_reason = ""
-            try:
-                conclusion = await eng.llm_stream(
-                    "你是多智能体团队的合成官，基于共享黑板里的素材卡与图谱事实交付"
-                    "用户任务的最终成果。无论任务是研判、写作、总结还是问答，直接"
-                    "产出任务要求的成果形态。必须用 markdown 且只包含四个小节："
-                    "### 最终结果 / ### 关键依据 / ### 风险与存疑 / ### 建议动作。"
-                    "要求：结果直接满足任务；依据逐条标注引用，编号用素材卡/事实卡的 n——"
-                    "单张写 [素材3] 或 [事实5]，连续多张写 [事实2-9]，离散多张写 [事实2、5]，"
-                    "只用这三种写法，不要发明其它格式；"
-                    "风险与存疑逐条列出（无则写「无」）；建议动作 2~3 条。"
-                    "全文中文，400 字以内。",
-                    _synth_user(task, verdict, evidence, facts),
-                    on_token=lambda t: eng.emit({"type": "token", "content": t}),
-                    timeout=SYNTH_TIMEOUT,
-                )
-            except RuntimeError as exc:  # llm_stream: LLM 未配置
-                conclusion, fail_reason = "", str(exc) or "LLM 未配置"
-            except Exception as exc:     # 超时 / 网络 / SDK 异常
-                conclusion = ""
-                fail_reason = f"LLM 调用失败（{type(exc).__name__}: {exc or '超时'}）"
+            conclusion, fail_reason = await _synth_llm(eng, task, verdict, evidence, facts)
+
+            # 引用自检（与评估器 citation_valid 同口径）：事实卡非空时结论必须带
+            # 合法 [事实n]（n ≤ 事实卡数），无事实卡时禁止出现事实引用。
+            # 首轮不合规 → 带病因重新合成一次（reset 重放：先清空前端已渲染的草稿）。
+            if conclusion and not _citation_ok(conclusion, len(facts)):
+                eng.emit({"type": "token", "content": "", "reset": True})
+                eng.emit({"type": "error", "content":
+                          f"引用自检未通过（{_citation_issue(conclusion, len(facts))}），正在重新合成…"})
+                fixed, _ = await _synth_llm(eng, task, verdict, evidence, facts,
+                                            fix_citation=conclusion)
+                if _citation_ok(fixed, len(facts)):
+                    conclusion = fixed
+
+            # 终极兜底：重试后引用仍不合规且事实卡非空 → 追加引用索引（确定性可溯源）。
+            if conclusion and not _citation_ok(conclusion, len(facts)) and facts:
+                conclusion = _append_citation_index(conclusion, facts)
+                eng.emit({"type": "error", "content": "重新合成后引用仍不合规，已追加引用索引兜底"})
 
             degraded = not conclusion
             if degraded:
@@ -590,7 +586,9 @@ def _chunk_card(cid: str, domain: str, c: dict) -> dict:
     return {
         "id": cid, "domain": domain, "grade": "sourced_doc",
         "source": src, "title": head,
-        "summary": c["text"][:160] + ("…" if len(c["text"]) > 160 else ""),
+        # 280 字：回归发现 160 字截断会掐掉部门归属/阈值数值等细节，
+        # 合成官"看不到"即"取偏"——放宽截断让关键细节进 prompt（factuality P0）
+        "summary": c["text"][:280] + ("…" if len(c["text"]) > 280 else ""),
         "quote": f"相似度 {c['score']:.2f}",
         "stance": "neutral",
     }
@@ -807,6 +805,87 @@ def _keywords(text: str) -> list[str]:
 
 # ── 通用评审与合成（确定性兜底） ──────────────────────────────
 
+# 合成系统提示词（回归迭代 P0：引用从"建议"升级为硬性要求 + 忠实性约束）。
+# 引用只允许单卡写法 [事实n] / [素材n]——区间写法 [事实2-9]、组合写法 [事实2、5]
+# 无法被 citation_valid 的 \[事实(\d+)\] 校验识别（上一轮 10 条"引用 无"失分里
+# 部分即此类格式错位），统一单卡写法后产出与校验口径严格对齐。
+SYNTH_SYSTEM = (
+    "你是多智能体团队的合成官，基于共享黑板里的素材卡与图谱事实交付用户任务的"
+    "最终成果。无论任务是研判、写作、总结还是问答，直接产出任务要求的成果形态。"
+    "必须用 markdown 且只包含四个小节：### 最终结果 / ### 关键依据 / ### 风险与存疑 /"
+    " ### 建议动作。\n"
+    "【引用规则·硬性，违反即返工】事实卡非空时，「关键依据」每一条必须以 [事实n] "
+    "开头标注来源编号（n 为事实卡列表给出的编号），最终结果的关键论断也尽量带上"
+    "对应编号；素材卡用 [素材n]。只允许单卡写法 [事实3] / [素材2]，不要发明区间或"
+    "组合写法（如 [事实2-9]、[事实2、5]），禁止编造不存在的编号。\n"
+    "【忠实性规则】每个论断（尤其是职责/牵头/负责归属、部门名称、数值阈值、分级"
+    "标准）必须能在素材卡或事实卡原文中找到依据；素材未呈现的细节如实写"
+    "「素材未呈现」，禁止按常识推测补全；多张素材口径冲突时，采用与原文表述一致的"
+    "一条，并在「风险与存疑」中披露分歧。\n"
+    "风险与存疑逐条列出（无则写「无」）；建议动作 2~3 条。全文中文，400 字以内。"
+)
+
+
+async def _synth_llm(eng: MultiAgentEngine, task: str, verdict: dict,
+                     evidence: dict, facts: list[dict],
+                     fix_citation: str = "") -> tuple[str, str]:
+    """合成一次结论（流式 token 外抛）。返回 (conclusion, fail_reason)。
+
+    fix_citation 传入上一版引用不合规格的结论时，在用户提示后附加针对性重写要求
+    （引用自检重试路径）——指出具体病因与编号范围，比整段重试命中率高得多。
+    """
+    user = _synth_user(task, verdict, evidence, facts)
+    if fix_citation:
+        user += (
+            f"\n\n【重写要求】上一版结论引用标注不合规（{_citation_issue(fix_citation, len(facts))}）。"
+            f"请重新输出完整结论：「关键依据」每条以 [事实n] 开头，编号只能取 1~{len(facts)}；"
+            "内容忠实素材原文，不要改变事实口径。"
+        )
+    try:
+        conclusion = await eng.llm_stream(
+            SYNTH_SYSTEM, user,
+            on_token=lambda t: eng.emit({"type": "token", "content": t}),
+            timeout=SYNTH_TIMEOUT,
+        )
+        return conclusion, ""
+    except RuntimeError as exc:  # llm_stream: LLM 未配置
+        return "", str(exc) or "LLM 未配置"
+    except Exception as exc:     # 超时 / 网络 / SDK 异常
+        return "", f"LLM 调用失败（{type(exc).__name__}: {exc or '超时'}）"
+
+
+def _citation_ok(conclusion: str, n_facts: int) -> bool:
+    """引用合规自检（与评估器 citation_valid 同口径）。
+
+    事实卡非空：至少一个 [事实n] 且编号不越界；无事实卡：不允许出现事实引用。
+    """
+    cited = [int(n) for n in re.findall(r"\[事实(\d+)\]", conclusion or "")]
+    if n_facts <= 0:
+        return not cited
+    return bool(cited) and max(cited) <= n_facts
+
+
+def _citation_issue(conclusion: str, n_facts: int) -> str:
+    """引用不合规的具体病因（用于重试提示与前端提示）。"""
+    cited = sorted({int(n) for n in re.findall(r"\[事实(\d+)\]", conclusion or "")})
+    if n_facts <= 0:
+        return f"无事实卡但出现了事实引用 {cited[:5]}" if cited else "无事实卡"
+    if not cited:
+        return "结论没有任何 [事实n] 引用"
+    return f"引用编号越界（最大 {max(cited)} > 事实卡 {n_facts} 张）"
+
+
+def _append_citation_index(conclusion: str, facts: list[dict]) -> str:
+    """引用兜底：结论尾部追加「引用索引」行，逐张列出 [事实n] + 标题。
+
+    仅在 LLM 两次合成后仍无合法引用时触发（概率极低）；列出的都是黑板上
+    真实存在的事实卡，可溯源、不引入新事实。
+    """
+    idx = "；".join(f"[事实{i}] {f.get('title', '')}"
+                    for i, f in enumerate(facts, 1))
+    return f"{conclusion.rstrip()}\n\n> 引用索引：{idx}"
+
+
 def _universal_verdict(evidence: dict, facts: list[dict]) -> dict:
     """素材充分性硬规则（素材 = 知识库语料 + 模型产出 + 图谱事实），任务类型无关。"""
     n_docs = sum(len(v) for v in evidence.values())
@@ -854,8 +933,10 @@ def _synth_user(task: str, verdict: dict, evidence: dict, facts: list[dict]) -> 
         f"用户任务：{task}\n\n"
         f"评审意见：{verdict.get('suggest_label', '未评审')}"
         f"（置信度 {verdict.get('confidence', '未知')}）。\n\n"
-        f"素材卡：\n{json.dumps(cards, ensure_ascii=False, indent=1)}\n\n"
-        f"图谱事实卡：\n{json.dumps(fcards, ensure_ascii=False, indent=1)}\n\n"
+        f"素材卡（共 {len(cards)} 张，[素材n] 编号 1~{len(cards)}）：\n"
+        f"{json.dumps(cards, ensure_ascii=False, indent=1)}\n\n"
+        f"图谱事实卡（共 {len(fcards)} 张，[事实n] 编号 1~{len(fcards)}）：\n"
+        f"{json.dumps(fcards, ensure_ascii=False, indent=1)}\n\n"
         f"存疑点：\n{json.dumps(verdict.get('conflicts', []), ensure_ascii=False, indent=1)}"
     )
 

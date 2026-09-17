@@ -30,7 +30,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # backend 根入 path
 
-from mcp.server.fastmcp import FastMCP                          # noqa: E402
+try:                                                            # noqa: E402
+    # mcp 1.x：FastMCP（<2，项目实测基线）
+    from mcp.server.fastmcp import FastMCP as MCPServer         # noqa: E402
+except ModuleNotFoundError:                                     # mcp 2.x：更名 MCPServer
+    from mcp.server.mcpserver import MCPServer                  # noqa: E402
 
 from services.tool_registry import (                            # noqa: E402
     builtin_data_query,
@@ -38,7 +42,7 @@ from services.tool_registry import (                            # noqa: E402
     builtin_kb_search,
 )
 
-mcp = FastMCP(
+mcp = MCPServer(
     "knowsource-tools",
     instructions=(
         "KnowSource 知识库平台工具集：kb_search 知识库向量检索、"

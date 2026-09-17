@@ -140,13 +140,14 @@ const formError = ref('')
 
 function openCreate() {
   formError.value = ''
-  form.value = emptyForm()
+  form.value = { ...emptyForm(), show: true }
 }
 
 function openEdit(server) {
   formError.value = ''
   form.value = {
     ...emptyForm(),
+    show: true,
     id: server.id,
     name: server.name,
     transport: server.transport,
