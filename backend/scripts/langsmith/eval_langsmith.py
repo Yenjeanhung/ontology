@@ -8,7 +8,11 @@
 
 设计对齐 doc/智能体/智能体评估/LangSmith接入方案.md §4：
   评估器① citation_valid   引用可溯源（确定性校验，零成本，防幻觉引用）
-  评估器② factuality_judge 事实正确性（LLM-as-judge，对照人工标注 reference）
+  评估器② factuality_judge 事实正确性（LLM-as-judge，对照人工标注 reference；
+          用 openevals 的 create_async_llm_as_judge 实现，judge 复用项目 LLM 实例；
+          未安装 openevals 时自动回退本地手写 judge，保证脚本随时可跑）
+  评估器③ trajectory_valid 执行轨迹合理性（agentevals 轨迹 judge，把引擎事件流
+          映射成 agent 轨迹，评"过程"；未安装 agentevals 时自动跳过）
 
 Examples 结构（LangSmith UI「Datasets & Experiments」中维护，或 --seed 播种）：
   inputs  = {"task": "任务文本"}            ← key 必须是 task，与 target 对齐
@@ -21,6 +25,8 @@ Examples 结构（LangSmith UI「Datasets & Experiments」中维护，或 --seed
   python scripts/langsmith/eval_langsmith.py --seed                   # 数据集不存在时播种示例
 
 前置：
+  pip install openevals agentevals（judge 用；未装时 factuality 回退本地手写、
+          trajectory 自动跳过，均不阻断跑批）；
   scripts/.env.scripts 已配置 LLM（factuality judge 用，模板见 .env.scripts.example）；
   backend/.env 已配置 LANGSMITH_TRACING / LANGSMITH_API_KEY / LANGSMITH_PROJECT；
   引擎运行所需的知识库 / 图谱 / 台账数据已就绪（未就绪时节点自行降级，仍可跑通）。
@@ -141,7 +147,50 @@ async def target(inputs: dict) -> dict:
         "facts": final.get("facts", []),
         "verdict": final.get("verdict", {}),
         "elapsed_ms": final.get("elapsed_ms"),
+        "trajectory": build_trajectory(engine, task, final.get("conclusion", "")),
     }
+
+
+def build_trajectory(engine, task: str, conclusion: str) -> list[dict]:
+    """把引擎事件流还原成 agentevals 轨迹（OpenAI messages 形态）。
+
+    引擎把过程事件推入 engine.q（node_start / node_done / evidence / fact…，
+    跑批时无人消费，队列里就是完整过程）。这里映射成：
+      user               = 用户任务
+      assistant+tool_call = 节点启动（工具名=节点名，入参=子任务目标）
+      tool               = 节点完成（返回=节点产出摘要）
+      assistant          = 最终结论
+    这样 judge 看到的不是"结论对不对"，而是"这条执行路径合不合理"。
+    """
+    msgs: list[dict] = [{"role": "user", "content": task}]
+    while True:
+        try:
+            evt = engine.q.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        kind = evt.get("type")
+        if kind == "node_start":
+            msgs.append({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "function": {
+                        "name": evt.get("node", ""),
+                        "arguments": json.dumps(
+                            {"role": evt.get("role", ""), "goal": evt.get("goal", "")},
+                            ensure_ascii=False,
+                        ),
+                    }
+                }],
+            })
+        elif kind == "node_done":
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": evt.get("node", ""),
+                "content": evt.get("summary", ""),
+            })
+    msgs.append({"role": "assistant", "content": (conclusion or "")[:1200]})
+    return msgs
 
 
 # ── 3. evaluator ①：引用可溯源（确定性，零成本） ─────────────────────
@@ -156,21 +205,88 @@ def citation_valid(run, example) -> dict:
     return {"key": "citation_valid", "score": int(ok)}
 
 
-# ── 4. evaluator ②：事实正确性（LLM-as-judge，复用项目 LLM 配置） ────
-async def factuality_judge(run, example) -> dict:
-    outputs = run.outputs or {}
-    reference = (example.outputs or {}).get("reference", "")
-    if not reference:
-        return {"key": "factuality", "score": 0, "comment": "该 Example 未标注 reference，跳过 judge"}
-    from providers import create_llm                    # 与业务同一 LLM 工厂
+# ── 4. evaluator ②：事实正确性（LLM-as-judge） ──────────────────────
+# 首选 openevals 的 create_async_llm_as_judge：结构化输出取分（不用手写正则解析 JSON）、
+# 自带 reasoning 便于 UI 里看判分理由；judge 直接复用 providers.create_llm() 的 LLM 实例，
+# 因此与业务走同一套 .env 配置（含自定义 base_url / 国内兼容模型）。
+# 注意：prompt 是 str 模板，openevals 用 str.format 填充，除 {inputs}/{outputs}/
+# {reference_outputs} 外不能再出现花括号。
+FACTUALITY_PROMPT = (
+    "你是航空运行领域的评分裁判，判断【系统结论】与【参考答案】是否事实一致。\n"
+    "判分口径：允许表述不同，不允许事实相悖；结论中参考答案未覆盖的内容，"
+    "只要不与参考答案冲突，不算相悖。\n\n"
+    "【用户任务】\n{inputs}\n\n"
+    "【参考答案】\n{reference_outputs}\n\n"
+    "【系统结论】\n{outputs}\n\n"
+    "只输出一个 JSON 对象，不要 Markdown 代码块和多余文字，格式如下：\n"
+    "{{\"reasoning\": \"一句话判分理由\", \"score\": true 或 false}}\n"
+    "score 为 true 表示事实一致。"
+)
+
+_FACTUALITY_JUDGE = None      # main() 里构造；为 None 时走本地回退
+
+
+def _build_judge_llm():
+    """judge 专用 LLM：与业务同配置，但把结构化输出锁定为 json_mode。
+
+    openevals 内部固定调用 judge.with_structured_output(schema)，langchain 默认走
+    OpenAI 严格 json_schema；本项目的 GLM / DeepSeek 等兼容端点对该模式支持不完整
+    （实测会退化成自由文本，JsonOutputParser 直接抛错）。这里用子类把 method 锁成
+    json_mode（response_format=json_object，已验证端点支持）。
+    """
+    from config import settings
+    from langchain_openai import ChatOpenAI
+    from providers.llm import build_llm
+
+    class _JsonModeChatOpenAI(ChatOpenAI):
+        def with_structured_output(self, schema, *, include_raw=False, **kwargs):
+            kwargs.pop("method", None)
+            return super().with_structured_output(
+                schema, method="json_mode", include_raw=include_raw, **kwargs
+            )
+
+    return build_llm(
+        provider=settings.LLM_PROVIDER,
+        api_key=settings.OPENAI_API_KEY,
+        base_url=settings.OPENAI_BASE_URL,
+        model=settings.LLM_MODEL,
+        max_tokens=settings.LLM_MAX_TOKENS,
+        temperature=settings.LLM_TEMPERATURE,
+        chat_cls=_JsonModeChatOpenAI,
+    )
+
+
+def build_openevals_judge():
+    """构造 openevals judge。返回 None 表示不可用（未装包 / LLM 未配置），走本地回退。"""
+    try:
+        from openevals.llm import create_async_llm_as_judge
+    except ImportError:
+        print("[warn] 未安装 openevals（pip install openevals），factuality 走本地手写 judge")
+        return None
+    from providers import create_llm                  # 与业务同一 LLM 工厂
+    if create_llm() is None:                          # 工厂可返回 None（未配置时）
+        print("[warn] create_llm() 返回空，factuality 走本地手写 judge："
+              "复制 scripts/.env.scripts.example 为 .env.scripts 并填写 LLM 配置")
+        return None
+    return create_async_llm_as_judge(
+        prompt=FACTUALITY_PROMPT,
+        feedback_key="factuality",
+        judge=_build_judge_llm(),
+        use_reasoning=True,                           # 判分理由写进 comment，UI 可查
+    )
+
+
+async def _legacy_factuality_judge(answer: str, reference: str) -> dict:
+    """本地手写 judge（openevals 不可用时的回退路径）。"""
+    from providers import create_llm
     llm = create_llm()
-    if llm is None:                                     # 工厂可返回 None（未配置时）
+    if llm is None:
         return {"key": "factuality", "score": 0, "comment": "create_llm() 返回空，跳过 judge"}
     prompt = (
         "判断【结论】与【参考答案】是否事实一致（允许表述不同，不允许事实相悖）。\n"
         f"【参考答案】\n{reference}\n\n"
-        f"【结论】\n{outputs.get('conclusion', '')}\n\n"
-        "只回答 JSON：{\"consistent\": true/false, \"reason\": \"一句话理由\"}"
+        f"【结论】\n{answer}\n\n"
+        "只回答 JSON：{{\"consistent\": true/false, \"reason\": \"一句话理由\"}}"
     )
     try:
         resp = await asyncio.wait_for(llm.ainvoke(prompt), timeout=60)
@@ -185,7 +301,78 @@ async def factuality_judge(run, example) -> dict:
         return {"key": "factuality", "score": 0, "comment": f"judge 失败: {e}"}
 
 
-# ── 5. 主流程 ────────────────────────────────────────────────────────
+async def factuality_judge(run, example) -> dict:
+    """langsmith 适配层：把 run/example 映射成 openevals 的 (inputs, outputs, reference_outputs)。"""
+    reference = (example.outputs or {}).get("reference", "")
+    if not reference:
+        return {"key": "factuality", "score": 0, "comment": "该 Example 未标注 reference，跳过 judge"}
+    answer = (run.outputs or {}).get("conclusion", "")
+    if _FACTUALITY_JUDGE is None:
+        return await _legacy_factuality_judge(answer, reference)
+    try:
+        return await _FACTUALITY_JUDGE(
+            inputs=_extract_task(run.inputs),
+            outputs=answer,
+            reference_outputs=reference,
+        )
+    except Exception as e:
+        # judge 故障不静默记 0 分：0 分会被误读成「事实错误」，这里带上原因便于在 UI 排查
+        return {"key": "factuality", "score": 0, "comment": f"judge 失败: {e}"}
+
+
+# ── 5. evaluator ③：执行轨迹合理性（agentevals，评"过程"而非"结论"） ──
+# 前两个评估器只看终态，改了编排逻辑（节点增删、并行改串行、评审被跳过）却看不出
+# 回归；这里把引擎事件流映射成 agent 轨迹，交给 agentevals 的轨迹 judge 判路径是否合理。
+TRAJECTORY_PROMPT = (
+    "你是多智能体系统的过程评审官。下面是一次任务执行的完整轨迹：\n"
+    "user 是用户任务；assistant 的 tool_call 是节点启动（工具名=节点名，"
+    "goal=子任务目标）；tool 是该节点的产出摘要；最后一条 assistant 是交付的结论。\n\n"
+    "判断这条执行路径是否合理，重点看：\n"
+    "1. 子任务分解是否覆盖任务要点，有无明显缺失或重复；\n"
+    "2. 节点顺序是否符合「规划 → 并行取证 → 评审 → 合成」的编排；\n"
+    "3. 关键节点失败（未命中语料 / LLM 未配置 / 执行失败）时后续是否仍正常收敛；\n"
+    "4. 有无明显空转（节点无产出却照常合成）或跳步。\n\n"
+    "只输出一个 JSON 对象，不要 Markdown 代码块和多余文字，格式如下：\n"
+    "{{\"reasoning\": \"一句话判分理由\", \"score\": true 或 false}}\n"
+    "score 为 true 表示执行路径合理。\n\n"
+    "【执行轨迹】\n{outputs}"
+)
+
+_TRAJECTORY_JUDGE = None      # main() 里构造；为 None 时跳过该评估器
+
+
+def build_trajectory_judge():
+    """构造 agentevals 轨迹 judge。返回 None 表示不可用（未装包 / LLM 未配置）。"""
+    try:
+        from agentevals.trajectory.llm import create_async_trajectory_llm_as_judge
+    except ImportError:
+        print("[warn] 未安装 agentevals（pip install agentevals），跳过 trajectory 评估")
+        return None
+    from providers import create_llm
+    if create_llm() is None:                          # 提示信息已在 build_openevals_judge 打出
+        return None
+    return create_async_trajectory_llm_as_judge(
+        prompt=TRAJECTORY_PROMPT,
+        feedback_key="trajectory_valid",
+        judge=_build_judge_llm(),                     # 同样锁定 json_mode
+        use_reasoning=True,
+    )
+
+
+async def trajectory_judge(run, example) -> dict:
+    if _TRAJECTORY_JUDGE is None:
+        return {"key": "trajectory_valid", "score": 0,
+                "comment": "agentevals 不可用（未安装或 LLM 未配置），跳过轨迹评估"}
+    traj = (run.outputs or {}).get("trajectory") or []
+    if len(traj) < 3:                                 # 只有 user + 结论，说明节点没跑起来
+        return {"key": "trajectory_valid", "score": 0, "comment": "轨迹过短（节点未启动），判为异常"}
+    try:
+        return await _TRAJECTORY_JUDGE(outputs=traj)
+    except Exception as e:
+        return {"key": "trajectory_valid", "score": 0, "comment": f"轨迹 judge 失败: {e}"}
+
+
+# ── 6. 主流程 ────────────────────────────────────────────────────────
 def main() -> None:
     parser = argparse.ArgumentParser(description="LangSmith 多智能体回归评估")
     parser.add_argument("--dataset", default=DEFAULT_DATASET, help="数据集名称")
@@ -195,6 +382,11 @@ def main() -> None:
                         help="删除并重建数据集（现有 Example 结构不对时用，如 UI 手建数据）")
     parser.add_argument("--prefix", default="regression", help="实验名前缀（跨轮对比按前缀分组）")
     args = parser.parse_args()
+
+    # judge 在跑批前构造一次（内部复用 providers 的 LLM 单例），失败则本地回退/跳过
+    global _FACTUALITY_JUDGE, _TRAJECTORY_JUDGE
+    _FACTUALITY_JUDGE = build_openevals_judge()
+    _TRAJECTORY_JUDGE = build_trajectory_judge()
 
     client = Client()
     if args.reseed or args.seed or not client.has_dataset(dataset_name=args.dataset):
@@ -220,8 +412,13 @@ def main() -> None:
     examples = valid
 
     n_ref = sum(1 for e in examples if (e.outputs or {}).get("reference"))
+    judge_backend = "openevals" if _FACTUALITY_JUDGE is not None else "本地手写（回退）"
+    evaluators = [citation_valid, factuality_judge]
+    if _TRAJECTORY_JUDGE is not None:
+        evaluators.append(trajectory_judge)
     print(f"[eval] 数据集 {args.dataset}：{len(examples)} 条（含 reference {n_ref} 条）｜"
-          f"评估器 citation_valid + factuality_judge｜max_concurrency=2")
+          f"评估器 {' + '.join(e.__name__ for e in evaluators)}"
+          f"（factuality: {judge_backend}）｜max_concurrency=2")
     print(f"[eval] 额度提示：预计产生 {len(examples) * 10}~{len(examples) * 50} 条 trace")
 
     t0 = time.monotonic()
@@ -230,7 +427,7 @@ def main() -> None:
         aevaluate(
             target,
             data=examples,
-            evaluators=[citation_valid, factuality_judge],
+            evaluators=evaluators,
             max_concurrency=2,          # 控并发：保护免费额度与下游 LLM 限流
             experiment_prefix=args.prefix,
         )

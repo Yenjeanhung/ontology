@@ -309,6 +309,16 @@ if front_dist.exists():
     app.mount("/", StaticFiles(directory=str(front_dist), html=True), name="frontend")
 
 
+@app.get("/api/healthz")
+async def healthz():
+    """进程存活探针（K8s liveness/readiness）：不探测外部组件，毫秒级返回。
+
+    组件级健康（数据库/图库/向量库/LLM…）见 /api/monitor/*，用于诊断而非探针——
+    探针若依赖外部组件，组件抖动会误杀 Pod。
+    """
+    return {"ok": True}
+
+
 if __name__ == "__main__":
     # 启动前自检各外部组件（数据库 / 图库 / 向量库 / 嵌入 / Tika），
     # 未就绪时打印状态清单与排查建议后退出，避免刷原始堆栈。

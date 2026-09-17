@@ -8,6 +8,7 @@ import AgentView from '../components/AgentView.vue'
 import AgentListPage from '../components/agent/AgentListPage.vue'
 import SkillListPage from '../components/SkillListPage.vue'
 import MultiAgentPage from '../components/multiagent/MultiAgentPage.vue'
+import McpRegistryPage from '../components/multiagent/McpRegistryPage.vue'
 import VectorDataView from '../components/VectorDataView.vue'
 import VectorFileDetail from '../components/VectorFileDetail.vue'
 import GraphView from '../components/GraphView.vue'
@@ -68,6 +69,8 @@ const routes = [
   { path: '/agent/skills', name: 'agent-skills', component: SkillListPage, meta: { keepAlive: true, perm: 'agent:view' } },
   // 多智能体协同研判（通用框架，业务场景以适配器接入）
   { path: '/agent/multi-agent', name: 'agent-multi-agent', component: MultiAgentPage, meta: { keepAlive: true, perm: 'agent:view' } },
+  // MCP 工具管理（ToolAgent 外部工具注册中心，配置入库热生效）
+  { path: '/agent/mcp', name: 'agent-mcp', component: McpRegistryPage, meta: { keepAlive: true, perm: 'agent:view' } },
   { path: '/vectors', name: 'vectors', component: VectorDataView, meta: { keepAlive: true, perm: 'vector:view' } },
   { path: '/vectors/:fileId', name: 'vector-file-detail', component: VectorFileDetail, props: true, meta: { perm: 'vector:view' } },
   { path: '/graph', name: 'graph', component: GraphView, meta: { keepAlive: true, perm: 'graph:view' } },

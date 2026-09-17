@@ -8,15 +8,16 @@
 - POST /api/agent/multi/scenarios/{sid}/run                      自由任务研判（SSE，仅 adhoc 场景；
                                                                  body.task + body.agents 自由指定团队编制）
 - GET/POST /api/agent/multi/tasks · PUT/DELETE /tasks/{tid}      任务库 CRUD（可配置任务提示词模板）
+- GET  /api/agent/multi/tools                                    Function Calling 工具清单（内置 + MCP 状态）
+- GET/POST /api/agent/multi/mcp/servers · PUT/DELETE /servers/{sid}   MCP 注册中心：服务器 CRUD（配置入库，热生效）
+- POST /api/agent/multi/mcp/test                                 MCP 服务器连接测试（不落库，试连 + 拉工具清单）
+- POST /api/agent/multi/mcp/inspect                              已启用服务器状态巡检（实连 + 工具清单）
 
 SSE 事件契约（team / plan / node_start / node_done / evidence / fact /
 conflict / token / error / done，`data: [DONE]` 收尾）与业务场景无关，
 定义见 doc/智能体/多智能体场景.md §4。新增业务场景只需在
 services/multi_agent/scenarios/ 注册适配器，本路由零改动。
 """
-
-from backend.services.multi_agent.scenarios import MultiAgentScenario
-
 
 import asyncio
 import inspect
@@ -30,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from services.multi_agent import task_store
-from services.multi_agent.scenarios import get_scenario, list_scenarios
+from services.multi_agent.scenarios import MultiAgentScenario, get_scenario, list_scenarios
 
 router = APIRouter(prefix="/agent/multi", tags=["agent-multi"])
 
@@ -43,6 +44,24 @@ def _sse_evt(payload: dict) -> str:
 async def multi_scenarios():
     """已注册场景列表（id / name / business / description / adhoc）。"""
     return list_scenarios()
+
+
+@router.get("/tools")
+async def multi_tools():
+    """Function Calling 工具清单：内置平台工具规范 + MCP 外部工具接入状态。
+
+    ToolAgent 组队时的可观测入口——不跑流水线也能确认工具链是否就绪
+    （MCP 服务器连接失败时在 mcp_status 中给出 error，不抛 500）。
+    """
+    from config import settings
+    from services.tool_registry import PlatformTools
+
+    async with PlatformTools() as pt:
+        return {
+            "tools": pt.registry.describe(),
+            "mcp_status": pt.mcp_status,
+            "mcp_configured": bool((getattr(settings, "MCP_SERVERS", "") or "").strip()),
+        }
 
 
 @router.get("/scenarios/{scenario_id}/targets")
@@ -85,6 +104,86 @@ async def run_scenario_task(scenario_id: str, body: TaskBody):
         raise HTTPException(422, "task 不能为空")
     # 构建以 awaitable 传入：SSE 先开流，Planner 规划（LLM 调用）期间前端可见「规划中」
     return _stream_engine(engine_source=scenario.build_engine_from_task(task, agents=body.agents))
+
+
+# ─────────────────────── MCP 注册中心（工具服务器管理） ───────────────────────
+
+
+class McpServerBody(BaseModel):
+    name: str = ""
+    transport: str = "stdio"      # stdio | streamable_http
+    command: str = ""             # stdio：可执行命令
+    args: list = []               # stdio：命令参数（字符串数组）
+    env: dict = {}                # stdio：环境变量（键值对象）
+    url: str = ""                 # streamable_http：MCP 端点
+    description: str = ""
+    enabled: bool = True
+
+
+@router.get("/mcp/servers")
+async def list_mcp_servers(db: AsyncSession = Depends(get_db)):
+    """MCP 服务器注册表列表（含停用项；配置入库持久化）。"""
+    from services.mcp_store import list_servers
+    return {"servers": await list_servers(db)}
+
+
+@router.post("/mcp/servers")
+async def create_mcp_server(req: McpServerBody, db: AsyncSession = Depends(get_db)):
+    """新增 MCP 服务器；校验失败 / 重名抛 422。保存后下次团队运行即热生效。"""
+    from services.mcp_store import create_server
+    try:
+        return await create_server(db, req.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@router.put("/mcp/servers/{server_id}")
+async def update_mcp_server(server_id: str, req: McpServerBody, db: AsyncSession = Depends(get_db)):
+    """更新 MCP 服务器（缺省字段保留现值，整体校验）；不存在返回 404。"""
+    from services.mcp_store import update_server
+    try:
+        row = await update_server(db, server_id, req.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    if not row:
+        raise HTTPException(404, "MCP 服务器不存在")
+    return row
+
+
+@router.delete("/mcp/servers/{server_id}")
+async def delete_mcp_server(server_id: str, db: AsyncSession = Depends(get_db)):
+    """删除 MCP 服务器（下次团队运行不再接入其工具）。"""
+    from services.mcp_store import delete_server
+    if not await delete_server(db, server_id):
+        raise HTTPException(404, "MCP 服务器不存在")
+    return {"ok": True}
+
+
+@router.post("/mcp/test")
+async def test_mcp_server(req: McpServerBody):
+    """连接测试（不落库）：试连 + initialize 握手 + 拉工具清单。
+
+    任何失败都返回 200 + ok:false + error 文本（管理界面直接展示，不抛 500）。
+    """
+    from services.mcp_store import validate_server
+    from services.tool_registry import probe_server
+    data = req.model_dump()
+    errors = validate_server(data)
+    if errors:
+        return {"ok": False, "tools": [], "elapsed_ms": 0, "error": "；".join(errors)}
+    return await probe_server(data)
+
+
+@router.post("/mcp/inspect")
+async def inspect_mcp_servers(db: AsyncSession = Depends(get_db)):
+    """状态巡检：对已启用的服务器逐一实连并返回各自工具清单（管理界面「巡检全部」）。"""
+    from services.mcp_store import load_enabled_servers
+    from services.tool_registry import probe_server
+    results = []
+    for server in await load_enabled_servers(db):
+        probe = await probe_server(server)
+        results.append({"server": server["name"], **probe})
+    return {"servers": results}
 
 
 # ─────────────────────── 任务库（可配置任务提示词） ───────────────────────

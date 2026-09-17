@@ -92,6 +92,19 @@ class Settings(BaseSettings):
     LANGSMITH_API_KEY: str = ""
     LANGSMITH_PROJECT: str = "ontology-multi-agent"
 
+    # ───────────────── Function Calling 工具链 / MCP ─────────────────
+    # ToolAgent 的工具调用循环与 MCP 外部工具接入（services/agent_loop.py、
+    # services/tool_registry.py）；工具清单见 GET /api/agent/multi/tools。
+    TOOL_LOOP_MAX_ITERATIONS: int = 4     # 单节点工具循环 LLM 轮数上限
+    TOOL_TIMEOUT: float = 25.0            # 单次工具执行超时（秒）
+    MCP_TOOL_TIMEOUT: float = 30.0        # MCP 远程工具单次调用超时（秒）
+    # MCP 服务器清单（JSON 数组文本，空=不接入）。示例：
+    # MCP_SERVERS=[{"name":"fs","transport":"stdio","command":"npx",
+    #               "args":["-y","@modelcontextprotocol/server-filesystem","D:/data"]},
+    #              {"name":"corp","transport":"streamable_http","url":"http://10.0.0.8:9001/mcp"}]
+    # 平台自身也可作为 MCP 服务器被外部 Agent 消费：python scripts/mcp_server.py
+    MCP_SERVERS: str = ""
+
     # 分块
     CHUNK_STRATEGY: Literal["fixed", "semantic", "sentence", "recursive", "heading"] = "fixed"
     # 以下为全局兜底默认值：仅在文件未分析 / 批量处理未确认时使用；

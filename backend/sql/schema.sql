@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS files (
     name VARCHAR NOT NULL,
     size INTEGER NOT NULL DEFAULT 0,
     total_chunks INTEGER NOT NULL DEFAULT 0,
+    content_hash VARCHAR,
     status VARCHAR DEFAULT 'uploading',
     progress INTEGER DEFAULT 0,
     message VARCHAR,
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     content TEXT NOT NULL,
     chunk_index INTEGER NOT NULL,
     embedding_id VARCHAR,
+    content_hash VARCHAR,
     created_at VARCHAR
 );
 
@@ -316,6 +318,24 @@ CREATE TABLE IF NOT EXISTS multi_agent_tasks (
     created_at VARCHAR,
     updated_at VARCHAR
 );
+
+-- ===== MCP 工具服务器注册中心（ToolAgent 外部工具可视化管理）=====
+
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(64) NOT NULL,
+    transport VARCHAR(20) NOT NULL DEFAULT 'stdio',
+    command VARCHAR(500) NOT NULL DEFAULT '',
+    args TEXT NOT NULL DEFAULT '[]',
+    env TEXT NOT NULL DEFAULT '{}',
+    url VARCHAR(500) NOT NULL DEFAULT '',
+    description VARCHAR(300) NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_skills_code ON agent_skills(code);
 
 -- ===== 技能分组（全局，任意层级嵌套）=====

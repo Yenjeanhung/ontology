@@ -722,3 +722,26 @@ CREATE TABLE IF NOT EXISTS multi_agent_tasks (
     created_at VARCHAR,
     updated_at VARCHAR
 );
+
+-- migration_035: 知识库文档增量更新——文件/分片内容指纹（内容寻址 diff，未变化分片复用已有向量不重嵌入）
+ALTER TABLE files ADD COLUMN content_hash VARCHAR;
+ALTER TABLE chunks ADD COLUMN content_hash VARCHAR;
+CREATE INDEX IF NOT EXISTS idx_chunks_file_hash ON chunks(file_id, content_hash);
+CREATE INDEX IF NOT EXISTS idx_files_kb_hash ON files(kb_id, content_hash);
+
+-- migration_036: MCP 工具服务器注册中心（ToolAgent 外部工具可视化管理，配置入库热生效）
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(64) NOT NULL,
+    transport VARCHAR(20) NOT NULL DEFAULT 'stdio',
+    command VARCHAR(500) NOT NULL DEFAULT '',
+    args TEXT NOT NULL DEFAULT '[]',
+    env TEXT NOT NULL DEFAULT '{}',
+    url VARCHAR(500) NOT NULL DEFAULT '',
+    description VARCHAR(300) NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);

@@ -160,8 +160,9 @@ async def run(args: argparse.Namespace) -> None:
                  "填写 OPENAI_API_KEY / OPENAI_BASE_URL / LLM_MODEL")
 
     need, seen = args.count, set()
-    samples = await sample_chunks(need)
-    print(f"[sample] 候选片段 {len(samples)} 条，开始出题（目标 {need} 条，"
+    samples = await sample_chunks(need, args.kb)
+    scope = f"知识库 {args.kb}" if args.kb else "全库"
+    print(f"[sample] 采样范围 {scope}，候选片段 {len(samples)} 条，开始出题（目标 {need} 条，"
           f"并发 {GEN_CONCURRENCY}，类型轮转 {len(TASK_KINDS)} 类）")
 
     t0 = time.monotonic()
@@ -215,12 +216,12 @@ async def run(args: argparse.Namespace) -> None:
         print("[dry-run] 仅预览未入库。完整 JSON：")
         print(json.dumps(results, ensure_ascii=False, indent=2))
 
-
+# 航班运行监控评估： python scripts/langsmith/gen_dataset.py --count 30 --dataset multi-agent-regression --kb a20a9a0a6492
 def main() -> None:
     parser = argparse.ArgumentParser(description="LangSmith 数据集合成（RAG 范式）")
     parser.add_argument("--count", type=int, default=30, help="生成条数（默认 30）")
     parser.add_argument("--dataset", default="multi-agent-regression", help="目标数据集名")
-    parser.add_argument("--kb", default=None, help="只从指定 kb_id 的知识库采样")
+    parser.add_argument("--kb", default=None, help="只从指定 kb_id 的知识库采样，运行监控处置的 a20a9a0a6492")
     parser.add_argument("--dry-run", action="store_true", help="只生成打印，不入库不落盘")
     args = parser.parse_args()
     asyncio.run(run(args))

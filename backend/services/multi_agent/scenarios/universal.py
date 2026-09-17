@@ -7,7 +7,8 @@ Magentic-One）：
 - 核心智能体内置：Planner（任务规划）与 Synthesizer（结果合成）是任何团队
   都必需的角色，固定在编；
 - 能力智能体自由勾选：Retriever（知识库取证）/ DataAgent（台账数据查询）/
-  GraphAgent（图谱事实）/ Critic（评审质控）由用户按需组队，流水线按编制
+  GraphAgent（图谱事实）/ ToolAgent（Function Calling 工具调用，含 MCP 外部
+  工具接入）/ Critic（评审质控）由用户按需组队，流水线按编制
   动态装配（不选 Critic 时并行节点直通 Synthesizer，引擎零特判）；
 - 任务类型不限：研判、写作、总结、问答皆可——Planner 分解提示词随编制
   切换（选 Retriever → 检索式子任务；否则 → 由成员用模型知识直接执行）；
@@ -49,6 +50,8 @@ OPTIONAL_AGENTS = [
      "desc": "查询实体台账结构化数据：总量/分类聚合统计 + 最新明细（真实数据，杜绝编造)"},
     {"id": "graph_agent", "name": "GraphAgent · 图谱事实",
      "desc": "实体图谱关键词检索，产出结构化事实卡"},
+    {"id": "tool_agent", "name": "ToolAgent · 工具调用",
+     "desc": "Function Calling 自主取证：多轮调用知识库/图谱/台账内置工具与 MCP 外部工具，真实数据杜绝编造"},
     {"id": "critic", "name": "Critic · 评审质控",
      "desc": "素材交叉验证、冲突消解与质量裁定（可选编制）"},
 ]
@@ -187,6 +190,9 @@ class UniversalScenario(MultiAgentScenario):
         if "graph_agent" in caps:
             plan.append({"id": "g1", "node": "graph_agent", "role": "graph_agent",
                          "goal": "实体图谱关联事实"})
+        if "tool_agent" in caps:
+            plan.append({"id": "t1", "node": "tool_agent", "role": "tool_agent",
+                         "goal": "Function Calling 工具调用取证"})
         if "critic" in caps:
             plan.append({"id": "c1", "node": "critic", "role": "critic",
                          "goal": "素材交叉验证与质量裁定"})
@@ -206,9 +212,11 @@ class UniversalScenario(MultiAgentScenario):
                 {"node": p["node"], "role": p["role"],
                  "name": {"data_agent": "DataAgent · 数据查询",
                           "graph_agent": "GraphAgent · 图谱事实",
+                          "tool_agent": "ToolAgent · 工具调用",
                           "critic": "Critic · 评审质控",
                           "synthesizer": "Synthesizer · 结果合成"}[p["role"]]}
-                for p in plan if p["role"] in ("data_agent", "graph_agent", "critic", "synthesizer")
+                for p in plan if p["role"] in ("data_agent", "graph_agent", "tool_agent",
+                                               "critic", "synthesizer")
             ]
         )
         cap_label = " + ".join(
@@ -294,6 +302,8 @@ class UniversalScenario(MultiAgentScenario):
                 nodes[step["node"]] = self._make_worker(eng, step, task)
             elif step["role"] == "data_agent":
                 nodes[step["node"]] = self._make_data_agent(eng, task)
+            elif step["role"] == "tool_agent":
+                nodes[step["node"]] = self._make_tool_agent(eng, task)
             elif step["role"] == "graph_agent":
                 nodes[step["node"]] = self._make_graph_agent(eng, task)
             elif step["role"] == "critic":
@@ -384,6 +394,67 @@ class UniversalScenario(MultiAgentScenario):
                             f"（1 统计 + {len(facts) - 1} 明细）"
                             if facts else "台账未查询到结构化数据"),
             })
+            return {"facts": facts}
+
+        return _fn
+
+    def _make_tool_agent(self, eng: MultiAgentEngine, task: str):
+        """ToolAgent：Function Calling 自主取证。
+
+        与 Retriever / DataAgent / GraphAgent 的本质差异：后三者的取数路径
+        由代码写死（节点内直接查询），ToolAgent 把平台能力注册为工具，由 LLM
+        在工具调用循环（services/agent_loop.py）中自主决定「调什么、调几次、
+        带什么参数」——原生 Function Calling / Tool Use 机制；内置工具之外，
+        还可通过 MCP（settings.MCP_SERVERS）无差别接入外部工具服务器。
+        每次工具调用产出一张工具事实卡（grade=tool_result），与其它成员
+        同一黑板协作，供合成官引用编号。
+        """
+        node = "tool_agent"
+
+        async def _fn(state: dict) -> dict:
+            eng.emit({"type": "node_start", "node": node, "role": "tool_agent",
+                      "goal": "Function Calling 工具调用取证"})
+            facts: list[dict] = []
+            try:
+                from services.agent_loop import run_tool_loop
+                from services.tool_registry import PlatformTools
+
+                if eng.llm() is None:
+                    raise RuntimeError("LLM 未配置")
+
+                mcp_note = ""
+                async with PlatformTools() as pt:
+                    if not pt.registry.names():
+                        raise RuntimeError("工具注册表为空")
+                    if pt.mcp_status:
+                        ok_n = sum(1 for s in pt.mcp_status if s["ok"])
+                        mcp_note = f"，MCP 接入 {ok_n}/{len(pt.mcp_status)} 个外部服务器"
+                    loop = await run_tool_loop(
+                        eng.llm(), pt.registry,
+                        system=(
+                            "你是多智能体团队的「工具执行官」，通过调用工具获取"
+                            "平台真实数据支撑团队任务。规则：1) 优先调用工具取"
+                            "真实数据，禁止编造；2) 相同参数的工具不要重复调用；"
+                            "3) 数据足够后输出不超过 120 字的中文要点总结，"
+                            "说明拿到了哪些关键信息。"
+                        ),
+                        user=f"团队总体任务：{task}",
+                        on_event=lambda e: eng.emit({"node": node, **e}),
+                    )
+                facts = _tool_facts(loop)
+                used: dict[str, int] = {}
+                for c in loop.calls:
+                    used[c.name] = used.get(c.name, 0) + 1
+                call_desc = "、".join(f"{k}×{v}" for k, v in used.items()) or "未调用工具"
+                summary = (f"Function Calling {loop.iterations} 轮：{call_desc}，"
+                           f"产出 {len(facts)} 张工具事实卡{mcp_note}")
+            except RuntimeError as exc:   # LLM 未配置 / 工具表为空
+                summary = f"工具循环未执行（{exc}）"
+            except Exception as exc:      # 工具循环兜底：不中断流水线
+                summary = f"工具循环失败（{type(exc).__name__}: {exc}）"
+
+            eng.emit({"type": "fact", "facts": facts})
+            eng.emit({"type": "node_done", "node": node, "summary": summary})
             return {"facts": facts}
 
         return _fn
@@ -523,6 +594,33 @@ def _chunk_card(cid: str, domain: str, c: dict) -> dict:
         "quote": f"相似度 {c['score']:.2f}",
         "stance": "neutral",
     }
+
+
+def _tool_facts(loop) -> list[dict]:
+    """工具循环调用记录 → 工具事实卡（grade=tool_result，前端「工具产出」tab）。
+
+    detail 优先展示工具返回的 note（结论性摘要），其余结构化字段序列化截断，
+    保证合成官与前端都能拿到可引用的真实数据摘要。
+    """
+    facts: list[dict] = []
+    for i, c in enumerate(loop.calls, start=1):
+        if c.error:
+            detail = f"调用失败：{c.error}"
+        elif isinstance(c.raw, dict):
+            note = str(c.raw.get("note") or "")
+            payload = {k: v for k, v in c.raw.items() if k != "note"}
+            blob = json.dumps(payload, ensure_ascii=False)
+            detail = f"{note}｜{blob[:280]}" if note else blob[:300]
+        else:
+            detail = (c.result_text or "")[:300]
+        args = json.dumps(c.arguments, ensure_ascii=False)[:80]
+        facts.append({
+            "id": f"fact-tool-{i}",
+            "grade": "tool_result",
+            "title": f"工具 {c.name}（{args}）",
+            "detail": detail or "（空结果）",
+        })
+    return facts
 
 
 async def _graph_facts(task: str) -> list[dict]:

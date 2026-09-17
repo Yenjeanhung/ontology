@@ -25,6 +25,7 @@ PUBLIC_PATHS = {
     "/api/auth/login",
     "/api/auth/refresh",
     "/api/auth/status",
+    "/api/healthz",   # K8s liveness/readiness 探针（仅进程存活，无敏感信息）
 }
 PUBLIC_PREFIXES = (
     "/api/auth/",

@@ -62,8 +62,12 @@ def _get_no_proxy_clients():
     return _no_proxy_sync, _no_proxy_async
 
 
-def build_llm(provider, api_key, base_url, model, max_tokens, temperature):
-    """根据显式参数构造一个 LLM 实例（不缓存，供测试连接使用）。"""
+def build_llm(provider, api_key, base_url, model, max_tokens, temperature, chat_cls=None):
+    """根据显式参数构造一个 LLM 实例（不缓存，供测试连接使用）。
+
+    chat_cls：可选的 ChatOpenAI 子类，供调用方覆写模型行为（如评估脚本需要把
+    结构化输出锁定为 json_mode）；不传时即原生 ChatOpenAI。
+    """
     provider = (provider or settings.LLM_PROVIDER or "openai").lower()
 
     if provider == "anthropic":
@@ -89,6 +93,7 @@ def build_llm(provider, api_key, base_url, model, max_tokens, temperature):
 
     # 默认 OpenAI 兼容协议
     from langchain_openai import ChatOpenAI
+    cls = chat_cls or ChatOpenAI
     kwargs = dict(
         model=model,
         api_key=api_key,
@@ -105,11 +110,11 @@ def build_llm(provider, api_key, base_url, model, max_tokens, temperature):
     # 显式关闭该注入，连接复用交给上面的 httpx 连接池。
     kwargs["http_socket_options"] = ()
     try:
-        return ChatOpenAI(**kwargs)
+        return cls(**kwargs)
     except (TypeError, ValueError):
         # 旧版 langchain-openai 无此字段，回退为默认行为
         kwargs.pop("http_socket_options", None)
-        return ChatOpenAI(**kwargs)
+        return cls(**kwargs)
 
 
 def create_llm():

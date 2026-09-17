@@ -7,6 +7,8 @@
  * - POST /api/agent/multi/scenarios/{sid}/targets/{tid}/run  对目标发起研判（SSE）
  * - POST /api/agent/multi/scenarios/{sid}/run                自由任务研判（SSE，adhoc 场景）
  * - GET/POST /api/agent/multi/tasks · PUT/DELETE /tasks/{tid} 任务库（可配置任务提示词模板）
+ * - GET/POST /api/agent/multi/mcp/servers · PUT/DELETE /mcp/servers/{sid}  MCP 注册中心（服务器 CRUD）
+ * - POST /api/agent/multi/mcp/test / mcp/inspect               MCP 连接测试 / 状态巡检
  *
  * 鉴权：interceptor.js 已全局拦截 fetch 并注入 Bearer token，这里保持裸 fetch。
  */
@@ -97,6 +99,76 @@ export async function deleteMultiTask(taskId) {
   if (!res.ok) {
     const body = await res.json().catch(() => null)
     throw new Error(apiDetail(body, '删除任务失败'))
+  }
+  return res.json()
+}
+
+// ─────────────────────── MCP 注册中心（工具服务器管理） ───────────────────────
+
+export async function listMcpServers() {
+  const res = await fetch(`${API}/api/agent/multi/mcp/servers`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '加载 MCP 服务器列表失败'))
+  }
+  return res.json()
+}
+
+export async function createMcpServer(data) {
+  const res = await fetch(`${API}/api/agent/multi/mcp/servers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '新增 MCP 服务器失败'))
+  }
+  return res.json()
+}
+
+export async function updateMcpServer(serverId, data) {
+  const res = await fetch(`${API}/api/agent/multi/mcp/servers/${encodeURIComponent(serverId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '更新 MCP 服务器失败'))
+  }
+  return res.json()
+}
+
+export async function deleteMcpServer(serverId) {
+  const res = await fetch(`${API}/api/agent/multi/mcp/servers/${encodeURIComponent(serverId)}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '删除 MCP 服务器失败'))
+  }
+  return res.json()
+}
+
+/** 连接测试（不落库）：返回 {ok, tools, elapsed_ms, error}，失败也是 200。 */
+export async function testMcpServer(data) {
+  const res = await fetch(`${API}/api/agent/multi/mcp/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '连接测试请求失败'))
+  }
+  return res.json()
+}
+
+/** 已启用服务器状态巡检：返回 {servers: [{server, ok, tools, elapsed_ms, error}]}。 */
+export async function inspectMcpServers() {
+  const res = await fetch(`${API}/api/agent/multi/mcp/inspect`, { method: 'POST' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '状态巡检请求失败'))
   }
   return res.json()
 }

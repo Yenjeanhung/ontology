@@ -1,0 +1,40 @@
+# 构建上下文瘦身：只保留 front/ 与 backend/ 的源码
+.git
+.codebuddy
+.claude
+.trae
+.walicode
+.workbuddy
+.playwright-cli
+.pytest_cache
+
+# 文档与设计资产（不参与运行）
+doc
+issus
+assets
+*.md
+
+# 运行时产物 / 本地数据（镜像内不携带，K8s 用 PVC）
+backend/chunks
+backend/data
+backend/uploads
+backend/sql
+backend/logs
+backend/test
+chunks
+data
+logs
+uploads
+test_data
+
+# Python / Node 缓存与依赖
+**/__pycache__
+**/*.pyc
+.venv
+venv
+front/node_modules
+front/dist
+
+# 本地密钥与配置（运行时通过 env/Secret 注入）
+.env
+backend/.env

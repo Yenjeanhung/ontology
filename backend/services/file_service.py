@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from datetime import datetime, timezone
+import hashlib
 import json
 import logging
 import shutil
@@ -46,6 +48,52 @@ LOG_TAIL_LIMIT = 120
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ── 增量更新：内容指纹与 diff 辅助 ──────────────────────────
+# 设计：chunk_id 从位置编址（{file_id}_{index}）改为内容寻址（{file_id}_{hash16}），
+# 文档更新后重新分片时按 content_hash 与旧分片对比：
+#   hash 命中 → 复用旧向量（不重嵌入），仅刷新分片位置信息；
+#   未命中   → 新嵌入 upsert；旧有新无 → 删除向量与分片行。
+# 效果：大文件局部改动只重嵌入变化分片；分片策略未变的重复重处理零嵌入成本。
+
+
+def sha256_file(path: Path) -> str:
+    """流式计算文件内容 SHA-256（大文件友好，恒定内存）。"""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def chunk_content_hash(content: str) -> str:
+    """分片文本内容 SHA-256（增量 diff 的复用键）。"""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def make_chunk_id(file_id: str, content_hash: str, dup_seq: int = 1) -> str:
+    """内容寻址 chunk_id：{file_id}_{hash前16位}；同文件内重复内容分片追加序号去重。"""
+    base = f"{file_id}_{content_hash[:16]}"
+    return base if dup_seq <= 1 else f"{base}_{dup_seq}"
+
+
+def build_chunk_hash_index(old_chunks: list) -> dict[str, deque]:
+    """把旧分片行按 content_hash 分组（保序），供增量 diff 复用。
+
+    无 content_hash（migration_035 之前索引的存量数据）或无 embedding_id
+    （向量 id 不明，复用有风险）的行不参与复用，最终按 stale 清理后重建。
+    """
+    index: dict[str, deque] = {}
+    for chunk in old_chunks:
+        if chunk.content_hash and chunk.embedding_id:
+            index.setdefault(chunk.content_hash, deque()).append(chunk)
+    return index
+
+
+def select_stale_chunks(old_chunks: list, reused_ids: set[str]) -> list:
+    """增量 diff 收尾：返回需要删除的旧分片行（已被复用的保留，其余全部过期）。"""
+    return [chunk for chunk in old_chunks if chunk.id not in reused_ids]
 
 
 def _visual_stage_name(stage: str | None) -> str | None:
@@ -453,21 +501,45 @@ class FileService:
         )
         file.asset_id = asset.id
         file.path = asset.path
+        # 文件内容指纹：同 KB 重复检测与增量处理幂等的依据
+        file.content_hash = await asyncio.to_thread(sha256_file, target_path)
+        duplicate = (
+            await db.execute(
+                select(File)
+                .where(
+                    File.kb_id == file.kb_id,
+                    File.content_hash == file.content_hash,
+                    File.id != file.id,
+                    File.status == "indexed",
+                )
+                .limit(1)
+            )
+        ).scalars().first()
+        dup_note = ""
+        if duplicate:
+            dup_note = f"；注意：与已索引文件《{duplicate.name}》内容相同"
+            FileService._append_log(
+                file,
+                f"检测到内容重复：与已索引文件《{duplicate.name}》({duplicate.id}) 内容一致",
+                "warning",
+            )
         await FileService._commit_runtime_state(
             db,
             file,
             status="uploaded",
             progress=0,
-            message="上传完成，等待开始处理",
+            message="上传完成，等待开始处理" + dup_note,
             stage="uploaded",
             log_message="上传完成，文件已重组",
         )
         logger.info(
-            "Upload reassembled: file_id=%s kb_id=%s path=%s size=%s",
+            "Upload reassembled: file_id=%s kb_id=%s path=%s size=%s content_hash=%s duplicate_of=%s",
             file_id,
             file.kb_id,
             file.path,
             file.size,
+            (file.content_hash or "")[:16],
+            duplicate.id if duplicate else "",
         )
         # 上传完成后是否自动分析：以页面「自动分析」开关为准（默认关闭），失败不阻塞上传流程
         if await AppSettingsService.get_bool(db, "chunk_auto_analyze", settings.CHUNK_AUTO_ANALYZE):
@@ -768,8 +840,9 @@ class FileService:
             logger.warning("Restart processing skipped: file_id=%s already processing", file_id)
             return False
 
-        await FileService._delete_index_artifacts(db, file, remove_source_file=False)
-
+        # 不再全量清场（删旧分片/向量/图谱后重建）：交由 _process_file_bg 按分片
+        # content_hash 增量 diff——未变化分片复用已有向量，仅变化部分重嵌入；
+        # 图谱抽取仍按文档子图整体重建（clear_existing=True）。
         decision = FileService._resolve_chunk_decision(file, strategy, params, use_recommendation)
         old_detail = FileService._read_detail(file)
         detail = FileService._empty_detail()
@@ -800,7 +873,7 @@ class FileService:
             progress=0,
             message="准备重新处理",
             stage="preparing",
-            log_message=f"已清理旧分片、向量和图谱，开始重新处理，分片策略：{decision_label}",
+            log_message=f"开始重新处理（增量模式：内容未变的分片将复用已有向量），分片策略：{decision_label}",
         )
         logger.info(
             "Restart processing: file_id=%s kb_id=%s file_name=%s extract_graph=%s chunking=%s",
@@ -883,6 +956,23 @@ class FileService:
                 )
 
                 chunk_started = perf_counter()
+                # ── 增量更新准备：文件指纹补算 + 旧分片 hash 索引 ──
+                if not file.content_hash:
+                    file.content_hash = await asyncio.to_thread(sha256_file, file_path)
+                old_chunk_rows = (
+                    (await db.execute(select(Chunk).where(Chunk.file_id == file_id)))
+                    .scalars()
+                    .all()
+                )
+                old_by_hash = build_chunk_hash_index(old_chunk_rows)
+                reused_row_ids: set[str] = set()
+                hash_dup_counter: dict[str, int] = {}
+                reused_count = 0
+                if old_chunk_rows:
+                    logger.info(
+                        "Incremental diff prepared: file_id=%s old_chunks=%s reusable_hashes=%s",
+                        file.id, len(old_chunk_rows), len(old_by_hash),
+                    )
                 embeddings = create_embeddings()
                 vectorstore = create_vector_store(file.kb_id, embeddings)
                 vector_batch_size = max(1, settings.VECTOR_WRITE_BATCH_SIZE)
@@ -909,6 +999,7 @@ class FileService:
                 graph_chunks: list[ChunkGraphData] = []
                 chunk_ids: list[str] = []
                 pending_chunk_rows: list[dict] = []
+                pending_hashes: list[str] = []
                 pending_docs: list[Document] = []
                 pending_ids: list[str] = []
                 generated_chunks = 0
@@ -926,9 +1017,10 @@ class FileService:
                     batch_docs = list(pending_docs)
                     batch_ids = list(pending_ids)
                     batch_rows = list(pending_chunk_rows)
+                    batch_hashes = list(pending_hashes)
                     await asyncio.to_thread(vectorstore.add_documents, batch_docs, ids=batch_ids)
 
-                    for chunk_row, chunk_id in zip(batch_rows, batch_ids):
+                    for chunk_row, chunk_id, chash in zip(batch_rows, batch_ids, batch_hashes):
                         text_chunks.append(chunk_row)
                         chunk_ids.append(chunk_id)
                         graph_chunks.append(
@@ -945,6 +1037,7 @@ class FileService:
                                 content=chunk_row["content"],
                                 chunk_index=chunk_row["index"],
                                 embedding_id=chunk_id,
+                                content_hash=chash,
                             )
                         )
 
@@ -985,6 +1078,7 @@ class FileService:
                     pending_docs.clear()
                     pending_ids.clear()
                     pending_chunk_rows.clear()
+                    pending_hashes.clear()
 
                 decision = FileService._read_detail(file).get("chunking_decision") or {}
                 decision_strategy = decision.get("strategy")
@@ -1003,8 +1097,31 @@ class FileService:
                     FileService._check_cancelled(file_id)
                     generated_chunks += 1
                     last_generated_offset = chunk["end_offset"]
-                    chunk_id = f"{file_id}_{chunk['index']}"
+                    chash = chunk_content_hash(chunk["content"])
+                    hash_dup_counter[chash] = hash_dup_counter.get(chash, 0) + 1
+
+                    # 增量 diff：内容未变化的分片复用已有向量（不重嵌入），仅刷新位置信息
+                    bucket = old_by_hash.get(chash)
+                    if bucket:
+                        reuse_row = bucket.popleft()
+                        reused_row_ids.add(reuse_row.id)
+                        reuse_row.chunk_index = chunk["index"]
+                        reused_count += 1
+                        reuse_id = reuse_row.embedding_id or reuse_row.id
+                        text_chunks.append(chunk)
+                        chunk_ids.append(reuse_id)
+                        graph_chunks.append(
+                            ChunkGraphData(
+                                chunk_id=reuse_id,
+                                chunk_index=chunk["index"],
+                                content=chunk["content"],
+                            )
+                        )
+                        continue
+
+                    chunk_id = make_chunk_id(file_id, chash, hash_dup_counter[chash])
                     pending_chunk_rows.append(chunk)
+                    pending_hashes.append(chash)
                     pending_ids.append(chunk_id)
                     pending_docs.append(
                         Document(
@@ -1039,15 +1156,45 @@ class FileService:
                     return
 
                 await flush_vector_batch(final=True)
+
+                # ── 增量收尾：清理未复用的旧分片（向量 + DB 行）──
+                # 旧有新无的分片已不在新一轮索引中，删除其向量与 Chunk 行；
+                # 失败不回滚已写入的新分片（残留孤儿可由下次重处理兜底清理）。
+                stale_rows = select_stale_chunks(old_chunk_rows, reused_row_ids)
+                stale_cleaned = 0
+                if stale_rows:
+                    stale_vec_ids = [c.embedding_id or c.id for c in stale_rows]
+                    try:
+                        stale_deleted = await asyncio.to_thread(
+                            delete_vector_ids, file.kb_id, stale_vec_ids, embeddings
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Stale vector delete failed: file_id=%s kb_id=%s requested=%s",
+                            file.id, file.kb_id, len(stale_vec_ids),
+                        )
+                        stale_deleted = 0
+                    for stale_row in stale_rows:
+                        await db.delete(stale_row)
+                    await db.flush()
+                    stale_cleaned = len(stale_rows)
+                    FileService._append_log(
+                        file,
+                        f"增量更新：清理过期分片 {stale_cleaned} 条（向量删除 {stale_deleted} 条）",
+                    )
+
                 FileService._check_cancelled(file_id)
                 chunk_ms = (perf_counter() - chunk_started) * 1000
                 vector_ms = (perf_counter() - vector_started) * 1000
                 logger.info(
-                    "Vector write completed: file_id=%s kb_id=%s provider=%s count=%s duration_ms=%.0f",
+                    "Vector write completed: file_id=%s kb_id=%s provider=%s count=%s reused=%s embedded=%s stale_removed=%s duration_ms=%.0f",
                     file.id,
                     file.kb_id,
                     vector_provider_name,
                     len(chunk_ids),
+                    reused_count,
+                    written_docs,
+                    stale_cleaned,
                     vector_ms,
                 )
                 # 在仅分片模式下，向量写入完成后跳到90%（因为没有抽取阶段）
@@ -1072,8 +1219,9 @@ class FileService:
                     },
                     summary={"chunk_count": len(text_chunks)},
                     log_message=(
-                        f"Streaming chunk/vector pipeline finished: {len(text_chunks)} chunks, "
-                        f"chunking {chunk_ms / 1000:.1f}s, vector write {vector_ms / 1000:.1f}s"
+                        f"分片完成：共 {len(text_chunks)} 片"
+                        f"（复用 {reused_count}，新嵌入 {written_docs}，清理过期 {stale_cleaned}），"
+                        f"分片 {chunk_ms / 1000:.1f}s，向量写入 {vector_ms / 1000:.1f}s"
                     ),
                 )
 

@@ -1,0 +1,127 @@
+# ══════════════════════════════════════════════════════════════
+# 应用层：PVC（文件/模型缓存持久化） + Deployment + Service + Ingress
+# 镜像先在仓库根目录构建：docker build -t knowsource:latest .
+# ══════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: knowsource-data
+  namespace: knowsource
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName: <集群默认 StorageClass，按需指定>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: knowsource
+  namespace: knowsource
+  labels:
+    app: knowsource
+spec:
+  # ⚠️ 单副本约束：进程内含 APScheduler 定时引擎（重启恢复型）与本地嵌入模型，
+  #    多副本会造成任务重复调度与内存翻倍；横向扩容前需将调度器改造为分布式锁/独立部署。
+  replicas: 1
+  strategy:
+    type: Recreate          # RVO 卷单挂载点，滚动更新前先杀旧 Pod
+  selector:
+    matchLabels:
+      app: knowsource
+  template:
+    metadata:
+      labels:
+        app: knowsource
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: knowsource
+          image: knowsource:latest       # 推送镜像仓库后替换为完整地址
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: knowsource-config
+            - secretRef:
+                name: knowsource-secret
+          volumeMounts:
+            - name: data
+              mountPath: /srv/backend/uploads   # 上传原件与切分产物
+              subPath: uploads
+            - name: data
+              mountPath: /srv/backend/data      # 嵌入模型缓存 / 本地图库
+              subPath: data
+          # 启动阶段：init_db 建表 + 嵌入模型加载 + 中间件就绪等待，放宽窗口
+          startupProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30        # 最长 5 分钟启动窗口
+          readinessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi               # sentence-transformers 嵌入模型常驻
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: knowsource-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: knowsource
+  namespace: knowsource
+spec:
+  type: ClusterIP
+  selector:
+    app: knowsource
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# 集群入口（nginx ingress；无 ingress-controller 时删除本段，改用 NodePort/端口转发）
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: knowsource
+  namespace: knowsource
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"   # SSE 流式（多智能体/工作流）长连接
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"       # SSE 必须关闭缓冲
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: knowsource.example.com        # 替换为实际域名
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: knowsource
+                port:
+                  number: 80

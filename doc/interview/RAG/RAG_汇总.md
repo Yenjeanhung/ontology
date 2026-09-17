@@ -50,6 +50,9 @@
 
 看语言匹配（中文选 `bge-small-zh-v1.5` 这类中文模型）、维度（小维度省存储、速度快）、效果榜单（C-MTEB）、部署方式（本地 sentence-transformers vs API）。项目支持 `EMBEDDING_PROVIDER=local/openai` 可切换。
 
+## 知识库文档有更新怎么维护
+
+
 # 三、检索
 
 ## Q7 向量检索的原理和短板

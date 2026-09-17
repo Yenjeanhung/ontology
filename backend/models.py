@@ -69,6 +69,8 @@ class File(Base):
     name = Column(String, nullable=False)
     size = Column(Integer, nullable=False)
     total_chunks = Column(Integer, nullable=False, default=0)
+    # 源文件内容 SHA-256：增量更新指纹（上传时计算；同 KB 重复检测 + 处理幂等）
+    content_hash = Column(String, nullable=True)
     status = Column(String, default="uploading")
     progress = Column(Integer, default=0)
     message = Column(String, nullable=True)
@@ -90,6 +92,8 @@ class Chunk(Base):
     content = Column(Text, nullable=False)
     chunk_index = Column(Integer, nullable=False)
     embedding_id = Column(String, nullable=True)
+    # 分片内容 SHA-256：增量更新时与旧分片 diff，未变化的分片复用已有向量（不重嵌入）
+    content_hash = Column(String, nullable=True)
     created_at = Column(String, default=lambda: datetime.now().isoformat())
 
     file = relationship("File", back_populates="chunks")
@@ -781,6 +785,31 @@ class MultiAgentTask(Base):
     prompt = Column(Text, nullable=False, default="")
     agents = Column(Text, nullable=False, default="[]")  # JSON 数组，如 ["retriever","graph_agent","critic"]
     is_preset = Column(Integer, nullable=False, default=0)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class McpServer(Base):
+    """MCP 工具服务器注册表：ToolAgent 可调用的外部工具服务器（注册中心可视化管理）。
+
+    transport=stdio 时 command/args/env 生效；streamable_http 时 url 生效。
+    配置入库后 PlatformTools 每次构建时热加载（enabled=1），改完即生效、无需重启；
+    库表为空时回退读取环境变量 MCP_SERVERS（向后兼容既有部署）。
+    name 会拼进工具前缀 mcp_<name>_，限 [a-zA-Z0-9_-] 且全局唯一。
+    """
+
+    __tablename__ = "mcp_servers"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String(64), nullable=False)
+    transport = Column(String(20), nullable=False, default="stdio")   # stdio | streamable_http
+    command = Column(String(500), nullable=False, default="")         # stdio：可执行命令
+    args = Column(Text, nullable=False, default="[]")                 # stdio：JSON 数组
+    env = Column(Text, nullable=False, default="{}")                  # stdio：JSON 对象
+    url = Column(String(500), nullable=False, default="")             # http：MCP 端点
+    description = Column(String(300), nullable=False, default="")
+    enabled = Column(Integer, nullable=False, default=1)
     sort_order = Column(Integer, nullable=False, default=0)
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())

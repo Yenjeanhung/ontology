@@ -83,9 +83,10 @@ class MultiAgentEngine:
     """
 
     # 并行角色：同一 superstep 自动并行执行（retriever=检索增强执行，
-    # worker=纯模型执行，graph_agent=图谱事实，data_agent=台账数据查询；
+    # worker=纯模型执行，graph_agent=图谱事实，data_agent=台账数据查询，
+    # tool_agent=Function Calling 工具调用取证；
     # 自由编制时由场景按所选智能体声明）
-    PARALLEL_ROLES = {"retriever", "worker", "graph_agent", "data_agent"}
+    PARALLEL_ROLES = {"retriever", "worker", "graph_agent", "data_agent", "tool_agent"}
 
     def __init__(
         self,

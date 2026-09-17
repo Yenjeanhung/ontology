@@ -39,6 +39,7 @@ const FALLBACK_ROSTER = {
     { id: 'retriever', name: 'Retriever · 知识库取证', desc: '为每个子任务检索平台全部知识库语料（RAG 增强）' },
     { id: 'data_agent', name: 'DataAgent · 数据查询', desc: '查询实体台账结构化数据：聚合统计 + 最新明细（真实数据）' },
     { id: 'graph_agent', name: 'GraphAgent · 图谱事实', desc: '实体图谱关键词检索，产出结构化事实卡' },
+    { id: 'tool_agent', name: 'ToolAgent · 工具调用', desc: 'Function Calling 自主取证：多轮调用内置工具与 MCP 外部工具' },
     { id: 'critic', name: 'Critic · 评审质控', desc: '素材交叉验证、冲突消解与质量裁定' },
   ],
   default: ['retriever', 'data_agent', 'graph_agent', 'critic'],
@@ -53,6 +54,7 @@ const pipelineHint = computed(() => {
   const useRetriever = selectedAgents.value.includes('retriever')
   const steps = ['Planner 分解', useRetriever ? 'Retriever×N 并行检索' : 'Worker×N 并行执行（模型知识）']
   if (selectedAgents.value.includes('graph_agent')) steps.push('GraphAgent 图谱事实')
+  if (selectedAgents.value.includes('tool_agent')) steps.push('ToolAgent 工具调用（Function Calling）')
   if (selectedAgents.value.includes('critic')) steps.push('Critic 评审质控')
   steps.push('Synthesizer 流式合成')
   return steps.join(' → ')
@@ -103,11 +105,13 @@ const KIND_META = {
   model: { label: '模型产出' },
   graph: { label: '图谱事实' },
   data: { label: '数据查询' },
+  tool: { label: '工具产出' },
 }
 
 function cardKind(c) {
   if (c.grade === 'graph_fact') return 'graph'
   if (c.grade === 'data_fact') return 'data'
+  if (c.grade === 'tool_result') return 'tool'
   if (c.grade === 'model_output' || c.grade === 'model_knowledge') return 'model'
   return 'doc'
 }
@@ -119,7 +123,7 @@ const evTabs = computed(() => {
   const counts = {}
   for (const c of taggedCards.value) counts[c.kind] = (counts[c.kind] || 0) + 1
   const tabs = [{ key: 'all', label: '全部', count: taggedCards.value.length }]
-  for (const k of ['doc', 'model', 'graph', 'data']) {
+  for (const k of ['doc', 'model', 'graph', 'data', 'tool']) {
     if (counts[k]) tabs.push({ key: k, label: KIND_META[k].label, count: counts[k] })
   }
   return tabs
@@ -215,9 +219,10 @@ function handleEvent(evt) {
       // 图谱/结构化事实卡以独立卡片组展示（grade=graph_fact，优先采信）
       evidenceDomains.value = [...evidenceDomains.value, { domain: '__facts__', cards: (evt.facts || []).map((f) => ({
         id: f.id,
-        domain: f.grade === 'data_fact' ? 'data' : 'graph',
+        domain: f.grade === 'data_fact' ? 'data' : f.grade === 'tool_result' ? 'tool' : 'graph',
         grade: f.grade,
-        source: f.grade === 'data_fact' ? '实体台账 · 结构化查询' : '本体图谱 · 结构化事实',
+        source: f.grade === 'data_fact' ? '实体台账 · 结构化查询'
+          : f.grade === 'tool_result' ? '工具链 · Function Calling' : '本体图谱 · 结构化事实',
         title: f.title, summary: f.detail, quote: '', stance: 'fact',
       })) }]
       break
@@ -370,6 +375,7 @@ function rerun() {
 function gradeLabel(grade) {
   if (grade === 'graph_fact') return '图谱事实'
   if (grade === 'data_fact') return '数据查询'
+  if (grade === 'tool_result') return '工具产出'
   if (grade === 'model_output') return '模型生成'
   if (grade === 'model_knowledge') return '模拟生成'
   if (grade === 'duty_record') return '值班记录'
@@ -620,7 +626,7 @@ onBeforeUnmount(() => {
               >
                 <div class="ma-ev-head">
                   <b>{{ c.title }}</b>
-                  <span class="ma-grade" :class="{ 'is-fact': c.grade === 'graph_fact' || c.grade === 'data_fact' }">{{ gradeLabel(c.grade) }}</span>
+                  <span class="ma-grade" :class="{ 'is-fact': c.grade === 'graph_fact' || c.grade === 'data_fact' || c.grade === 'tool_result' }">{{ gradeLabel(c.grade) }}</span>
                 </div>
                 <div class="muted ma-ev-src">{{ c.source }}</div>
                 <p>{{ c.summary }}</p>
