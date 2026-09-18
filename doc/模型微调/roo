@@ -1,0 +1,10 @@
+{
+  "ontology_router": {
+    "file_name": "ontology_router.json",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output"
+    }
+  }
+}

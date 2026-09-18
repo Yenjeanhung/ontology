@@ -102,3 +102,7 @@ resume/
 
 # Playwright CLI 浏览器自动化验证产物（页面快照/控制台日志）
 .playwright-cli/
+
+# 微调模型产物（GGUF / 合并导出目录，单文件 GB 级，勿入库）
+doc/模型微调/qwen06b-router-merged/
+doc/模型微调/saves/
