@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
+from core.otel import init_otel, shutdown_otel, start_cleanup_task
 from core.preflight import failed_required, has_run, render_report, run_preflight
 from database import DatabaseUnavailableError, get_db, init_db
 from middleware.access_log import AccessLogMiddleware
@@ -230,9 +231,23 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to start scheduler engine")
 
+    # 启动 OpenTelemetry 每日清理任务。
+    # 注意：init_otel(app) 必须在模块级（app 创建后、首个请求前）调用，
+    # 放在 lifespan startup 里会因中间件栈已构建而静默失效（无 SERVER span）。
+    try:
+        start_cleanup_task()
+    except Exception:
+        logger.exception("Failed to start otel cleanup task")
+
     logger.info("KnowSource started.")
     yield
     logger.info("KnowSource stopped.")
+
+    # 关闭链路追踪：强制刷新 BatchSpanProcessor 缓冲后释放 SQLite 连接
+    try:
+        shutdown_otel()
+    except Exception:
+        logger.exception("Failed to shutdown otel tracing")
 
     # 关闭审计异步落库（给在途日志一个收尾窗口）
     try:
@@ -251,6 +266,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="KnowSource", lifespan=lifespan)
+
+# OpenTelemetry 链路追踪：必须在 app 创建后、首个请求（含 uvicorn 的 lifespan
+# 握手）之前执行。FastAPIInstrumentor 靠替换 build_middleware_stack 挂载 HTTP
+# SERVER span 中间件，而 Starlette 首次 __call__ 即构建并缓存中间件栈；若放到
+# lifespan startup 里，栈已构建、patch 永不生效，SERVER span 会静默丢失。
+try:
+    init_otel(app)
+except Exception:
+    logger.exception("Failed to init otel tracing")
 
 # CORS：配置了白名单时收紧（并允许携带凭证）；留空则沿用 * 以兼容本地开发
 _cors_origins = [o.strip() for o in (settings.CORS_ALLOW_ORIGINS or "").split(",") if o.strip()]

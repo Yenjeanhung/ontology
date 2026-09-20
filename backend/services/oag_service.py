@@ -17,6 +17,7 @@ import logging
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config import settings
+from core.otel import async_span
 from providers.embedding import create_embeddings
 from providers.graph_store import (
     chunks_mentioning_entities,
@@ -357,7 +358,28 @@ class OAGService:
     async def query_stream(kb_id: str, query: str, kb_name: str, ontology_schema, skills=None,
                            persona=None, history=None, summary: str = "", memories=None,
                            use_tools: bool = False):
-        """智能体查询（SSE 流式）：推理过程 → 流式回答。
+        """智能体查询（SSE 流式）。薄壳：包 OAG 根 span，实现见 _query_stream_impl。"""
+        async with async_span(
+            "oag.query_stream",
+            {
+                "rag.kb_id": kb_id,
+                "rag.kb_name": kb_name,
+                "rag.query_chars": len(query),
+                "oag.use_tools": bool(use_tools),
+            },
+        ):
+            async for event in OAGService._query_stream_impl(
+                kb_id, query, kb_name, ontology_schema, skills=skills,
+                persona=persona, history=history, summary=summary,
+                memories=memories, use_tools=use_tools,
+            ):
+                yield event
+
+    @staticmethod
+    async def _query_stream_impl(kb_id: str, query: str, kb_name: str, ontology_schema,
+                                 skills=None, persona=None, history=None,
+                                 summary: str = "", memories=None, use_tools: bool = False):
+        """智能体查询实现：推理过程 → 流式回答。
 
         ontology_schema 由路由层预加载；skills 由 SkillService.resolve 预加载。
         persona 为智能体自定义人设（覆盖 OAG_SYSTEM_PROMPT），空则用默认人设。

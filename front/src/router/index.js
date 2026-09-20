@@ -21,6 +21,7 @@ import FunctionEditorPage from '../components/ontology/FunctionEditorPage.vue'
 import ModelConfigPage from '../components/config/ModelConfigPage.vue'
 import ApiDocsPage from '../components/config/ApiDocsPage.vue'
 import MonitorPage from '../components/monitor/MonitorPage.vue'
+import TracePage from '../components/trace/TracePage.vue'
 import EntityListPage from '../components/entity/EntityListPage.vue'
 import EntityDetailPage from '../components/entity/EntityDetailPage.vue'
 import GraphCleanupPage from '../components/entity/GraphCleanupPage.vue'
@@ -88,6 +89,8 @@ const routes = [
   // 配置
   { path: '/config/models', name: 'config-models', component: ModelConfigPage, meta: { keepAlive: true, perm: 'config:view' } },
   { path: '/config/monitor', name: 'config-monitor', component: MonitorPage, meta: { keepAlive: true, perm: 'config:view' } },
+  // 接口链路追踪（OpenTelemetry，独立二级菜单，与系统监控平级）
+  { path: '/config/trace', name: 'config-trace', component: TracePage, meta: { keepAlive: true, perm: 'config:view' } },
   { path: '/config/api-docs', name: 'config-api-docs', component: ApiDocsPage, meta: { keepAlive: true, perm: 'config:view' } },
   // 系统管理（用户与权限）
   { path: '/system/users', name: 'system-users', component: UserListView, meta: { perm: 'system:user:manage' } },

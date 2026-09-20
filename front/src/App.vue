@@ -191,6 +191,7 @@ const menuItems = [
     children: [
       { to: '/config/models', label: '模型配置', perm: 'config:view' },
       { to: '/config/monitor', label: '系统监控', perm: 'config:view' },
+      { to: '/config/trace', label: '接口追踪', perm: 'config:view' },
       { to: '/config/api-docs', label: 'API 文档', perm: 'config:view' },
     ],
   },

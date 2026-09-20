@@ -220,6 +220,19 @@ function openImage(url) {
   if (url) window.open(url, '_blank')
 }
 
+/** 最终结果正文点击：图表角标 → 滚动定位内嵌图表；图表图片 → 看原图；其余走引用 chip 定位。 */
+function answerClick(evt) {
+  const ref = evt.target.closest('.ma-chart-ref')
+  if (ref) {
+    const fig = ref.closest('.ma-answer-md')
+      ?.querySelector(`.ma-answer-chart[data-chart="${ref.dataset.chart}"]`)
+    if (fig) { fig.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); flashCard(fig) }
+    return
+  }
+  if (evt.target.closest('.ma-answer-chart img')) { openImage(evt.target.src); return }
+  jumpCite(evt)
+}
+
 /** 成果里的引用 chip 点击 → 滚动定位到该轮素材面板对应卡片并高亮。 */
 function jumpCite(evt) {
   const chip = evt.target.closest('.ma-cite')
@@ -676,6 +689,34 @@ function renderMd(text, ri) {
     const cards = r ? taggedOf(r) : []
     const nMat = cards.length
     const nFact = cards.filter((c) => c.stance === 'fact').length
+    // 图表内嵌：正文中的图表链接折叠为「图表N」角标，图片统一内嵌到正文下方
+    // （AntV 图表产物 URL 以 /original 结尾；尾随中文标点可能被 GFM autolink 吞进 href，需剥离）
+    const imgs = []
+    const pushImg = (u) => { if (u && !imgs.includes(u)) imgs.push(u) }
+    for (const c of cards) if (c.image) pushImg(c.image)
+    html = html.replace(/<a\s[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, (m, url) => {
+      const clean = url.replace(/[。，、；！？）】"']+$/u, '')
+      const tail = url.slice(clean.length)
+      if (!/\/original(?:[?#].*)?$/i.test(clean) && !imgs.includes(clean)) return m
+      pushImg(clean)
+      const i = imgs.indexOf(clean)
+      return `<sup class="ma-chart-ref" data-chart="${i}" title="点击定位到图表">图表${i + 1}</sup>${tail}`
+    })
+    // 正文里的 markdown 图片 <img src=…>（![](...) 渲染产物）同样折叠进图表区，防止原尺寸溢出被气泡裁切
+    html = html.replace(/<img\s[^>]*src="(https?:\/\/[^"]+)"[^>]*>/gi, (m, url) => {
+      const clean = url.replace(/[。，、；！？）】"']+$/u, '')
+      if (!/\/original(?:[?#].*)?$/i.test(clean) && !imgs.includes(clean)) return m
+      pushImg(clean)
+      const i = imgs.indexOf(clean)
+      return `<sup class="ma-chart-ref" data-chart="${i}" title="点击定位到图表">图表${i + 1}</sup>`
+    })
+    if (imgs.length) {
+      html += '<div class="ma-answer-charts">' + imgs.map((u, i) =>
+        `<figure class="ma-answer-chart" data-chart="${i}" title="点击查看原图">` +
+        `<img src="${u}" loading="lazy" alt="图表${i + 1}">` +
+        `<figcaption>图表 ${i + 1} · 点击查看原图</figcaption></figure>`
+      ).join('') + '</div>'
+    }
     // 引用 chip：单张 [素材3]/[事实5]、连续范围 [事实2-9]、离散列表 [事实2、5]
     html = html.replace(/\[(素材|事实)([0-9、,，·\-~—至\s]+)\]/g, (_, kind, inner) => {
       const total = kind === '事实' ? nFact : nMat
@@ -883,7 +924,7 @@ onBeforeUnmount(() => {
               <span v-if="r.elapsed" class="ma-reply-ms">总耗时 {{ (r.elapsed / 1000).toFixed(1) }}s</span>
               <button v-if="!r.live" class="ma-mini" @click="rerunRound(r)">↻ 重新运行</button>
             </div>
-            <div v-if="r.conclusion" class="ma-reply-body" @click="jumpCite">
+            <div v-if="r.conclusion" class="ma-reply-body" @click="answerClick">
               <div class="ma-answer-md" v-html="renderMd(r.conclusion, ri)" />
             </div>
             <p v-else class="ma-typing">团队协作中…</p>
@@ -1073,8 +1114,9 @@ onBeforeUnmount(() => {
 .ma-card-fact { color: var(--c-success); border-color: var(--c-success); }
 .ma-card-title { font-size: 12.5px; font-weight: 600; color: var(--c-fg); line-height: 1.4; }
 .ma-card-sum { margin: 0; font-size: 12px; color: var(--c-secondary); line-height: 1.55; }
-.ma-card-img { display: block; width: 100%; margin-top: 4px; border: 1px solid var(--c-border);
-  border-radius: 8px; background: #fff; cursor: zoom-in; }
+.ma-card-img { display: block; width: auto; max-width: 100%; max-height: 260px;
+  margin: 6px auto 0; border: 1px solid var(--c-border); border-radius: 8px;
+  background: #fff; cursor: zoom-in; object-fit: contain; }
 .ma-card-quote { margin: 0; padding: 5px 9px; border-left: 3px solid var(--c-accent);
   background: var(--c-muted); border-radius: 0 8px 8px 0;
   font-size: 11.5px; color: var(--c-fg); line-height: 1.5; }
@@ -1110,6 +1152,19 @@ onBeforeUnmount(() => {
   padding: 0 2px; }
 .ma-answer-md :deep(.ma-cite:hover) { text-decoration: underline; }
 .ma-answer-md :deep(.ma-cite.is-missing) { color: var(--c-secondary); cursor: default; }
+.ma-answer-md :deep(.ma-chart-ref) { color: var(--c-accent); font-weight: 700; cursor: pointer; padding: 0 2px; }
+.ma-answer-md :deep(.ma-chart-ref:hover) { text-decoration: underline; }
+/* v-html 注入的节点没有 data-v 属性，图表区所有选择器必须走 :deep 才能命中 */
+.ma-answer-md :deep(.ma-answer-charts) { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.ma-answer-md :deep(.ma-answer-chart) { margin: 0; border: 1px solid var(--c-border); border-radius: 8px;
+  background: #fff; overflow: hidden; cursor: zoom-in; }
+.ma-answer-md :deep(.ma-answer-chart.is-flash) { animation: ma-flash 1.5s ease; }
+.ma-answer-md :deep(.ma-answer-chart img) { display: block; width: auto; max-width: 240px; max-height: 150px;
+  object-fit: contain; margin: 0 auto; }
+.ma-answer-md :deep(.ma-answer-chart figcaption) { font-size: 11px; color: var(--c-secondary); text-align: center;
+  padding: 3px 6px; border-top: 1px solid var(--c-border); }
+/* 兜底：正文内联图片一律不超出气泡宽度（图表区 img 由上方更高优先级规则接管） */
+.ma-answer-md :deep(img) { max-width: 100%; height: auto; }
 .ma-typing { margin: 0; font-size: 13px; color: var(--c-secondary); animation: ma-blink 1.2s infinite; }
 
 /* ── 底部输入区 ── */

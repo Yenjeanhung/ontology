@@ -79,3 +79,8 @@ agentevals>=0.0.9
 # 长期记忆（services/memory_store.py，MEM0_ENABLED=true 时启用；未装时自动降级 no-op）
 mem0ai>=0.1.0
 protobuf>=5.29.3,<6.0    # 约束上限：与 autogen-core / opentelemetry-proto 保持兼容
+
+# 接口链路追踪（core/otel.py；span 自托管 SQLite 存储，未安装时自动降级 no-op）
+opentelemetry-api>=1.29.0
+opentelemetry-sdk>=1.29.0
+opentelemetry-instrumentation-fastapi>=0.50b0

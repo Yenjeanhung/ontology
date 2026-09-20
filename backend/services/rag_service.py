@@ -5,6 +5,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from core.otel import async_span, set_llm_usage
 from providers.bm25 import get_or_build_index
 from providers.embedding import create_embeddings
 from providers.retrieval import chunk_id_from_vector_metadata, rrf_fuse
@@ -77,42 +78,45 @@ async def _expand_queries(llm, query: str) -> list[str]:
         return [query]
 
     count = max(1, int(settings.QUERY_REWRITE_COUNT))
-    try:
-        from langchain_core.messages import HumanMessage, SystemMessage
+    async with async_span("rag.query_rewrite") as span:
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
 
-        prompt = QUERY_REWRITE_TEMPLATE.format(question=query, count=count)
-        response = await llm.ainvoke(
-            [SystemMessage(content=QUERY_REWRITE_SYSTEM), HumanMessage(content=prompt)]
-        )
-        raw = chunk_text(response)
-    except Exception:
-        logger.warning("Query rewrite failed, use original query", exc_info=True)
-        return [query]
-
-    try:
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.strip("`").strip()
-            if text.lower().startswith("json"):
-                text = text[4:].strip()
-        start, end = text.find("["), text.rfind("]")
-        if start != -1 and end > start:
-            text = text[start: end + 1]
-        variants = json.loads(text)
-        if not isinstance(variants, list):
+            prompt = QUERY_REWRITE_TEMPLATE.format(question=query, count=count)
+            response = await llm.ainvoke(
+                [SystemMessage(content=QUERY_REWRITE_SYSTEM), HumanMessage(content=prompt)]
+            )
+            raw = chunk_text(response)
+        except Exception:
+            logger.warning("Query rewrite failed, use original query", exc_info=True)
             return [query]
-    except Exception:
-        logger.warning("Query rewrite: unparsable variants, use original query", exc_info=True)
-        return [query]
 
-    result = [query]
-    for variant in variants:
-        if not isinstance(variant, str):
-            continue
-        cleaned = variant.strip()
-        if cleaned and cleaned != query and cleaned not in result:
-            result.append(cleaned)
-    return result[: count + 1]
+        try:
+            text = raw.strip()
+            if text.startswith("```"):
+                text = text.strip("`").strip()
+                if text.lower().startswith("json"):
+                    text = text[4:].strip()
+            start, end = text.find("["), text.rfind("]")
+            if start != -1 and end > start:
+                text = text[start: end + 1]
+            variants = json.loads(text)
+            if not isinstance(variants, list):
+                return [query]
+        except Exception:
+            logger.warning("Query rewrite: unparsable variants, use original query", exc_info=True)
+            return [query]
+
+        result = [query]
+        for variant in variants:
+            if not isinstance(variant, str):
+                continue
+            cleaned = variant.strip()
+            if cleaned and cleaned != query and cleaned not in result:
+                result.append(cleaned)
+        if span.is_recording():
+            span.set_attribute("rag.variants", len(result))
+        return result[: count + 1]
 
 
 class RAGService:
@@ -132,15 +136,18 @@ class RAGService:
         for query in queries:
             # ===== 向量召回 =====
             vec_docs: list[tuple] = []
-            try:
-                vectorstore = create_vector_store(kb_id, embeddings)
-                docs_with_scores = await asyncio.to_thread(
-                    vectorstore.similarity_search_with_score, query, k=_RETRIEVAL_K,
-                )
-                vec_docs = _filter_by_score(docs_with_scores, settings.SIMILARITY_THRESHOLD)
-            except Exception:
-                logger.exception("Vector recall failed: kb_id=%s", kb_id)
-                vec_docs = []
+            async with async_span("rag.recall.vector") as vspan:
+                try:
+                    vectorstore = create_vector_store(kb_id, embeddings)
+                    docs_with_scores = await asyncio.to_thread(
+                        vectorstore.similarity_search_with_score, query, k=_RETRIEVAL_K,
+                    )
+                    vec_docs = _filter_by_score(docs_with_scores, settings.SIMILARITY_THRESHOLD)
+                except Exception:
+                    logger.exception("Vector recall failed: kb_id=%s", kb_id)
+                    vec_docs = []
+                if vspan.is_recording():
+                    vspan.set_attribute("rag.vec_hits", len(vec_docs))
 
             vec_rank: list[str] = []
             for doc, score in vec_docs:
@@ -159,18 +166,22 @@ class RAGService:
             # ===== BM25 关键词召回 =====
             if not settings.BM25_ENABLED:
                 continue
-            try:
-                index = await asyncio.to_thread(get_or_build_index, kb_id)
-            except Exception:
-                logger.exception("BM25 index load failed: kb_id=%s", kb_id)
-                index = None
-            if index is None:
-                continue
-            try:
-                hits = await asyncio.to_thread(index.search, query, settings.BM25_RECALL_K)
-            except Exception:
-                logger.exception("BM25 search failed: kb_id=%s", kb_id)
-                hits = []
+            hits: list = []
+            async with async_span("rag.recall.bm25") as bspan:
+                try:
+                    index = await asyncio.to_thread(get_or_build_index, kb_id)
+                except Exception:
+                    logger.exception("BM25 index load failed: kb_id=%s", kb_id)
+                    index = None
+                if index is None:
+                    continue
+                try:
+                    hits = await asyncio.to_thread(index.search, query, settings.BM25_RECALL_K)
+                except Exception:
+                    logger.exception("BM25 search failed: kb_id=%s", kb_id)
+                    hits = []
+                if bspan.is_recording():
+                    bspan.set_attribute("rag.bm25_hits", len(hits))
 
             bm25_rank: list[str] = []
             for cid, bm25_score, doc in hits:
@@ -206,7 +217,10 @@ class RAGService:
             return []
 
         # ===== RRF 融合 =====
-        fused = rrf_fuse(rank_lists, k=settings.HYBRID_RRF_K)
+        async with async_span(
+            "rag.rrf_fuse", {"rag.input_lists": len(rank_lists)}
+        ):
+            fused = rrf_fuse(rank_lists, k=settings.HYBRID_RRF_K)
         ordered_ids = [cid for cid, _ in fused]
 
         # 精排需要更大的候选池，否则只是把 TOP_N 内部重新排序，收益有限
@@ -231,7 +245,12 @@ class RAGService:
         # ===== Rerank 精排 =====
         limit = settings.HYBRID_TOP_N
         if settings.RERANK_ENABLED and candidates:
-            reranked = await rerank(query, candidates, settings.RERANK_TOP_N, llm)
+            async with async_span(
+                "rag.rerank", {"rag.candidates": len(candidates)}
+            ) as rspan:
+                reranked = await rerank(query, candidates, settings.RERANK_TOP_N, llm)
+                if rspan.is_recording() and reranked:
+                    rspan.set_attribute("rag.kept", len(reranked))
             if reranked:
                 candidates = reranked
                 limit = settings.RERANK_TOP_N
@@ -253,76 +272,99 @@ class RAGService:
     async def query(
         db: AsyncSession, kb_id: str, query: str,
     ) -> dict:
-        embeddings = create_embeddings()
-        llm = create_llm()
+        async with async_span(
+            "rag.query", {"rag.kb_id": kb_id, "rag.query_chars": len(query)}
+        ):
+            embeddings = create_embeddings()
+            llm = create_llm()
 
-        chunks_result = await RAGService._hybrid_retrieve(kb_id, query, embeddings, llm)
+            async with async_span("rag.retrieve") as span:
+                chunks_result = await RAGService._hybrid_retrieve(
+                    kb_id, query, embeddings, llm
+                )
+                if span.is_recording():
+                    span.set_attribute("rag.chunks", len(chunks_result))
 
-        if not chunks_result:
+            if not chunks_result:
+                return {
+                    "query": query,
+                    "answer": "在知识库中未找到相关内容。",
+                    "chunks": [],
+                }
+
+            if llm is None:
+                return {
+                    "query": query,
+                    "answer": "未配置 LLM，无法生成回答。",
+                    "chunks": chunks_result,
+                }
+
+            # LLM 生成回答
+            context_text = RAGService._build_context(chunks_result)
+            prompt = RAG_USER_TEMPLATE.format(context=context_text, question=query)
+
+            from langchain_core.messages import SystemMessage, HumanMessage
+            messages = [
+                SystemMessage(content=RAG_SYSTEM_PROMPT),
+                HumanMessage(content=prompt),
+            ]
+            async with async_span("rag.llm_generate") as span:
+                response = await llm.ainvoke(messages)
+                set_llm_usage(span, response)
+
             return {
                 "query": query,
-                "answer": "在知识库中未找到相关内容。",
-                "chunks": [],
-            }
-
-        if llm is None:
-            return {
-                "query": query,
-                "answer": "未配置 LLM，无法生成回答。",
+                "answer": chunk_text(response),
                 "chunks": chunks_result,
             }
 
-        # LLM 生成回答
-        context_text = RAGService._build_context(chunks_result)
-        prompt = RAG_USER_TEMPLATE.format(context=context_text, question=query)
-
-        from langchain_core.messages import SystemMessage, HumanMessage
-        messages = [
-            SystemMessage(content=RAG_SYSTEM_PROMPT),
-            HumanMessage(content=prompt),
-        ]
-        response = await llm.ainvoke(messages)
-
-        return {
-            "query": query,
-            "answer": chunk_text(response),
-            "chunks": chunks_result,
-        }
-
     @staticmethod
     async def query_stream(kb_id: str, query: str):
-        """SSE 流式问答：先发 chunks，再逐 token 流式输出回答。"""
-        embeddings = create_embeddings()
-        llm = create_llm()
+        """SSE 流式问答：先发 chunks，再逐 token 流式输出回答。
 
-        chunks_result = await RAGService._hybrid_retrieve(kb_id, query, embeddings, llm)
+        span 覆盖整个生成器生命周期（客户端断开时 async with 正常退出）。
+        """
+        async with async_span(
+            "rag.query_stream", {"rag.kb_id": kb_id, "rag.query_chars": len(query)}
+        ):
+            embeddings = create_embeddings()
+            llm = create_llm()
 
-        # 发送检索到的 chunks
-        yield f"data: {json.dumps({'type': 'chunks', 'chunks': chunks_result}, ensure_ascii=False)}\n\n"
+            async with async_span("rag.retrieve") as span:
+                chunks_result = await RAGService._hybrid_retrieve(
+                    kb_id, query, embeddings, llm
+                )
+                if span.is_recording():
+                    span.set_attribute("rag.chunks", len(chunks_result))
 
-        if not chunks_result:
-            yield f"data: {json.dumps({'type': 'token', 'content': '在知识库中未找到相关内容。'}, ensure_ascii=False)}\n\n"
+            # 发送检索到的 chunks
+            yield f"data: {json.dumps({'type': 'chunks', 'chunks': chunks_result}, ensure_ascii=False)}\n\n"
+
+            if not chunks_result:
+                yield f"data: {json.dumps({'type': 'token', 'content': '在知识库中未找到相关内容。'}, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            if llm is None:
+                yield f"data: {json.dumps({'type': 'token', 'content': '未配置 LLM，无法生成回答。'}, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            # 构建上下文（带来源编号）& 流式调用 LLM
+            context_text = RAGService._build_context(chunks_result)
+            prompt = RAG_USER_TEMPLATE.format(context=context_text, question=query)
+
+            from langchain_core.messages import SystemMessage, HumanMessage
+            messages = [
+                SystemMessage(content=RAG_SYSTEM_PROMPT),
+                HumanMessage(content=prompt),
+            ]
+
+            async with async_span("rag.llm_generate"):
+                # 流式模式下 usage 随各服务商 chunk 格式不同，此处不强行采集
+                async for chunk in llm.astream(messages):
+                    text = chunk_text(chunk)
+                    if text:
+                        yield f"data: {json.dumps({'type': 'token', 'content': text}, ensure_ascii=False)}\n\n"
+
             yield "data: [DONE]\n\n"
-            return
-
-        if llm is None:
-            yield f"data: {json.dumps({'type': 'token', 'content': '未配置 LLM，无法生成回答。'}, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-            return
-
-        # 构建上下文（带来源编号）& 流式调用 LLM
-        context_text = RAGService._build_context(chunks_result)
-        prompt = RAG_USER_TEMPLATE.format(context=context_text, question=query)
-
-        from langchain_core.messages import SystemMessage, HumanMessage
-        messages = [
-            SystemMessage(content=RAG_SYSTEM_PROMPT),
-            HumanMessage(content=prompt),
-        ]
-
-        async for chunk in llm.astream(messages):
-            text = chunk_text(chunk)
-            if text:
-                yield f"data: {json.dumps({'type': 'token', 'content': text}, ensure_ascii=False)}\n\n"
-
-        yield "data: [DONE]\n\n"

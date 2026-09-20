@@ -270,6 +270,17 @@ class Settings(BaseSettings):
     # SSE 定时推送组件状态的间隔（秒）；打开监控页面时生效
     MONITOR_PUSH_INTERVAL_SECONDS: int = 30
 
+    # ───────────────────────── OpenTelemetry 接口链路追踪 ─────────────────────────
+    # doc/监控/OpenTelemetry/00-OTel接口链路追踪方案.md；span 存独立 SQLite
+    # （与业务主库隔离），OTEL_ENABLED=false 或 SDK 未安装时全量降级 no-op。
+    OTEL_ENABLED: bool = True
+    OTEL_DB_PATH: str = "./data/otel_traces.db"   # trace 存储文件（WAL 模式）
+    OTEL_RETENTION_DAYS: int = 7                  # span 保留天数（每日清理一次）
+    OTEL_SLOW_MS: int = 3000                      # 慢调用阈值（前端标红 / slow_only 过滤）
+    OTEL_EXPORT_INTERVAL_MS: int = 5000           # BatchSpanProcessor 批量落库间隔
+    # FastAPIInstrumentor 排除路径（逗号分隔正则）：SSE 长连接与健康探针不入库
+    OTEL_EXCLUDED_URLS: str = "/api/monitor/stream,/api/healthz,/api/notifications/summary"
+
     # ───────────────────────── 服务层方法日志（AOP 式自动织入）─────────────────────────
     # 启动时扫描 services 包，为类的公共方法统一织入「入参 + 返回值 + 耗时」日志
     SERVICE_TRACE_ENABLED: bool = True

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from config import settings
 from database import async_session
-from services import monitor_service
+from services import monitor_service, trace_service
 from sqlalchemy import bindparam, text
 
 logger = logging.getLogger(__name__)
@@ -380,3 +380,36 @@ async def llm_stream(req: LlmStreamRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ═══════════════════════ 接口链路追踪（OpenTelemetry） ═══════════════════════
+# 数据来源：core/otel.py 写入的 data/otel_traces.db（otol_spans 表），
+# SERVER span（FastAPIInstrumentor 自动创建）= 一次 HTTP 调用。
+
+
+@router.get("/monitor/traces/stats")
+async def trace_stats(hours: int = Query(24, ge=1, le=168)):
+    """按接口聚合（慢接口榜）：调用数 / avg / p95 / max / 错误数 / 慢调用数，p95 倒序。"""
+    return await trace_service.get_stats(hours=hours)
+
+
+@router.get("/monitor/traces")
+async def trace_calls(
+    hours: int = Query(24, ge=1, le=168),
+    endpoint: str = Query("", description="按接口过滤，如 'POST /api/query'"),
+    limit: int = Query(100, ge=1, le=500),
+    slow_only: bool = Query(False, description="仅看超过 OTEL_SLOW_MS 的慢调用"),
+):
+    """HTTP 调用列表（SERVER span 按开始时间倒序）。"""
+    return await trace_service.get_calls(
+        hours=hours, endpoint=endpoint, limit=limit, slow_only=slow_only
+    )
+
+
+@router.get("/monitor/traces/{trace_id}")
+async def trace_detail(trace_id: str):
+    """单次调用的完整 span 树（瀑布图数据，按 start_ns 升序）。"""
+    data = await trace_service.get_trace(trace_id)
+    if not data["spans"]:
+        raise HTTPException(404, f"trace 不存在: {trace_id}")
+    return data

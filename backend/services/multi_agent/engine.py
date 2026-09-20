@@ -22,6 +22,7 @@ from typing import Annotated, Awaitable, Callable, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from core.otel import async_span
 from providers.llm import create_llm
 
 NODE_TIMEOUT = 30.0  # 单节点 LLM 调用超时（秒），超时由节点自行降级
@@ -206,10 +207,29 @@ class MultiAgentEngine:
         critic = next((s["node"] for s in self._plan if s["role"] == "critic"), None)
         synth = next(s["node"] for s in self._plan if s["role"] == "synthesizer")
 
+        role_by_node = {s["node"]: s["role"] for s in self._plan}
+
+        def _wrap(node: str, fn: NodeFunc) -> NodeFunc:
+            """节点级 OTel span：并行角色节点在瀑布图中呈同一父下的并列横条。
+
+            与 emit(node_start/node_done) 事件并存——SSE 实时回放用事件，
+            事后持久化调用树用 span，一次包装两份产出。
+            """
+            role = role_by_node.get(node, node)
+
+            async def _wrapped(state):
+                async with async_span(
+                    f"agent.multi.node[{node}]",
+                    {"agent.node": node, "agent.role": role},
+                ):
+                    return await fn(state)
+
+            return _wrapped
+
         g = StateGraph(MultiAgentState)
-        g.add_node("planner", self._planner)
+        g.add_node("planner", _wrap("planner", self._planner))
         for node, fn in self._nodes.items():
-            g.add_node(node, fn)
+            g.add_node(node, _wrap(node, fn))
         g.add_edge(START, "planner")
 
         # 汇聚点：有 critic 组合则并行节点汇入 critic，否则直通 synthesizer
@@ -229,13 +249,23 @@ class MultiAgentEngine:
     async def run(self) -> dict:
         """执行流水线，返回终态（含 elapsed_ms）。"""
         t0 = time.monotonic()
-        final = await self._build().ainvoke({
-            "context": self.context,
-            "plan": [],
-            "evidence": {},
-            "facts": [],
-            "verdict": {},
-            "conclusion": "",
-        })
-        final["elapsed_ms"] = int((time.monotonic() - t0) * 1000)
+        async with async_span(
+            "agent.multi.run",
+            {
+                "agent.team": self._team_info.get("team", ""),
+                "agent.task": str(self.context.get("task", ""))[:200],
+                "agent.steps": len(self._plan),
+            },
+        ) as span:
+            final = await self._build().ainvoke({
+                "context": self.context,
+                "plan": [],
+                "evidence": {},
+                "facts": [],
+                "verdict": {},
+                "conclusion": "",
+            })
+            final["elapsed_ms"] = int((time.monotonic() - t0) * 1000)
+            if span.is_recording():
+                span.set_attribute("agent.elapsed_ms", final["elapsed_ms"])
         return final
