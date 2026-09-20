@@ -180,7 +180,6 @@ const menuItems = [
       { to: '/agent/mcp', label: 'MCP 工具管理', perm: 'agent:view' },
       { to: '/agent/skills', label: '技能管理', perm: 'agent:view' },
       { to: '/agent/configs', label: '智能体配置', perm: 'agent:view' },
-      { to: '/agent', label: '智能体问答', perm: 'agent:view' },
       { to: '/agent/multi-agent', label: '多智能体协作', perm: 'agent:view' },
     ],
   },

@@ -47,7 +47,10 @@ const FALLBACK_ROSTER = {
   default: ['retriever', 'data_agent', 'graph_agent', 'critic'],
 }
 const roster = computed(() => scenario.value?.agents || FALLBACK_ROSTER)
-const optionalAgents = computed(() => roster.value.optional || [])
+const optionalAgents = computed(() => [
+  ...(roster.value.optional || []),
+  ...(roster.value.custom || []),   // 自定义智能体（智能体配置页，custom:{id}）
+])
 /** 欢迎区一行阵容展示：核心在前、可选在后（opt 标记 = 底部可手动勾选的能力智能体）。 */
 const allRoster = computed(() => [
   ...(roster.value.core || []).map((a) => ({ ...a, opt: false })),

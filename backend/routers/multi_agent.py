@@ -66,8 +66,38 @@ def _route_label(route: dict) -> str:
 
 @router.get("/scenarios")
 async def multi_scenarios():
-    """已注册场景列表（id / name / business / description / adhoc）。"""
-    return list_scenarios()
+    """已注册场景列表（id / name / business / description / adhoc）。
+
+    universal 场景额外注入 agents.custom：智能体配置页的自定义智能体
+    （启用中、非内置）→ 前端组队勾选可直接选中（custom:{id} 透传后端装配）。
+    """
+    data = list_scenarios()
+    custom = await _list_custom_roster()
+    for item in data:
+        if item.get("id") == "universal":
+            item.setdefault("agents", {})["custom"] = custom
+    return data
+
+
+async def _list_custom_roster() -> list[dict]:
+    """自定义智能体名册（组队勾选用）：启用中、非内置 preset。失败降级为空。"""
+    from sqlalchemy import select
+    from database import async_session
+    from models import Agent
+
+    try:
+        async with async_session() as db:
+            rows = (await db.execute(
+                select(Agent).where(Agent.is_enabled == 1, Agent.is_preset == 0)
+                .order_by(Agent.name)
+            )).scalars().all()
+        return [{
+            "id": f"custom:{r.id}",
+            "name": r.name,
+            "desc": (r.description or "自定义智能体（人设 + 绑定知识库）").strip()[:60],
+        } for r in rows]
+    except Exception:
+        return []
 
 
 @router.get("/tools")

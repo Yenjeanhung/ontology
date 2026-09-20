@@ -101,11 +101,15 @@ DATA_STRONG_MIN = 3        # 类型/名称级命中数达到该值才视为强�
 
 
 def _normalize_agents(agents: Optional[list[str]]) -> list[str]:
-    """组合归一化：只保留名册内的能力智能体 id，按名册顺序输出；None=默认组合。"""
+    """组合归一化：保留名册内能力智能体 id 与自定义智能体（custom:{id}）。
+
+    内置按名册顺序、自定义按传入顺序排后；None=默认组合。
+    """
     if agents is None:
         return list(DEFAULT_AGENTS)
-    req = {str(a).strip() for a in (agents or [])}
-    return [aid for aid in OPTIONAL_IDS if aid in req]
+    req = [str(a).strip() for a in (agents or []) if str(a).strip()]
+    builtin = [aid for aid in OPTIONAL_IDS if aid in req]
+    return builtin + [a for a in req if a.startswith("custom:")]
 
 
 # ── 场景定义 ─────────────────────────────────────────────────
@@ -127,6 +131,7 @@ class UniversalScenario(MultiAgentScenario):
         meta["agents"] = {                      # 组队选择器名册
             "core": CORE_AGENTS,
             "optional": OPTIONAL_AGENTS,
+            "custom": [],                       # 自定义智能体（路由层查库填充）
             "default": DEFAULT_AGENTS,
         }
         return meta
@@ -225,6 +230,9 @@ class UniversalScenario(MultiAgentScenario):
                          "hit": route["nl2filter_hit"]})
         rewrite_gate = bool(route.get("rewrite_gate")) and use_retrieval
 
+        # 自定义智能体（智能体配置页，custom:{id}）：查库取启用配置，防脏 id
+        custom_agents = await _load_custom_agents(caps)
+
         # 计划：子任务执行者（并行） → 图谱（可选） → 评审（可选） → 合成（必在）
         plan: list[dict] = [
             {
@@ -244,6 +252,9 @@ class UniversalScenario(MultiAgentScenario):
         if "tool_agent" in caps:
             plan.append({"id": "t1", "node": "tool_agent", "role": "tool_agent",
                          "goal": "Function Calling 工具调用取证"})
+        for i, ca in enumerate(custom_agents, start=1):
+            plan.append({"id": f"cu{i}", "node": f"custom_{i}", "role": "custom",
+                         "goal": ca["goal"], "agent": ca})
         if "critic" in caps:
             plan.append({"id": "c1", "node": "critic", "role": "critic",
                          "goal": "素材交叉验证与质量裁定"})
@@ -261,18 +272,19 @@ class UniversalScenario(MultiAgentScenario):
             ]
             + [
                 {"node": p["node"], "role": p["role"],
-                 "name": {"data_agent": "DataAgent · 数据查询",
+                 "name": (p["agent"]["name"] if p["role"] == "custom" else {
+                          "data_agent": "DataAgent · 数据查询",
                           "graph_agent": "GraphAgent · 图谱事实",
                           "tool_agent": "ToolAgent · 工具调用",
                           "critic": "Critic · 评审质控",
-                          "synthesizer": "Synthesizer · 结果合成"}[p["role"]]}
+                          "synthesizer": "Synthesizer · 结果合成"}[p["role"]])}
                 for p in plan if p["role"] in ("data_agent", "graph_agent", "tool_agent",
-                                               "critic", "synthesizer")
+                                               "custom", "critic", "synthesizer")
             ]
         )
-        cap_label = " + ".join(
-            a["name"].split(" · ")[0] for a in OPTIONAL_AGENTS if a["id"] in caps
-        ) or "纯模型协作"
+        cap_names = [a["name"].split(" · ")[0] for a in OPTIONAL_AGENTS if a["id"] in caps]
+        cap_names += [ca["name"] for ca in custom_agents]
+        cap_label = " + ".join(cap_names) or "纯模型协作"
         team_info = {
             "team": f"通用智能体团队（{cap_label}）",
             "members": members,
@@ -411,6 +423,8 @@ class UniversalScenario(MultiAgentScenario):
                 nodes[step["node"]] = self._make_kb_retriever(eng, step, rewrite_gate)
             elif step["role"] == "worker":
                 nodes[step["node"]] = self._make_worker(eng, step, task)
+            elif step["role"] == "custom":
+                nodes[step["node"]] = self._make_custom_agent(eng, step, task)
             elif step["role"] == "data_agent":
                 nodes[step["node"]] = self._make_data_agent(eng, task, nl_filter)
             elif step["role"] == "tool_agent":
@@ -481,6 +495,66 @@ class UniversalScenario(MultiAgentScenario):
                 "summary": "子任务完成（模型生成）" if text else "子任务执行失败（LLM 未配置）",
             })
             return {"evidence": {domain: cards}}
+
+        return _fn
+
+    def _make_custom_agent(self, eng: MultiAgentEngine, step: dict, task: str):
+        """Custom-i：智能体配置页定义的自定义智能体入队执行（并行成员）。
+
+        与 Worker 的差异：人设（system_prompt）来自智能体配置；绑定了知识库
+        时先检索该库语料（仅限绑定库，区别于 Retriever 的全库检索），语料
+        以素材卡落黑板后再按人设完成子任务——配置化智能体直接参与协作。
+        """
+        node, domain = step["node"], step["id"]
+        agent = step.get("agent") or {}
+        name = agent.get("name") or "自定义智能体"
+        goal = step["goal"]
+        persona = (agent.get("system_prompt") or "").strip()
+        kb_id = agent.get("kb_id") or ""
+
+        async def _fn(state: dict) -> dict:
+            eng.emit({"type": "node_start", "node": node, "role": "custom",
+                      "goal": f"{name} · {goal}"})
+            cards: list[dict] = []
+            kb_ctx = ""
+            if kb_id:   # 绑定知识库：先取证（仅绑定库），语料进 prompt 并落黑板
+                chunks = await _search_kb_chunks(f"{task}\n{goal}", kb_id=kb_id)
+                cards = [_chunk_card(f"ev-{node}-{i}", domain, c)
+                         for i, c in enumerate(chunks)]
+                if cards:
+                    kb_ctx = "\n".join(f"- {c['summary']}" for c in cards)
+                    eng.emit({"type": "evidence", "domain": domain, "cards": cards})
+            system = persona or (
+                "你是多智能体团队的执行成员，用自身知识独立完成分配的子任务。")
+            system += "直接输出要点式中文结果（不超过 150 字），不要寒暄或重复任务。"
+            user = f"总体任务：{task}\n你的子任务：{goal}"
+            if kb_ctx:
+                user += f"\n\n绑定知识库相关语料：\n{kb_ctx}"
+            text = ""
+            try:
+                text = await eng.llm_stream(system, user)
+            except Exception:
+                text = ""
+            card = {
+                "id": f"ev-{node}",
+                "domain": domain,
+                "grade": "model_output",
+                "source": f"{name} · 智能体配置",
+                "title": goal[:24],
+                "summary": text[:160] if text else "（执行失败，无产出）",
+                "quote": "",
+                "stance": "neutral",
+            }
+            out_cards = cards + ([card] if text else [])
+            if text:
+                eng.emit({"type": "evidence", "domain": domain, "cards": [card]})
+            eng.emit({
+                "type": "node_done", "node": node,
+                "summary": (f"{name} 完成（模型生成）"
+                            + (f"，引用绑定库语料 {len(cards)} 条" if cards else "")
+                            if text else f"{name} 执行失败（LLM 未配置）"),
+            })
+            return {"evidence": {domain: out_cards}}
 
         return _fn
 
@@ -661,19 +735,54 @@ class UniversalScenario(MultiAgentScenario):
         return _fn
 
 
+async def _load_custom_agents(caps: list[str]) -> list[dict]:
+    """组合中的自定义智能体（custom:{agent_id}）→ 启用中的配置（防脏 id）。
+
+    id 无效或已停用的项静默跳过，不中断流水线；输出保持用户勾选顺序。
+    """
+    ids = [a.split(":", 1)[1] for a in caps if a.startswith("custom:")]
+    if not ids:
+        return []
+    from database import async_session
+    from models import Agent
+
+    try:
+        async with async_session() as db:
+            rows = (await db.execute(
+                select(Agent).where(Agent.id.in_(ids), Agent.is_enabled == 1)
+            )).scalars().all()
+        by_id = {r.id: r for r in rows}
+        out: list[dict] = []
+        for aid in ids:
+            r = by_id.get(aid)
+            if not r:
+                continue
+            out.append({
+                "id": aid,
+                "name": r.name,
+                "goal": (r.description or "").strip()[:40] or f"{r.name} 专项分析",
+                "system_prompt": r.system_prompt or "",
+                "kb_id": (r.kb_id or "").strip(),
+            })
+        return out
+    except Exception:
+        return []
+
+
 # ── 平台通用取证（业务无关） ──────────────────────────────────
 
-async def _search_kb_chunks(query: str) -> list[dict]:
-    """跨全部知识库的向量检索（VectorDataService），失败逐库降级。"""
+async def _search_kb_chunks(query: str, kb_id: str = "") -> list[dict]:
+    """跨全部知识库（或指定绑定库）的向量检索（VectorDataService），失败逐库降级。"""
     from database import async_session
     from models import KnowledgeBase
     from services.vector_data_service import VectorDataService
 
     try:
+        stmt = select(KnowledgeBase).limit(MAX_KBS)
+        if kb_id:
+            stmt = stmt.where(KnowledgeBase.id == kb_id)
         async with async_session() as db:
-            kbs = (await db.execute(
-                select(KnowledgeBase).limit(MAX_KBS)
-            )).scalars().all()
+            kbs = (await db.execute(stmt)).scalars().all()
     except Exception:
         return []
 

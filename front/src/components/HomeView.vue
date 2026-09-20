@@ -62,11 +62,11 @@ const flowSteps = [
   {
     key: 'agent',
     number: '06',
-    to: '/agent',
-    label: '智能体',
-    role: '增强问答',
-    line: '融合知识库检索、图谱事实与技能，回答更准、推理过程可追溯。',
-    action: '进入智能体',
+    to: '/agent/multi-agent',
+    label: '多智能体协作',
+    role: '团队研判',
+    line: 'Planner 动态规划、多智能体并行取证，融合知识库、图谱与台账数据合成可溯源成果。',
+    action: '发起协作',
   },
 ]
 

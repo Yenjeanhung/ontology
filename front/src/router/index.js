@@ -4,7 +4,6 @@ import KbList from '../components/KbList.vue'
 import KbDetail from '../components/KbDetail.vue'
 import FileLibrary from '../components/FileLibrary.vue'
 import QueryView from '../components/QueryView.vue'
-import AgentView from '../components/AgentView.vue'
 import AgentListPage from '../components/agent/AgentListPage.vue'
 import SkillListPage from '../components/SkillListPage.vue'
 import MultiAgentPage from '../components/multiagent/MultiAgentPage.vue'
@@ -64,7 +63,6 @@ const routes = [
   // 其他
   { path: '/files', name: 'files', component: FileLibrary, meta: { keepAlive: true, perm: 'file:view' } },
   { path: '/query', name: 'query', component: QueryView, meta: { keepAlive: true, perm: 'kb:query' } },
-  { path: '/agent', name: 'agent', component: AgentView, meta: { keepAlive: true, perm: 'agent:view' } },
   { path: '/agent/configs', name: 'agent-configs', component: AgentListPage, meta: { keepAlive: true, perm: 'agent:view' } },
   { path: '/agent/skills', name: 'agent-skills', component: SkillListPage, meta: { keepAlive: true, perm: 'agent:view' } },
   // 多智能体协同研判（通用框架，业务场景以适配器接入）
