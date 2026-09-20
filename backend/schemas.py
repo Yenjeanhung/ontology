@@ -43,6 +43,7 @@ class AgentCreate(BaseModel):
     system_prompt: str = ""
     skill_ids: list[str] = []
     is_enabled: int = 1
+    use_tools: int = 0  # 1 = 多智能体协作时启用工具循环（内置 + MCP，如图表 MCP）
 
 
 class AgentUpdate(BaseModel):
@@ -52,6 +53,7 @@ class AgentUpdate(BaseModel):
     system_prompt: str | None = None
     skill_ids: list[str] | None = None
     is_enabled: int | None = None
+    use_tools: int | None = None
 
 
 # ===== 工作流 =====

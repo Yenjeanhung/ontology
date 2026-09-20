@@ -443,7 +443,8 @@ def _stream_engine(engine_source, session=None, task_text: str = "") -> Streamin
         elif t == "fact":
             turn_meta["domains"].append({"domain": "__facts__", "cards": [
                 {"grade": f.get("grade", ""), "source": "", "title": f.get("title", ""),
-                 "summary": f.get("detail", ""), "quote": "", "stance": "fact"}
+                 "summary": f.get("detail", ""), "quote": "", "stance": "fact",
+                 "image": f.get("image", "")}   # 图表卡（chart_result）内嵌图片回放
                 for f in evt.get("facts") or []
             ]})
         elif t == "conflict":

@@ -383,8 +383,10 @@ def score_rows(rows: list[dict], args, *, fatal: bool = True) -> None:
     for name in skipped:
         print(f"[WARN] 评测集无 reference，跳过指标: {name}")
 
+    # 评估
     evaluator_llm = LangchainLLMWrapper(resolve_llm(args))
     evaluator_emb = LangchainEmbeddingsWrapper(create_embeddings())
+    # 包装为 EvaluationDataset 对象
     dataset: EvaluationDataset = EvaluationDataset(build_samples(rows))
 
     print(f"\n[INFO] ragas 评估中：{len(rows)} 条 × {len(metrics)} 指标 ...")

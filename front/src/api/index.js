@@ -694,11 +694,11 @@ export async function fetchDefaultPersona() {
   return res.json()
 }
 
-export async function createAgent({ name, description = '', kbId, systemPrompt = '', skillIds = [] }) {
+export async function createAgent({ name, description = '', kbId, systemPrompt = '', skillIds = [], useTools = 0 }) {
   const res = await fetch(`${API}/api/agents`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, kb_id: kbId, system_prompt: systemPrompt, skill_ids: skillIds }),
+    body: JSON.stringify({ name, description, kb_id: kbId, system_prompt: systemPrompt, skill_ids: skillIds, use_tools: useTools }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
@@ -715,6 +715,7 @@ export async function updateAgent(agentId, data = {}) {
   if (data.systemPrompt != null) body.system_prompt = data.systemPrompt
   if (data.skillIds != null) body.skill_ids = data.skillIds
   if (data.isEnabled != null) body.is_enabled = data.isEnabled
+  if (data.useTools != null) body.use_tools = data.useTools
   const res = await fetch(`${API}/api/agents/${agentId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

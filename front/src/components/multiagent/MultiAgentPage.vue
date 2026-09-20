@@ -140,7 +140,8 @@ function roundFromMeta(task, conclusion, meta) {
       ...c,
       // __facts__ 组的前端 domain 由 grade 推导（与实时 fact 事件处理一致）
       domain: d.domain === '__facts__'
-        ? (c.grade === 'data_fact' ? 'data' : c.grade === 'tool_result' ? 'tool' : 'graph')
+        ? (c.grade === 'data_fact' ? 'data' : c.grade === 'tool_result' ? 'tool'
+          : c.grade === 'chart_result' ? 'chart' : 'graph')
         : d.domain,
     })),
   }))
@@ -167,12 +168,14 @@ const KIND_META = {
   graph: { label: '图谱事实' },
   data: { label: '数据查询' },
   tool: { label: '工具产出' },
+  chart: { label: '图表产出' },
 }
 
 function cardKind(c) {
   if (c.grade === 'graph_fact') return 'graph'
   if (c.grade === 'data_fact') return 'data'
   if (c.grade === 'tool_result') return 'tool'
+  if (c.grade === 'chart_result') return 'chart'
   if (c.grade === 'model_output' || c.grade === 'model_knowledge') return 'model'
   return 'doc'
 }
@@ -190,7 +193,7 @@ function evTabsOf(r) {
   const counts = {}
   for (const c of cards) counts[c.kind] = (counts[c.kind] || 0) + 1
   const tabs = [{ key: 'all', label: '全部', count: cards.length }]
-  for (const k of ['doc', 'model', 'graph', 'data', 'tool']) {
+  for (const k of ['doc', 'model', 'graph', 'data', 'tool', 'chart']) {
     if (counts[k]) tabs.push({ key: k, label: KIND_META[k].label, count: counts[k] })
   }
   return tabs
@@ -210,6 +213,11 @@ function flashCard(el) {
   el.classList.add('is-flash')
   clearTimeout(flashTimer)
   flashTimer = setTimeout(() => el.classList.remove('is-flash'), 1600)
+}
+
+/** 图表卡图片点击 → 新窗口打开原图。 */
+function openImage(url) {
+  if (url) window.open(url, '_blank')
 }
 
 /** 成果里的引用 chip 点击 → 滚动定位到该轮素材面板对应卡片并高亮。 */
@@ -385,14 +393,17 @@ function handleEvent(r, evt) {
       break
     }
     case 'fact':
-      // 图谱/结构化/工具事实卡独立成组（grade 区分，优先采信）
+      // 图谱/结构化/工具/图表事实卡独立成组（grade 区分，优先采信）
       r.evidenceDomains = [...r.evidenceDomains, { domain: '__facts__', cards: (evt.facts || []).map((f) => ({
         id: f.id,
-        domain: f.grade === 'data_fact' ? 'data' : f.grade === 'tool_result' ? 'tool' : 'graph',
+        domain: f.grade === 'data_fact' ? 'data' : f.grade === 'tool_result' ? 'tool'
+          : f.grade === 'chart_result' ? 'chart' : 'graph',
         grade: f.grade,
         source: f.grade === 'data_fact' ? '实体台账 · 结构化查询'
-          : f.grade === 'tool_result' ? '工具链 · Function Calling' : '本体图谱 · 结构化事实',
+          : f.grade === 'tool_result' ? '工具链 · Function Calling'
+          : f.grade === 'chart_result' ? '图表智能体 · 可视化产出' : '本体图谱 · 结构化事实',
         title: f.title, summary: f.detail, quote: '', stance: 'fact',
+        image: f.image || '',
       })) }]
       break
     case 'conflict':
@@ -841,6 +852,8 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="ma-card-title">{{ c.title }}</div>
                   <p class="ma-card-sum">{{ c.summary }}</p>
+                  <img v-if="c.image" :src="c.image" class="ma-card-img"
+                       loading="lazy" alt="图表产出" @click="openImage(c.image)" />
                   <blockquote v-if="c.quote" class="ma-card-quote">{{ c.quote }}</blockquote>
                 </div>
               </div>
@@ -1060,6 +1073,8 @@ onBeforeUnmount(() => {
 .ma-card-fact { color: var(--c-success); border-color: var(--c-success); }
 .ma-card-title { font-size: 12.5px; font-weight: 600; color: var(--c-fg); line-height: 1.4; }
 .ma-card-sum { margin: 0; font-size: 12px; color: var(--c-secondary); line-height: 1.55; }
+.ma-card-img { display: block; width: 100%; margin-top: 4px; border: 1px solid var(--c-border);
+  border-radius: 8px; background: #fff; cursor: zoom-in; }
 .ma-card-quote { margin: 0; padding: 5px 9px; border-left: 3px solid var(--c-accent);
   background: var(--c-muted); border-radius: 0 8px 8px 0;
   font-size: 11.5px; color: var(--c-fg); line-height: 1.5; }

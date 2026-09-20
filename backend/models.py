@@ -843,6 +843,7 @@ class Agent(Base):
     temperature = Column(Float, default=0.7)
     is_preset = Column(Integer, nullable=False, default=0)  # 1 = 内置（不可删除）
     is_enabled = Column(Integer, nullable=False, default=1)
+    use_tools = Column(Integer, nullable=False, default=0)  # 1 = 协作时启用 Function Calling 工具循环（内置 + MCP，如图表 MCP）
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 

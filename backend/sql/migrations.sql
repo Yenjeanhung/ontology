@@ -750,3 +750,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
 -- scene 区分会话场景：空=智能体问答（存量默认），multi=多智能体协作）
 ALTER TABLE chat_sessions ADD COLUMN scene VARCHAR DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_scene ON chat_sessions(scene);
+
+-- migration_038: 智能体工具调用开关（多智能体协作时启用 Function Calling 工具循环：
+-- 内置 kb_search/graph_search/data_query + MCP 外部工具，如图表 MCP；自定义智能体可配）
+ALTER TABLE agents ADD COLUMN use_tools INTEGER NOT NULL DEFAULT 0;

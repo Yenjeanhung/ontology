@@ -26,6 +26,7 @@ const editForm = ref({
   kb_id: '',
   skill_ids: [],
   system_prompt: '',
+  use_tools: false,
 })
 
 const enabledSkills = computed(() => skills.value.filter(s => s.is_enabled))
@@ -96,13 +97,14 @@ function selectAgent(id) {
     kb_id: a.kb_id,
     skill_ids: a.skill_ids || [],
     system_prompt: a.system_prompt || '',
+    use_tools: !!a.use_tools,
   }
 }
 
 function newAgent() {
   selectedId.value = null
   isNew.value = true
-  editForm.value = { name: '', description: '', kb_id: '', skill_ids: [], system_prompt: '' }
+  editForm.value = { name: '', description: '', kb_id: '', skill_ids: [], system_prompt: '', use_tools: false }
 }
 
 function cancelEdit() {
@@ -137,6 +139,7 @@ async function save() {
         kbId: editForm.value.kb_id,
         skillIds: editForm.value.skill_ids,
         systemPrompt: editForm.value.system_prompt,
+        useTools: editForm.value.use_tools ? 1 : 0,
       })
       toast.success('智能体已创建')
       selectedId.value = created.id
@@ -148,6 +151,7 @@ async function save() {
         kbId: editForm.value.kb_id,
         skillIds: editForm.value.skill_ids,
         systemPrompt: editForm.value.system_prompt,
+        useTools: editForm.value.use_tools ? 1 : 0,
       })
       toast.success('已保存')
     }
@@ -348,6 +352,13 @@ async function doRemove() {
               </template>
               <span class="hint" v-else>已自定义人设，将覆盖系统默认人设；技能指令会追加在人设之后</span>
             </div>
+            <div class="field">
+              <label class="check-row">
+                <input type="checkbox" v-model="editForm.use_tools" />
+                <span>工具调用（Function Calling · 内置工具 + MCP 外部工具）</span>
+              </label>
+              <span class="hint">开启后该智能体在多智能体协作中可自主调用工具，如取台账数据、用图表 MCP 生成柱状图/饼图/表格（产出进「图表产出」tab）</span>
+            </div>
           </div>
 
           <div class="edit-actions">
@@ -453,6 +464,8 @@ async function doRemove() {
 .field textarea { font-family: var(--font); line-height: 1.5; resize: vertical; min-height: 120px; }
 .hint { font-size: 11px; color: var(--c-secondary); }
 .req { color: var(--c-danger); }
+.check-row { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px !important; font-weight: 500 !important; color: var(--c-fg) !important; }
+.check-row input { width: 15px; height: 15px; cursor: pointer; accent-color: var(--c-accent); }
 
 /* 系统默认人设预览：人设留空时展示实际生效内容 */
 .persona-default {

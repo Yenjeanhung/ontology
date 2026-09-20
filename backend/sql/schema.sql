@@ -368,6 +368,7 @@ CREATE TABLE IF NOT EXISTS agents (
     temperature REAL DEFAULT 0.7,
     is_preset INTEGER NOT NULL DEFAULT 0,
     is_enabled INTEGER NOT NULL DEFAULT 1,
+    use_tools INTEGER NOT NULL DEFAULT 0,
     created_at VARCHAR,
     updated_at VARCHAR
 );

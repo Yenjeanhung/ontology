@@ -254,11 +254,13 @@ async def builtin_data_query(keywords: list[str], limit: int = 8) -> dict:
                 return {"total": 0, "scope": scope,
                         "note": f"台账无命中（关键词：{' / '.join(kws)}）"}
 
-            type_q = select(Entity.entity_type, func.count()).group_by(Entity.entity_type)
+            type_q = (select(Entity.entity_type, func.count())
+                      .group_by(Entity.entity_type)
+                      .order_by(func.count().desc()))
             if cond is not None:
                 type_q = type_q.where(cond)
-            type_counts = {str(t or "未分类"): c
-                           for t, c in (await db.execute(type_q)).all()}
+            type_rows = (await db.execute(type_q)).all()
+            type_counts = {str(t or "未分类"): c for t, c in type_rows}
 
             stmt = select(Entity)
             if cond is not None:
@@ -276,9 +278,17 @@ async def builtin_data_query(keywords: list[str], limit: int = 8) -> dict:
                     "properties": props,
                     "created_at": str(e.created_at or "")[:10],
                 })
+            primary: dict = {}
+            note = f"台账命中 {total} 条（{scope}），返回最新 {len(records)} 条"
+            if (len(type_rows) > 1 and total > 0
+                    and type_rows[0][1] * 10 >= total * 6):
+                primary = {"type": str(type_rows[0][0] or "未分类"),
+                           "count": int(type_rows[0][1])}
+                note += (f"；主类型「{primary['type']}」{primary['count']} 条，"
+                         f"其余 {total - primary['count']} 条为关键词关联实体"
+                         "（统计以主类型为准）")
             return {"total": total, "scope": scope, "type_counts": type_counts,
-                    "records": records,
-                    "note": f"台账命中 {total} 条（{scope}），返回最新 {len(records)} 条"}
+                    "primary": primary, "records": records, "note": note}
     except Exception as exc:
         return {"total": 0, "records": [], "note": f"台账查询失败：{type(exc).__name__}"}
 

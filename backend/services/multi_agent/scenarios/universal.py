@@ -209,6 +209,13 @@ class UniversalScenario(MultiAgentScenario):
             agents = list(route["agents"])           # 路由精简组合
 
         caps = _normalize_agents(agents)
+        if not explicit and _looks_like_chart_task(task):
+            # 自动组队：任务确有图表/表格诉求时才追加启用中的图表智能体
+            # （v6.2 修复：原先无条件追加，「整理本周告警」等无图表意图的任务
+            # 也会拉上图表智能体空跑；是否真成图仍由其节点内判断兜底）
+            chart_aid = await _find_chart_agent_id()
+            if chart_aid and f"custom:{chart_aid}" not in caps:
+                caps.append(f"custom:{chart_aid}")
         use_retrieval = "retriever" in caps
         _pt0 = time.perf_counter()
         goals = await self._plan_goals(task, use_retrieval)
@@ -504,6 +511,12 @@ class UniversalScenario(MultiAgentScenario):
         与 Worker 的差异：人设（system_prompt）来自智能体配置；绑定了知识库
         时先检索该库语料（仅限绑定库，区别于 Retriever 的全库检索），语料
         以素材卡落黑板后再按人设完成子任务——配置化智能体直接参与协作。
+
+        use_tools=1（配置页「工具调用」开关）时升级为 Function Calling 工具
+        循环（与 ToolAgent 同机制）：内置工具（kb_search/graph_search/
+        data_query）+ MCP 外部工具（如开源图表 @antv/mcp-server-chart）由
+        LLM 自主调用；工具产出以事实卡落黑板，图表工具返回的图片 URL 额外
+        提取为图表卡（grade=chart_result，前端「图表产出」tab 内嵌渲染）。
         """
         node, domain = step["node"], step["id"]
         agent = step.get("agent") or {}
@@ -511,6 +524,7 @@ class UniversalScenario(MultiAgentScenario):
         goal = step["goal"]
         persona = (agent.get("system_prompt") or "").strip()
         kb_id = agent.get("kb_id") or ""
+        use_tools = bool(agent.get("use_tools"))
 
         async def _fn(state: dict) -> dict:
             eng.emit({"type": "node_start", "node": node, "role": "custom",
@@ -526,15 +540,55 @@ class UniversalScenario(MultiAgentScenario):
                     eng.emit({"type": "evidence", "domain": domain, "cards": cards})
             system = persona or (
                 "你是多智能体团队的执行成员，用自身知识独立完成分配的子任务。")
-            system += "直接输出要点式中文结果（不超过 150 字），不要寒暄或重复任务。"
             user = f"总体任务：{task}\n你的子任务：{goal}"
             if kb_ctx:
                 user += f"\n\n绑定知识库相关语料：\n{kb_ctx}"
-            text = ""
-            try:
-                text = await eng.llm_stream(system, user)
-            except Exception:
-                text = ""
+
+            text, tool_facts, tool_note = "", [], ""
+            if use_tools and eng.llm() is not None:
+                # 工具循环路径：人设 + 平台工具（内置 + MCP），LLM 自主决定调用
+                system += ("可以调用平台提供的工具完成任务；需要真实数据或图表/表格"
+                           "产出时必须调用工具获取，禁止编造数据；工具调用完成后，"
+                           "输出不超过 150 字的中文要点总结。")
+                try:
+                    from services.agent_loop import run_tool_loop
+                    from services.tool_registry import PlatformTools
+
+                    loop = None
+                    mcp_note = ""
+                    async with PlatformTools() as pt:
+                        if pt.mcp_status:
+                            ok_n = sum(1 for s in pt.mcp_status if s["ok"])
+                            mcp_note = (f"，MCP 接入 {ok_n}/"
+                                        f"{len(pt.mcp_status)} 个外部服务器")
+                        if pt.registry.names():
+                            loop = await run_tool_loop(
+                                eng.llm(), pt.registry, system, user,
+                                on_event=lambda e: eng.emit({"node": node, **e}))
+                    if loop is not None:
+                        chart_facts = _chart_facts(loop)
+                        text = loop.final_text or ""
+                        tool_facts = _tool_facts(loop) + chart_facts
+                        used: dict[str, int] = {}
+                        for c in loop.calls:
+                            used[c.name] = used.get(c.name, 0) + 1
+                        call_desc = ("、".join(f"{k}×{v}" for k, v in used.items())
+                                     or "未调用工具")
+                        tool_note = (f"，Function Calling：{call_desc}" + mcp_note
+                                     + (f"，产出图表 {len(chart_facts)} 张"
+                                        if chart_facts else ""))
+                except Exception:
+                    # 工具链路故障 → 回落纯人设（不因 MCP 抖动拖垮节点）
+                    text, tool_facts, tool_note = "", [], ""
+            if not text and not tool_facts:
+                # 未启用工具 / 工具循环不可用 → 纯人设流式（原行为，token 实时可见）
+                system += "直接输出要点式中文结果（不超过 150 字），不要寒暄或重复任务。"
+                try:
+                    text = await eng.llm_stream(system, user)
+                except Exception:
+                    text = ""
+            if tool_facts:
+                eng.emit({"type": "fact", "facts": tool_facts})
             card = {
                 "id": f"ev-{node}",
                 "domain": domain,
@@ -550,11 +604,12 @@ class UniversalScenario(MultiAgentScenario):
                 eng.emit({"type": "evidence", "domain": domain, "cards": [card]})
             eng.emit({
                 "type": "node_done", "node": node,
-                "summary": (f"{name} 完成（模型生成）"
+                "summary": (f"{name} 完成（模型生成{tool_note}）"
                             + (f"，引用绑定库语料 {len(cards)} 条" if cards else "")
-                            if text else f"{name} 执行失败（LLM 未配置）"),
+                            if (text or tool_facts)
+                            else f"{name} 执行失败（LLM 未配置）"),
             })
-            return {"evidence": {domain: out_cards}}
+            return {"evidence": {domain: out_cards}, "facts": tool_facts}
 
         return _fn
 
@@ -763,10 +818,82 @@ async def _load_custom_agents(caps: list[str]) -> list[dict]:
                 "goal": (r.description or "").strip()[:40] or f"{r.name} 专项分析",
                 "system_prompt": r.system_prompt or "",
                 "kb_id": (r.kb_id or "").strip(),
+                "use_tools": bool(int(getattr(r, "use_tools", 0) or 0)),
             })
         return out
     except Exception:
         return []
+
+
+# ── 图表需求自动组队 + 图表卡提取（开源图表 MCP @antv/mcp-server-chart） ──
+
+# 图表/表格意图词（自动组队门控：任务文本命中才追加图表智能体，成图与否仍由节点内判断）
+_CHART_INTENT_RE = re.compile(
+    r"图表|画图|绘图|成图|可视化|柱状|条形|折线|曲线图|饼图|环形图|散点|雷达|漏斗|"
+    r"直方|词云|桑基|瀑布图|热力|趋势|占比|分布图|统计表|报表|表格|chart|spreadsheet",
+    re.IGNORECASE)
+
+# 图表工具产出中的图片 URL（AntV 图表 MCP 返回「成功生成…: <图片URL>」）
+_CHART_URL_RE = re.compile(
+    r"https?://[^\s<>\"'（）《》【】，。]+?\.(?:png|jpe?g|webp|gif|svg|html?)"
+    r"(?:\?[^\s<>\"'（）《》【】，。]*)?", re.IGNORECASE)
+
+
+def _looks_like_chart_task(task: str) -> bool:
+    """任务文本是否含图表/表格需求（自动组队用）。"""
+    return bool(_CHART_INTENT_RE.search(task or ""))
+
+
+async def _find_chart_agent_id() -> str:
+    """启用中的图表智能体 id：固定 id（agent_chart，种子脚本创建）优先，
+    名称含「图表」的自定义智能体兜底；异常一律返回空串（不阻断组队）。"""
+    from database import async_session
+    from models import Agent
+    from services.agent_service import CHART_AGENT_ID
+
+    try:
+        async with async_session() as db:
+            row = await db.get(Agent, CHART_AGENT_ID)
+            if row is None or not row.is_enabled:
+                row = (await db.execute(
+                    select(Agent).where(Agent.is_enabled == 1,
+                                        Agent.name.ilike("%图表%"))
+                )).scalars().first()
+            return (row.id if row is not None and row.is_enabled else "")
+    except Exception:
+        return ""
+
+
+def _chart_facts(loop) -> list[dict]:
+    """工具循环中图表类 MCP 工具的图片产出 → 图表事实卡（grade=chart_result）。
+
+    URL 提取自工具返回文本；图表卡经 fact 事件落黑板，前端「图表产出」tab
+    内嵌渲染图片，合成官与协作回放亦可引用。
+    """
+    facts: list[dict] = []
+    for c in loop.calls:
+        rtext = c.result_text or ""
+        if c.error or not rtext:
+            continue
+        m = _CHART_URL_RE.search(rtext)
+        if not m and "generate_" in (c.name or ""):
+            # 图表工具（mcp_<srv>_generate_*）URL 无扩展名时兜底（AntV 返回 /original 结尾）
+            m = re.search(r"https?://[^\s<>\"'（）《》【】，。]+", rtext)
+        if not m:
+            continue
+        url = m.group(0).rstrip("。，；,;.")
+        args = c.arguments if isinstance(c.arguments, dict) else {}
+        title = str(args.get("title") or "").strip() or c.name
+        facts.append({
+            "id": f"fact-chart-{len(facts) + 1}",
+            "grade": "chart_result",
+            "title": f"{title}（{c.name}）",
+            "detail": f"图表工具 {c.name} 已生成可视化图片：{url}",
+            "image": url,
+        })
+        if len(facts) >= 8:
+            break
+    return facts
 
 
 # ── 平台通用取证（业务无关） ──────────────────────────────────
@@ -904,6 +1031,30 @@ async def _graph_facts(task: str) -> list[dict]:
         return []
 
 
+def _type_scope_text(total: int, type_rows: list) -> str:
+    """类型分组聚合 → 统计口径文案（业务无关）。
+
+    主类型占绝对多数（≥60%）时以主类型为统计焦点，其余类型标注为关键词
+    关联实体——避免「告警规则/概念」等名称沾边的知识型实体混入总量叙事
+    （信息仍完整展示，仅口径明确：统计以主类型为准）。
+    """
+    if not type_rows:
+        return f"共 {total} 条记录"
+    if len(type_rows) == 1:
+        t, c = type_rows[0]
+        return f"共 {total} 条记录，类型「{t or '未分类'}」{c} 条"
+    groups = "、".join(f"{t or '未分类'} {c} 条"
+                       for t, c in type_rows[:DATA_TYPE_GROUPS])
+    top_t, top_n = type_rows[0]
+    if total > 0 and top_n * 10 >= total * 6:
+        others = "、".join(f"{t or '未分类'} {c} 条"
+                           for t, c in type_rows[1:][:4])
+        return (f"共命中 {total} 条相关实体，主类型「{top_t or '未分类'}」{top_n} 条"
+                f"（统计以此为准）；其余 {total - top_n} 条为关键词关联实体"
+                f"（{others}）；全部类型：{groups}")
+    return f"共 {total} 条记录；按实体类型：{groups}"
+
+
 async def _data_facts(task: str, nl_filter: Optional[dict] = None) -> list[dict]:
     """实体台账结构化查询（业务无关）：关键词命中 → 聚合统计 + 明细事实卡。
 
@@ -959,13 +1110,12 @@ async def _data_facts(task: str, nl_filter: Optional[dict] = None) -> list[dict]
             if total == 0:
                 return []
 
-            type_q = select(Entity.entity_type, func.count()).group_by(Entity.entity_type)
+            type_q = (select(Entity.entity_type, func.count())
+                      .group_by(Entity.entity_type)
+                      .order_by(func.count().desc()))
             if cond is not None:
                 type_q = type_q.where(cond)
-            type_counts = [
-                f"{t or '未分类'} {c} 条"
-                for t, c in (await db.execute(type_q)).all()
-            ][:DATA_TYPE_GROUPS]
+            type_rows = (await db.execute(type_q)).all()
 
             stmt = select(Entity)
             if cond is not None:
@@ -981,8 +1131,8 @@ async def _data_facts(task: str, nl_filter: Optional[dict] = None) -> list[dict]
                 "id": "fact-data-agg",
                 "grade": "data_fact",
                 "title": f"台账统计 · 命中 {total} 条",
-                "detail": f"实体台账结构化查询（{kw_note}）：共 {total} 条记录；"
-                          f"按实体类型：{'、'.join(type_counts)}。",
+                "detail": (f"实体台账结构化查询（{kw_note}）："
+                           f"{_type_scope_text(total, type_rows)}。"),
             }]
             for e in rows:
                 props = _entity_props(e.properties)
@@ -1035,6 +1185,11 @@ async def _data_facts_by_filter(f: dict) -> list[dict]:
                 .order_by(Entity.created_at.desc()).limit(DATA_SAMPLE)
             )).scalars().all()
 
+            type_rows = (await db.execute(
+                select(Entity.entity_type, func.count()).where(cond)
+                .group_by(Entity.entity_type).order_by(func.count().desc())
+            )).all()
+
             note = "、".join(x for x in [
                 f"类型≈{f['entity_type']}" if f.get("entity_type") else "",
                 f"名称≈{f['name']}" if f.get("name") else "",
@@ -1045,7 +1200,8 @@ async def _data_facts_by_filter(f: dict) -> list[dict]:
                 "id": "fact-data-agg",
                 "grade": "data_fact",
                 "title": f"台账统计（NL2Filter 精准口径）· 命中 {total} 条",
-                "detail": f"实体台账结构化查询（filter：{note}）：共 {total} 条记录。",
+                "detail": (f"实体台账结构化查询（filter：{note}）："
+                           f"{_type_scope_text(total, type_rows)}。"),
             }]
             for e in rows:
                 props = _entity_props(e.properties)
@@ -1067,15 +1223,25 @@ async def _data_facts_by_filter(f: dict) -> list[dict]:
 
 
 def _time_floor(time_range: str) -> tuple[Optional[str], str]:
-    """time_range 词 → created_at 下界（ISO 字符串可直接比较）与口径标签。"""
+    """time_range 词 → created_at 下界（ISO 字符串可直接比较）与口径标签。
+
+    兼容两种输入：NL2Filter 英文契约（today/yesterday/this_week/this_month，
+    0.6B 小模型抽取输出）与中文时间词。
+    """
     today = date.today()
+    week = (today - timedelta(days=today.weekday())).isoformat()
+    month = today.replace(day=1).isoformat()
     mapping = {
         "今天": (today.isoformat(), "今天"),
+        "today": (today.isoformat(), "今天"),
         "昨天": ((today - timedelta(days=1)).isoformat(), "昨天"),
-        "本周": ((today - timedelta(days=today.weekday())).isoformat(), "本周"),
-        "本月": (today.replace(day=1).isoformat(), "本月"),
+        "yesterday": ((today - timedelta(days=1)).isoformat(), "昨天"),
+        "本周": (week, "本周"),
+        "this_week": (week, "本周"),
+        "本月": (month, "本月"),
+        "this_month": (month, "本月"),
     }
-    return mapping.get((time_range or "").strip(), (None, ""))
+    return mapping.get((time_range or "").strip().lower(), (None, ""))
 
 
 async def _rewrite_query(eng: MultiAgentEngine, goal: str) -> str:

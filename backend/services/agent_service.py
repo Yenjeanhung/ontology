@@ -44,6 +44,7 @@ def _serialize(
         "skill_count": len(skill_ids) if skill_count is None else skill_count,
         "is_preset": a.is_preset,
         "is_enabled": a.is_enabled,
+        "use_tools": int(getattr(a, "use_tools", 0) or 0),
         "created_at": a.created_at,
         "updated_at": a.updated_at,
     }
@@ -51,10 +52,39 @@ def _serialize(
 
 # 内置「系统默认」智能体固定 id：seed 生成，不可删除（可改名称/描述/KB/技能/人设）
 DEFAULT_AGENT_ID = "agent_default"
-
 DEFAULT_AGENT_DESCRIPTION = (
     "内置默认智能体：未绑定知识库/技能时，问答页自动跟随页面选择的知识库与技能"
     "（技能默认全选启用项）。可修改其配置作为全局默认，不可删除。"
+)
+
+# 图表智能体固定 id 与配置：多智能体协作的图表/表格产出成员。
+# 由 backend/scripts/seed_chart_agent.py 创建（is_preset=0，可在配置页编辑/删除，
+# 删除即取消自动组队）；任务含图表需求时按该 id 定位（名称含「图表」兜底），
+# use_tools=1 → 协作节点走 Function Calling 工具循环调用开源图表 MCP（AntV）成图。
+CHART_AGENT_ID = "agent_chart"
+
+CHART_AGENT_DESCRIPTION = (
+    "有图表需求且数据适合成图时，调用开源图表 MCP（AntV）生成柱状/折线/饼图等"
+    "常用图表与数据表格；无图表需求或数据不足时如实说明。"
+)
+
+CHART_AGENT_SYSTEM_PROMPT = (
+    "你是多智能体团队中的「图表智能体」，专职把任务中的数据转化为常用的图表与表格。"
+    "工作流程：\n"
+    "1. 取数：调用工具获取真实数据——台账结构化数据用 data_query，知识库语料用"
+    " kb_search，图谱事实用 graph_search；严禁编造数据；取数最多 2~3 次，相同参数"
+    "不要重复调用，一旦拿到含分类/日期/数值的可聚合数据就立即进入成图，不要反复"
+    "换关键词查询。\n"
+    "2. 成图判定：只要取到的真实数据存在可聚合维度（分类计数、时间趋势、占比构成、"
+    "排名分布），就必须调用图表 MCP 工具生成至少 1 张图表；只有完全取不到结构化"
+    "数据时才允许不调用图表工具，并用文字说明原因与建议。\n"
+    "3. 成图：调用系统注册的图表 MCP 工具（generate_* 系列，工具清单见注册中心）"
+    "生成最合适的常用图形，一次任务最多 4 张：分类对比用柱状/条形类，趋势变化用"
+    "折线/面积类，占比构成用饼图/环形类，分布关系用散点/直方/雷达类，明细数据用"
+    "表格类工具；data 参数传上一步取到的真实数据数组（每项含分类与数值字段），"
+    "title 用简短中文。\n"
+    "4. 总结：图表生成后用不超过 150 字中文总结数据要点（最高/最低、趋势方向、"
+    "占比头部），并逐条列出已生成图表的名称。"
 )
 
 
