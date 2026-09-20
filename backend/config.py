@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     # 平台自身也可作为 MCP 服务器被外部 Agent 消费：python scripts/mcp_server.py
     MCP_SERVERS: str = ""
 
+    # ───────────────── 单智能体问答工具循环（L2：agent loop + tools） ─────────────────
+    # 问答页 /agent/query 的生成阶段允许 LLM 自主调用平台工具（kb_search/graph_search/
+    # data_query + MCP）补充检索：检索管线照跑（引用体系不变），工具作为口径补充与
+    # KB 未命中兜底。默认关闭（避免所有问答额外延迟），请求体 use_tools 可按次开启。
+    AGENT_TOOL_LOOP_ENABLED: bool = False
+
     # 分块
     CHUNK_STRATEGY: Literal["fixed", "semantic", "sentence", "recursive", "heading"] = "fixed"
     # 以下为全局兜底默认值：仅在文件未分析 / 批量处理未确认时使用；
@@ -149,6 +155,21 @@ class Settings(BaseSettings):
     # 关闭时行为与旧版完全一致（仅原始 query 单路召回）。
     QUERY_REWRITE_ENABLED: bool = False
     QUERY_REWRITE_COUNT: int = 3     # 生成变体数（不含原始 query）
+
+    # ── 两级意图路由（0.6B 路由服务，v6 LoRA；见 doc/模型微调/训练与部署手册.md）──
+    # 第一级：chat→大模型直答 / data·graph·kb→精简组合 / 低置信→全组合老规则兜底。
+    # 服务不可达或超时一律自动回落，行为与关闭路由时完全一致。
+    INTENT_ROUTING_ENABLED: bool = True
+    INTENT_ROUTER_URL: str = "http://127.0.0.1:8001/v1/chat/completions"
+    INTENT_ROUTER_MODEL: str = "qwen3-0.6b-router"
+    INTENT_ROUTER_TIMEOUT: float = 3.0   # 路由调用超时（秒）
+    INTENT_CONF_MIN: float = 0.6         # 置信低于该值 → 视为低置信，全组合兜底
+    # 第二级：NL2Filter 结构化抽取（仅 data 类触发；抽不出 → DataAgent 词频老路兜底）
+    NL2FILTER_ENABLED: bool = True
+    NL2FILTER_URL: str = ""              # 留空复用 INTENT_ROUTER_URL（同服务双模式）
+    NL2FILTER_MODEL: str = "qwen3-0.6b-router"      # 先与第一级同一个 0.6B；专属 LoRA 部署后在 .env 改名即切换
+    NL2FILTER_TIMEOUT: float = 3.0
+    KB_REWRITE_GATE: bool = True         # kb 模式下 Retriever 检索前轻量改写（门控）
 
     # Rerank 精排：RRF 融合后用 cross-encoder / LLM 二次打分再截断。
     # 默认关闭：cross-encoder 需首次下载模型，开启前请确认 RERANK_MODEL 可访问。

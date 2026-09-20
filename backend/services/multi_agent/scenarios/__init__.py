@@ -49,8 +49,8 @@ class MultiAgentScenario:
     async def build_engine_from_task(
         self, task: str, agents: Optional[list[str]] = None
     ) -> MultiAgentEngine:
-        """自由任务入口（仅 adhoc 场景实现）；agents 为可选编制（能力智能体 id），
-        None = 场景默认编制；不支持时路由层转 400。"""
+        """自由任务入口（仅 adhoc 场景实现）；agents 为可选组合（能力智能体 id），
+        None = 场景默认组合；不支持时路由层转 400。"""
         raise NotImplementedError(f"场景 {self.scenario_id} 不支持自由任务输入")
 
     def meta(self) -> dict:

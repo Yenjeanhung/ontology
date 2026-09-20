@@ -745,3 +745,8 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     updated_at VARCHAR
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
+
+-- migration_037: 多智能体会话（协作历史/短期记忆，复用 chat_sessions/chat_messages；
+-- scene 区分会话场景：空=智能体问答（存量默认），multi=多智能体协作）
+ALTER TABLE chat_sessions ADD COLUMN scene VARCHAR DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_scene ON chat_sessions(scene);

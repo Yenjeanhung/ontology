@@ -5,7 +5,7 @@
 引擎不知道任何业务概念，只负责三件事（对应《多智能体交互.md》§4/§5）：
 1. 编排：planner 分解 → plan 中声明为并行角色（retriever / worker /
    graph_agent / data_agent）的节点在同一 superstep 自动并行 → critic
-   （可选编制）→ synthesizer；
+   （可选组合）→ synthesizer；
 2. 事件外抛：节点通过 engine.emit() 把过程事件（node_start / node_done /
    evidence / fact / conflict / token / error）推入队列，路由层转成 SSE；
 3. 公共设施：LLM 单例、流式调用（带单节点超时）、并行写 state 的 reducer。
@@ -85,7 +85,7 @@ class MultiAgentEngine:
     # 并行角色：同一 superstep 自动并行执行（retriever=检索增强执行，
     # worker=纯模型执行，graph_agent=图谱事实，data_agent=台账数据查询，
     # tool_agent=Function Calling 工具调用取证；
-    # 自由编制时由场景按所选智能体声明）
+    # 自由组合时由场景按所选智能体声明）
     PARALLEL_ROLES = {"retriever", "worker", "graph_agent", "data_agent", "tool_agent"}
 
     def __init__(
@@ -106,6 +106,7 @@ class MultiAgentEngine:
         self._llm_checked = False
 
         self.q: asyncio.Queue = asyncio.Queue()
+        self._node_t0: dict[str, float] = {}   # 节点计时起点（node_start 首次出现时刻）
         self._validate_plan()
 
     def _validate_plan(self) -> None:
@@ -114,11 +115,19 @@ class MultiAgentEngine:
         if len(critics) > 1 or len(synths) != 1:
             raise ValueError(
                 "plan 必须包含且仅包含一个 synthesizer，至多一个 critic 节点"
-                "（critic 为可选编制，未选时并行节点直通 synthesizer）")
+                "（critic 为可选组合，未选时并行节点直通 synthesizer）")
 
     # ── 基础设施 ──────────────────────────────────────────────
 
     def emit(self, evt: dict) -> None:
+        """事件外抛统一出口：node_done 就地补齐 elapsed_ms（节点真实执行耗时），
+        回放/链路耗时面板不再依赖前端现场计时。"""
+        t = evt.get("type")
+        if t == "node_start":
+            self._node_t0.setdefault(evt.get("node", ""), time.perf_counter())
+        elif t == "node_done":
+            t0 = self._node_t0.setdefault(evt.get("node", ""), time.perf_counter())
+            evt["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
         self.q.put_nowait(evt)
 
     def team_info(self) -> dict:
@@ -201,7 +210,7 @@ class MultiAgentEngine:
             g.add_node(node, fn)
         g.add_edge(START, "planner")
 
-        # 汇聚点：有 critic 编制则并行节点汇入 critic，否则直通 synthesizer
+        # 汇聚点：有 critic 组合则并行节点汇入 critic，否则直通 synthesizer
         fan_in = critic or synth
         parallel_steps = [s for s in self._plan if s["role"] in self.PARALLEL_ROLES]
         if parallel_steps:

@@ -2,34 +2,36 @@
 /**
  * 多智能体协作（通用智能体团队，业务无关、任务类型无关）。
  *
- * 页面定位：通用智能体团队——核心智能体内置（Planner / Synthesizer），
- * 能力智能体自由勾选组队（Retriever / GraphAgent / Critic），任务类型不限
- * （研判 / 写作 / 总结 / 问答皆可）。业务场景以适配器在后端接入，本页面
- * 只面向通用契约渲染：团队编制（team）→ 协作时间线（team/plan/node_*）
- * → 素材卡（evidence/fact）→ 评审质控（conflict）→ 流式成果（token/done）。
- * 事件契约见 doc/智能体/多智能体场景.md §4。
+ * 聊天式协作：主区为消息流（用户任务气泡 + 团队过程/成果块逐轮顺排），底部输入区
+ * 常驻——智能体组队（默认 0.6B 意图路由自动组队，可切手动勾选能力智能体）+ 任务
+ * 提示词模板 + 任务输入。每次运行自动留痕到协作会话，点开历史即多轮回放；同一会话
+ * 内可继续追问（短期记忆）。事件契约见 doc/智能体/多智能体场景.md §4。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { marked } from 'marked'
 import {
   createMultiTask,
+  deleteMultiSession,
   deleteMultiTask,
   listMultiScenarios,
+  listMultiSessionMessages,
+  listMultiSessions,
   listMultiTasks,
+  renameMultiSession,
   streamTaskRun,
   updateMultiTask,
 } from '../../api/multiAgent'
 
-// ── 场景、任务库与编制 ──
-const scenario = ref(null)         // 通用场景（唯一默认场景）
-const tasks = ref([])              // 任务库：可配置/可编辑的任务提示词模板
-const selectedTaskId = ref('')     // 当前选中任务（运行 = 任务提示词模板 + 用户问题）
+// ── 场景、任务库 ──
+const scenario = ref(null)
+const tasks = ref([])
+const selectedTaskId = ref('')
 const loadError = ref('')
-const taskInput = ref('')          // 用户具体问题/主题输入
-const taskForm = ref({ show: false, id: '', name: '', prompt: '' })  // 任务编辑表单
+const taskInput = ref('')
+const taskForm = ref({ show: false, id: '', name: '', prompt: '' })
 const savingTask = ref(false)
 
-// 智能体名册：核心内置 + 能力可选（后端下发，本地兜底）
+// 智能体名册（后端下发，本地兜底）
 const FALLBACK_ROSTER = {
   core: [
     { id: 'planner', name: 'Planner · 任务规划', desc: '用 LLM 把任务分解为可并行子任务' },
@@ -45,45 +47,107 @@ const FALLBACK_ROSTER = {
   default: ['retriever', 'data_agent', 'graph_agent', 'critic'],
 }
 const roster = computed(() => scenario.value?.agents || FALLBACK_ROSTER)
-const selectedAgents = ref([...FALLBACK_ROSTER.default])   // 已勾选的能力智能体
-
-const coreAgents = computed(() => roster.value.core || [])
 const optionalAgents = computed(() => roster.value.optional || [])
+/** 欢迎区一行阵容展示：核心在前、可选在后（opt 标记 = 底部可手动勾选的能力智能体）。 */
+const allRoster = computed(() => [
+  ...(roster.value.core || []).map((a) => ({ ...a, opt: false })),
+  ...optionalAgents.value.map((a) => ({ ...a, opt: true })),
+])
 
-const pipelineHint = computed(() => {
-  const useRetriever = selectedAgents.value.includes('retriever')
-  const steps = ['Planner 分解', useRetriever ? 'Retriever×N 并行检索' : 'Worker×N 并行执行（模型知识）']
-  if (selectedAgents.value.includes('graph_agent')) steps.push('GraphAgent 图谱事实')
-  if (selectedAgents.value.includes('tool_agent')) steps.push('ToolAgent 工具调用（Function Calling）')
-  if (selectedAgents.value.includes('critic')) steps.push('Critic 评审质控')
-  steps.push('Synthesizer 流式合成')
-  return steps.join(' → ')
-})
+// ── 智能体组队：默认自动路由，可切手动勾选（后端非空 agents = 尊重用户组合） ──
+const agentsMode = ref('auto')     // 'auto' = 意图路由自动组队 | 'manual' = 手动勾选
+const setupOpen = ref(true)        // 顶部协作配置面板（阵容/任务库/组队）展开态
+const manualAgents = ref([])       // 手动勾选的能力智能体 id（空 = 按默认组合跑）
 
 function toggleAgent(id) {
-  if (runState.reviewing) return
-  const i = selectedAgents.value.indexOf(id)
-  if (i >= 0) selectedAgents.value = selectedAgents.value.filter((a) => a !== id)
-  else selectedAgents.value = [...selectedAgents.value, id]
+  manualAgents.value = manualAgents.value.includes(id)
+    ? manualAgents.value.filter((x) => x !== id)
+    : [...manualAgents.value, id]
 }
+
+/** 配置面板介绍卡即勾选：点能力智能体卡 → 自动切手动模式并勾选/取消（核心卡内置不可点）。 */
+function toggleCardAgent(a) {
+  if (!a.opt) return
+  if (agentsMode.value !== 'manual') agentsMode.value = 'manual'
+  toggleAgent(a.id)
+}
+
+// 切回自动路由时清掉手动勾选：卡片选中态/高亮随之消失，组队口径不残留
+watch(agentsMode, (mode) => {
+  if (mode === 'auto') manualAgents.value = []
+})
+
+function pickAgents() {
+  return agentsMode.value === 'manual' ? [...manualAgents.value] : []
+}
+
+const agentHint = computed(() => agentsMode.value === 'auto'
+  ? '0.6B 意图路由按任务自动组队：chat 高置信直答 · data/graph/kb 精简组合 · 低置信兜底全组合'
+  : (manualAgents.value.length
+    ? `手动组合（${manualAgents.value.length} 项）· 路由仅叠加 NL2Filter / 改写门控`
+    : '点击上方能力智能体卡片勾选；未选 → 按默认组合（Retriever / Data / Graph / Critic）'))
+
+// ── 协作会话（协作历史 / 短期记忆） ──
+const sessions = ref([])
+const activeSessionId = ref('')    // 多轮续聊锚点（session 事件回传后非空）
+const loadingSession = ref(false)
 
 // ── 运行状态 ──
 const runState = ref({ reviewing: false })
 let abortCtrl = null
-
-const current = ref(null)          // 当前任务 {title, headline}
-const teamName = ref('')
-const members = ref([])            // [{node, role, name}]
-const plan = ref([])
-const nodes = ref({})              // node → {status:'running'|'done', summary}
-const nodeOrder = ref([])
-const evidenceDomains = ref([])    // [{domain, cards:[...]}]
-const conflicts = ref([])
-const verdict = ref(null)
-const conclusionMd = ref('')
-const errorMsg = ref('')
-const elapsed = ref(0)
 const reviewing = computed(() => runState.value.reviewing)
+
+/** 聊天轮次：每轮 = 用户任务气泡 + 团队块（过程/素材/质控/成果独立状态）。 */
+const rounds = ref([])
+
+function newRound(task) {
+  return {
+    task,
+    live: true,
+    reviewing: true,
+    team: '', members: [], route: null, plan: [], planStep: null,
+    nodes: {}, nodeOrder: [],
+    evidenceDomains: [],
+    conflicts: [], verdict: null,
+    conclusion: '', error: '', elapsed: 0,
+    manual: false,
+    evTab: 'all', procCollapsed: false,
+  }
+}
+
+/** 历史轮重建：meta（后端 turn_meta，与渲染状态同构）→ 团队块静态渲染。 */
+function roundFromMeta(task, conclusion, meta) {
+  const r = newRound(task)
+  r.live = false
+  r.reviewing = false
+  r.procCollapsed = true   // 历史回放：过程默认收起，对话流只露结论
+  const m = meta || {}
+  r.team = m.team || ''
+  r.members = m.members || []
+  r.route = m.route || null
+  r.planStep = m.plan_ms != null ? { ms: m.plan_ms, summary: m.plan_summary || '' } : null
+  r.plan = m.plan || []
+  for (const n of m.nodes || []) {
+    r.nodes[n.node] = { status: 'done', summary: n.summary || '', ms: n.elapsed_ms ?? null }
+    r.nodeOrder = [...r.nodeOrder, n.node]
+  }
+  r.evidenceDomains = (m.domains || []).map((d) => ({
+    domain: d.domain,
+    cards: (d.cards || []).map((c) => ({
+      ...c,
+      // __facts__ 组的前端 domain 由 grade 推导（与实时 fact 事件处理一致）
+      domain: d.domain === '__facts__'
+        ? (c.grade === 'data_fact' ? 'data' : c.grade === 'tool_result' ? 'tool' : 'graph')
+        : d.domain,
+    })),
+  }))
+  r.conflicts = m.conflicts || []
+  r.verdict = m.verdict || null
+  r.conclusion = conclusion || ''
+  r.elapsed = m.elapsed_ms || 0
+  r.error = !conclusion && !meta ? '该轮无成果产出（运行未完成）' : ''
+  return r
+}
 
 const NODE_FALLBACK_NAMES = {
   planner: 'Planner · 任务规划',
@@ -92,14 +156,8 @@ const NODE_FALLBACK_NAMES = {
   synthesizer: 'Synthesizer · 结果合成',
 }
 
-const evidenceCards = computed(() => evidenceDomains.value.flatMap((d) => d.cards))
-
-// ── 素材分类（tab） / 折叠 / 引用定位 ──
-// 后端 _synth_user 的编号约定：[素材N]=证据卡拍平序（与 evidenceCards 同序），
-// [事实N]=事实卡序（facts 数组序，前端即 stance==='fact' 的卡片序）。
-// 引用写法三种：单张 [事实5] / 连续范围 [事实2-9] / 离散列表 [事实2、5]。
-const evTab = ref('all')
-const evCollapsed = ref(false)
+// ── 素材分类 / 折叠 / 引用定位（按轮） ──
+// 编号约定：[素材N]=证据卡拍平序，[事实N]=事实卡序（stance==='fact'）。
 const KIND_META = {
   doc: { label: '知识库文档' },
   model: { label: '模型产出' },
@@ -116,46 +174,57 @@ function cardKind(c) {
   return 'doc'
 }
 
-const taggedCards = computed(() => evidenceCards.value.map((c, i) => ({ ...c, _i: i, kind: cardKind(c) })))
-const factCount = computed(() => taggedCards.value.filter((c) => c.stance === 'fact').length)
+function cardsOf(r) {
+  return (r.evidenceDomains || []).flatMap((d) => d.cards)
+}
 
-const evTabs = computed(() => {
+function taggedOf(r) {
+  return cardsOf(r).map((c, i) => ({ ...c, _i: i, kind: cardKind(c) }))
+}
+
+function evTabsOf(r) {
+  const cards = taggedOf(r)
   const counts = {}
-  for (const c of taggedCards.value) counts[c.kind] = (counts[c.kind] || 0) + 1
-  const tabs = [{ key: 'all', label: '全部', count: taggedCards.value.length }]
+  for (const c of cards) counts[c.kind] = (counts[c.kind] || 0) + 1
+  const tabs = [{ key: 'all', label: '全部', count: cards.length }]
   for (const k of ['doc', 'model', 'graph', 'data', 'tool']) {
     if (counts[k]) tabs.push({ key: k, label: KIND_META[k].label, count: counts[k] })
   }
   return tabs
-})
+}
 
-const filteredEvCards = computed(() =>
-  evTab.value === 'all' ? taggedCards.value : taggedCards.value.filter((c) => c.kind === evTab.value))
+function filteredEvOf(r) {
+  const cards = taggedOf(r)
+  return r.evTab === 'all' ? cards : cards.filter((c) => c.kind === r.evTab)
+}
 
 let flashTimer = null
 
 function flashCard(el) {
   if (!el) return
   el.classList.remove('is-flash')
-  void el.offsetWidth          // 强制重排，重启动画
+  void el.offsetWidth
   el.classList.add('is-flash')
   clearTimeout(flashTimer)
   flashTimer = setTimeout(() => el.classList.remove('is-flash'), 1600)
 }
 
-/** 成果里的引用 chip 点击 → 滚动定位到素材面板对应卡片并高亮。 */
+/** 成果里的引用 chip 点击 → 滚动定位到该轮素材面板对应卡片并高亮。 */
 function jumpCite(evt) {
   const chip = evt.target.closest('.ma-cite')
   if (!chip || chip.classList.contains('is-missing')) return
+  const ri = Number(chip.dataset.round)
+  const r = rounds.value[ri]
+  if (!r) return
   const n = Number(chip.dataset.n)
+  const cards = taggedOf(r)
   const card = chip.dataset.kind === 'fact'
-    ? taggedCards.value.filter((c) => c.stance === 'fact')[n - 1] || null
-    : taggedCards.value[n - 1] || null
+    ? cards.filter((c) => c.stance === 'fact')[n - 1] || null
+    : cards[n - 1] || null
   if (!card) return
-  if (evTab.value !== 'all' && evTab.value !== card.kind) evTab.value = card.kind
-  if (evCollapsed.value) evCollapsed.value = false
+  if (r.evTab !== 'all' && r.evTab !== card.kind) r.evTab = card.kind
   requestAnimationFrame(() => {
-    const el = document.getElementById(`ma-card-${card._i}`)
+    const el = document.getElementById(`ma-card-${ri}-${card._i}`)
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' })
       flashCard(el)
@@ -163,8 +232,8 @@ function jumpCite(evt) {
   })
 }
 
-function memberName(node) {
-  const m = members.value.find((x) => x.node === node)
+function memberName(r, node) {
+  const m = (r.members || []).find((x) => x.node === node)
   if (m?.name) return m.name
   if (NODE_FALLBACK_NAMES[node]) return NODE_FALLBACK_NAMES[node]
   if (node.startsWith('retriever')) return 'Retriever · 知识库取证'
@@ -172,52 +241,149 @@ function memberName(node) {
   return node
 }
 
-function resetRunState() {
-  teamName.value = ''
-  members.value = []
-  plan.value = []
-  nodes.value = {}
-  nodeOrder.value = []
-  evidenceDomains.value = []
-  conflicts.value = []
-  verdict.value = null
-  conclusionMd.value = ''
-  errorMsg.value = ''
-  elapsed.value = 0
+/** 过程面板收起态摘要：团队 · N 子任务 · 已完成/总步数 · 总耗时。 */
+function procSummary(r) {
+  if (r.error) return r.error.length > 48 ? r.error.slice(0, 48) + '…' : r.error
+  const done = r.nodeOrder.filter((n) => r.nodes[n]?.status === 'done').length
+  const parts = [r.team || '团队组建中']
+  if (r.plan.length) parts.push(`${r.plan.length} 子任务`)
+  if (r.nodeOrder.length) parts.push(`${done}/${r.nodeOrder.length} 步`)
+  if (r.elapsed) parts.push(`${(r.elapsed / 1000).toFixed(1)}s`)
+  return parts.join(' · ')
 }
 
-function touchNode(node) {
-  if (!nodes.value[node]) {
-    nodes.value[node] = { status: 'running', summary: '' }
-    nodeOrder.value = [...nodeOrder.value, node]
+/** 运行中当前活动节点（时间线上最后一个未完成节点）。 */
+function activeNodeName(r) {
+  const cur = [...r.nodeOrder].reverse().find((n) => r.nodes[n]?.status !== 'done')
+  return cur ? memberName(r, cur) : ''
+}
+
+/** 置信度百分比：非有限数（NaN/字符串"NaN"/null）一律不显示。 */
+function fmtPct(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? Math.round(n * 100) : null
+}
+
+// ── 执行链路前置步骤（按轮）：意图路由 → NL2Filter，并入节点时间线展示 ──
+function routeSteps(r) {
+  const rt = r.route
+  if (!rt) {
+    // 手动组队 / 运行初期尚未收到 team 事件：占住第一步；旧回放无记录则不显行
+    if (!r.live && !r.manual) return []
+    return [{
+      key: 'route', status: r.live ? 'running' : 'done',
+      label: '意图路由 · 0.6B 小模型',
+      desc: r.manual ? '手动组队指定组合，跳过小模型路由' : '小模型判别任务意图与组队…',
+    }]
+  }
+  const steps = [
+    {
+      key: 'route', status: 'done',
+      label: '意图路由 · 0.6B 小模型',
+      ms: Number.isFinite(rt.elapsed_ms) ? rt.elapsed_ms : null,
+      desc: rt.source === 'router'
+        ? (rt.manual
+          ? `mode=${rt.mode} · 置信 ${Number(rt.confidence || 0).toFixed(2)} · 手动组队，组合由用户指定`
+          : `mode=${rt.mode} · 置信 ${Number(rt.confidence || 0).toFixed(2)}`
+            + (Array.isArray(rt.agents) && rt.agents.length ? ` · 精简组合 [${rt.agents.join(',')}]` : ''))
+        : '服务不可达/低置信 → 全组合老规则兜底',
+    },
+  ]
+  // Planner 构建期规划（step_done 事件即时送达；旧回放无此记录则不显行）
+  if (r.planStep) {
+    steps.push({
+      key: 'plan', status: 'done',
+      label: 'Planner · LLM 任务规划',
+      ms: Number.isFinite(r.planStep.ms) ? r.planStep.ms : null,
+      desc: r.planStep.summary || 'LLM 分解并行子任务',
+    })
+  }
+  // NL2Filter：未放行 → 未启用；放行但耗时未到（live 抽取中）→ running 态占位
+  const nlReady = rt.nl2filter && Number.isFinite(rt.nl2filter_ms)
+  steps.push({
+    key: 'nl2f', status: rt.nl2filter && !nlReady && r.live ? 'running' : 'done',
+    label: 'NL2Filter · 0.6B 小模型',
+    ms: nlReady ? rt.nl2filter_ms : null,
+    desc: !rt.nl2filter
+      ? (rt.mode === 'data'
+        ? (rt.source === 'router' ? '未启用（NL2FILTER_ENABLED 开关关闭）' : '未启用（路由不可用，全组合兜底）')
+        : (rt.mode ? `未启用（路由判为 ${rt.mode} 类，仅 data 台账查询类启用）` : '未启用（路由不可用，全组合兜底）'))
+      : (nlReady
+        ? (rt.nl2filter_hit ? '抽取命中 → DataAgent 精准口径' : '未命中 → 词频老路兜底')
+        : '0.6B 抽取结构化查询条件…'),
+  })
+  return steps
+}
+
+/** 耗时格式化：≥1s 显示 x.xs，否则 xxxms（仅对非空 ms 调用）。 */
+function fmtMs(ms) {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+}
+
+// ── 聊天区滚动：新轮次强制到底，流式输出仅在用户本就贴近底部时跟随 ──
+const chatEl = ref(null)
+
+function scrollChat(force = false) {
+  nextTick(() => {
+    const el = chatEl.value
+    if (!el) return
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 140
+    if (force || near) el.scrollTop = el.scrollHeight
+  })
+}
+
+// ── SSE 事件 → 轮状态 ──
+function touchNode(r, node) {
+  if (!r.nodes[node]) {
+    r.nodes[node] = { status: 'running', summary: '', ms: null, _t0: performance.now() }
+    r.nodeOrder = [...r.nodeOrder, node]
   }
 }
 
-function handleEvent(evt) {
+function handleEvent(r, evt) {
   switch (evt.type) {
+    case 'session':
+      // 会话锚点：新建会话时后端回传 id，后续输入续聊同一会话
+      activeSessionId.value = evt.session_id || ''
+      refreshSessions()
+      break
     case 'team':
-      teamName.value = evt.team || ''
-      members.value = evt.members || []
+      r.team = evt.team || ''
+      r.members = evt.members || []
+      r.route = evt.route || null
+      break
+    case 'step_done':
+      // 构建期步骤完成（后端每步结束即时推送，含真实耗时）：
+      // planner → 时间线 Planner 行；nl2filter → 合入 r.route（routeSteps 已消费该口径）
+      if (evt.step === 'planner') r.planStep = { ms: evt.elapsed_ms ?? null, summary: evt.summary || '' }
+      else if (evt.step === 'nl2filter') r.route = { ...(r.route || {}), nl2filter_ms: evt.elapsed_ms ?? null, nl2filter_hit: !!evt.hit, nl2filter: true }
       break
     case 'plan':
-      plan.value = evt.plan || []
+      r.plan = evt.plan || []
       break
     case 'node_start':
-      touchNode(evt.node)
+      touchNode(r, evt.node)
       break
-    case 'node_done':
-      touchNode(evt.node)
-      nodes.value[evt.node] = { status: 'done', summary: evt.summary || '' }
+    case 'node_done': {
+      touchNode(r, evt.node)
+      const t0 = r.nodes[evt.node]?._t0
+      // 优先后端计时（engine.emit 统一出口，与回放同口径）；无则回退前端现场测量
+      r.nodes[evt.node] = {
+        status: 'done',
+        summary: evt.summary || '',
+        ms: evt.elapsed_ms ?? (t0 != null ? Math.round(performance.now() - t0) : null),
+      }
       break
+    }
     case 'evidence': {
-      const hit = evidenceDomains.value.find((d) => d.domain === evt.domain)
+      const hit = r.evidenceDomains.find((d) => d.domain === evt.domain)
       if (hit) hit.cards = evt.cards || []
-      else evidenceDomains.value = [...evidenceDomains.value, { domain: evt.domain, cards: evt.cards || [] }]
+      else r.evidenceDomains = [...r.evidenceDomains, { domain: evt.domain, cards: evt.cards || [] }]
       break
     }
     case 'fact':
-      // 图谱/结构化事实卡以独立卡片组展示（grade=graph_fact，优先采信）
-      evidenceDomains.value = [...evidenceDomains.value, { domain: '__facts__', cards: (evt.facts || []).map((f) => ({
+      // 图谱/结构化/工具事实卡独立成组（grade 区分，优先采信）
+      r.evidenceDomains = [...r.evidenceDomains, { domain: '__facts__', cards: (evt.facts || []).map((f) => ({
         id: f.id,
         domain: f.grade === 'data_fact' ? 'data' : f.grade === 'tool_result' ? 'tool' : 'graph',
         grade: f.grade,
@@ -227,8 +393,8 @@ function handleEvent(evt) {
       })) }]
       break
     case 'conflict':
-      conflicts.value = evt.conflicts || []
-      verdict.value = {
+      r.conflicts = evt.conflicts || []
+      r.verdict = {
         suggest_label: evt.suggest_label,
         confidence: evt.confidence,
         need_human: evt.need_human,
@@ -237,44 +403,151 @@ function handleEvent(evt) {
       break
     case 'token':
       // reset=true：合成官引用自检未过、重放修正稿——先清空已渲染的草稿再追加
-      if (evt.reset) conclusionMd.value = ''
-      conclusionMd.value += evt.content || ''
+      if (evt.reset) r.conclusion = ''
+      r.conclusion += evt.content || ''
+      scrollChat()
       break
     case 'done':
-      if (evt.conclusion && !conclusionMd.value) conclusionMd.value = evt.conclusion
-      elapsed.value = evt.elapsed_ms || 0
+      if (evt.conclusion && !r.conclusion) r.conclusion = evt.conclusion
+      r.elapsed = evt.elapsed_ms || 0
+      r.reviewing = false
+      r.live = false
+      r.procCollapsed = true   // 完成后自动收起过程面板（主流做法：结论留在对话流）
+      scrollChat()
       break
     case 'error':
-      errorMsg.value = evt.content || ''
+      r.error = evt.content || ''
+      r.reviewing = false
       break
     default:
       break
   }
 }
 
-/** 发起团队协作：任务 + 当前编制。 */
-async function runTask(taskObj) {
-  if (reviewing.value) return
+/** 发起一轮团队协作：任务文本 → 追加聊天轮次 → SSE 增量渲染（多轮续聊）。 */
+async function sendWithTask(task, agents = []) {
+  if (reviewing.value || !task) return
   abortCtrl?.abort()
   abortCtrl = new AbortController()
-  current.value = taskObj
-  resetRunState()
+  const r = newRound(task)
+  r.manual = agents.length > 0   // 手动勾选组合 = 跳过 0.6B 意图路由
+  rounds.value = [...rounds.value, r]
+  // 关键：SSE 回调必须持有“响应式代理”而非 newRound 的原始对象——
+  // 原始引用赋值不触发依赖通知，事件数据虽已写入却不重渲（收起再展开才可见）。
+  const rx = rounds.value[rounds.value.length - 1]
   runState.value.reviewing = true
+  scrollChat(true)
   try {
-    await streamTaskRun(scenario.value?.id || 'universal', taskObj.task, [...selectedAgents.value], {
-      onEvent: handleEvent,
+    await streamTaskRun(scenario.value?.id || 'universal', task, agents, {
+      onEvent: (evt) => handleEvent(rx, evt),
       signal: abortCtrl.signal,
+      sessionId: activeSessionId.value || undefined,
     })
   } catch (err) {
-    if (err?.name !== 'AbortError') errorMsg.value = err?.message || '协作请求失败'
+    if (err?.name !== 'AbortError') rx.error = err?.message || '协作请求失败'
   } finally {
+    rx.reviewing = false
+    rx.live = false
     runState.value.reviewing = false
+  }
+}
+
+/** 底部输入区发送：选中任务 = 提示词模板 + 输入问题；未选 = 自由任务。 */
+function send() {
+  const task = composeTask()
+  if (!task) return
+  const agents = pickAgents()
+  taskInput.value = ''
+  sendWithTask(task, agents)
+}
+
+// ── 协作会话：列表刷新 / 多轮回放 / 管理 ──
+
+function fmtTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+async function refreshSessions() {
+  try {
+    sessions.value = await listMultiSessions()
+  } catch {
+    /* 历史加载失败不打扰主流程 */
+  }
+}
+
+/** 开新协作：清空会话锚点与聊天流，下次运行自动新建会话。 */
+function newSession() {
+  if (reviewing.value) return
+  activeSessionId.value = ''
+  rounds.value = []
+}
+
+/** 会话消息 → 回放轮次：按 user 消息分轮，挂接其后第一条 assistant。 */
+function buildRounds(messages) {
+  const out = []
+  for (const m of messages) {
+    if (m.role === 'user') out.push({ task: m.content || '', conclusion: '', meta: null })
+    else if (m.role === 'assistant' && out.length) {
+      const r = out[out.length - 1]
+      r.conclusion = m.content || ''
+      r.meta = m.meta || null
+    }
+  }
+  return out
+}
+
+/** 点历史会话：拉取消息 → 全部轮次按顺序渲染为聊天流（多轮回放）。 */
+async function openSession(s) {
+  if (reviewing.value) return
+  loadingSession.value = true
+  try {
+    const detail = await listMultiSessionMessages(s.session_id || s.id)
+    activeSessionId.value = detail.session_id
+    rounds.value = buildRounds(detail.messages || [])
+      .map((x) => roundFromMeta(x.task, x.conclusion, x.meta))
+    scrollChat(true)
+  } catch (err) {
+    loadError.value = err?.message || '加载会话失败'
+  } finally {
+    loadingSession.value = false
+  }
+}
+
+/** 轮次一键重跑：以该轮任务文本续聊当前会话（组合沿用当前组队选择）。 */
+function rerunRound(r) {
+  if (reviewing.value || !r.task) return
+  sendWithTask(r.task, pickAgents())
+}
+
+async function removeSession(s) {
+  if (reviewing.value) return
+  try {
+    await deleteMultiSession(s.id)
+    sessions.value = sessions.value.filter((x) => x.id !== s.id)
+    if (activeSessionId.value === s.id) newSession()
+  } catch (err) {
+    loadError.value = err?.message || '删除会话失败'
+  }
+}
+
+async function renameSession(s) {
+  const title = (window.prompt('重命名协作会话', s.title || '') || '').trim()
+  if (!title) return
+  try {
+    const updated = await renameMultiSession(s.id, title)
+    sessions.value = sessions.value.map((x) => (x.id === s.id ? { ...x, title: updated.title } : x))
+  } catch (err) {
+    loadError.value = err?.message || '重命名失败'
   }
 }
 
 const selectedTask = computed(() => tasks.value.find((t) => t.id === selectedTaskId.value) || null)
 
-/** 组合最终任务文本：选中任务 → 任务提示词模板（{question} 替换为用户问题）；未选 → 纯自由输入。 */
+/** 组合最终任务文本：选中任务 → 提示词模板（{question} 替换为用户问题）；未选 → 纯自由输入。 */
 function composeTask() {
   const q = taskInput.value.trim()
   const t = selectedTask.value
@@ -284,45 +557,22 @@ function composeTask() {
   return `${t.prompt}\n\n${q}`
 }
 
-/** 选中/取消任务：应用其默认编制（可再手动调整），再输入具体问题运行。 */
+/** 选中/取消任务模板（组队由自动路由或手动勾选决定，任务仅提供提示词模板）。 */
 function applyTask(t) {
-  if (reviewing.value) return
   selectedTaskId.value = selectedTaskId.value === t.id ? '' : t.id
-  syncAgentsFromTask(t)
 }
 
-function syncAgentsFromTask(t) {
-  if (selectedTaskId.value !== t.id) return
-  const ids = optionalAgents.value.map((a) => a.id)
-  if (Array.isArray(t.agents) && t.agents.length) {
-    selectedAgents.value = ids.filter((id) => t.agents.includes(id))
-  }
-}
-
-/** 快捷运行：该行 ▶ 直接按「任务提示词（+ 已输入的问题）」起团队。 */
+/** 任务库 ▶：按提示词（+ 已输入的问题）直接起一轮。 */
 function quickRun(t) {
   if (reviewing.value) return
   selectedTaskId.value = t.id
-  syncAgentsFromTask(t)
   const q = taskInput.value.trim()
   const task = q ? composeTask() : t.prompt
-  runTask({ id: t.id, title: t.name, headline: q || t.name, task })
+  taskInput.value = ''
+  sendWithTask(task, pickAgents())
 }
 
-/** 运行：选中任务 → 任务提示词模板 + 输入框问题；未选 → 自由任务。 */
-function startTask() {
-  const task = composeTask()
-  if (!task) return
-  const t = selectedTask.value
-  runTask({
-    id: t ? t.id : '__adhoc__',
-    title: t ? t.name : '自由任务',
-    headline: taskInput.value.trim() || (t ? t.name : '自由任务'),
-    task,
-  })
-}
-
-// ── 任务库 CRUD：新建 / 编辑提示词 / 删除 ──
+// ── 任务库 CRUD ──
 function openNewTask() {
   taskForm.value = { show: true, id: '', name: '', prompt: '' }
 }
@@ -339,10 +589,10 @@ async function saveTask() {
   savingTask.value = true
   try {
     if (f.id) {
-      const updated = await updateMultiTask(f.id, { name, prompt, agents: [...selectedAgents.value] })
+      const updated = await updateMultiTask(f.id, { name, prompt, agents: [] })
       tasks.value = tasks.value.map((t) => (t.id === f.id ? updated : t))
     } else {
-      const created = await createMultiTask({ name, prompt, agents: [...selectedAgents.value] })
+      const created = await createMultiTask({ name, prompt, agents: [] })
       tasks.value = [...tasks.value, created]
       selectedTaskId.value = created.id
     }
@@ -360,18 +610,9 @@ async function removeTask(t) {
     await deleteMultiTask(t.id)
     tasks.value = tasks.value.filter((x) => x.id !== t.id)
     if (selectedTaskId.value === t.id) selectedTaskId.value = ''
-    if (current.value?.id === t.id) current.value = null
   } catch (err) {
     loadError.value = err?.message || '删除任务失败'
   }
-}
-
-function rerun() {
-  if (!current.value) return
-  if (current.value.id === '__adhoc__' && taskInput.value.trim()) {
-    current.value = { ...current.value, task: taskInput.value.trim(), headline: taskInput.value.trim() }
-  }
-  runTask(current.value)
 }
 
 function gradeLabel(grade) {
@@ -392,9 +633,9 @@ function parseCiteNums(s) {
     if (!m) continue
     const a = Number(m[1])
     const b = m[2] === undefined ? a : Number(m[2])
-    const lo = Math.min(a, b)
-    const hi = Math.max(a, b)
-    if (hi - lo <= 50) for (let i = lo; i <= hi; i++) nums.add(i)  // 防呆：范围最多展开 50 个
+    if (Math.max(a, b) - Math.min(a, b) <= 50) {
+      for (let i = Math.min(a, b); i <= Math.max(a, b); i++) nums.add(i)
+    }
   }
   return [...nums].sort((x, y) => x - y)
 }
@@ -414,19 +655,20 @@ function fmtCiteNums(nums) {
   return runs.join('·')
 }
 
-function renderMd(text) {
+function renderMd(text, ri) {
   try {
     let html = marked.parse(text || '', { breaks: true })
-    const nMat = taggedCards.value.length
-    const nFact = factCount.value
-    // 引用 chip：单张 [素材3]/[事实5]、连续范围 [事实2-9]、离散列表 [事实2、5]；
-    // 范围渲染为一枚组 chip，点击定位到第一张有效卡，title 展示全部编号。
+    const r = rounds.value[ri]
+    const cards = r ? taggedOf(r) : []
+    const nMat = cards.length
+    const nFact = cards.filter((c) => c.stance === 'fact').length
+    // 引用 chip：单张 [素材3]/[事实5]、连续范围 [事实2-9]、离散列表 [事实2、5]
     html = html.replace(/\[(素材|事实)([0-9、,，·\-~—至\s]+)\]/g, (_, kind, inner) => {
       const total = kind === '事实' ? nFact : nMat
       const ok = parseCiteNums(inner).filter((n) => n >= 1 && n <= total)
       const label = ok.length ? `${kind}${fmtCiteNums(ok)}` : `${kind}${String(inner).trim()}`
       const title = ok.length ? `点击定位${kind}卡：${ok.join('、')}` : '引用编号不存在'
-      return `<sup class="ma-cite${ok.length ? '' : ' is-missing'}" data-kind="${kind === '事实' ? 'fact' : 'mat'}" data-n="${ok[0] || ''}" title="${title}">${label}</sup>`
+      return `<sup class="ma-cite${ok.length ? '' : ' is-missing'}" data-round="${ri}" data-kind="${kind === '事实' ? 'fact' : 'mat'}" data-n="${ok[0] || ''}" title="${title}">${label}</sup>`
     })
     return html
   } catch {
@@ -435,11 +677,11 @@ function renderMd(text) {
 }
 
 onMounted(async () => {
+  refreshSessions()
   try {
     const scenarios = await listMultiScenarios()
     scenario.value = scenarios.find((s) => s.adhoc) || scenarios[0] || null
     if (!scenario.value) return
-    selectedAgents.value = [...(scenario.value.agents?.default || FALLBACK_ROSTER.default)]
     tasks.value = await listMultiTasks()
   } catch (err) {
     loadError.value = err?.message || '加载智能体团队失败'
@@ -454,723 +696,457 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="ma-page">
-    <header class="ma-head">
-      <div>
-        <h1>多智能体协作</h1>
-        <p class="ma-sub">
-          通用智能体团队：核心智能体内置（Planner / Synthesizer），能力智能体自由组队，任务类型不限——研判、写作、总结、问答皆可
-        </p>
+    <!-- 左栏：协作会话（多轮留痕 / 回放 / 续聊） -->
+    <aside class="ma-side">
+      <div class="ma-side-head">
+        <span>协作历史</span>
+        <button class="ma-mini" @click="newSession">＋ 新协作</button>
       </div>
-      <p class="ma-claim">团队即服务：动态规划 + 并行执行 + 可选质控，全程留痕</p>
-    </header>
-
-    <div class="ma-layout">
-      <!-- ── 左：任务工作台 + 组队 ── -->
-      <aside class="ma-workbench">
-        <h2 class="ma-col-title">任务工作台 <span class="muted">{{ scenario?.business || '任意任务' }}</span></h2>
-        <p v-if="scenario" class="ma-scenario-desc muted">{{ scenario.description }}</p>
-        <p v-if="loadError" class="ma-error">{{ loadError }}</p>
-
-        <!-- 智能体组队：核心内置 + 能力自由勾选 -->
-        <div class="ma-agents">
-          <p class="ma-agents-title muted">团队编制 <span>核心内置 · 能力自由勾选</span></p>
-          <div class="ma-agent-row">
-            <span
-              v-for="a in coreAgents"
-              :key="a.id"
-              class="ma-agent-chip is-core"
-              :title="a.desc"
-            >{{ a.name }}<i>内置</i></span>
-          </div>
-          <div class="ma-agent-row">
-            <button
-              v-for="a in optionalAgents"
-              :key="a.id"
-              type="button"
-              class="ma-agent-chip is-toggle"
-              :class="{ 'is-on': selectedAgents.includes(a.id) }"
-              :title="a.desc"
-              :disabled="reviewing"
-              @click="toggleAgent(a.id)"
-            >{{ selectedAgents.includes(a.id) ? '✓ ' : '+ ' }}{{ a.name }}</button>
-          </div>
-          <p class="ma-agent-hint muted">核心 {{ coreAgents.length }} 名 + 能力 {{ selectedAgents.length }} 名 · {{ pipelineHint }}</p>
-        </div>
-
-        <!-- 任务输入：选中任务 = 任务提示词模板 + 具体问题；未选 = 自由任务 -->
-        <div class="ma-task-box">
-          <textarea
-            v-model="taskInput"
-            class="ma-task-input"
-            rows="4"
-            :placeholder="selectedTask
-              ? `已选任务「${selectedTask.name}」：在这里输入具体问题/主题，运行时替换模板中的 {question}`
-              : '输入任意任务（不限类型）…例如：检索知识库盘点主题 / 写一份简报 / 总结成摘要 / 回答开放问题'"
-            :disabled="reviewing"
-            @keydown.enter.exact.prevent="startTask"
-          ></textarea>
-          <div class="ma-task-actions">
-            <span class="ma-task-hint">{{ selectedTask ? '按任务提示词模板运行 · Planner 动态分解' : '自由任务 · Planner 用 LLM 动态分解，按编制即刻成团' }}</span>
-            <button class="ma-btn" type="button" :disabled="reviewing || !composeTask()" @click="startTask">
-              {{ reviewing ? '团队运行中…' : '团队运行' }}
-            </button>
-          </div>
-        </div>
-
-        <div class="ma-tasklib-head">
-          <p class="ma-examples-title muted">任务库（可配置 · 选中后输入问题运行）</p>
-          <button class="ma-btn sm ghost" type="button" :disabled="reviewing" @click="openNewTask">＋ 新建任务</button>
-        </div>
-
-        <!-- 任务编辑表单（新建 / 编辑提示词） -->
-        <div v-if="taskForm.show" class="ma-task-form">
-          <input
-            v-model="taskForm.name"
-            class="ma-form-input"
-            maxlength="100"
-            placeholder="任务名称，如：研判 · 专题盘点"
-          />
-          <textarea
-            v-model="taskForm.prompt"
-            class="ma-form-input"
-            rows="4"
-            placeholder="任务提示词模板，支持 {question} 占位符——运行时替换为输入框里的具体问题；未含占位符时问题拼接在模板之后"
-          ></textarea>
-          <p class="ma-form-hint muted">保存时将把当前勾选的团队编制存为该任务的默认编制（选中任务时自动应用）</p>
-          <div class="ma-form-actions">
-            <button
-              class="ma-btn sm"
-              type="button"
-              :disabled="savingTask || !taskForm.name.trim() || !taskForm.prompt.trim()"
-              @click="saveTask"
-            >保存</button>
-            <button class="ma-btn sm ghost" type="button" @click="taskForm.show = false">取消</button>
-          </div>
-        </div>
-
-        <!-- 任务库列表：点击选中 / ▶ 直接运行 / ✎ 编辑 / ✕ 删除 -->
-        <div
-          v-for="t in tasks"
-          :key="t.id"
-          class="ma-example"
-          :class="{ 'is-active': selectedTaskId === t.id }"
-          role="button"
-          tabindex="0"
-          @click="applyTask(t)"
-          @keydown.enter.prevent="applyTask(t)"
-        >
-          <div class="ma-example-head">
-            <b>{{ t.name }}</b>
-            <span class="ma-example-acts">
-              <i class="ma-act" title="按提示词直接运行" @click.stop="quickRun(t)">▶</i>
-              <i class="ma-act" title="编辑提示词" @click.stop="openEditTask(t)">✎</i>
-              <i class="ma-act danger" title="删除任务" @click.stop="removeTask(t)">✕</i>
+      <div class="ma-side-list">
+        <p v-if="loadingSession" class="ma-side-empty">加载中…</p>
+        <p v-else-if="!sessions.length" class="ma-side-empty">暂无历史：发起一次协作即自动留痕</p>
+        <div v-for="s in sessions" :key="s.id" class="ma-sess"
+             :class="{ active: s.id === activeSessionId }" @click="openSession(s)">
+          <div class="ma-sess-title">{{ s.title || '未命名协作' }}</div>
+          <div class="ma-sess-meta">
+            <span>{{ fmtTime(s.updated_at || s.created_at) }}</span>
+            <span class="ma-sess-ops" @click.stop>
+              <button title="重命名" @click="renameSession(s)">✎</button>
+              <button title="删除" @click="removeSession(s)">✕</button>
             </span>
           </div>
-          <span class="ma-example-prompt">{{ t.prompt }}</span>
         </div>
-      </aside>
+      </div>
+    </aside>
 
-      <!-- ── 右：协作面板（通用渲染，与业务无关） ── -->
-      <section class="ma-panel">
-        <div v-if="!current" class="ma-placeholder">
-          <p>输入任意任务，点「团队运行」；示例任务点击即跑。团队编制随勾选动态装配。</p>
-          <p class="muted">流水线：{{ pipelineHint }}</p>
+    <!-- 主区：聊天流 + 底部输入 -->
+    <section class="ma-main">
+      <header class="ma-head">
+        <div>
+          <h2>{{ scenario?.team || '通用智能体团队' }}</h2>
+          <p>{{ scenario?.desc || '任务分解 → 并行取证 → 交叉评审 → 结果合成' }}</p>
+        </div>
+        <span v-if="activeSessionId" class="ma-head-tag">会话中 · 追问延续上下文</span>
+      </header>
+
+      <!-- 协作配置面板（常驻顶部，可收起）：智能体阵容介绍 + 任务库 + 组队 -->
+      <div class="ma-setup">
+        <button class="ma-setup-bar" @click="setupOpen = !setupOpen">
+          <span>协作配置 · 团队阵容 / 任务库 / 组队</span>
+          <span class="ma-setup-arrow">{{ setupOpen ? '▾' : '▸' }}</span>
+        </button>
+        <div v-show="setupOpen" class="ma-setup-body">
+          <div class="ma-setup-agents">
+            <div v-for="a in allRoster" :key="a.id" class="ma-wagent"
+                 :class="{ opt: a.opt, pickable: a.opt, picked: a.opt && manualAgents.includes(a.id) }"
+                 :title="a.opt ? '点击勾选 / 取消该智能体（手动组队）' : '核心智能体 · 内置不可取消'"
+                 @click="toggleCardAgent(a)">
+              <span v-if="a.opt && manualAgents.includes(a.id)" class="ma-pick-badge">✓</span>
+              <b>{{ a.name }}</b><span>{{ a.desc }}</span>
+            </div>
+          </div>
+          <div v-if="tasks.length" class="ma-setup-row">
+            <span class="ma-comp-label">任务库</span>
+            <div class="ma-task-chips">
+              <span v-for="t in tasks" :key="t.id" class="ma-task-chip"
+                    :class="{ on: selectedTaskId === t.id }">
+                <button class="chip-main" :title="t.prompt" @click="applyTask(t)">{{ t.name }}</button>
+                <button class="chip-ico" title="按模板直接运行" @click="quickRun(t)">▶</button>
+                <button class="chip-ico" title="编辑" @click="openEditTask(t)">✎</button>
+                <button class="chip-ico danger" title="删除" @click="removeTask(t)">✕</button>
+              </span>
+              <button class="ma-mini" @click="openNewTask">＋ 自定义任务</button>
+            </div>
+          </div>
+          <div class="ma-setup-row">
+            <span class="ma-comp-label">组队</span>
+            <div class="ma-pick">
+              <label><input v-model="agentsMode" type="radio" value="auto" /> 自动路由</label>
+              <label><input v-model="agentsMode" type="radio" value="manual" /> 手动勾选</label>
+              <span class="ma-pick-hint">{{ agentHint }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div ref="chatEl" class="ma-chat">
+        <div v-if="!rounds.length" class="ma-welcome">
+          <h3>发起一次团队协作</h3>
+          <p>在上方选择任务模板或组队方式，在下方输入任务，团队自动分工交付。</p>
         </div>
 
-        <template v-else>
-          <div class="ma-panel-head">
-            <strong>{{ current.title }} · {{ current.headline }}</strong>
-            <span v-if="elapsed" class="muted">耗时 {{ elapsed }}ms</span>
-            <button class="ma-btn sm" type="button" :disabled="reviewing" @click="rerun">
-              重新运行
+        <p v-if="loadError" class="ma-error">{{ loadError }}</p>
+
+        <!-- 每轮 = 用户任务气泡 + 团队协作卡片 -->
+        <div v-for="(r, ri) in rounds" :key="ri" class="ma-turn">
+          <div class="ma-user-row">
+            <div class="ma-user-bubble">{{ r.task }}</div>
+          </div>
+
+          <!-- 执行过程面板：收起 = 一行状态摘要；展开 = 计划/智能体发言/素材/质控/链路耗时 -->
+          <div class="ma-proc">
+            <button class="ma-proc-bar" @click="r.procCollapsed = !r.procCollapsed">
+              <span class="ma-proc-dot" :class="r.error ? 'err' : r.live ? 'live' : 'ok'">
+                {{ r.error ? '✕' : r.live ? '◔' : '✓' }}
+              </span>
+              <span class="ma-proc-sum">{{ procSummary(r) }}</span>
+              <span v-if="r.live && activeNodeName(r)" class="ma-proc-cur">{{ activeNodeName(r) }}</span>
+              <span class="ma-proc-arrow">{{ r.procCollapsed ? '▸' : '▾' }}</span>
             </button>
-          </div>
 
-          <!-- 协作时间线 -->
-          <ol class="ma-timeline">
-            <li v-if="teamName" class="ma-t-team">团队：{{ teamName }}（{{ members.length }} 成员）</li>
-            <li v-if="plan.length" class="ma-t-plan">
-              <b>Planner</b> 拆解 {{ plan.length }} 项子任务
-              <div class="ma-plan-steps">
-                <span v-for="p in plan" :key="p.id">{{ p.goal }}</span>
-              </div>
-            </li>
-            <li v-for="n in nodeOrder" :key="n" class="ma-t-node" :class="nodes[n].status">
-              <span class="ma-dot" aria-hidden="true"></span>
-              <div class="ma-t-body">
-                <b>{{ memberName(n) }}</b>
-                <span v-if="nodes[n].status === 'running'" class="ma-spin">进行中…</span>
-                <span v-else class="muted">{{ nodes[n].summary }}</span>
-              </div>
-            </li>
-          </ol>
+            <div v-if="!r.procCollapsed" class="ma-proc-body">
+              <p v-if="r.error" class="ma-error">{{ r.error }}</p>
 
-          <!-- 素材卡：分类 tab + 可折叠；卡片 id 供成果引用 chip 定位 -->
-          <div v-if="evidenceCards.length" class="ma-cards-wrap">
-            <div class="ma-cards-bar">
-              <button class="ma-fold" type="button" @click="evCollapsed = !evCollapsed">
-                <i class="ma-fold-arrow" :class="{ open: !evCollapsed }">▸</i>
-                <b>素材与事实</b>
-                <span class="muted">{{ evidenceCards.length }} 条 · 成果引用编号可点击定位</span>
-              </button>
-              <div v-if="!evCollapsed" class="ma-tabs">
-                <button
-                  v-for="t in evTabs" :key="t.key" type="button" class="ma-tab"
-                  :class="{ 'is-on': evTab === t.key }" @click="evTab = t.key"
-                >{{ t.label }}<em>{{ t.count }}</em></button>
+            <ol v-if="r.plan.length" class="ma-plan">
+              <li v-for="(p, pi) in r.plan" :key="pi">
+                {{ typeof p === 'string' ? p : (p.desc || p.title || p.goal || JSON.stringify(p)) }}
+              </li>
+            </ol>
+
+            <!-- 执行链路时间线：意图路由 → NL2Filter → 编排节点（每步耗时就地标注） -->
+            <ul v-if="r.nodeOrder.length || routeSteps(r).length" class="ma-nodes">
+              <li v-for="s in routeSteps(r)" :key="s.key" :class="s.status">
+                <span class="ma-dot">{{ s.status === 'done' ? '✓' : '…' }}</span>
+                <span class="ma-node-name">{{ s.label }}</span>
+                <span v-if="s.ms != null" class="ma-node-ms">{{ fmtMs(s.ms) }}</span>
+                <span class="ma-node-sum">{{ s.desc }}</span>
+              </li>
+              <li v-for="n in r.nodeOrder" :key="n" :class="r.nodes[n]?.status">
+                <span class="ma-dot">{{ r.nodes[n]?.status === 'done' ? '✓' : '…' }}</span>
+                <span class="ma-node-name">{{ memberName(r, n) }}</span>
+                <span v-if="r.nodes[n]?.ms != null" class="ma-node-ms">{{ fmtMs(r.nodes[n].ms) }}</span>
+                <span class="ma-node-sum">{{ r.nodes[n]?.summary }}</span>
+              </li>
+            </ul>
+            <!-- 共享黑板素材（常显，tabs 分类过滤） -->
+            <div v-if="cardsOf(r).length" class="ma-ev">
+              <div class="ma-ev-title">共享黑板素材（{{ cardsOf(r).length }}）</div>
+              <div class="ma-ev-tabs">
+                <button v-for="t in evTabsOf(r)" :key="t.key"
+                        :class="{ on: r.evTab === t.key }" @click="r.evTab = t.key">
+                  {{ t.label }} {{ t.count }}
+                </button>
               </div>
-            </div>
-            <div v-show="!evCollapsed" class="ma-cards">
-              <div
-                v-for="c in filteredEvCards" :key="c.id" :id="`ma-card-${c._i}`"
-                class="ma-ev" :class="[c.stance]"
-              >
-                <div class="ma-ev-head">
-                  <b>{{ c.title }}</b>
-                  <span class="ma-grade" :class="{ 'is-fact': c.grade === 'graph_fact' || c.grade === 'data_fact' || c.grade === 'tool_result' }">{{ gradeLabel(c.grade) }}</span>
+              <div class="ma-ev-list">
+                <div v-for="c in filteredEvOf(r)" :key="c._i"
+                     :id="`ma-card-${ri}-${c._i}`" class="ma-card">
+                  <div class="ma-card-head">
+                    <span class="ma-card-no">#{{ c._i + 1 }}</span>
+                    <span class="ma-card-src">{{ c.source }}</span>
+                    <span class="ma-card-grade">{{ gradeLabel(c.grade) }}</span>
+                    <span v-if="c.stance === 'fact'" class="ma-card-fact">事实</span>
+                  </div>
+                  <div class="ma-card-title">{{ c.title }}</div>
+                  <p class="ma-card-sum">{{ c.summary }}</p>
+                  <blockquote v-if="c.quote" class="ma-card-quote">{{ c.quote }}</blockquote>
                 </div>
-                <div class="muted ma-ev-src">{{ c.source }}</div>
-                <p>{{ c.summary }}</p>
-                <code v-if="c.quote">{{ c.quote }}</code>
               </div>
+            </div>
+
+            <!-- 质控：冲突 + 裁定 -->
+            <div v-if="r.conflicts.length || r.verdict" class="ma-qc">
+              <div v-for="(cf, ci) in r.conflicts" :key="ci" class="ma-conflict">
+                ⚠ 冲突：{{ typeof cf === 'string' ? cf : (cf.detail || cf.summary || cf.reason || '') }}
+              </div>
+              <div v-if="r.verdict" class="ma-verdict" :class="{ human: r.verdict.need_human }">
+                裁定：{{ r.verdict.suggest_label }}
+                <template v-if="fmtPct(r.verdict.confidence) != null">
+                  （置信 {{ fmtPct(r.verdict.confidence) }}%）
+                </template>
+                <b v-if="r.verdict.need_human">· 建议人工复核</b>
+                <span v-if="r.verdict.comment"> — {{ r.verdict.comment }}</span>
+              </div>
+            </div>
             </div>
           </div>
 
-          <!-- 评审存疑 -->
-          <div v-for="(cf, i) in conflicts" :key="i" class="ma-conflict">
-            <b>⚠️ 评审质控：{{ cf.topic }}</b>
-            <p>{{ cf.verdict }}</p>
-            <p class="muted">{{ cf.basis }}<template v-if="cf.review_hint"> → {{ cf.review_hint }}</template></p>
+          <!-- 成果气泡：干净的最终结论（引用 chip 点击 → 定位素材卡） -->
+          <div v-if="r.conclusion || (r.reviewing && !r.error)" class="ma-reply">
+            <div class="ma-reply-head">
+              <span class="ma-reply-team">{{ r.team || '智能体团队' }}</span>
+              <span v-if="r.elapsed" class="ma-reply-ms">总耗时 {{ (r.elapsed / 1000).toFixed(1) }}s</span>
+              <button v-if="!r.live" class="ma-mini" @click="rerunRound(r)">↻ 重新运行</button>
+            </div>
+            <div v-if="r.conclusion" class="ma-reply-body" @click="jumpCite">
+              <div class="ma-answer-md" v-html="renderMd(r.conclusion, ri)" />
+            </div>
+            <p v-else class="ma-typing">团队协作中…</p>
           </div>
+        </div>
+      </div>
+      <!-- 底部输入区（任务库/组队已上移至协作配置面板） -->
+      <div class="ma-composer">
+        <div class="ma-comp-main">
+          <textarea v-model="taskInput" rows="2"
+            :placeholder="selectedTask
+              ? `已选任务「${selectedTask.name}」，补充具体问题后发送（留空则按模板原文执行）`
+              : '输入任务，Enter 发送，Shift+Enter 换行'"
+            @keydown.enter.exact.prevent="send" />
+          <button class="ma-send" :disabled="reviewing || (!taskInput.trim() && !selectedTask)" @click="send">
+            {{ reviewing ? '协作中…' : '发 送' }}
+          </button>
+        </div>
+      </div>
 
-          <!-- 质控结论行 -->
-          <div v-if="verdict" class="ma-verdict">
-            质控建议：<b>{{ verdict.suggest_label }}</b>
-            <span class="muted">· 置信度 {{ verdict.confidence }} · 需人裁：{{ verdict.need_human ? '是' : '否' }}</span>
+      <!-- 任务编辑弹窗 -->
+      <teleport to="body">
+        <div v-if="taskForm.show" class="ma-modal-mask" @click.self="taskForm.show = false">
+          <div class="ma-modal">
+            <h3>{{ taskForm.id ? '编辑任务' : '新建任务' }}</h3>
+            <label>名称<input v-model="taskForm.name" placeholder="如：竞品分析" /></label>
+            <label>提示词模板
+              <textarea v-model="taskForm.prompt" rows="5"
+                        placeholder="可含 {question} 占位符，运行时替换为输入框里的问题" />
+            </label>
+            <div class="ma-modal-ops">
+              <button class="ma-btn" @click="taskForm.show = false">取消</button>
+              <button class="ma-btn primary" :disabled="savingTask" @click="saveTask">
+                {{ savingTask ? '保存中…' : '保存' }}
+              </button>
+            </div>
           </div>
-
-          <!-- 成果（流式 markdown；引用 chip 事件委托 → 定位素材卡） -->
-          <article
-            v-if="conclusionMd" class="ma-conclusion"
-            @click="jumpCite" v-html="renderMd(conclusionMd)"
-          ></article>
-
-          <p v-if="errorMsg" class="ma-error">{{ errorMsg }}</p>
-        </template>
-      </section>
-    </div>
+        </div>
+      </teleport>
+    </section>
   </div>
 </template>
 
 <style scoped>
+/* 页面骨架：左协作历史 + 主聊天区（不滚，聊天区内部滚），对齐 AgentView 布局 */
 .ma-page {
-  padding: 20px 24px 32px;
-  max-width: 1280px;
-  margin: 0 auto;
+  display: flex; gap: 14px;
+  height: calc(100dvh - 128px); min-height: 520px;
 }
-.ma-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-}
-.ma-head h1 {
-  font-size: 20px;
-  margin: 0 0 4px;
-}
-.ma-sub {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--c-secondary);
-}
-.ma-claim {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--c-secondary);
-}
-.muted { color: var(--c-secondary); }
+.ma-page > * { flex-shrink: 0; }
+.ma-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ma-main > * { flex-shrink: 0; }
 
-.ma-layout {
-  display: grid;
-  grid-template-columns: 380px 1fr;
-  gap: 16px;
-  align-items: start;
-}
-@media (max-width: 960px) {
-  .ma-layout { grid-template-columns: 1fr; }
-}
+/* ── 左栏：协作历史 ── */
+.ma-side { width: 230px; display: flex; flex-direction: column;
+  border: 1px solid var(--c-border); border-radius: 14px;
+  background: var(--c-panel); overflow: hidden; }
+.ma-side-head { display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; font-size: 12px; font-weight: 700; color: var(--c-secondary);
+  border-bottom: 1px solid var(--c-border); }
+.ma-side-list { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.ma-side-empty { font-size: 12px; color: var(--c-secondary); padding: 12px 6px; line-height: 1.6; }
+.ma-sess { padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; cursor: pointer; }
+.ma-sess:hover { background: var(--c-muted); }
+.ma-sess.active { background: var(--c-accent-weak); border-color: var(--c-accent); }
+.ma-sess-title { font-size: 13px; color: var(--c-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ma-sess-meta { display: flex; align-items: center; justify-content: space-between;
+  margin-top: 3px; font-size: 11px; color: var(--c-secondary); }
+.ma-sess-ops { display: none; gap: 4px; }
+.ma-sess:hover .ma-sess-ops, .ma-sess.active .ma-sess-ops { display: inline-flex; }
+.ma-sess-ops button { border: 0; background: none; cursor: pointer; color: var(--c-secondary);
+  font-size: 12px; padding: 0 2px; }
+.ma-sess-ops button:hover { color: var(--c-fg); }
 
-.ma-col-title {
-  font-size: 13px;
-  margin: 0 0 8px;
-  color: var(--c-fg);
-}
-.ma-scenario-desc {
-  font-size: 12px;
-  margin: 0 0 10px;
-  line-height: 1.6;
-}
+/* ── 页头 ── */
+.ma-head { display: flex; align-items: center; justify-content: space-between;
+  padding: 2px 4px 10px; }
+.ma-head h2 { margin: 0; font-size: 18px; color: var(--c-fg); }
+.ma-head p { margin: 2px 0 0; font-size: 12px; color: var(--c-secondary); }
+.ma-head-tag { font-size: 12px; color: var(--c-accent); background: var(--c-accent-weak);
+  border: 1px solid var(--c-accent); border-radius: 999px; padding: 3px 10px; }
 
-/* 智能体组队 */
-.ma-agents {
-  background: var(--c-panel);
-  border: 1px solid var(--c-border);
-  border-radius: 10px;
-  padding: 10px;
-  margin-bottom: 12px;
-}
-.ma-agents-title {
-  font-size: 12px;
-  margin: 0 0 8px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.ma-agents-title span {
-  font-size: 11px;
-  color: var(--c-secondary);
-  font-weight: 400;
-}
-.ma-agent-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.ma-agent-row + .ma-agent-row { margin-top: 6px; }
-.ma-agent-chip {
-  font-size: 11.5px;
-  border-radius: 999px;
-  padding: 3px 10px;
-  border: 1px solid var(--c-border);
-  background: transparent;
-  color: var(--c-fg);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.ma-agent-chip.is-core {
-  background: var(--c-muted);
-  cursor: default;
-}
-.ma-agent-chip.is-core i {
-  font-style: normal;
-  font-size: 10px;
-  color: var(--c-accent);
-  border: 1px solid var(--c-accent);
-  border-radius: 999px;
-  padding: 0 6px;
-}
-.ma-agent-chip.is-toggle {
-  cursor: pointer;
-  color: var(--c-secondary);
-}
-.ma-agent-chip.is-toggle.is-on {
-  border-color: var(--c-accent);
-  color: var(--c-accent);
-  background: var(--c-accent-weak);
-  font-weight: 600;
-}
-.ma-agent-chip.is-toggle:disabled { cursor: not-allowed; opacity: 0.6; }
-.ma-agent-hint {
-  font-size: 11px;
-  margin: 8px 0 0;
-  line-height: 1.5;
-}
+/* ── 聊天流 ── */
+.ma-chat { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+  gap: 16px; padding: 12px 6px 12px 2px; }
+.ma-error { margin: 0; padding: 8px 12px; border-radius: 10px; font-size: 13px;
+  color: var(--c-danger); background: color-mix(in srgb, var(--c-danger) 10%, transparent); }
 
-/* 任务输入 */
-.ma-task-box {
-  background: var(--c-panel);
-  border: 1px solid var(--c-border);
-  border-radius: 10px;
-  padding: 10px;
-  margin-bottom: 12px;
-}
-.ma-task-input {
-  width: 100%;
-  box-sizing: border-box;
-  resize: vertical;
-  min-height: 84px;
-  background: var(--c-bg, transparent);
-  color: var(--c-fg);
-  border: 1px solid var(--c-border);
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 13px;
-  line-height: 1.6;
-  font-family: inherit;
-}
-.ma-task-input:focus {
-  outline: none;
-  border-color: var(--c-accent);
-}
-.ma-task-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 8px;
-}
-.ma-task-hint {
-  font-size: 11px;
-  color: var(--c-fg-muted, #888);
-}
-.ma-examples-title {
-  font-size: 11px;
-  margin: 0 0 8px;
-}
+/* 协作配置面板（顶部常驻：阵容介绍 + 任务库 + 组队，可收起） */
+.ma-setup { border: 1px solid var(--c-border); border-radius: 14px;
+  background: var(--c-panel); flex-shrink: 0; }
+.ma-setup-bar { width: 100%; display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 14px; background: none; border: none; cursor: pointer;
+  font-size: 12.5px; color: var(--c-secondary); }
+.ma-setup-bar:hover { color: var(--c-fg); }
+.ma-setup-arrow { font-size: 11px; }
+.ma-setup-body { display: flex; flex-direction: column; gap: 10px; padding: 2px 14px 14px; }
+.ma-setup-agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.ma-wagent { position: relative; border: 1px solid var(--c-border); border-radius: 10px;
+  padding: 7px 10px; background: var(--c-panel-elevated);
+  display: flex; flex-direction: column; gap: 2px; }
+.ma-wagent b { font-size: 12.5px; color: var(--c-fg); }
+.ma-wagent span { font-size: 11.5px; color: var(--c-secondary); line-height: 1.5; }
+.ma-wagent.opt b { color: var(--c-accent); }
+/* 能力卡即勾选：可点、选中高亮 + ✓ 角标 */
+.ma-wagent.pickable { cursor: pointer; transition: border-color 120ms, background 120ms; }
+.ma-wagent.pickable:hover { border-color: var(--c-accent); }
+.ma-wagent.picked { border-color: var(--c-accent);
+  background: color-mix(in srgb, var(--c-accent) 7%, var(--c-panel-elevated)); }
+.ma-pick-badge { position: absolute; top: 7px; right: 9px;
+  font-size: 11px; font-weight: 700; color: var(--c-accent); }
+.ma-setup-row { display: flex; gap: 10px; align-items: flex-start; }
+.ma-setup-row .ma-comp-label { margin-top: 5px; }
 
-/* 任务库 */
-.ma-tasklib-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin: 0 0 8px;
-}
-.ma-btn.ghost { background: transparent; }
-.ma-example {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  text-align: left;
-  background: var(--c-panel);
-  border: 1px solid var(--c-border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  margin-bottom: 8px;
-  cursor: pointer;
-  color: var(--c-fg);
-}
-.ma-example:hover { border-color: var(--c-accent); }
-.ma-example:focus-visible { outline: none; border-color: var(--c-accent); }
-.ma-example.is-active {
-  border-color: var(--c-accent);
-  box-shadow: 0 0 0 1px var(--c-accent) inset;
-}
-.ma-example-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.ma-example-head b {
-  font-size: 12.5px;
-}
-.ma-example-acts {
-  display: inline-flex;
-  gap: 8px;
-  flex: none;
-}
-.ma-act {
-  font-style: normal;
-  font-size: 12px;
-  color: var(--c-secondary);
-  cursor: pointer;
-  padding: 0 2px;
-}
-.ma-act:hover { color: var(--c-accent); }
-.ma-act.danger:hover { color: #dc2626; }
-.ma-example-prompt {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  font-size: 11.5px;
-  color: var(--c-secondary);
-  line-height: 1.5;
-  margin-top: 2px;
-}
+/* 欢迎空状态 */
+.ma-welcome { border: 1px dashed var(--c-border); border-radius: 16px;
+  background: var(--c-panel); padding: 14px 22px; }
+.ma-welcome h3 { margin: 0 0 4px; font-size: 16px; color: var(--c-fg); }
+.ma-welcome p { margin: 0; font-size: 13px; color: var(--c-secondary); }
 
-/* 任务编辑表单 */
-.ma-task-form {
-  background: var(--c-bg, transparent);
-  border: 1px dashed var(--c-accent);
-  border-radius: 10px;
-  padding: 10px;
-  margin-bottom: 10px;
-}
-.ma-form-input {
-  width: 100%;
-  box-sizing: border-box;
-  background: transparent;
-  color: var(--c-fg);
-  border: 1px solid var(--c-border);
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 12.5px;
-  line-height: 1.6;
-  font-family: inherit;
-  margin-bottom: 8px;
-  resize: vertical;
-}
-.ma-form-input:focus { outline: none; border-color: var(--c-accent); }
-.ma-form-hint {
-  font-size: 11px;
-  margin: 0 0 8px;
-}
-.ma-form-actions { display: flex; gap: 8px; }
+/* 每轮 */
+.ma-turn { display: flex; flex-direction: column; gap: 8px; }
+.ma-user-row { display: flex; justify-content: flex-end; }
+.ma-user-bubble { max-width: 78%; background: var(--c-accent); color: var(--c-panel-elevated);
+  border-radius: 14px 14px 4px 14px; padding: 9px 14px; font-size: 14px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word; }
 
-.ma-btn {
-  border: 1px solid var(--c-accent);
-  background: var(--c-accent-weak);
-  color: var(--c-accent);
-  font-weight: 600;
-  font-size: 12.5px;
-  border-radius: 8px;
-  padding: 6px 14px;
-  cursor: pointer;
-}
-.ma-btn:hover:not(:disabled) { filter: brightness(1.05); }
-.ma-btn:disabled { opacity: 0.55; cursor: not-allowed; }
-.ma-btn.sm { padding: 3px 10px; font-size: 12px; }
+/* ── 执行过程面板（收起 = 一行状态摘要，展开 = 全过程） ── */
+.ma-proc { display: flex; flex-direction: column; min-width: 0; }
+.ma-proc-bar { display: flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%;
+  border: 1px solid var(--c-border); background: var(--c-panel); border-radius: 10px;
+  padding: 6px 12px; cursor: pointer; text-align: left; }
+.ma-proc-bar:hover { background: var(--c-muted); }
+.ma-proc-dot { width: 18px; height: 18px; border-radius: 50%; display: inline-flex;
+  align-items: center; justify-content: center; font-size: 11px; flex-shrink: 0;
+  color: var(--c-bg); background: var(--c-success); }
+.ma-proc-dot.live { background: var(--c-accent); animation: ma-blink 1.1s infinite; }
+.ma-proc-dot.err { background: var(--c-danger); }
+.ma-proc-sum { font-size: 12.5px; color: var(--c-fg); font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ma-proc-cur { font-size: 12px; color: var(--c-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ma-proc-arrow { font-size: 11px; color: var(--c-secondary); flex-shrink: 0; }
+.ma-proc-body { margin: 8px 0 0 9px; padding: 2px 0 2px 16px;
+  border-left: 2px solid var(--c-border); display: flex; flex-direction: column;
+  gap: 12px; min-width: 0; }
+.ma-mini { border: 1px solid var(--c-border); background: var(--c-panel-elevated);
+  color: var(--c-secondary); font-size: 11.5px; border-radius: 8px; padding: 2px 8px;
+  cursor: pointer; white-space: nowrap; }
+.ma-mini:hover { color: var(--c-fg); border-color: var(--c-secondary); }
 
-/* 右侧面板 */
-.ma-panel {
-  background: var(--c-panel);
-  border: 1px solid var(--c-border);
-  border-radius: 10px;
-  padding: 16px 18px;
-  min-height: 320px;
-}
-.ma-placeholder {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  min-height: 280px;
-  text-align: center;
-  font-size: 14px;
-}
-.ma-placeholder .muted { font-size: 12.5px; }
-.ma-panel-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-  font-size: 14.5px;
-}
-.ma-panel-head .ma-btn { margin-left: auto; }
+/* 计划 */
+.ma-plan { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 3px; }
+.ma-plan li { font-size: 12.5px; color: var(--c-fg); line-height: 1.5; }
 
-/* 时间线 */
-.ma-timeline {
-  list-style: none;
-  margin: 0 0 12px;
-  padding: 10px 12px;
-  border: 1px dashed var(--c-border);
-  border-radius: 10px;
-  font-size: 12.5px;
-}
-.ma-t-team { color: var(--c-secondary); margin-bottom: 6px; }
-.ma-t-plan { margin-bottom: 6px; }
-.ma-plan-steps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
-}
-.ma-plan-steps span {
-  font-size: 11.5px;
-  background: var(--c-accent-weak);
-  color: var(--c-accent);
-  border-radius: 999px;
-  padding: 2px 10px;
-}
-.ma-t-node {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 3px 0;
-}
-.ma-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-top: 5px;
-  flex: none;
-  background: var(--c-border);
-}
-.ma-t-node.running .ma-dot { background: #d97706; animation: ma-pulse 1s infinite; }
-.ma-t-node.done .ma-dot { background: #16a34a; }
-.ma-t-body b { margin-right: 8px; }
-.ma-spin { color: #d97706; }
-@keyframes ma-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
+/* 节点时间线 */
+.ma-nodes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.ma-nodes li { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; }
+.ma-dot { width: 16px; text-align: center; color: var(--c-accent); flex-shrink: 0; }
+.ma-nodes li.running .ma-dot { color: var(--c-secondary); animation: ma-blink 1s infinite; }
+.ma-node-name { font-weight: 600; color: var(--c-fg); flex-shrink: 0; }
+.ma-node-ms { font-size: 11.5px; color: var(--c-accent); flex-shrink: 0; }
+.ma-node-sum { color: var(--c-secondary); font-size: 12px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes ma-blink { 50% { opacity: 0.25; } }
 
-/* 素材卡：分类 tab + 可折叠容器 */
-.ma-cards-wrap {
-  border: 1px solid var(--c-border);
-  border-radius: 10px;
-  margin-bottom: 12px;
-  overflow: hidden;
-}
-.ma-cards-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 8px 12px;
-  background: var(--c-muted);
-  font-size: 12.5px;
-}
-.ma-fold {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: transparent;
-  border: none;
-  color: var(--c-fg);
-  cursor: pointer;
-  font-size: 12.5px;
-  padding: 0;
-}
-.ma-fold-arrow {
-  font-style: normal;
-  display: inline-block;
-  transition: transform 0.15s;
-  color: var(--c-secondary);
-}
-.ma-fold-arrow.open { transform: rotate(90deg); }
-.ma-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
-.ma-tab {
-  font-size: 11.5px;
-  border: 1px solid var(--c-border);
-  background: transparent;
-  color: var(--c-secondary);
-  border-radius: 999px;
-  padding: 2px 10px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.ma-tab em {
-  font-style: normal;
-  font-size: 10.5px;
-  background: var(--c-muted);
-  border-radius: 999px;
-  padding: 0 5px;
-}
-.ma-tab.is-on {
-  border-color: var(--c-accent);
-  color: var(--c-accent);
-  background: var(--c-accent-weak);
-  font-weight: 600;
-}
-.ma-tab.is-on em { background: transparent; color: var(--c-accent); }
-.ma-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 10px;
-  margin-bottom: 12px;
-}
-.ma-cards-wrap .ma-cards { margin-bottom: 0; padding: 10px; }
-.ma-ev {
-  border: 1px solid var(--c-border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-size: 12.5px;
-  background: var(--c-bg);
-}
-.ma-ev.worsen { border-left: 3px solid #ea580c; }
-.ma-ev.improve { border-left: 3px solid #16a34a; }
-.ma-ev.neutral { border-left: 3px solid var(--c-border); }
-.ma-ev.fact { border-left: 3px solid var(--c-accent); }
-.ma-ev.is-flash { animation: ma-flash 1.5s ease; }
-@keyframes ma-flash {
-  0%, 55% { box-shadow: 0 0 0 2px var(--c-accent); border-color: var(--c-accent); }
-  100% { box-shadow: none; }
-}
-.ma-ev-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.ma-grade {
-  font-size: 11px;
-  color: var(--c-secondary);
-  border: 1px solid var(--c-border);
-  border-radius: 999px;
-  padding: 0 8px;
-  white-space: nowrap;
-}
-.ma-grade.is-fact {
-  color: var(--c-accent);
-  border-color: var(--c-accent);
-}
-.ma-ev-src { font-size: 11.5px; margin: 2px 0 6px; }
-.ma-ev p { margin: 0 0 6px; line-height: 1.55; }
-.ma-ev code {
-  display: block;
-  font-size: 11.5px;
-  color: var(--c-secondary);
-  background: var(--c-muted);
-  border-radius: 6px;
-  padding: 4px 8px;
-}
+/* ── 共享黑板素材 ── */
+.ma-ev { display: flex; flex-direction: column; gap: 8px; }
+.ma-ev-title { font-size: 11.5px; font-weight: 700; color: var(--c-secondary); }
+.ma-ev-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.ma-ev-tabs button { border: 1px solid var(--c-border); background: none; color: var(--c-secondary);
+  font-size: 12px; border-radius: 999px; padding: 2px 10px; cursor: pointer; }
+.ma-ev-tabs button.on { color: var(--c-accent); border-color: var(--c-accent);
+  background: var(--c-accent-weak); }
+.ma-ev-list { display: flex; flex-direction: column; gap: 6px; }
+.ma-card { border: 1px solid var(--c-border); border-radius: 10px; padding: 8px 10px;
+  background: var(--c-panel-elevated); display: flex; flex-direction: column; gap: 4px; }
+.ma-card.is-flash { animation: ma-flash 1.5s ease; }
+@keyframes ma-flash { 0%, 55% { border-color: var(--c-accent); box-shadow: 0 0 0 3px var(--c-accent-weak); }
+  100% { border-color: var(--c-border); box-shadow: none; } }
+.ma-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ma-card-no { font-size: 11px; font-weight: 700; color: var(--c-accent); }
+.ma-card-src { font-size: 11.5px; color: var(--c-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ma-card-grade, .ma-card-fact { font-size: 10.5px; padding: 0 6px; border-radius: 999px;
+  border: 1px solid var(--c-border); color: var(--c-secondary); flex-shrink: 0; }
+.ma-card-fact { color: var(--c-success); border-color: var(--c-success); }
+.ma-card-title { font-size: 12.5px; font-weight: 600; color: var(--c-fg); line-height: 1.4; }
+.ma-card-sum { margin: 0; font-size: 12px; color: var(--c-secondary); line-height: 1.55; }
+.ma-card-quote { margin: 0; padding: 5px 9px; border-left: 3px solid var(--c-accent);
+  background: var(--c-muted); border-radius: 0 8px 8px 0;
+  font-size: 11.5px; color: var(--c-fg); line-height: 1.5; }
 
-/* 评审 / 质控 / 成果 */
-.ma-conflict {
-  border: 1px solid rgba(217, 119, 6, 0.55);
-  background: rgba(217, 119, 6, 0.08);
-  border-radius: 10px;
-  padding: 10px 14px;
-  font-size: 13px;
-  margin-bottom: 10px;
-}
-.ma-conflict p { margin: 4px 0 0; }
-.ma-verdict {
-  font-size: 13.5px;
-  margin-bottom: 10px;
-}
-.ma-verdict b { color: var(--c-accent); }
-.ma-conclusion {
-  border: 1px solid var(--c-border);
-  border-radius: 10px;
-  padding: 12px 16px;
-  font-size: 13.5px;
-  line-height: 1.7;
-}
-.ma-conclusion :deep(h3) { font-size: 14px; margin: 10px 0 6px; }
-.ma-conclusion :deep(h3:first-child) { margin-top: 0; }
-.ma-conclusion :deep(ul) { margin: 4px 0; padding-left: 20px; }
-.ma-conclusion :deep(ol) { margin: 4px 0; padding-left: 20px; }
-.ma-conclusion :deep(p) { margin: 6px 0; }
-/* 成果引用 chip：可点击定位到素材面板对应卡片 */
-.ma-conclusion :deep(.ma-cite) {
-  display: inline-block;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--c-accent);
-  background: var(--c-accent-weak);
-  border: 1px solid var(--c-accent);
-  border-radius: 999px;
-  padding: 0 7px;
-  margin: 0 2px;
-  cursor: pointer;
-  vertical-align: 2px;
-  user-select: none;
-  white-space: nowrap;
-}
-.ma-conclusion :deep(.ma-cite:hover) { filter: brightness(1.12); }
-.ma-conclusion :deep(.ma-cite.is-missing) {
-  color: var(--c-secondary);
-  border-color: var(--c-border);
-  background: transparent;
-  cursor: not-allowed;
-  text-decoration: line-through;
-}
+/* ── 质控 ── */
+.ma-qc { display: flex; flex-direction: column; gap: 5px; }
+.ma-conflict { font-size: 12px; color: var(--c-danger); line-height: 1.5; }
+.ma-verdict { font-size: 12.5px; color: var(--c-fg); background: var(--c-muted);
+  border-radius: 8px; padding: 6px 10px; line-height: 1.5; }
+.ma-verdict.human { color: var(--c-danger); background: color-mix(in srgb, var(--c-danger) 8%, transparent); }
 
-.ma-error {
-  color: #dc2626;
-  font-size: 13px;
-  margin: 8px 0 0;
+/* ── 成果气泡（干净结论；markdown 由 v-html 注入，须 :deep） ── */
+.ma-reply { max-width: 88%; border: 1px solid var(--c-border); border-radius: 4px 14px 14px 14px;
+  background: var(--c-panel-elevated); padding: 10px 14px 12px;
+  display: flex; flex-direction: column; gap: 6px; }
+.ma-reply-head { display: flex; align-items: center; gap: 10px; }
+.ma-reply-team { font-size: 12px; font-weight: 700; color: var(--c-accent); }
+.ma-reply-ms { font-size: 11.5px; color: var(--c-secondary); }
+.ma-reply-head .ma-mini { margin-left: auto; opacity: 0; transition: opacity 0.15s; }
+.ma-reply:hover .ma-mini { opacity: 1; }
+.ma-answer-md { font-size: 14px; color: var(--c-fg); line-height: 1.7; }
+.ma-answer-md :deep(h1), .ma-answer-md :deep(h2), .ma-answer-md :deep(h3) {
+  margin: 12px 0 6px; font-size: 15px; }
+.ma-answer-md :deep(p) { margin: 6px 0; }
+.ma-answer-md :deep(ul), .ma-answer-md :deep(ol) { margin: 6px 0; padding-left: 20px; }
+.ma-answer-md :deep(table) { border-collapse: collapse; margin: 8px 0; }
+.ma-answer-md :deep(th), .ma-answer-md :deep(td) { border: 1px solid var(--c-border);
+  padding: 4px 8px; font-size: 12.5px; }
+.ma-answer-md :deep(code) { background: var(--c-muted); border-radius: 4px; padding: 1px 5px; font-size: 12.5px; }
+.ma-answer-md :deep(blockquote) { margin: 6px 0; padding: 4px 10px; border-left: 3px solid var(--c-accent);
+  background: var(--c-muted); border-radius: 0 8px 8px 0; color: var(--c-secondary); }
+.ma-answer-md :deep(.ma-cite) { cursor: pointer; color: var(--c-accent); font-weight: 700;
+  padding: 0 2px; }
+.ma-answer-md :deep(.ma-cite:hover) { text-decoration: underline; }
+.ma-answer-md :deep(.ma-cite.is-missing) { color: var(--c-secondary); cursor: default; }
+.ma-typing { margin: 0; font-size: 13px; color: var(--c-secondary); animation: ma-blink 1.2s infinite; }
+
+/* ── 底部输入区 ── */
+.ma-composer { border: 1px solid var(--c-border); border-radius: 16px;
+  background: var(--c-panel); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.ma-comp-row { display: flex; align-items: flex-start; gap: 8px; }
+.ma-comp-label { font-size: 11.5px; color: var(--c-secondary); flex-shrink: 0;
+  padding-top: 4px; width: 34px; }
+.ma-task-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.ma-task-chip { display: inline-flex; align-items: center; border: 1px solid var(--c-border);
+  border-radius: 999px; overflow: hidden; background: var(--c-panel-elevated); }
+.ma-task-chip.on { border-color: var(--c-accent); background: var(--c-accent-weak); }
+.ma-task-chip .chip-main { border: 0; background: none; color: var(--c-fg); font-size: 12px;
+  padding: 3px 10px; cursor: pointer; max-width: 220px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.ma-task-chip .chip-ico { border: 0; background: none; color: var(--c-secondary); font-size: 10px;
+  padding: 3px 5px; cursor: pointer; }
+.ma-task-chip .chip-ico:hover { color: var(--c-fg); }
+.ma-task-chip .chip-ico.danger:hover { color: var(--c-danger); }
+.ma-pick { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.ma-pick label { font-size: 12.5px; color: var(--c-fg); display: inline-flex;
+  align-items: center; gap: 4px; cursor: pointer; }
+.ma-agent-chip { border: 1px solid var(--c-border); background: none; color: var(--c-secondary);
+  font-size: 12px; border-radius: 999px; padding: 2px 10px; cursor: pointer; }
+.ma-agent-chip.on { color: var(--c-accent); border-color: var(--c-accent); background: var(--c-accent-weak); }
+.ma-pick-hint { flex-basis: 100%; font-size: 11.5px; color: var(--c-secondary); }
+.ma-comp-main { display: flex; align-items: flex-end; gap: 10px; }
+.ma-comp-main textarea { flex: 1; resize: none; border: 1px solid var(--c-border); border-radius: 10px;
+  background: var(--c-panel-elevated); color: var(--c-fg); font-size: 14px; padding: 9px 12px;
+  line-height: 1.5; font-family: inherit; }
+.ma-comp-main textarea:focus { outline: none; border-color: var(--c-accent); }
+.ma-send { border: 0; border-radius: 10px; background: var(--c-btn-primary-bg);
+  color: var(--c-bg); font-size: 14px; font-weight: 700; padding: 10px 22px; cursor: pointer; }
+.ma-send:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ── 任务编辑弹窗 ── */
+.ma-modal-mask { position: fixed; inset: 0; background: var(--c-overlay);
+  display: flex; align-items: center; justify-content: center; z-index: 60; }
+.ma-modal { width: 460px; max-width: 92vw; background: var(--c-panel-elevated);
+  border: 1px solid var(--c-border); border-radius: 16px; padding: 18px;
+  display: flex; flex-direction: column; gap: 12px; box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18); }
+.ma-modal h3 { margin: 0; font-size: 15px; color: var(--c-fg); }
+.ma-modal label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--c-secondary); }
+.ma-modal input, .ma-modal textarea { border: 1px solid var(--c-border); border-radius: 8px;
+  background: var(--c-panel); color: var(--c-fg); font-size: 13px; padding: 8px 10px;
+  font-family: inherit; resize: vertical; }
+.ma-modal input:focus, .ma-modal textarea:focus { outline: none; border-color: var(--c-accent); }
+.ma-modal-ops { display: flex; justify-content: flex-end; gap: 8px; }
+.ma-btn { border: 1px solid var(--c-border); background: none; color: var(--c-fg);
+  font-size: 13px; border-radius: 8px; padding: 7px 16px; cursor: pointer; }
+.ma-btn.primary { border: 0; background: var(--c-btn-primary-bg); color: var(--c-bg); font-weight: 700; }
+.ma-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+@media (max-width: 900px) {
+  .ma-side { width: 180px; }
+  .ma-user-bubble { max-width: 92%; }
 }
 </style>

@@ -27,6 +27,7 @@ class AgentQueryRequest(BaseModel):
     skill_ids: list[str] = []
     agent_id: str | None = None       # 引用已配置智能体（KB + 技能 + 人设）
     session_id: str | None = None     # 会话 id：传了就续聊（注入历史），不传自动新建会话
+    use_tools: bool | None = None     # L2 工具循环开关：None=取全局默认（AGENT_TOOL_LOOP_ENABLED）
 
 
 class ChatSessionRename(BaseModel):

@@ -21,6 +21,10 @@ async function loadSkills() {
   try { allSkills.value = await fetchAgentSkills() } catch {}
 }
 
+// ---------- L2 工具循环（agent loop + tools） ----------
+const useTools = ref(false)   // 开关：本轮问答允许 LLM 自主调用平台工具（台账/图谱/全库检索）
+const toolCalls = ref([])     // 本轮工具调用记录 [{name, arguments, ok, duration_ms, error}]
+
 // ---------- 智能体（下拉只列自定义；「系统默认」= 内置 agent_default） ----------
 const agents = ref([])
 const selectedAgentId = ref('')
@@ -106,6 +110,7 @@ function resetTurnPanel() {
   thinkExpanded.value = false
   reasonOpen.value = true
   hoveredChunk.value = null
+  toolCalls.value = []
   Object.keys(expandedSources).forEach(k => delete expandedSources[k])
 }
 
@@ -189,9 +194,10 @@ const kbDropdownOpen = ref(false)
 
 const queryKbList = computed(() => kbs.value.filter(kb => kb.file_count > 0))
 const selectedKb = computed(() => queryKbList.value.find(kb => kb.id === queryKbId.value) || null)
+// 空选择 = 全局模式：不做 KB 语料检索，靠工具循环全局取数（台账/图谱/全库）
 const selectedKbLabel = computed(() => selectedKb.value
   ? `${selectedKb.value.name} (${selectedKb.value.file_count} 个文件)`
-  : '请选择知识库...')
+  : '全局模式 · 不限知识库')
 
 const hasReasoning = computed(() => (entities.value.length > 0) || (subgraph.value && (subgraph.value.relations?.length || subgraph.value.entities?.length)) || activeSkills.value.length > 0)
 const isDegraded = computed(() => !!subgraph.value?.retrieval_path?.degraded)
@@ -405,8 +411,8 @@ async function loadKbs() {
 
 async function runQuery() {
   const q = queryText.value.trim()
-  // 未绑 KB 的智能体（agentPresetActive 且无 kb）允许直接对话
-  if (!q || (!queryKbId.value && !selectedAgentId.value)) return
+  // 全局模式：不选 KB 也可提问（无语料检索，靠人设+技能+工具循环全局取数）
+  if (!q) return
   // 上一轮已完整回答：滚入历史气泡，让本轮独占富面板
   if (currentQ.value && answerRaw.value) {
     historyTurns.value = [...historyTurns.value, { q: currentQ.value, answer: answerExThink.value || answerRaw.value }]
@@ -420,6 +426,22 @@ async function runQuery() {
       skillIds: selectedSkillIds.value,
       agentId: selectedAgentId.value || null,
       sessionId: sessionId.value || null,
+      useTools: useTools.value,
+      onToolEvent(data) {
+        // 过程事件即时上屏；tool_calls 汇总（含权威记录）到达后整体替换
+        if (data.type === 'tool_call') {
+          toolCalls.value.push({ name: data.name, arguments: data.arguments, ok: null })
+        } else if (data.type === 'tool_result') {
+          const last = [...toolCalls.value].reverse().find(c => c.name === data.name && c.ok === null)
+          if (last) {
+            last.ok = !!data.ok
+            last.duration_ms = data.duration_ms
+            if (!data.ok && data.summary) last.error = data.summary
+          }
+        } else if (data.type === 'tool_calls') {
+          toolCalls.value = (data.calls || []).map(c => ({ ...c }))
+        }
+      },
       onSession(data) {
         // 新建会话时后端回传 session_id：锚定后续轮次并刷新会话列表
         if (data?.session_id && data.session_id !== sessionId.value) {
@@ -493,6 +515,13 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
         </button>
         <span v-if="!enabledSkills.length" class="skill-empty">暂无启用技能，可在「智能体技能」页启用</span>
       </div>
+      <button type="button" class="skill-chip" :class="{ active: useTools }"
+        title="开启后 LLM 可自主调用平台工具（台账统计 / 图谱 / 全库检索）补充回答"
+        @click="useTools = !useTools">
+        <span class="chip-ic" v-if="useTools">✓</span>
+        <span class="chip-ic" v-else>⚡</span>
+        工具调用
+      </button>
     </div>
     <div class="cfg-sub">
       <span class="agent-pick-hint">技能与「{{ agentPresetActive ? selectedAgent.name : '系统默认' }}」配置实时同步（同一份数据）</span>
@@ -513,7 +542,10 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
           </span>
         </button>
         <div v-if="kbDropdownOpen" class="kb-dropdown">
-          <button type="button" class="kb-option kb-option-placeholder" @click="selectKb('')">请选择知识库...</button>
+          <button type="button" class="kb-option kb-option-placeholder" :class="{ active: !queryKbId }" @click="selectKb('')">
+            <span class="kb-option-name">全局模式 · 不限知识库</span>
+            <span class="kb-option-meta">工具取数不限库</span>
+          </button>
           <button v-for="kb in queryKbList" :key="kb.id" type="button" class="kb-option" :class="{ active: kb.id === queryKbId }" @click="selectKb(kb.id)">
             <span class="kb-option-name">{{ kb.name }}</span>
             <span class="kb-option-meta">{{ kb.file_count }} 个文件</span>
@@ -624,6 +656,20 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
         <div class="think-content markdown-body" v-show="thinkExpanded" v-html="renderMd(b.content)"></div>
       </div>
 
+      <!-- 工具调用（L2 工具循环） -->
+      <div class="tool-card" v-if="toolCalls.length">
+        <div class="tool-card-title">工具调用 · {{ toolCalls.length }}</div>
+        <div class="tool-list">
+          <div v-for="(c, i) in toolCalls" :key="`tool${i}`" class="tool-item">
+            <span class="tool-name">{{ c.name }}</span>
+            <span class="tool-args" v-if="c.arguments && Object.keys(c.arguments).length">{{ JSON.stringify(c.arguments) }}</span>
+            <span class="tool-status" :class="{ ok: c.ok, fail: c.ok === false }">
+              {{ c.ok === null ? '执行中…' : (c.ok ? `${c.duration_ms || 0}ms` : `失败：${c.error || '未知错误'}`) }}
+            </span>
+          </div>
+        </div>
+      </div>
+
       <div class="content-row">
         <!-- Answer -->
         <div class="answer-col">
@@ -690,12 +736,12 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
     </div>
 
     <div class="query-row">
-      <div class="field-shell search-shell" :class="{ disabled: (!queryKbId && !selectedAgentId) || querying }">
+      <div class="field-shell search-shell" :class="{ disabled: querying }">
         <span class="field-icon" aria-hidden="true">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></svg>
         </span>
-        <input ref="queryInputRef" type="text" v-model="queryText" placeholder="输入问题，智能体将结合图谱与本体回答..." @keydown.enter="runQuery" :disabled="(!queryKbId && !selectedAgentId) || querying">
-        <button class="query-submit" @click="runQuery" :disabled="(!queryKbId && !selectedAgentId) || !queryText.trim() || querying">
+        <input ref="queryInputRef" type="text" v-model="queryText" placeholder="输入问题，智能体将结合图谱与本体回答..." @keydown.enter="runQuery" :disabled="querying">
+        <button class="query-submit" @click="runQuery" :disabled="!queryText.trim() || querying">
           <span class="spinner" v-if="querying"></span>
           <template v-else>提问</template>
         </button>
@@ -806,6 +852,17 @@ onBeforeUnmount(() => window.removeEventListener('pointerdown', onWindowPointerD
 .query-submit:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
 
 .results { display: flex; flex-direction: column; gap: 14px; }
+
+/* 工具调用（L2）—— 全部使用主题变量，自动适配深色模式 */
+.tool-card { border: 1px solid var(--c-border); border-radius: 14px; background: var(--c-panel-elevated); padding: 10px 14px; }
+.tool-card-title { font-size: 13px; font-weight: 700; color: var(--c-fg); margin-bottom: 8px; }
+.tool-list { display: flex; flex-direction: column; gap: 6px; }
+.tool-item { display: flex; align-items: center; gap: 8px; font-size: 12px; flex-wrap: wrap; }
+.tool-name { font-family: monospace; background: var(--c-muted); border-radius: 6px; padding: 2px 8px; color: var(--c-fg); font-weight: 700; }
+.tool-args { color: var(--c-secondary); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+.tool-status { margin-left: auto; color: var(--c-secondary); }
+.tool-status.ok { color: #16a34a; }
+.tool-status.fail { color: #dc2626; }
 
 /* 推理过程 —— 全部使用主题变量，自动适配深色模式 */
 .reason-card { border: 1px solid var(--c-border); border-radius: 18px; overflow: hidden; background: var(--c-panel-elevated); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05); }

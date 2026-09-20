@@ -5,6 +5,7 @@ import {
   fetchKbs, fetchAgentSkills, fetchDefaultPersona,
 } from '../../api'
 import { useToast } from '../../composables/useToast'
+import { listMultiScenarios } from '../../api/multiAgent'
 import ModalDialog from '../common/ModalDialog.vue'
 import Pagination from '../common/Pagination.vue'
 
@@ -41,6 +42,17 @@ const pagedAgents = computed(() =>
 )
 const pagedPresetAgents = computed(() => pagedAgents.value.filter(a => a.is_preset))
 const pagedCustomAgents = computed(() => pagedAgents.value.filter(a => !a.is_preset))
+
+// ── 多智能体团队（引擎内置名册，只读展示；selectedId 特殊值 'multi-team'） ──
+const MULTI_TEAM_ID = 'multi-team'
+const teamScenario = ref(null)
+const isTeamSelected = computed(() => selectedId.value === MULTI_TEAM_ID)
+const teamAgents = computed(() => teamScenario.value?.agents || { core: [], optional: [] })
+const teamRoleCount = computed(() => teamAgents.value.core.length + teamAgents.value.optional.length)
+function selectTeam() {
+  selectedId.value = MULTI_TEAM_ID
+  isNew.value = false
+}
 watch(agents, () => { page.value = 1 }, { deep: true })
 const selectedIsPreset = () => !!selectedAgent()?.is_preset
 
@@ -52,6 +64,11 @@ onMounted(async () => {
     kbs.value = kb
     skills.value = sk
     defaultPersona.value = dp?.persona || ''
+    // 多智能体名册（拉取失败不影响本页主功能）
+    try {
+      const scenarios = await listMultiScenarios()
+      teamScenario.value = scenarios.find((s) => s.adhoc) || scenarios[0] || null
+    } catch {}
   } catch {
     toast.error('加载智能体失败')
   }
@@ -226,12 +243,57 @@ async function doRemove() {
           <div class="list-empty" v-if="!loading && !customAgents.length">暂无自定义智能体，点击右上角新建</div>
           <div class="list-empty" v-if="loading">加载中...</div>
           <Pagination v-if="agents.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="agents.length" />
+
+          <!-- 多智能体团队（引擎内置名册，只读；名册加载失败时隐藏） -->
+          <template v-if="teamScenario">
+            <div class="group-title">多智能体团队</div>
+            <div class="agent-card" :class="{ active: isTeamSelected }" @click="selectTeam">
+              <div class="card-top">
+                <span class="card-name"><span class="preset-star" title="引擎内置">⚙</span>{{ teamScenario.team }}</span>
+                <span class="builtin-tag" title="由多智能体引擎内置，不可编辑">引擎内置</span>
+              </div>
+              <div class="card-desc">{{ teamScenario.desc }}</div>
+              <div class="card-meta"><span class="meta-tag">🤝 {{ teamRoleCount }} 角色</span></div>
+            </div>
+          </template>
         </div>
       </div>
 
       <!-- 右：编辑面板 -->
       <div class="edit-col">
-        <template v-if="isNew || selectedId">
+        <!-- 多智能体团队：只读详情（引擎内置，无编辑表单） -->
+        <template v-if="isTeamSelected && teamScenario">
+          <div class="edit-head">
+            <h4>{{ teamScenario.team }}</h4>
+            <span class="builtin-tag" title="角色提示词与装配逻辑内置于引擎，保证流水线行为确定">引擎内置 · 不可编辑</span>
+          </div>
+          <div class="form">
+            <p class="team-desc">{{ teamScenario.desc }}</p>
+            <div class="field">
+              <label>核心角色（任何任务必在，不可取消）</label>
+              <div class="team-roles">
+                <div v-for="a in teamAgents.core" :key="a.id" class="team-role">
+                  <b>{{ a.name }}</b><span>{{ a.desc }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="field">
+              <label>能力角色（协作页按任务自由勾选组队）</label>
+              <div class="team-roles">
+                <div v-for="a in teamAgents.optional" :key="a.id" class="team-role opt">
+                  <b>{{ a.name }}</b><span>{{ a.desc }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="team-note">
+              这些角色不是独立对话智能体，而是协作流水线的内置工序，不支持配置技能/人设。
+              外部工具在「MCP 工具管理」启用后由 ToolAgent 自动调用。
+              <router-link to="/agent/multi-agent">前往多智能体协作 →</router-link>
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="isNew || selectedId">
           <div class="edit-head">
             <h4>{{ isNew ? '新建智能体' : '编辑智能体' }}</h4>
             <button class="btn" @click="cancelEdit" v-if="!isNew">取消</button>
@@ -338,6 +400,11 @@ async function doRemove() {
   color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--c-accent) 30%, transparent);
 }
+.builtin-tag {
+  flex-shrink: 0; font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
+  color: var(--c-secondary); background: var(--c-muted);
+  border: 1px solid var(--c-border);
+}
 .list-items { display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - 240px); overflow-y: auto; }
 
 .agent-card {
@@ -414,6 +481,20 @@ async function doRemove() {
 .chip-ic { font-size: 11px; line-height: 1; }
 
 .edit-actions { display: flex; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--c-border); }
+
+/* 多智能体团队只读详情 */
+.team-desc { margin: 0; font-size: 13px; color: var(--c-secondary); line-height: 1.6; }
+.team-roles { display: flex; flex-direction: column; gap: 6px; }
+.team-role { border: 1px solid var(--c-border); border-radius: 8px; padding: 7px 10px; background: var(--c-bg); }
+.team-role b { display: block; font-size: 12.5px; color: var(--c-fg); margin-bottom: 2px; }
+.team-role span { font-size: 11.5px; color: var(--c-secondary); line-height: 1.5; }
+.team-role.opt b { color: var(--c-accent); }
+.team-note {
+  font-size: 12px; color: var(--c-secondary); background: var(--c-muted);
+  border-radius: 8px; padding: 10px 12px; line-height: 1.8;
+}
+.team-note a { color: var(--c-accent); text-decoration: none; margin-left: 4px; }
+.team-note a:hover { text-decoration: underline; }
 
 .edit-empty {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;

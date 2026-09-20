@@ -775,7 +775,7 @@ class MultiAgentTask(Base):
 
     prompt 为任务提示词模板，支持 ``{question}`` 占位符——运行时用用户输入的
     具体问题替换；模板未含占位符时，问题拼接在模板之后。agents 为选中该任务
-    时应用的默认团队编制（可选能力智能体 id 的 JSON 数组字符串）。
+    时应用的默认智能体组合（可选能力智能体 id 的 JSON 数组字符串）。
     """
 
     __tablename__ = "multi_agent_tasks"
@@ -861,6 +861,7 @@ class ChatSession(Base):
     kb_id = Column(String, default="", index=True)
     user_id = Column(String, default="", index=True)   # 预留多用户
     title = Column(String(200), default="")            # 默认取首问截断
+    scene = Column(String, default="", index=True)     # 会话场景：空=智能体问答，multi=多智能体协作（migration_037）
     summary = Column(Text, default="")                 # 窗口外旧轮次的滚动摘要
     summary_until_id = Column(String, default="")      # 已计入摘要的最后一条消息 id
     created_at = Column(String, default=lambda: datetime.now().isoformat())

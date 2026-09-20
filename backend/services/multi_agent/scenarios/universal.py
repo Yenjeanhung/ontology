@@ -2,15 +2,15 @@
 """
 通用智能体团队场景（adhoc · 默认场景，业务无关、任务类型无关）。
 
-对标开源多智能体项目的「团队编制」协作范式（AutoGen / CrewAI / MetaGPT /
+对标开源多智能体项目的「智能体组合」协作范式（AutoGen / CrewAI / MetaGPT /
 Magentic-One）：
 - 核心智能体内置：Planner（任务规划）与 Synthesizer（结果合成）是任何团队
-  都必需的角色，固定在编；
+  都必需的角色，固定内置；
 - 能力智能体自由勾选：Retriever（知识库取证）/ DataAgent（台账数据查询）/
   GraphAgent（图谱事实）/ ToolAgent（Function Calling 工具调用，含 MCP 外部
-  工具接入）/ Critic（评审质控）由用户按需组队，流水线按编制
+  工具接入）/ Critic（评审质控）由用户按需组队，流水线按组合
   动态装配（不选 Critic 时并行节点直通 Synthesizer，引擎零特判）；
-- 任务类型不限：研判、写作、总结、问答皆可——Planner 分解提示词随编制
+- 任务类型不限：研判、写作、总结、问答皆可——Planner 分解提示词随组合
   切换（选 Retriever → 检索式子任务；否则 → 由成员用模型知识直接执行）；
 - 黑板协作：所有节点读写共享 state（evidence / facts / verdict），并行
   节点同一 superstep 执行，结果以素材卡/事实卡落黑板；
@@ -24,12 +24,16 @@ MultiAgentScenario 适配器范式另行接入。
 import asyncio
 import json
 import re
-from typing import Optional
+import time
+from datetime import date, timedelta
+from typing import Callable, Optional
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from providers.llm import create_llm
 from ..engine import MultiAgentEngine
+from ..router_service import nl2filter as _nl2filter_extract
+from ..router_service import routing_decision
 from . import MultiAgentScenario, register
 
 # ── 智能体名册（前端组队选择器据此渲染） ──────────────────────
@@ -42,7 +46,7 @@ CORE_AGENTS = [
      "desc": "汇总共享黑板素材，流式交付最终成果"},
 ]
 
-# 能力智能体：自由勾选组合，流水线按编制动态装配
+# 能力智能体：自由勾选组合，流水线按组合动态装配
 OPTIONAL_AGENTS = [
     {"id": "retriever", "name": "Retriever · 知识库取证",
      "desc": "为每个子任务检索平台全部知识库向量语料（RAG 增强）"},
@@ -53,7 +57,7 @@ OPTIONAL_AGENTS = [
     {"id": "tool_agent", "name": "ToolAgent · 工具调用",
      "desc": "Function Calling 自主取证：多轮调用知识库/图谱/台账内置工具与 MCP 外部工具，真实数据杜绝编造"},
     {"id": "critic", "name": "Critic · 评审质控",
-     "desc": "素材交叉验证、冲突消解与质量裁定（可选编制）"},
+     "desc": "素材交叉验证、冲突消解与质量裁定（可选组合）"},
 ]
 OPTIONAL_IDS = [a["id"] for a in OPTIONAL_AGENTS]
 DEFAULT_AGENTS = ["retriever", "data_agent", "graph_agent", "critic"]
@@ -97,7 +101,7 @@ DATA_STRONG_MIN = 3        # 类型/名称级命中数达到该值才视为强�
 
 
 def _normalize_agents(agents: Optional[list[str]]) -> list[str]:
-    """编制归一化：只保留名册内的能力智能体 id，按名册顺序输出；None=默认编制。"""
+    """组合归一化：只保留名册内的能力智能体 id，按名册顺序输出；None=默认组合。"""
     if agents is None:
         return list(DEFAULT_AGENTS)
     req = {str(a).strip() for a in (agents or [])}
@@ -114,7 +118,7 @@ class UniversalScenario(MultiAgentScenario):
         "核心智能体内置（Planner / Synthesizer），能力智能体自由组队"
         "（Retriever / DataAgent / GraphAgent / Critic），任务类型不限——研判、写作、"
         "总结、问答皆可。Planner 用 LLM 动态分解，并行执行，流式交付。"
-        "对标 AutoGen/CrewAI 的团队编制范式。"
+        "对标 AutoGen/CrewAI 的智能体组合范式。"
     )
     adhoc = True   # 自由任务输入（前端据此渲染任务工作台）
 
@@ -144,21 +148,38 @@ class UniversalScenario(MultiAgentScenario):
             for ex in EXAMPLES
         ]
 
-    # ── 构建引擎：按编制动态装配 ──────────────────────────────
+    # ── 构建引擎：按组合动态装配 ──────────────────────────────
 
     async def build_engine(self, target_id: str) -> MultiAgentEngine:
-        """示例任务入口：按 id 找回任务文本，走统一 build（默认编制）。"""
+        """示例任务入口：按 id 找回任务文本，走统一 build（默认组合）。"""
         task = next((ex["task"] for ex in EXAMPLES if ex["id"] == target_id), None)
         if not task:
             raise KeyError(target_id)
         return await self.build_engine_from_task(task)
 
     async def build_engine_from_task(
-        self, task: str, agents: Optional[list[str]] = None
+        self, task: str, agents: Optional[list[str]] = None,
+        route: Optional[dict] = None,
+        on_step: Optional[Callable[[dict], None]] = None,
     ) -> MultiAgentEngine:
-        """自由任务入口：编制归一化 → LLM 动态规划 → 按编制装配节点 → 引擎。
+        """自由任务入口：两级路由（0.6B）→ 组合归一化 → LLM 动态规划 → 按组合装配 → 引擎。
 
-        编制语义：
+        on_step：构建期进度回调（每步完成即时调用，事件由路由层转 SSE 推给
+        前端，构建期间不再静默）。事件契约：
+        - {"type": "step_done", "step": "planner", "elapsed_ms", "summary"}
+          —— LLM 任务规划完成（子任务已分解）；
+        - {"type": "step_done", "step": "nl2filter", "elapsed_ms", "hit"}
+          —— NL2Filter 抽取完成（结果同步记入 route.nl2filter_ms / nl2filter_hit）。
+
+        两级路由（services/multi_agent/router_service.py，可整体降级）：
+        - chat（高置信）→ 大模型直答，编排不启动（收益最硬）；
+        - data / graph / kb → 精简组合；data 放行第二级 NL2Filter，
+          kb 触发 Retriever 检索改写门控；
+        - 低置信 / 路由不可用 → 全组合 + 老规则兜底（行为与接入前一致）。
+        显式传入非空 agents 时尊重用户组合，路由仅叠加 NL2Filter / 改写门控；
+        agents=None 或 [] 时由路由接管组合。
+
+        组合语义：
         - planner / synthesizer：核心内置，必在；
         - retriever：选中 → 每个子任务由 Retriever-i 检索知识库（RAG 增强）；
           未选 → 由 Worker-i 用模型知识直接执行子任务；
@@ -170,9 +191,39 @@ class UniversalScenario(MultiAgentScenario):
         if not task:
             raise ValueError("任务描述不能为空")
 
+        # ── 第一级：意图路由（失败自动 fallback，永不中断） ─────────
+        if route is None:
+            _t0 = time.perf_counter()
+            route = await routing_decision(task)
+            route["elapsed_ms"] = int((time.perf_counter() - _t0) * 1000)
+        explicit = bool(agents)                      # 非空列表 = 用户显式组队
+        route["manual"] = explicit                   # 手动组队标记：组合由用户指定，路由仅辅助 NL2Filter/改写门控
+        if not explicit and route.get("chat_direct"):
+            return self._build_direct(task, route)   # chat → 直答，编排不启动
+        if not explicit and route.get("agents"):
+            agents = list(route["agents"])           # 路由精简组合
+
         caps = _normalize_agents(agents)
         use_retrieval = "retriever" in caps
+        _pt0 = time.perf_counter()
         goals = await self._plan_goals(task, use_retrieval)
+        if on_step:   # 规划一完成即外抛（此刻 NL2Filter 尚未开始）
+            on_step({"type": "step_done", "step": "planner",
+                     "elapsed_ms": int((time.perf_counter() - _pt0) * 1000),
+                     "summary": f"LLM 分解 {len(goals)} 个并行子任务"})
+
+        # ── 第二级：NL2Filter（仅 data 类放行；抽不出 → DataAgent 词频老路兜底） ──
+        nl_filter: Optional[dict] = None
+        if route.get("nl2filter") and "data_agent" in caps:
+            _t0 = time.perf_counter()
+            nl_filter = await _nl2filter_extract(task)
+            route["nl2filter_ms"] = int((time.perf_counter() - _t0) * 1000)
+            route["nl2filter_hit"] = nl_filter is not None
+            if on_step:   # 抽取一完成即外抛，不等后续装配
+                on_step({"type": "step_done", "step": "nl2filter",
+                         "elapsed_ms": route["nl2filter_ms"],
+                         "hit": route["nl2filter_hit"]})
+        rewrite_gate = bool(route.get("rewrite_gate")) and use_retrieval
 
         # 计划：子任务执行者（并行） → 图谱（可选） → 评审（可选） → 合成（必在）
         plan: list[dict] = [
@@ -227,15 +278,73 @@ class UniversalScenario(MultiAgentScenario):
             "members": members,
         }
 
+        team_info["route"] = route   # 两级路由决策透出（前端可渲染，不认识则忽略）
+
         return MultiAgentEngine(
-            context={"task": task, "agents": caps},
+            context={"task": task, "agents": caps, "route": route},
             team_info=team_info,
             plan=plan,
-            node_factory=lambda eng: self._make_nodes(eng, plan, task),
+            node_factory=lambda eng: self._make_nodes(
+                eng, plan, task, nl_filter=nl_filter, rewrite_gate=rewrite_gate),
             pacing=0.1,
         )
 
-    # ── 动态规划（Plan-and-Solve，随编制切换分解策略） ─────────
+    # ── chat 直答团（第一级路由命中：编排不启动，收益最硬） ─────
+
+    def _build_direct(self, task: str, route: dict) -> MultiAgentEngine:
+        """跳过 LLM 规划与全部并行角色，单 Synthesizer 节点直答。
+
+        复用引擎与 SSE 契约（token 流式事件不变）：时间线 Planner → Synthesizer，
+        无素材/评审环节，合成官直接回答用户问题。
+        """
+        plan = [{"id": "s1", "node": "synthesizer", "role": "synthesizer",
+                 "goal": "大模型直答（路由命中 chat，编排未启动）"}]
+        team_info = {
+            "team": f"直答 · 意图路由（chat · 置信 {route.get('confidence', 0):.2f}）",
+            "members": [
+                {"node": "planner", "role": "planner", "name": "Planner · 任务规划"},
+                {"node": "synthesizer", "role": "synthesizer", "name": "Synthesizer · 直答"},
+            ],
+            "route": route,
+        }
+        return MultiAgentEngine(
+            context={"task": task, "agents": [], "route": route},
+            team_info=team_info,
+            plan=plan,
+            node_factory=lambda eng: {"synthesizer": self._make_direct_answer(eng, task)},
+            pacing=0.05,
+        )
+
+    def _make_direct_answer(self, eng: MultiAgentEngine, task: str):
+        async def _fn(state: dict) -> dict:
+            eng.emit({"type": "node_start", "node": "synthesizer",
+                      "role": "synthesizer", "goal": "大模型直答"})
+            conclusion, reason = "", ""
+            try:
+                conclusion = await eng.llm_stream(
+                    "你是平台助手，直接回答用户问题：要点式中文回答，条理清晰。"
+                    "不要编造平台内数据（台账数值/图谱关系），涉及平台内数据时"
+                    "建议用户改用多智能体研判。",
+                    task,
+                    on_token=lambda t: eng.emit({"type": "token", "content": t}),
+                    timeout=SYNTH_TIMEOUT,
+                )
+            except RuntimeError as exc:   # llm_stream：LLM 未配置
+                reason = str(exc) or "LLM 未配置"
+            except Exception as exc:      # 超时 / 网络 / SDK 异常
+                reason = f"LLM 调用失败（{type(exc).__name__}）"
+            degraded = not conclusion
+            if degraded:
+                conclusion = (f"直答服务暂不可用（{reason or '未知原因'}），请稍后重试；"
+                              "也可在多智能体页选择完整智能体组合发起研判。")
+                eng.emit({"type": "error", "content": conclusion})
+            eng.emit({"type": "node_done", "node": "synthesizer",
+                      "summary": "直答完成（大模型直连）" if not degraded else "直答降级"})
+            return {"conclusion": conclusion}
+
+        return _fn
+
+    # ── 动态规划（Plan-and-Solve，随组合切换分解策略） ─────────
 
     async def _plan_goals(self, task: str, use_retrieval: bool) -> list[str]:
         """LLM 分解任务为并行子任务；失败回落默认分解。
@@ -293,15 +402,17 @@ class UniversalScenario(MultiAgentScenario):
 
     # ── 节点实现（闭包 engine：emit / llm_stream） ────────────
 
-    def _make_nodes(self, eng: MultiAgentEngine, plan: list[dict], task: str) -> dict:
+    def _make_nodes(self, eng: MultiAgentEngine, plan: list[dict], task: str,
+                    nl_filter: Optional[dict] = None,
+                    rewrite_gate: bool = False) -> dict:
         nodes = {}
         for step in plan:
             if step["role"] == "retriever":
-                nodes[step["node"]] = self._make_kb_retriever(eng, step)
+                nodes[step["node"]] = self._make_kb_retriever(eng, step, rewrite_gate)
             elif step["role"] == "worker":
                 nodes[step["node"]] = self._make_worker(eng, step, task)
             elif step["role"] == "data_agent":
-                nodes[step["node"]] = self._make_data_agent(eng, task)
+                nodes[step["node"]] = self._make_data_agent(eng, task, nl_filter)
             elif step["role"] == "tool_agent":
                 nodes[step["node"]] = self._make_tool_agent(eng, task)
             elif step["role"] == "graph_agent":
@@ -312,21 +423,27 @@ class UniversalScenario(MultiAgentScenario):
                 nodes[step["node"]] = self._make_synthesizer(eng, task)
         return nodes
 
-    def _make_kb_retriever(self, eng: MultiAgentEngine, step: dict):
-        """Retriever-i：检索增强执行——检索知识库语料，命中即素材卡。"""
+    def _make_kb_retriever(self, eng: MultiAgentEngine, step: dict,
+                           rewrite_gate: bool = False):
+        """Retriever-i：检索增强执行——检索知识库语料，命中即素材卡。
+
+        rewrite_gate（kb 模式路由触发）：检索前对子任务做一次轻量改写，
+        改写失败自动回落原查询——门控不拦人。
+        """
         node, goal, domain = step["node"], step["goal"], step["id"]
 
         async def _fn(state: dict) -> dict:
             eng.emit({"type": "node_start", "node": node, "role": "retriever", "goal": goal})
-            chunks = await _search_kb_chunks(goal)
+            query = await _rewrite_query(eng, goal) if rewrite_gate else goal
+            chunks = await _search_kb_chunks(query)
             cards = [_chunk_card(f"ev-{node}-{i}", domain, c)
                      for i, c in enumerate(chunks)]
             eng.emit({"type": "evidence", "domain": domain, "cards": cards})
-            eng.emit({
-                "type": "node_done", "node": node,
-                "summary": (f"全库检索命中 {len(cards)} 条语料"
-                            if cards else "未命中知识库语料"),
-            })
+            summary = (f"全库检索命中 {len(cards)} 条语料"
+                       if cards else "未命中知识库语料")
+            if rewrite_gate and query != goal:
+                summary += "（改写门控已启用）"
+            eng.emit({"type": "node_done", "node": node, "summary": summary})
             return {"evidence": {domain: cards}}
 
         return _fn
@@ -382,17 +499,21 @@ class UniversalScenario(MultiAgentScenario):
 
         return _fn
 
-    def _make_data_agent(self, eng: MultiAgentEngine, task: str):
+    def _make_data_agent(self, eng: MultiAgentEngine, task: str,
+                         nl_filter: Optional[dict] = None):
+        goal = "NL2Filter 结构化取数与统计" if nl_filter else "实体台账结构化查询与统计"
+
         async def _fn(state: dict) -> dict:
             eng.emit({"type": "node_start", "node": "data_agent", "role": "data_agent",
-                      "goal": "实体台账结构化查询与统计"})
-            facts = await _data_facts(task)
+                      "goal": goal})
+            facts = await _data_facts(task, nl_filter)
             eng.emit({"type": "fact", "facts": facts})
             eng.emit({
                 "type": "node_done", "node": "data_agent",
                 "summary": (f"台账命中，产出 {len(facts)} 张数据卡"
                             f"（1 统计 + {len(facts) - 1} 明细）"
-                            if facts else "台账未查询到结构化数据"),
+                            if facts else "台账未查询到结构化数据（NL2Filter 未命中，词频兜底亦空）"
+                            if nl_filter else "台账未查询到结构化数据"),
             })
             return {"facts": facts}
 
@@ -674,8 +795,12 @@ async def _graph_facts(task: str) -> list[dict]:
         return []
 
 
-async def _data_facts(task: str) -> list[dict]:
+async def _data_facts(task: str, nl_filter: Optional[dict] = None) -> list[dict]:
     """实体台账结构化查询（业务无关）：关键词命中 → 聚合统计 + 明细事实卡。
+
+    两级路由接线：nl_filter 非空时先走 NL2Filter 结构化取数
+    （_data_facts_by_filter），未命中 / 抽错 / 异常 → 回落词频老路（本函数主体），
+    即「抽不出/抽错 → 词频老路兜底」。
 
     与 GraphAgent 的差异：不只找「关联实体」，而是给出台账口径的真实数据——
     命中总量、按实体类型聚合计数、最新若干条记录的关键属性，供合成官引用
@@ -684,6 +809,11 @@ async def _data_facts(task: str) -> list[dict]:
     """
     from database import async_session
     from models import Entity
+
+    if nl_filter:
+        facts = await _data_facts_by_filter(nl_filter)
+        if facts:
+            return facts   # 结构化口径命中，无需词频兜底
 
     kws = _keywords(task)
     try:
@@ -762,6 +892,93 @@ async def _data_facts(task: str) -> list[dict]:
             return facts
     except Exception:
         return []
+
+
+async def _data_facts_by_filter(f: dict) -> list[dict]:
+    """NL2Filter 结构化取数：filter 条件精确命中台账（事实卡口径与词频路径一致）。
+
+    条件全部落库执行（entity_type / name 模糊匹配 + time_range 映射
+    created_at 下界）；无可用条件或 0 命中返回 []，由调用方回落词频老路。
+    """
+    from database import async_session
+    from models import Entity
+
+    conds = []
+    if f.get("entity_type"):
+        conds.append(Entity.entity_type.ilike(f"%{f['entity_type']}%"))
+    if f.get("name"):
+        conds.append(Entity.name.ilike(f"%{f['name']}%"))
+    floor, _label = _time_floor(f.get("time_range", ""))
+    if floor:
+        conds.append(Entity.created_at >= floor)   # created_at 为 ISO 字符串，字典序即时间序
+    if not conds:
+        return []
+    try:
+        async with async_session() as db:
+            cond = and_(*conds)
+            total = (await db.execute(
+                select(func.count()).select_from(Entity).where(cond)
+            )).scalar_one()
+            if total == 0:
+                return []
+            rows = (await db.execute(
+                select(Entity).where(cond)
+                .order_by(Entity.created_at.desc()).limit(DATA_SAMPLE)
+            )).scalars().all()
+
+            note = "、".join(x for x in [
+                f"类型≈{f['entity_type']}" if f.get("entity_type") else "",
+                f"名称≈{f['name']}" if f.get("name") else "",
+                f"时间≥{_time_floor(f.get('time_range', ''))[1]}" if floor else "",
+                f"指标={f['metric']}" if f.get("metric") else "",
+            ] if x)
+            facts = [{
+                "id": "fact-data-agg",
+                "grade": "data_fact",
+                "title": f"台账统计（NL2Filter 精准口径）· 命中 {total} 条",
+                "detail": f"实体台账结构化查询（filter：{note}）：共 {total} 条记录。",
+            }]
+            for e in rows:
+                props = _entity_props(e.properties)
+                kv = "；".join(f"{k}={v}" for k, v in props.items())
+                desc = str(e.description or "")
+                if not kv and desc:
+                    kv = desc[:80]
+                created = str(e.created_at or "—")[:10]
+                facts.append({
+                    "id": f"fact-data-{e.id}",
+                    "grade": "data_fact",
+                    "title": f"{e.entity_type} · {e.name}",
+                    "detail": (f"台账记录（{created}）"
+                               + (f"｜{kv}" if kv else ""))[:200],
+                })
+            return facts
+    except Exception:
+        return []
+
+
+def _time_floor(time_range: str) -> tuple[Optional[str], str]:
+    """time_range 词 → created_at 下界（ISO 字符串可直接比较）与口径标签。"""
+    today = date.today()
+    mapping = {
+        "今天": (today.isoformat(), "今天"),
+        "昨天": ((today - timedelta(days=1)).isoformat(), "昨天"),
+        "本周": ((today - timedelta(days=today.weekday())).isoformat(), "本周"),
+        "本月": (today.replace(day=1).isoformat(), "本月"),
+    }
+    return mapping.get((time_range or "").strip(), (None, ""))
+
+
+async def _rewrite_query(eng: MultiAgentEngine, goal: str) -> str:
+    """kb 模式检索改写门控：单次轻量改写，失败回落原查询（门控不拦人）。"""
+    try:
+        return await eng.llm_stream(
+            "把检索问题改写成更适合向量检索的独立查询：补全省略指代，保留关键实体"
+            "与意图，去掉口语与格式词。只输出改写后的查询本身，不要任何解释。",
+            goal, timeout=8.0,
+        ) or goal
+    except Exception:
+        return goal
 
 
 def _entity_props(raw: str) -> dict:

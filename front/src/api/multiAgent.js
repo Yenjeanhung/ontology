@@ -5,8 +5,10 @@
  * - GET  /api/agent/multi/scenarios                          已注册场景列表
  * - GET  /api/agent/multi/scenarios/{sid}/targets            场景目标列表（通用目标卡）
  * - POST /api/agent/multi/scenarios/{sid}/targets/{tid}/run  对目标发起研判（SSE）
- * - POST /api/agent/multi/scenarios/{sid}/run                自由任务研判（SSE，adhoc 场景）
+ * - POST /api/agent/multi/scenarios/{sid}/run                自由任务研判（SSE，adhoc 场景；支持 session_id 续聊）
  * - GET/POST /api/agent/multi/tasks · PUT/DELETE /tasks/{tid} 任务库（可配置任务提示词模板）
+ * - GET /api/agent/multi/sessions · /sessions/{sid}/messages  协作会话：列表 / 历史消息（回放）
+ * - POST /api/agent/multi/sessions/{sid}/rename · DELETE      会话重命名 / 删除
  * - GET/POST /api/agent/multi/mcp/servers · PUT/DELETE /mcp/servers/{sid}  MCP 注册中心（服务器 CRUD）
  * - POST /api/agent/multi/mcp/test / mcp/inspect               MCP 连接测试 / 状态巡检
  *
@@ -43,18 +45,60 @@ export async function streamScenarioRun(scenarioId, targetId, { onEvent, signal 
 }
 
 /**
- * 订阅多智能体 SSE 流——自由任务模式（adhoc 场景，自由编制）。
+ * 订阅多智能体 SSE 流——自由任务模式（adhoc 场景，自由组合）。
  * @param {string} scenarioId
  * @param {string} task 任务描述全文（任务类型不限：研判/写作/总结/问答…）
- * @param {string[]} agents 可选能力智能体 id 列表（空数组 = 后端默认编制）
+ * @param {string[]} agents 可选能力智能体 id 列表（空数组 = 后端默认组合）
  * @param {{ onEvent?: (evt: object) => void, signal?: AbortSignal }} handlers
  */
-export async function streamTaskRun(scenarioId, task, agents = [], { onEvent, signal } = {}) {
+export async function streamTaskRun(scenarioId, task, agents = [], { onEvent, signal, sessionId } = {}) {
   await _stream(
     `${API}/api/agent/multi/scenarios/${encodeURIComponent(scenarioId)}/run`,
-    { task, agents },
+    { task, agents, ...(sessionId ? { session_id: sessionId } : {}) },
     { onEvent, signal },
   )
+}
+
+// ─────────────────────── 协作会话（协作历史 / 短期记忆） ───────────────────────
+
+export async function listMultiSessions() {
+  const res = await fetch(`${API}/api/agent/multi/sessions`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '加载协作历史失败'))
+  }
+  return res.json()
+}
+
+export async function listMultiSessionMessages(sessionId) {
+  const res = await fetch(`${API}/api/agent/multi/sessions/${encodeURIComponent(sessionId)}/messages`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '加载会话消息失败'))
+  }
+  return res.json()
+}
+
+export async function renameMultiSession(sessionId, title) {
+  const res = await fetch(`${API}/api/agent/multi/sessions/${encodeURIComponent(sessionId)}/rename`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '重命名会话失败'))
+  }
+  return res.json()
+}
+
+export async function deleteMultiSession(sessionId) {
+  const res = await fetch(`${API}/api/agent/multi/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '删除会话失败'))
+  }
+  return res.json()
 }
 
 // ─────────────────────── 任务库（可配置任务提示词模板） ───────────────────────

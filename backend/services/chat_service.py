@@ -34,11 +34,12 @@ class ChatService:
 
     @staticmethod
     async def create_session(db: AsyncSession, agent_id: str = "", kb_id: str = "",
-                             user_id: str = "", title: str = "") -> ChatSession:
+                             user_id: str = "", title: str = "", scene: str = "") -> ChatSession:
+        """scene 区分场景：空 = 智能体问答（默认），multi = 多智能体协作。"""
         session = ChatSession(
             id=_new_id(), agent_id=agent_id or "", kb_id=kb_id or "",
             user_id=user_id or "", title=(title or "").strip()[:200],
-            created_at=_now(), updated_at=_now(),
+            scene=(scene or "").strip(), created_at=_now(), updated_at=_now(),
         )
         db.add(session)
         await db.commit()
@@ -59,11 +60,14 @@ class ChatService:
     @staticmethod
     async def list_sessions(db: AsyncSession, agent_id: str | None = None,
                             kb_id: str | None = None, limit: int = 50,
-                            user_id: str = "") -> list[ChatSession]:
+                            user_id: str = "", scene: str | None = None) -> list[ChatSession]:
         stmt = select(ChatSession)
         if user_id:
             # 会话按属主隔离：只看自己的（存量数据已迁移归属，见 scripts/backfill_chat_sessions_user.py）
             stmt = stmt.where(ChatSession.user_id == user_id)
+        if scene is not None:
+            # 按场景过滤：None=不过滤（含全部），'' =仅普通问答，'multi'=仅多智能体协作
+            stmt = stmt.where(ChatSession.scene == scene)
         if agent_id is not None:
             if agent_id == DEFAULT_AGENT_ID:
                 # 「系统默认」同时包含旧版本未记录 agent_id（空串）的历史会话（查询兜底）

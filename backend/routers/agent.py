@@ -580,11 +580,13 @@ async def test_agent(agent_id: str, req: AgentQueryRequest, db: AsyncSession = D
 
 
 async def _chat_no_kb(query: str, persona: str | None, skills=None,
-                      history=None, summary: str = "", memories=None):
+                      history=None, summary: str = "", memories=None,
+                      use_tools: bool = False):
     """未绑 KB 的智能体：无检索直接 LLM 回答（人设 + 技能）。
 
     不下发 entities/subgraph/chunks 事件（无检索过程，避免前端渲染
     空的「推理过程」卡片与缺失的「来源」引用框），仅 skills + reasoning + token。
+    use_tools=True 时走 L2 工具循环：LLM 可自主调用平台工具检索台账/图谱/全库语料。
     """
     from services.oag_service import (
         CHAT_SYSTEM_PROMPT, _augment_system_prompt, _history_messages, build_system_prompt,
@@ -608,6 +610,17 @@ async def _chat_no_kb(query: str, persona: str | None, skills=None,
     messages = [*_history_messages(history), HumanMessage(content=query)]
     if system_prompt:
         messages.insert(0, SystemMessage(content=system_prompt))
+    # L2 工具循环：人设/技能/记忆为基座 + 工具说明（无预取检索上下文）
+    if use_tools:
+        from services.oag_service import _TOOL_MODE_HEADER, _tool_loop_sse
+        tool_system = (system_prompt or "") + _TOOL_MODE_HEADER.format(
+            facts="（无）", sources="（未绑定知识库，无预取检索上下文）")
+        async for event in _tool_loop_sse(
+            llm, tool_system, query, history=_history_messages(history),
+        ):
+            yield event
+        yield "data: [DONE]\n\n"
+        return
     try:
         async for chunk in llm.astream(messages):
             reasoning = extract_reasoning(chunk)
@@ -725,13 +738,17 @@ async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)
     if MemoryStore.available():
         memories = await MemoryStore.search(req.query, agent_id=agent_scope, user_id=user_id)
 
+    # L2 工具循环开关：请求级 use_tools 优先，未传取全局默认（AGENT_TOOL_LOOP_ENABLED）
+    from config import settings
+    use_tools = settings.AGENT_TOOL_LOOP_ENABLED if req.use_tools is None else req.use_tools
+
     if not kb_id:
-        # 未绑 KB 的智能体：不使用知识库，直接 LLM 按人设+技能回答
-        if not agent:
-            raise HTTPException(400, "缺少 kb_id 或 agent_id")
+        # 未绑 KB：不使用知识库检索，人设+技能直接回答；L2 工具循环下可全局取数
+        # （台账/图谱/全库检索均为全局口径，与页面是否选 KB 无关），支持「不选 KB 提问」。
         inner = _chat_no_kb(
             req.query, persona, skills=skills,
             history=hist["history"], summary=hist["summary"], memories=memories,
+            use_tools=use_tools,
         )
     else:
         kb = await KBService.get(db, kb_id)
@@ -754,6 +771,7 @@ async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)
         inner = OAGService.query_stream(
             kb_id, req.query, kb["name"], ontology_schema, skills, persona=persona,
             history=hist["history"], summary=hist["summary"], memories=memories,
+            use_tools=use_tools,
         )
 
     async def _stream():

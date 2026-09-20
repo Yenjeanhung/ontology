@@ -380,6 +380,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     kb_id VARCHAR DEFAULT '',
     user_id VARCHAR DEFAULT '',
     title VARCHAR(200) DEFAULT '',
+    scene VARCHAR DEFAULT '',
     summary TEXT DEFAULT '',
     summary_until_id VARCHAR DEFAULT '',
     created_at VARCHAR,
@@ -388,6 +389,9 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_agent ON chat_sessions(agent_id);
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_kb ON chat_sessions(kb_id);
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id);
+-- scene 列及其索引由 migration_037 增量创建：schema.sql 每次启动全量执行，
+-- 而 CREATE TABLE IF NOT EXISTS 在存量库上会跳过已存在的表（新列不生效），
+-- 若在此处建 scene 索引会在 ALTER 加列之前执行而报 UndefinedColumnError
 
 CREATE TABLE IF NOT EXISTS chat_messages (
     id VARCHAR PRIMARY KEY,

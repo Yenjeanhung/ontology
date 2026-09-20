@@ -67,7 +67,7 @@ loop ≤ TOOL_LOOP_MAX_ITERATIONS 轮:
 与既有取证成员（Retriever/DataAgent/GraphAgent）的本质差异：**后三者的取数
 路径由代码写死，ToolAgent 由 LLM 在循环中自主规划工具调用**。
 
-- 编制：能力智能体 `tool_agent`（`OPTIONAL_AGENTS`，前端组队器自动出现）；
+- 组合：能力智能体 `tool_agent`（`OPTIONAL_AGENTS`，前端组队器自动出现）；
   并行角色（`PARALLEL_ROLES`），与其它取证节点同 superstep 执行；
 - 产出：每次工具调用 → 一张工具事实卡（`grade=tool_result`，前端「工具产出」
   tab），进入黑板 facts，与图谱/台账事实同一编号体系，供 Synthesizer 以

@@ -104,6 +104,83 @@ OAG_USER_TEMPLATE = """【图谱事实】
 
 请根据以上图谱事实与参考资料回答问题："""
 
+# ───────────────── L2 工具循环（agent loop + tools） ─────────────────
+# 工具模式的 system 结构：人设/技能/记忆 + 检索上下文（预取） + 工具说明；
+# user 消息为纯问题（检索上下文已前置到 system，避免与工具轮次的消息混排）。
+_TOOL_MODE_HEADER = """
+
+【图谱事实】
+{facts}
+
+【参考资料】
+{sources}
+
+【平台工具】
+你可以调用平台工具获取实时或补充数据，仅在必要时调用，无需每次都调：
+- data_query：实体台账结构化统计（问数量/分类统计/明细等真实数据时必须调用，禁止凭资料估算数字）；
+- kb_search：跨全部知识库的向量检索（上述参考资料不足时补充）；
+- graph_search：实体图谱关系检索（实体关联/依赖结构问题补充）；
+- 其余以工具清单为准（可能含 MCP 接入的外部工具）。
+要求：
+1. 工具返回数据与检索上下文冲突时，以工具返回为准并明确指出差异；
+2. 引用检索上下文仍按 [来源N]/[事实] 标注；来自工具的数据须注明工具名，如（台账 data_query）；
+3. 依据充分时直接回答，不要为调工具而调工具。
+"""
+
+
+async def _tool_loop_sse(llm, system_prompt: str, query: str, history=None):
+    """L2 工具循环的 SSE 封装：工具事件即时下发 + 结束后汇总 + 最终回答。
+
+    - PlatformTools 异步上下文内注册内置工具（kb_search/graph_search/data_query）
+      与 MCP 远程工具，进入时下发 tools 事件（前端展示可用工具）；
+    - run_tool_loop 的 tool_call / tool_result 事件经队列转为 SSE 逐条下发；
+    - 循环结束下发 tool_calls 汇总（含结构化 raw，供素材卡渲染），final_text
+      作为一次性 token 事件下发（与问答页流式渲染协议兼容）。
+    """
+    from services.agent_loop import run_tool_loop
+    from services.tool_registry import PlatformTools
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def _on_event(evt: dict) -> None:
+        queue.put_nowait(evt)
+
+    try:
+        async with PlatformTools() as pt:
+            yield _sse({"type": "tools", "tools": pt.registry.describe(),
+                        "mcp_status": pt.mcp_status})
+            task = asyncio.create_task(run_tool_loop(
+                llm, pt.registry, system_prompt, query, history=history,
+                on_event=_on_event,
+            ))
+            while not task.done() or not queue.empty():
+                try:
+                    evt = await asyncio.wait_for(queue.get(), timeout=0.2)
+                except asyncio.TimeoutError:
+                    continue
+                yield _sse({**evt})
+            try:
+                result = await task
+            except RuntimeError as exc:   # LLM 未配置等致命错误
+                yield _sse({"type": "token", "content": f"（工具循环无法启动：{exc}）"})
+                return
+    except Exception:
+        logger.exception("agent tool loop failed")
+        yield _sse({"type": "token", "content": "\n\n[工具调用循环执行出错]"})
+        return
+
+    if result.degraded and result.degrade_note:
+        logger.warning("Agent tool loop degraded: %s", result.degrade_note)
+        yield _sse({"type": "tool_degrade", "note": result.degrade_note})
+    if result.calls:
+        yield _sse({"type": "tool_calls", "calls": [
+            {"name": c.name, "arguments": c.arguments, "ok": c.ok,
+             "error": c.error, "duration_ms": c.duration_ms, "raw": c.raw}
+            for c in result.calls
+        ]})
+    if result.final_text:
+        yield _sse({"type": "token", "content": result.final_text})
+
 # 图谱事实文本的软上限（字符），避免 prompt 过长
 _FACTS_CHAR_BUDGET = 1600
 
@@ -278,13 +355,17 @@ async def _link_entities(kb_id: str, query: str, vector_chunk_ids: list[str]) ->
 class OAGService:
     @staticmethod
     async def query_stream(kb_id: str, query: str, kb_name: str, ontology_schema, skills=None,
-                           persona=None, history=None, summary: str = "", memories=None):
+                           persona=None, history=None, summary: str = "", memories=None,
+                           use_tools: bool = False):
         """智能体查询（SSE 流式）：推理过程 → 流式回答。
 
         ontology_schema 由路由层预加载；skills 由 SkillService.resolve 预加载。
         persona 为智能体自定义人设（覆盖 OAG_SYSTEM_PROMPT），空则用默认人设。
         history 为会话历史（[{role, content}]，旧→新），summary 为滚动摘要，
         memories 为 mem0 长期记忆事实；三者拼接为多轮上下文注入 prompt。
+        use_tools=True 时（L2 工具循环）：检索管线照跑（引用体系不变），生成阶段
+        换为 agent loop——LLM 可自主调用平台工具补充检索；KB 未命中不再短路，
+        允许工具兜底后回答。
         """
         skills = skills or []
         if not settings.OAG_ENABLED:
@@ -561,7 +642,7 @@ class OAGService:
         })
         yield _sse({"type": "chunks", "chunks": final_chunks})
 
-        if not final_chunks:
+        if not final_chunks and not use_tools:
             yield _sse({"type": "token", "content": "在知识库与图谱中均未找到相关内容。"})
             yield "data: [DONE]\n\n"
             return
@@ -571,6 +652,21 @@ class OAGService:
         )
         context_parts = [f"[来源{c['index']}]\n{c['text']}" for c in final_chunks]
         context_with_sources = "\n\n".join(context_parts)
+
+        # L2 工具循环：检索上下文前置到 system，user 为纯问题，LLM 自主调用平台工具
+        if use_tools:
+            tool_system = system_prompt + _TOOL_MODE_HEADER.format(
+                facts=facts_text,
+                sources=context_with_sources
+                or "（检索管线未命中语料，可调用 kb_search / data_query 补充）",
+            )
+            async for event in _tool_loop_sse(
+                llm, tool_system, query, history=_history_messages(history),
+            ):
+                yield event
+            yield "data: [DONE]\n\n"
+            return
+
         prompt = OAG_USER_TEMPLATE.format(
             subgraph_facts=facts_text,
             context_with_sources=context_with_sources,
@@ -602,7 +698,8 @@ class OAGService:
 
 
     @staticmethod
-    async def run(kb_id: str, query: str, kb_name: str, ontology_schema, skills=None, persona=None) -> dict:
+    async def run(kb_id: str, query: str, kb_name: str, ontology_schema, skills=None, persona=None,
+                  use_tools: bool = False) -> dict:
         """非流式：完整执行 OAG 管线，返回 {answer, chunks, entities, subgraph}。
 
         供工作流引擎等需要「拿到完整结果」的调用方使用；内部复用 query_stream，
@@ -612,7 +709,8 @@ class OAGService:
         chunks: list[dict] = []
         entities: list[dict] = []
         subgraph: dict | None = None
-        async for s in OAGService.query_stream(kb_id, query, kb_name, ontology_schema, skills, persona):
+        async for s in OAGService.query_stream(kb_id, query, kb_name, ontology_schema,
+                                               skills, persona, use_tools=use_tools):
             if not s.startswith("data: "):
                 continue
             payload = s[len("data: "):].strip()

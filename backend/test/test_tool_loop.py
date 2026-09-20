@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from services.agent_loop import ToolCallRecord, run_tool_loop
 from services.tool_registry import Tool, ToolRegistry
@@ -172,6 +172,20 @@ def test_loop_max_iterations_forced_finish():
     # 事件外抛：tool_call / tool_result 各两次
     assert sum(1 for e in events if e["type"] == "tool_call") == 2
     assert sum(1 for e in events if e["type"] == "tool_result") == 2
+
+
+def test_loop_history_messages_inserted():
+    """history 消息应插入 System 之后、当前问题之前（多轮对话支持）。"""
+    reg = ToolRegistry()
+    llm = FakeLLM([AIMessage(content="带历史的回答")])
+    history = [HumanMessage(content="上一问"), AIMessage(content="上一答")]
+    result = asyncio.run(run_tool_loop(llm, reg, system="s", user="u", history=history))
+    assert result.final_text == "带历史的回答"
+    seen = llm.seen_messages[0]
+    # 顺序：System → history(Human, AI) → Human(当前问题)
+    assert [type(m).__name__ for m in seen] == ["SystemMessage", "HumanMessage", "AIMessage", "HumanMessage"]
+    assert seen[-1].content == "u"
+    assert seen[1].content == "上一问"
 
 
 def test_loop_degrade_when_bind_fails():

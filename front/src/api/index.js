@@ -423,13 +423,16 @@ export async function queryRagStream(kbId, query, { onChunks, onToken }) {
 }
 
 // 智能体（OAG）流式问答：比 queryRagStream 多 entities / subgraph / session 三类事件
-export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, onChunks, onToken, onReasoning, onSkills, onSession, skillIds, agentId, sessionId } = {}) {
+// useTools=true 开启 L2 工具循环：额外收到 tools（可用清单）/ tool_call / tool_result /
+// tool_calls（汇总含 raw）/ tool_degrade（模型不支持工具的降级说明）事件
+export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, onChunks, onToken, onReasoning, onSkills, onSession, onToolEvent, skillIds, agentId, sessionId, useTools } = {}) {
   const res = await fetch(`${API}/api/agent/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       query, kb_id: kbId, skill_ids: skillIds || [],
       agent_id: agentId || null, session_id: sessionId || null,
+      use_tools: useTools ?? null,
     }),
   })
   if (!res.ok) {
@@ -462,6 +465,7 @@ export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, on
         else if (data.type === 'chunks') onChunks?.(data.chunks)
         else if (data.type === 'reasoning') onReasoning?.(data.content)
         else if (data.type === 'token') onToken?.(data.content)
+        else if (data.type.startsWith('tool')) onToolEvent?.(data)
       } catch { /* skip malformed lines */ }
     }
   }

@@ -64,11 +64,13 @@ async def run_tool_loop(
     turn_timeout: float = 120.0,
     tool_timeout: Optional[float] = None,
     on_event: Optional[Callable[[dict], None]] = None,
+    history: Optional[list] = None,
 ) -> ToolLoopResult:
     """运行工具调用循环，返回最终回答与全部工具调用记录。
 
     - max_iterations：LLM 轮数上限（默认取 settings.TOOL_LOOP_MAX_ITERATIONS）；
     - on_event：过程事件回调，事件类型 tool_call / tool_result / tool_degrade；
+    - history：多轮对话的 LangChain 消息序列（旧→新），插入 System 之后、当前问题之前；
     - RuntimeError（LLM 未配置）原样上抛，其余 LLM 异常折入 final_text 降级返回。
     """
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -94,7 +96,7 @@ async def run_tool_loop(
             _emit({"type": "tool_degrade", "note": result.degrade_note})
             tool_llm = llm
 
-    messages = [SystemMessage(content=system), HumanMessage(content=user)]
+    messages = [SystemMessage(content=system), *(history or []), HumanMessage(content=user)]
 
     for iteration in range(1, max_iterations + 1):
         result.iterations = iteration
