@@ -28,7 +28,7 @@ const itemLoading = ref(false)
 const fileInput = ref(null)
 
 const editDialog = ref({ visible: false, id: null, name: '', description: '', default_kb_id: '', loading: false })
-const itemDialog = ref({ visible: false, id: null, question: '', reference: '', kb_id: '', loading: false })
+const itemDialog = ref({ visible: false, id: null, question: '', reference: '', loading: false })
 const deleteDialog = ref({ visible: false, id: null, name: '', loading: false })
 const editing = ref(null)          // 行内编辑：{ id, field, value }
 
@@ -115,17 +115,17 @@ async function doDelete() {
 
 // ── 条目操作 ──
 function openAddItem() {
-  itemDialog.value = { visible: true, id: null, question: '', reference: '', kb_id: '', loading: false }
+  itemDialog.value = { visible: true, id: null, question: '', reference: '', loading: false }
 }
 function openEditItem(it) {
-  itemDialog.value = { visible: true, id: it.id, question: it.question, reference: it.reference, kb_id: it.kb_id, loading: false }
+  itemDialog.value = { visible: true, id: it.id, question: it.question, reference: it.reference, loading: false }
 }
 async function saveItem() {
   const d = itemDialog.value
   if (!d.question.trim()) { toast.error('问题不能为空'); return }
   d.loading = true
   try {
-    const payload = { question: d.question.trim(), reference: d.reference, kb_id: d.kb_id }
+    const payload = { question: d.question.trim(), reference: d.reference }
     if (d.id) await updateTestsetItem(current.value.id, d.id, payload)
     else await addTestsetItem(current.value.id, payload)
     toast.success('已保存')
@@ -173,7 +173,6 @@ async function doExport(format) {
   } catch (e) { toast.error(e.message) }
 }
 
-function kbName(id) { return kbs.value.find(k => k.id === id)?.name || id }
 function fmtTime(ts) {
   if (!ts) return ''
   return String(ts).replace('T', ' ').slice(5, 16)
@@ -250,13 +249,12 @@ function fmtTime(ts) {
       <div v-else-if="!items.length" class="empty">暂无条目</div>
       <table v-else class="tbl">
         <thead>
-          <tr><th style="width:45%">问题</th><th style="width:30%">标准答案</th><th>知识库</th><th>来源</th><th>启用</th><th style="width:150px">操作</th></tr>
+          <tr><th style="width:55%">问题</th><th style="width:30%">标准答案</th><th>来源</th><th>启用</th><th style="width:150px">操作</th></tr>
         </thead>
         <tbody>
           <tr v-for="it in items" :key="it.id">
             <td class="q-cell" :title="it.question"><span class="clamp">{{ it.question }}</span></td>
             <td class="q-cell dim" :title="it.reference"><span class="clamp">{{ it.reference || '—' }}</span></td>
-            <td class="dim">{{ it.kb_id ? kbName(it.kb_id) : '默认' }}</td>
             <td>
               <span class="tag" :class="{ flow: it.origin === 'badcase' }">{{ ORIGIN_LABEL[it.origin] || it.origin }}</span>
             </td>
@@ -302,11 +300,6 @@ function fmtTime(ts) {
         <textarea v-model="itemDialog.question" class="ipt" rows="2" placeholder="用户提问" />
         <label>标准答案（reference）</label>
         <textarea v-model="itemDialog.reference" class="ipt" rows="4" placeholder="评测集缺标注时，需 reference 的指标会被跳过" />
-        <label>知识库覆盖</label>
-        <select v-model="itemDialog.kb_id" class="ipt">
-          <option value="">用评测集默认知识库</option>
-          <option v-for="k in kbs" :key="k.id" :value="k.id">{{ k.name }}</option>
-        </select>
       </div>
       <template #footer>
         <button class="btn" @click="itemDialog.visible = false">取消</button>

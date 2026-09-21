@@ -1,0 +1,27 @@
+# DPO 偏好对齐训练（第二阶段）：在 SFT 合并模型上继续 LoRA 训练
+# 前置：§3.1 SFT 已完成并合并导出（qwen06b-router-merged）——先教会说话，再教偏好
+# 模型：AutoDL 实例上是 scp 上传的 SFT 合并产物；本机复训改为
+#       D:/myWorkspace/AI_project/ontology/doc/模型微调/qwen06b-router-merged
+model_name_or_path: /root/autodl-tmp/models/qwen06b-router-merged
+stage: dpo
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target: all
+pref_beta: 0.1                        # DPO 的 KL 约束强度 β：偏离参考模型（SFT 模型）的惩罚权重，
+                                      # 0.1 为常用值——过大学不动偏好、过小遗忘 SFT 能力
+dataset: ontology_router_dpo
+template: qwen3                       # 必须与 SFT / 线上推理同模板，否则三处不同源效果劣化
+cutoff_len: 1024
+max_samples: 100000
+learning_rate: 5.0e-6                 # DPO 学习率要比 SFT 小 1~2 个量级（SFT 2e-4），过大会把 SFT 打崩
+num_train_epochs: 2                   # DPO 过训典型症状：chosen/rejected rewards margin 拉满但生成退化，宁少勿多
+per_device_train_batch_size: 4        # DPO 每样本算 chosen+rejected 两次前向，等效显存约 SFT 的两倍
+gradient_accumulation_steps: 4
+warmup_ratio: 0.03
+logging_steps: 10
+save_steps: 100
+output_dir: saves/qwen06b-router-dpo
+plot_loss: true
