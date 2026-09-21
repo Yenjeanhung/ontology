@@ -209,6 +209,53 @@ async def routing_decision(task: str) -> dict:
     return out
 
 
+# ── 任务澄清判定（第三复用：同 0.6B 服务多一档提示词模式） ──────────────
+
+_CLARIFY_SYSTEM = (
+    "你是任务澄清器。判断用户的任务是否缺少完成所必需的关键信息"
+    "（如对象/范围/时间范围/统计口径/输出形式等）。信息充足只输出 {\"need_clarify\": false}；"
+    "信息不足输出 {\"need_clarify\": true, \"question\": \"一句话澄清提问\", "
+    "\"options\": [\"候选项1\", \"候选项2\", \"候选项3\"]}，候选项 2~4 个、每个不超过 20 字。"
+    "只输出 JSON，不要输出任何其他文字。"
+)
+
+
+async def clarify_check(task: str) -> Optional[dict]:
+    """澄清判定（永不抛异常）：任务信息不足返回 {"question", "options"}，充足/不可用返回 None。
+
+    复用 0.6B 路由服务（CLARIFY_URL → NL2FILTER_URL → INTENT_ROUTER_URL 同源策略）；
+    开关 CLARIFY_ENABLED=False 或服务不可达/输出不合法时一律放行不澄清（行为与接入前一致）。
+    """
+    if not getattr(settings, "CLARIFY_ENABLED", True):
+        return None
+    url = ((getattr(settings, "CLARIFY_URL", "") or "").strip()
+           or (getattr(settings, "NL2FILTER_URL", "") or "").strip()
+           or (getattr(settings, "INTENT_ROUTER_URL", "") or "").strip())
+    if not url:
+        return None
+    try:
+        raw = await _chat_once(
+            _CLARIFY_SYSTEM, task,
+            url=url,
+            model=getattr(settings, "CLARIFY_MODEL", "qwen3-0.6b-router"),
+            timeout=float(getattr(settings, "CLARIFY_TIMEOUT", 5.0)),
+            tag="澄清判定",
+        )
+    except Exception as exc:
+        logger.warning("[澄清判定] 0.6B 调用失败（%s: %s）→ 不澄清直接执行",
+                       type(exc).__name__, exc)
+        return None
+    data = _parse_json_block(raw)
+    if not isinstance(data, dict) or not data.get("need_clarify"):
+        return None
+    question = str(data.get("question") or "").strip()
+    options = [str(o).strip() for o in (data.get("options") or []) if str(o).strip()][:4]
+    if not question or not options:
+        return None
+    logger.info("[澄清判定] 任务信息不足 → 澄清：%s 选项：%s", _short(question, 60), options)
+    return {"question": question, "options": options}
+
+
 def _time_floor(time_range: str) -> tuple[Optional[str], str]:
     """time_range 词 → created_at 下界（ISO 字符串可直接比较）与口径标签。"""
     mapping = {

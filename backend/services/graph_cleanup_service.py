@@ -3,21 +3,30 @@
 设计要点：
 - 建议为确定性启发式（名称相似度聚簇 + 低价值/孤岛识别 + 通用关系黑名单），不入库；
   由前端审核后显式 apply。
-- 合并 / 删除均复用 ``EntityService``，Kùzu 同步经 ``providers.graph_store`` 公开函数，
-  不与具体图库绑定（现 Kùzu，将来可换 Neo4j）。
+- 合并建议含两条通道：
+  * 字面通道——SequenceMatcher 名称相似度聚簇（近形变体）；
+  * 语义通道——「实体名+描述」embedding 近邻比对（简称/全称/别名等语义同、字面远的重复），
+    向量缓存在 entity_vectors 派生表，仅增量编码，可整表重建（见本文件 _semantic_merge_suggestions）。
+- 合并 / 删除均复用 ``EntityService``，图库同步经 ``providers.graph_store`` 公开函数，
+  不与具体图库绑定（Kùzu / Neo4j 均可）。
 """
 
 from __future__ import annotations
 
+import base64
 import difflib
+import hashlib
 import logging
 import re
+from datetime import datetime
 
-from sqlalchemy import func, select
+import numpy as np
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from models import Entity, Ontology, Relation
+from models import Entity, EntityVector, Ontology, Relation
+from providers.embedding import create_embeddings
 from services.entity_service import EntityService
 from services.graph_extraction_service import (
     _generic_relation_blocklist,
@@ -66,6 +75,65 @@ def _are_distinct_products(a: str, b: str) -> bool:
     if code_a and code_b and brand_a and brand_a == brand_b and code_a != code_b:
         return True
     return False
+
+
+# ===== 语义实体对齐：embedding 缓存 + blocking + verification =====
+# 设计见 doc/知识库/实体语义对齐与知识入库流程.md §4-§5
+# - 缓存：entity_vectors 派生表存「实体名+描述」向量（float32→base64，方言无关），
+#   content_hash（模型|文本）惰性失效，可整表 DROP 重建；
+# - 增量编码：仅对无有效缓存的实体调用嵌入模型（编码是主要成本），
+#   首轮全量，之后每轮只算新增/变更部分，单轮成本只随增量线性增长；
+# - blocking：比对在向量缓存之上按类型做矩阵乘取 top-k 近邻为候选——常规类型全量比对
+#   （建议与字面通道一致地可重复出现），单类型超过矩阵上限才退化为只比增量侧，
+#   十万级实体按类型分桶后单类型矩阵乘毫秒~百毫秒级；
+# - verification：候选对过余弦阈值 + 防误合规则（_are_distinct_products）后聚簇出建议。
+
+
+def _entity_embed_text(name: str, description: str) -> str:
+    """参与编码的实体文本：名称 + 截断后的描述。"""
+    limit = settings.GRAPH_CLEANUP_SEMANTIC_TEXT_MAXLEN
+    return f"{name or ''}\n{(description or '')[:limit]}"
+
+
+def _embed_content_hash(text: str) -> str:
+    """缓存失效指纹：provider/模型名参与哈希，换嵌入模型自动全量失效。"""
+    basis = f"{settings.EMBEDDING_PROVIDER}|{settings.EMBEDDING_MODEL}|{text}"
+    return hashlib.sha1(basis.encode("utf-8")).hexdigest()
+
+
+def _embedding_model_tag() -> str:
+    return f"{settings.EMBEDDING_PROVIDER}:{settings.EMBEDDING_MODEL}"
+
+
+def _encode_vector(vec) -> str:
+    return base64.b64encode(np.asarray(vec, dtype=np.float32).tobytes()).decode("ascii")
+
+
+def _decode_vector(raw: str):
+    """base64 → float32 ndarray；损坏/为空返回 None（调用方视为过期重算）。"""
+    try:
+        arr = np.frombuffer(base64.b64decode(raw), dtype=np.float32)
+        return arr if arr.size else None
+    except Exception:
+        return None
+
+
+def _make_union_find(ids: list[str]):
+    """并查集（路径压缩）：返回 (find, union)，闭包共享同一 parent 表。"""
+    parent = {x: x for x in ids}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    return find, union
 
 
 class GraphCleanupService:
@@ -160,7 +228,27 @@ class GraphCleanupService:
                         {"id": m.id, "name": m.name, "degree": deg(m.id)} for m in members
                     ],
                     "reason": "名称高度相似",
+                    "source": "literal",
                 })
+
+        # ----- 合并建议（语义通道）：语义同、字面远的重复（简称/全称/别名）。
+        # 与字面通道去重：语义组若与已有建议存在成员交集则整组跳过——
+        # 宁少勿重，避免同一实体出现在多个建议组导致 apply 时二次合并踩已删实体；
+        # 被跳过的组合并执行后实体消失，后续轮次自然收敛。-----
+        semantic_added = 0
+        if merge_groups or ents:
+            semantic_groups = await GraphCleanupService._semantic_merge_suggestions(
+                db, ents, degree
+            )
+            covered: set[str] = set()
+            for g in merge_groups:
+                covered.add(g["canonical_id"])
+                covered.update(m["id"] for m in g["members"])
+            for g in semantic_groups:
+                if covered & {m["id"] for m in g["members"]}:
+                    continue
+                merge_groups.append(g)
+                semantic_added += 1
 
         # ----- 删除实体建议：仅低价值实体名（日期/数值/整句/URL/版本号）。
         # 刻意「不」建议删除度数=0 的孤岛节点：删通用关系后大量实体会临时变成孤岛，
@@ -197,10 +285,175 @@ class GraphCleanupService:
                 "entity_total": len(ents),
                 "relation_total": len(rels),
                 "merge_group_count": len(merge_groups),
+                "semantic_merge_group_count": semantic_added,
                 "delete_entity_count": len(delete_entities),
                 "delete_relation_count": len(delete_relations),
             },
         }
+
+    @staticmethod
+    async def _semantic_merge_suggestions(
+        db: AsyncSession,
+        ents: list[Entity],
+        degree: dict[str, int],
+    ) -> list[dict]:
+        """语义通道：对「语义同、字面远」的重复实体（简称/全称/别名）生成合并建议。
+
+        增量编码：entity_vectors 中无有效缓存（缺失 / content_hash 过期 / 解码失败）的实体
+        视为本轮增量，仅对增量调用嵌入模型（编码是主要成本，首轮全量、之后线性增长）；
+        比对在向量缓存之上按类型做矩阵乘：常规类型全量比对（建议可重复出现，与字面通道
+        行为一致），超过矩阵上限的超大类型只比增量侧。
+
+        写路径仅涉及派生的 entity_vectors 缓存表（建议本身仍不入库），不触碰业务表；
+        缓存写入失败只降级为「本轮不产出语义建议」，不影响清洗主流程。
+        """
+        if not settings.GRAPH_CLEANUP_SEMANTIC_ENABLED or len(ents) < 2:
+            return []
+        if len(ents) > settings.GRAPH_CLEANUP_SEMANTIC_MAX_ENTITIES:
+            logger.warning(
+                "[语义对齐] 实体数 %d 超过上限 %d，本轮跳过语义通道"
+                "（如需放开可调大 GRAPH_CLEANUP_SEMANTIC_MAX_ENTITIES）",
+                len(ents), settings.GRAPH_CLEANUP_SEMANTIC_MAX_ENTITIES,
+            )
+            return []
+
+        threshold = settings.GRAPH_CLEANUP_SEMANTIC_THRESHOLD
+        topk = max(1, settings.GRAPH_CLEANUP_SEMANTIC_TOPK)
+
+        # 1. 文本与内容指纹（模型名参与哈希，换模型自动全量失效）
+        texts = {e.id: _entity_embed_text(e.name, e.description or "") for e in ents}
+        hashes = {eid: _embed_content_hash(t) for eid, t in texts.items()}
+        model_tag = _embedding_model_tag()
+
+        # 2. 加载向量缓存（IN 分批，兼容 SQLite 变量数上限）
+        cached: dict[str, EntityVector] = {}
+        ent_ids = [e.id for e in ents]
+        for i in range(0, len(ent_ids), 500):
+            rows = await db.execute(
+                select(EntityVector).where(EntityVector.entity_id.in_(ent_ids[i:i + 500]))
+            )
+            for row in rows.scalars():
+                cached[row.entity_id] = row
+
+        # 3. 分桶：有效缓存 / 待编码（缺失、过期、模型不匹配、解码失败）
+        valid_vecs: dict[str, np.ndarray] = {}
+        stale_ids: list[str] = []
+        for e in ents:
+            row = cached.get(e.id)
+            arr = _decode_vector(row.vec) if row else None
+            if (
+                row is not None
+                and arr is not None
+                and row.model == model_tag
+                and row.content_hash == hashes[e.id]
+            ):
+                valid_vecs[e.id] = arr
+            else:
+                stale_ids.append(e.id)
+
+        # 4. 增量编码并回写缓存（同步阻塞调用，与项目内其他 embed 用法一致；
+        #    merge 按主键 upsert，重复运行幂等）
+        new_vecs: dict[str, np.ndarray] = {}
+        if stale_ids:
+            try:
+                embeddings = create_embeddings()
+            except Exception as exc:
+                logger.warning("[语义对齐] 嵌入模型不可用，跳过语义通道: %s", exc)
+                return []
+            kb_of = {e.id: (e.kb_id or "") for e in ents}
+            batch = 64
+            for i in range(0, len(stale_ids), batch):
+                part = stale_ids[i:i + batch]
+                try:
+                    vectors = embeddings.embed_documents([texts[eid] for eid in part])
+                except Exception as exc:
+                    logger.warning("[语义对齐] 向量编码失败，跳过语义通道: %s", exc)
+                    return []
+                for eid, vec in zip(part, vectors):
+                    new_vecs[eid] = np.asarray(vec, dtype=np.float32)
+            try:
+                for eid, arr in new_vecs.items():
+                    await db.merge(EntityVector(
+                        entity_id=eid,
+                        kb_id=kb_of.get(eid, ""),
+                        vec=_encode_vector(arr),
+                        dim=int(arr.size),
+                        model=model_tag,
+                        content_hash=hashes[eid],
+                        updated_at=datetime.now().isoformat(),
+                    ))
+                await db.commit()
+            except Exception as exc:
+                logger.warning("[语义对齐] 向量缓存回写失败（不影响建议生成，下轮重算）: %s", exc)
+                await db.rollback()
+
+        all_vecs = {**valid_vecs, **new_vecs}
+        if len(all_vecs) < 2:
+            return []
+
+        # 5. 逐类型 blocking + verification（同类型才可能同实体）
+        # 编码只做增量（步骤 4），比对尽量全量：向量已缓存后 n×n 只是矩阵乘（毫秒~百毫秒级），
+        # 保证建议与字面通道一致地「每次都给」（用户未处理也不消失）；
+        # 单类型超过矩阵上限时退化为只比增量侧，防超大类型的 n² 矩阵内存。
+        id2ent = {e.id: e for e in ents}
+        by_type: dict[str, list[Entity]] = {}
+        for e in ents:
+            by_type.setdefault(e.entity_type or "UNKNOWN", []).append(e)
+
+        type_limit = max(2, settings.GRAPH_CLEANUP_SEMANTIC_TYPE_MATRIX_LIMIT)
+        suggestions: list[dict] = []
+        for etype, group in by_type.items():
+            gid = [e.id for e in group if e.id in all_vecs]
+            if len(gid) < 2:
+                continue
+            new_in_group = [eid for eid in gid if eid in new_vecs]
+            query_ids = gid if len(gid) <= type_limit else new_in_group
+            if not query_ids:
+                continue
+            idx_of = {eid: k for k, eid in enumerate(gid)}
+            mat = np.stack([all_vecs[eid] for eid in gid]).astype(np.float32)
+            norms = np.linalg.norm(mat, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            mat /= norms  # 归一化后点积即余弦相似度
+            sims = mat[[idx_of[eid] for eid in query_ids]] @ mat.T  # (查询侧, 全体)
+
+            find, union = _make_union_find(gid)
+            for r, src in enumerate(query_ids):
+                row = sims[r]
+                row[idx_of[src]] = -1.0  # 排除自身
+                k = min(topk, row.size - 1)
+                if k <= 0:
+                    continue
+                for c in np.argpartition(-row, k)[:k]:
+                    if float(row[c]) < threshold:
+                        continue
+                    dst = gid[int(c)]
+                    if _are_distinct_products(id2ent[src].name, id2ent[dst].name):
+                        continue
+                    union(src, dst)
+
+            clusters: dict[str, list[str]] = {}
+            for eid in gid:
+                clusters.setdefault(find(eid), []).append(eid)
+            for members in clusters.values():
+                if len(members) < 2:
+                    continue
+                # canonical 与字面通道同规则：度数最高，并列取名字最短
+                canonical = sorted(
+                    members, key=lambda eid: (-degree.get(eid, 0), len(id2ent[eid].name or ""))
+                )[0]
+                suggestions.append({
+                    "canonical_id": canonical,
+                    "canonical_name": id2ent[canonical].name,
+                    "entity_type": etype,
+                    "members": [
+                        {"id": m, "name": id2ent[m].name, "degree": degree.get(m, 0)}
+                        for m in members
+                    ],
+                    "reason": "语义相似(名称+描述向量)",
+                    "source": "semantic",
+                })
+        return suggestions
 
     @staticmethod
     async def apply_cleanup(
@@ -256,6 +509,19 @@ class GraphCleanupService:
         # 先删关系、再删实体，避免关系端点先于关系本身失效
         rel_deleted = await EntityService.delete_relations(db, delete_relation_ids or [])
         ent_deleted = await EntityService.delete_entities(db, delete_entity_ids or [])
+
+        # 顺手清理已删实体的向量缓存（派生表，避免残留孤儿行；合并的 merged_ids 实体同样已删）
+        removed_ids: set[str] = set(delete_entity_ids or [])
+        for item in (merges or []):
+            removed_ids.update(item.get("merged_ids") or [])
+        if removed_ids:
+            removed_list = list(removed_ids)
+            for i in range(0, len(removed_list), 500):
+                await db.execute(
+                    delete(EntityVector).where(EntityVector.entity_id.in_(removed_list[i:i + 500]))
+                )
+            await db.commit()
+
         return {
             "kb_id": kb_id,
             "merged": merged_total,

@@ -144,6 +144,7 @@ class TaskBody(BaseModel):
     task: str = ""
     agents: list[str] = []         # 自由组合：可选能力智能体 id 列表（空 = 场景默认组合）
     session_id: str | None = None  # 协作会话 id：传了续聊（校验属主+场景），不传自动新建
+    clarified: bool = False        # True = 澄清补充后的重发，跳过澄清判定（防循环）
 
 
 @router.post("/scenarios/{scenario_id}/run")
@@ -179,7 +180,7 @@ async def run_scenario_task(scenario_id: str, body: TaskBody,
     return _stream_engine(
         engine_source=lambda route, on_step=None: scenario.build_engine_from_task(
             task, agents=body.agents, route=route, on_step=on_step),
-        session=session, task_text=task)
+        session=session, task_text=task, clarified=body.clarified)
 
 
 # ─────────────────────── MCP 注册中心（工具服务器管理） ───────────────────────
@@ -395,7 +396,8 @@ async def delete_multi_session(session_id: str, db: AsyncSession = Depends(get_d
     return {"status": "deleted"}
 
 
-def _stream_engine(engine_source, session=None, task_text: str = "") -> StreamingResponse:
+def _stream_engine(engine_source, session=None, task_text: str = "",
+                   clarified: bool = False) -> StreamingResponse:
     """引擎执行 → SSE 事件流（session 首帧 / team / 过程事件 / done 收尾，公共实现）。
 
     engine_source 可以是引擎实例，也可以是「返回引擎的 awaitable」（自由任务
@@ -494,6 +496,15 @@ def _stream_engine(engine_source, session=None, task_text: str = "") -> Streamin
             # 立即发 team 预告帧（含 route），随后 LLM 规划（可达十余秒）期间前端
             # 可见团队与路由，不再长时间只见一行 planner 干等（过程不可见根因）。
             # route 传给工厂后 build 内不再重复路由（route is None 才自跑）。
+            # ── 澄清判定：任务缺关键信息先问清再开工（clarified=True 的补充重发跳过，防循环） ──
+            if not clarified:
+                from services.multi_agent.router_service import clarify_check
+                _clar = await clarify_check(task_text)
+                if _clar:
+                    yield _sse_evt({"type": "clarify", **_clar})
+                    yield _sse_evt({"type": "done", "conclusion": "", "elapsed_ms": 0})
+                    yield "data: [DONE]\n\n"
+                    return
             yield _sse_evt({"type": "node_start", "node": "planner",
                             "role": "planner", "goal": "任务规划中（LLM 分解子任务）…"})
             from services.multi_agent.router_service import routing_decision

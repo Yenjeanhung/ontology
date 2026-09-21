@@ -74,6 +74,7 @@ function initFromSuggestions(data) {
   groups.value = (data.merge_groups || []).map(g => ({
     entity_type: g.entity_type,
     reason: g.reason,
+    source: g.source || 'literal',
     members: g.members,
     canonicalId: g.canonical_id,
     memberChecked: Object.fromEntries((g.members || []).map(m => [m.id, true])),
@@ -346,7 +347,7 @@ onActivated(async () => {
           <div v-if="!groups.length" class="tab-empty">该类别暂无建议</div>
           <template v-else>
             <div class="section-head">
-              <span class="section-hint">名称高度相似的同类实体，可调整主实体或取消勾选部分成员</span>
+              <span class="section-hint">名称/语义高度相似的同类实体，可调整主实体或取消勾选部分成员</span>
               <button class="btn danger sm" :disabled="!selectedCounts.mergeCount || applying" @click="askCleanup('merge')">
                 仅清洗此类（{{ selectedCounts.mergeCount }}）
               </button>
@@ -355,6 +356,7 @@ onActivated(async () => {
               <div v-for="(g, gi) in pagedGroups" :key="gi" class="group-card">
                 <div class="group-card-head">
                   <span class="type-tag">{{ g.entity_type }}</span>
+                  <span class="source-tag" :class="{ semantic: g.source === 'semantic' }">{{ g.source === 'semantic' ? '语义' : '字面' }}</span>
                   <span class="group-reason">{{ g.reason }}</span>
                   <div class="canonical-pick">
                     <span class="canonical-label">合并为：</span>
@@ -517,6 +519,8 @@ onActivated(async () => {
 .group-card { border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-panel); padding: 12px 14px; }
 .group-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .group-reason { font-size: 12px; color: var(--c-secondary); flex: 1; min-width: 80px; }
+.source-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--c-muted); color: var(--c-secondary); flex-shrink: 0; }
+.source-tag.semantic { background: rgba(59, 130, 246, 0.12); color: #3b82f6; font-weight: 600; }
 .canonical-pick { display: flex; align-items: center; gap: 6px; }
 .canonical-label { font-size: 12px; color: var(--c-secondary); }
 .canonical-select {

@@ -215,10 +215,14 @@ function flashCard(el) {
   flashTimer = setTimeout(() => el.classList.remove('is-flash'), 1600)
 }
 
-/** 图表卡图片点击 → 新窗口打开原图。 */
+const lightbox = ref('')
+
+/** 图片查看：页内弹窗放大（点遮罩/关闭按钮/ESC 关闭），不再跳新窗口。 */
 function openImage(url) {
-  if (url) window.open(url, '_blank')
+  if (url) lightbox.value = url
 }
+function closeLightbox() { lightbox.value = '' }
+function onLbKey(e) { if (e.key === 'Escape') closeLightbox() }
 
 /** 最终结果正文点击：图表角标 → 滚动定位内嵌图表；图表图片 → 看原图；其余走引用 chip 定位。 */
 function answerClick(evt) {
@@ -434,6 +438,10 @@ function handleEvent(r, evt) {
       r.conclusion += evt.content || ''
       scrollChat()
       break
+    case 'clarify':
+      // 任务信息不足：后端先发澄清（含候选项），本轮不启动团队，用户补充后重发
+      r.clarify = { question: evt.question || '', options: evt.options || [], picked: '', text: '' }
+      break
     case 'done':
       if (evt.conclusion && !r.conclusion) r.conclusion = evt.conclusion
       r.elapsed = evt.elapsed_ms || 0
@@ -452,7 +460,7 @@ function handleEvent(r, evt) {
 }
 
 /** 发起一轮团队协作：任务文本 → 追加聊天轮次 → SSE 增量渲染（多轮续聊）。 */
-async function sendWithTask(task, agents = []) {
+async function sendWithTask(task, agents = [], opts = {}) {
   if (reviewing.value || !task) return
   abortCtrl?.abort()
   abortCtrl = new AbortController()
@@ -469,6 +477,7 @@ async function sendWithTask(task, agents = []) {
       onEvent: (evt) => handleEvent(rx, evt),
       signal: abortCtrl.signal,
       sessionId: activeSessionId.value || undefined,
+      clarified: opts.clarified,
     })
   } catch (err) {
     if (err?.name !== 'AbortError') rx.error = err?.message || '协作请求失败'
@@ -477,6 +486,22 @@ async function sendWithTask(task, agents = []) {
     rx.live = false
     runState.value.reviewing = false
   }
+
+/** 澄清卡：选中候选项；「__custom__」= 转自由填写。 */
+function pickClarify(r, opt) {
+  r.clarify.picked = opt
+}
+
+/** 澄清补充提交：原任务 + 补充说明作为新一轮重发（clarified 标记跳过再次澄清，防循环）。 */
+async function sendClarify(r) {
+  const c = r.clarify
+  if (!c) return
+  const extra = c.picked === '__custom__' ? (c.text || '').trim() : c.picked
+  if (!extra) return
+  r.clarifyAnswered = extra
+  r.clarify = null
+  await sendWithTask(`${r.task}（补充说明：${extra}）`, [], { clarified: true })
+}
 }
 
 /** 底部输入区发送：选中任务 = 提示词模板 + 输入问题；未选 = 自由任务。 */
@@ -732,6 +757,7 @@ function renderMd(text, ri) {
 }
 
 onMounted(async () => {
+  window.addEventListener('keydown', onLbKey)
   refreshSessions()
   try {
     const scenarios = await listMultiScenarios()
@@ -746,6 +772,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   abortCtrl?.abort()
   clearTimeout(flashTimer)
+  window.removeEventListener('keydown', onLbKey)
 })
 </script>
 
@@ -917,8 +944,8 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- 成果气泡：干净的最终结论（引用 chip 点击 → 定位素材卡） -->
-          <div v-if="r.conclusion || (r.reviewing && !r.error)" class="ma-reply">
+          <!-- 成果气泡：干净的最终结论（引用 chip 点击 → 定位素材卡）；澄清轮不显示 -->
+          <div v-if="r.conclusion || (r.reviewing && !r.error && !r.clarify)" class="ma-reply">
             <div class="ma-reply-head">
               <span class="ma-reply-team">{{ r.team || '智能体团队' }}</span>
               <span v-if="r.elapsed" class="ma-reply-ms">总耗时 {{ (r.elapsed / 1000).toFixed(1) }}s</span>
@@ -929,6 +956,25 @@ onBeforeUnmount(() => {
             </div>
             <p v-else class="ma-typing">团队协作中…</p>
           </div>
+
+          <!-- 澄清卡：任务信息不足 → 候选项选择（最后一项自由填写），补充后自动续跑 -->
+          <div v-if="r.clarify" class="ma-clarify">
+            <p class="ma-clr-q">{{ r.clarify.question }}</p>
+            <div class="ma-clr-opts">
+              <button v-for="o in r.clarify.options" :key="o" class="ma-clr-opt"
+                      :class="{ active: r.clarify.picked === o }" @click="pickClarify(r, o)">{{ o }}</button>
+              <button class="ma-clr-opt" :class="{ active: r.clarify.picked === '__custom__' }"
+                      @click="pickClarify(r, '__custom__')">自己填写…</button>
+            </div>
+            <div v-if="r.clarify.picked" class="ma-clr-input">
+              <input v-if="r.clarify.picked === '__custom__'" v-model="r.clarify.text" class="ma-clr-txt"
+                     placeholder="补充关键信息后发送…" @keyup.enter="sendClarify(r)" />
+              <button class="ma-clr-send"
+                      :disabled="r.clarify.picked === '__custom__' && !r.clarify.text.trim()"
+                      @click="sendClarify(r)">补充并继续协作</button>
+            </div>
+          </div>
+          <p v-else-if="r.clarifyAnswered" class="ma-clr-answered">已补充「{{ r.clarifyAnswered }}」，见下方新一轮回复</p>
         </div>
       </div>
       <!-- 底部输入区（任务库/组队已上移至协作配置面板） -->
@@ -944,6 +990,14 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
+
+      <!-- 图片查看弹窗：页内放大（点遮罩/×/ESC 关闭），替代跳新窗口 -->
+      <teleport to="body">
+        <div v-if="lightbox" class="ma-lightbox" @click="closeLightbox">
+          <img :src="lightbox" alt="图表原图" @click.stop />
+          <button class="ma-lb-close" title="关闭" @click="closeLightbox">×</button>
+        </div>
+      </teleport>
 
       <!-- 任务编辑弹窗 -->
       <teleport to="body">
@@ -1165,6 +1219,34 @@ onBeforeUnmount(() => {
   padding: 3px 6px; border-top: 1px solid var(--c-border); }
 /* 兜底：正文内联图片一律不超出气泡宽度（图表区 img 由上方更高优先级规则接管） */
 .ma-answer-md :deep(img) { max-width: 100%; height: auto; }
+
+/* ── 澄清卡：任务信息不足 → 选项补充 ── */
+.ma-clarify { border: 1px solid var(--c-border); border-radius: 10px; padding: 10px 12px;
+  background: var(--c-muted); display: flex; flex-direction: column; gap: 8px; max-width: 720px; }
+.ma-clr-q { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--c-fg); }
+.ma-clr-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.ma-clr-opt { border: 1px solid var(--c-border); border-radius: 14px; background: var(--c-panel);
+  color: var(--c-fg); font-size: 12.5px; padding: 4px 12px; cursor: pointer; }
+.ma-clr-opt:hover { border-color: var(--c-accent); color: var(--c-accent); }
+.ma-clr-opt.active { background: var(--c-accent); border-color: var(--c-accent); color: #fff; }
+.ma-clr-input { display: flex; gap: 6px; }
+.ma-clr-txt { flex: 1; border: 1px solid var(--c-border); border-radius: 8px;
+  background: var(--c-panel); color: var(--c-fg); font-size: 12.5px; padding: 5px 10px; outline: none; }
+.ma-clr-txt:focus { border-color: var(--c-accent); }
+.ma-clr-send { border: none; border-radius: 8px; background: var(--c-accent); color: #fff;
+  font-size: 12.5px; padding: 5px 14px; cursor: pointer; }
+.ma-clr-send:disabled { opacity: .45; cursor: default; }
+.ma-clr-answered { margin: 4px 0 0; font-size: 12.5px; color: var(--c-secondary); }
+
+/* ── 图片查看弹窗 ── */
+.ma-lightbox { position: fixed; inset: 0; z-index: 1200; background: rgba(0, 0, 0, .74);
+  display: flex; align-items: center; justify-content: center; padding: 32px; cursor: zoom-out; }
+.ma-lightbox img { max-width: min(1100px, 92vw); max-height: 88vh; object-fit: contain;
+  border-radius: 10px; background: #fff; box-shadow: 0 18px 60px rgba(0, 0, 0, .5); cursor: default; }
+.ma-lb-close { position: absolute; top: 18px; right: 22px; width: 34px; height: 34px;
+  border-radius: 50%; border: none; background: rgba(255, 255, 255, .16); color: #fff;
+  font-size: 20px; line-height: 1; cursor: pointer; }
+.ma-lb-close:hover { background: rgba(255, 255, 255, .3); }
 .ma-typing { margin: 0; font-size: 13px; color: var(--c-secondary); animation: ma-blink 1.2s infinite; }
 
 /* ── 底部输入区 ── */

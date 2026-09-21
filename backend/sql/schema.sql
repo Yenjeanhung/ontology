@@ -278,6 +278,19 @@ CREATE TABLE IF NOT EXISTS relations (
     UNIQUE(kb_id, source_entity_id, relation_type, target_entity_id)
 );
 
+-- 实体向量缓存（语义实体对齐用，派生数据可整表重建；见 doc/知识库/实体语义对齐与知识入库流程.md）
+CREATE TABLE IF NOT EXISTS entity_vectors (
+    entity_id    VARCHAR PRIMARY KEY,
+    kb_id        VARCHAR NOT NULL,
+    vec          TEXT NOT NULL,
+    dim          INTEGER NOT NULL DEFAULT 0,
+    model        VARCHAR NOT NULL DEFAULT '',
+    content_hash VARCHAR NOT NULL DEFAULT '',
+    updated_at   VARCHAR
+);
+
+CREATE INDEX IF NOT EXISTS ix_entity_vectors_kb ON entity_vectors(kb_id);
+
 CREATE TABLE IF NOT EXISTS llm_configs (
     id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL,

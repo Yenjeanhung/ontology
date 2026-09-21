@@ -65,6 +65,18 @@ class Settings(BaseSettings):
     # 图谱清洗安全护栏：单次 apply 删除实体/关系占比超过此值则中止（防止误操作清空整个图谱）。
     # 取 0.8：允许对"噪声为主"的脏图一次清掉大多数噪声，同时拦截接近清空的误操作。
     GRAPH_CLEANUP_MAX_DELETE_RATIO: float = 0.8
+    # ── 语义实体对齐（清洗建议的语义通道）──
+    # 对「实体名+描述」embedding 后做近邻比对（blocking）+ 阈值精判（verification），
+    # 补足字面相似度聚簇抓不到的「语义同、字面远」重复（简称/全称/别名）。
+    # 向量缓存在 entity_vectors 表（派生数据，可整表重建），仅对无有效缓存的实体增量编码。
+    GRAPH_CLEANUP_SEMANTIC_ENABLED: bool = True
+    GRAPH_CLEANUP_SEMANTIC_THRESHOLD: float = 0.90    # 余弦相似度阈值（语义通道从紧，控制误合率）
+    GRAPH_CLEANUP_SEMANTIC_TOPK: int = 5              # 每个待判实体保留的近邻候选数
+    GRAPH_CLEANUP_SEMANTIC_MAX_ENTITIES: int = 20000  # 参与语义通道的实体数上限（超出跳过，防首跑过重）
+    GRAPH_CLEANUP_SEMANTIC_TEXT_MAXLEN: int = 300     # 参与编码的「名称+描述」文本截断长度
+    # 单类型全量比对上限：向量有缓存后比对只是矩阵乘，常规类型每次全量比（建议可重复出现，
+    # 与字面通道行为一致）；超过此值的超大类型退化为只比增量侧，存量随增量逐轮收敛。
+    GRAPH_CLEANUP_SEMANTIC_TYPE_MATRIX_LIMIT: int = 5000
     # ── 实体抽取规则（doc/知识库/实体抽取属性级规则与人工复核设计.md）──
     # 全局兜底实体置信度门槛，0 = 关闭；对象类型 min_confidence > 属性 confidence_threshold 优先
     GRAPH_MIN_ENTITY_CONFIDENCE: float = 0.0
@@ -170,6 +182,11 @@ class Settings(BaseSettings):
     NL2FILTER_MODEL: str = "qwen3-0.6b-router"      # 先与第一级同一个 0.6B；专属 LoRA 部署后在 .env 改名即切换
     NL2FILTER_TIMEOUT: float = 3.0
     KB_REWRITE_GATE: bool = True         # kb 模式下 Retriever 检索前轻量改写（门控）
+    # 任务澄清判定：开跑前 0.6B 判断任务是否缺关键信息，缺则先发澄清选项（用户补充后跳过，防循环）
+    CLARIFY_ENABLED: bool = True
+    CLARIFY_URL: str = ""                # 留空复用 NL2FILTER_URL → INTENT_ROUTER_URL（同服务多模式）
+    CLARIFY_MODEL: str = "qwen3-0.6b-router"
+    CLARIFY_TIMEOUT: float = 5.0
 
     # Rerank 精排：RRF 融合后用 cross-encoder / LLM 二次打分再截断。
     # 默认关闭：cross-encoder 需首次下载模型，开启前请确认 RERANK_MODEL 可访问。

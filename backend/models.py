@@ -589,6 +589,23 @@ class Relation(Base):
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
+# ===== 实体向量缓存（语义实体对齐用，派生数据可整表重建）=====
+# 仅作清洗建议的比对加速，不参与业务语义；由 services/graph_cleanup_service.py 惰性维护：
+# 缓存缺失/过期（content_hash 不匹配）时增量编码并回写。
+# 不设外键（跟随实体实例层风格）；实体被删除后的残留行不参与比对，
+# 由 apply_cleanup 成功后顺手清理。vec 为 float32 → base64 文本，PG/SQLite 方言通用。
+class EntityVector(Base):
+    __tablename__ = "entity_vectors"
+
+    entity_id = Column(String, primary_key=True)              # = entities.id
+    kb_id = Column(String, nullable=False, default="")
+    vec = Column(Text, nullable=False)                        # float32 数组 base64 编码
+    dim = Column(Integer, nullable=False, default=0)
+    model = Column(String, nullable=False, default="")        # 嵌入模型名，换模型自动全量失效
+    content_hash = Column(String, nullable=False, default="")  # sha1(model|name|description)
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
 # ===== 抽取复核队列：未通过规则、待人工审核的实体 =====
 # 设计见 doc/知识库/实体抽取属性级规则与人工复核设计.md §5
 
