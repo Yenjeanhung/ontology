@@ -834,3 +834,6 @@ CREATE TABLE IF NOT EXISTS eval_run_items (
     created_at VARCHAR
 );
 CREATE INDEX IF NOT EXISTS idx_eval_run_items_run ON eval_run_items(run_id);
+
+-- migration_041: 评测任务各指标成功评分条数（ragas 逐条评分失败返回 NaN→null，均值卡需暴露覆盖面）
+ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS scored_count_json TEXT DEFAULT '';

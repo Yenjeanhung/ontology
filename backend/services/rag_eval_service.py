@@ -17,7 +17,11 @@ import io
 import json
 import logging
 import math
+import os
 from datetime import datetime
+
+# ragas 每次评估都向其官方遥测端点上报（当前网络必超时，白白占用评分线程），默认关闭
+os.environ.setdefault("RAGAS_DO_NOT_TRACK", "True")
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -177,8 +181,11 @@ def _clean_score(v) -> float | None:
 def score_rows_sync(rows: list[dict], metric_names: list[str], eval_llm):
     """ragas 评分（同步阻塞，内部线程池并行；调用方用 asyncio.to_thread 包装）。
 
-    返回 (逐条分数 {run_item_id: {metric: score}}, 均值 {metric: mean}, 跳过的指标)。
+    返回 (逐条分数 {run_item_id: {metric: score}}, 均值 {metric: mean},
+          各指标成功评分条数 {metric: n}, 跳过的指标)。
     rows 元素需含 id/question/reference/answer/contexts。
+    逐条 LLM 输出解析失败/超时时 ragas 静默置 NaN（raise_exceptions=False），
+    由 _clean_score 转为 None 并不计入均值——scored 计数用于向页面暴露覆盖面。
     """
     from ragas import EvaluationDataset, RunConfig, evaluate
     from ragas.embeddings import LangchainEmbeddingsWrapper
@@ -205,21 +212,23 @@ def score_rows_sync(rows: list[dict], metric_names: list[str], eval_llm):
         metrics=metrics,
         llm=LangchainLLMWrapper(eval_llm),
         embeddings=LangchainEmbeddingsWrapper(create_embeddings()),
-        run_config=RunConfig(max_workers=4, max_retries=3, timeout=180),
+        run_config=RunConfig(max_workers=4, max_retries=5, timeout=240),
         raise_exceptions=False,
         show_progress=False,
     )
     # result.scores 与 dataset 顺序对齐：每条为 {metric_name: score|NaN}
     per_item: dict[str, dict] = {}
     means: dict[str, float] = {}
+    scored: dict[str, int] = {}
     metric_names_used = [mt.name for mt in metrics]
     for row, scores in zip(rows, result.scores):
         per_item[row["id"]] = {name: _clean_score(scores.get(name)) for name in metric_names_used}
     for name in metric_names_used:
         vals = [s[name] for s in per_item.values() if s.get(name) is not None]
+        scored[name] = len(vals)
         if vals:
             means[name] = round(sum(vals) / len(vals), 4)
-    return per_item, means, skipped
+    return per_item, means, scored, skipped
 
 
 # ────────────────────────── 评测集管理 ──────────────────────────
@@ -573,6 +582,7 @@ def _run_row(r: EvalRun, testset_name: str = "") -> dict:
         "done": r.done,
         "failed_count": r.failed_count,
         "metrics": json.loads(r.metrics_summary_json) if r.metrics_summary_json else {},
+        "scored": json.loads(r.scored_count_json) if r.scored_count_json else {},
         "error": r.error or "",
         "created_by": r.created_by or "",
         "created_at": r.created_at,
@@ -850,42 +860,12 @@ async def execute_run(run_id: str) -> None:
                                     "done": run.done, "total": run.total,
                                     "failed_count": run.failed_count})
 
-            # 评分阶段（采集已全部落库；重查以拿到 run_item.id）
-            # 置 scoring 让前端区分「采集完正在评分」与卡死（ragas 逐指标打 LLM，需数分钟）
+            # 评分阶段（采集已全部落库；置 scoring 让前端区分「采集完正在评分」与卡死）
             run.status = "scoring"
             await db.commit()
             _publish_event({"type": "status", "run_id": run_id, "status": "scoring",
                             "done": run.done, "total": run.total})
-            saved = (await db.execute(
-                select(EvalRunItem).where(EvalRunItem.run_id == run_id)
-                .order_by(EvalRunItem.created_at)
-            )).scalars().all()
-            score_rows = [
-                {
-                    "id": it.id,
-                    "question": it.question,
-                    "reference": it.reference or "",
-                    "answer": it.answer or "",
-                    "contexts": json.loads(it.contexts_json or "[]"),
-                }
-                for it in saved if not it.error
-            ]
-            if score_rows:
-                try:
-                    eval_llm, _ = await resolve_eval_llm(db, config.get("llm_config_id"))
-                    per_item, means, skipped = await asyncio.to_thread(
-                        score_rows_sync, score_rows, config.get("metrics") or list(DEFAULT_METRICS), eval_llm
-                    )
-                    for it in saved:
-                        s = per_item.get(it.id)
-                        if s is not None:
-                            it.metric_scores_json = json.dumps(s, ensure_ascii=False)
-                    run.metrics_summary_json = json.dumps(means, ensure_ascii=False)
-                    if skipped:
-                        run.error = f"跳过需 reference 的指标：{', '.join(skipped)}（评测集条目缺标注）"
-                except Exception as exc:
-                    logger.exception("评测评分失败 run=%s", run_id)
-                    run.error = f"采集完成，但评分失败：{exc}"
+            await _score_and_fill(db, run, config)
             if run.status != "cancelled":
                 run.status = "done"
         except asyncio.CancelledError:
@@ -893,6 +873,101 @@ async def execute_run(run_id: str) -> None:
             raise
         except Exception as exc:
             logger.exception("评测任务异常 run=%s", run_id)
+            run.status = "failed"
+            run.error = str(exc)
+        finally:
+            run.finished_at = _now()
+            await db.commit()
+            _publish_event({"type": "status", "run_id": run_id, "status": run.status,
+                            "done": run.done, "total": run.total})
+
+
+async def _score_and_fill(db: AsyncSession, run: EvalRun, config: dict) -> None:
+    """评分公共段（execute_run 与 rescore_run 共用）：对已落库条目跑 ragas，
+    回填逐条分数、指标均值与各指标成功评分条数。
+
+    评分失败不覆盖已采集数据，仅写 run.error（含跳过指标说明）。
+    """
+    run_id = run.id
+    saved = (await db.execute(
+        select(EvalRunItem).where(EvalRunItem.run_id == run_id)
+        .order_by(EvalRunItem.created_at)
+    )).scalars().all()
+    score_rows = [
+        {
+            "id": it.id,
+            "question": it.question,
+            "reference": it.reference or "",
+            "answer": it.answer or "",
+            "contexts": json.loads(it.contexts_json or "[]"),
+        }
+        for it in saved if not it.error
+    ]
+    if not score_rows:
+        return
+    try:
+        eval_llm, _ = await resolve_eval_llm(db, config.get("llm_config_id"))
+        per_item, means, scored, skipped = await asyncio.to_thread(
+            score_rows_sync, score_rows, config.get("metrics") or list(DEFAULT_METRICS), eval_llm
+        )
+        for it in saved:
+            s = per_item.get(it.id)
+            if s is not None:
+                it.metric_scores_json = json.dumps(s, ensure_ascii=False)
+        run.metrics_summary_json = json.dumps(means, ensure_ascii=False)
+        run.scored_count_json = json.dumps(scored, ensure_ascii=False)
+        if skipped:
+            run.error = f"跳过需 reference 的指标：{', '.join(skipped)}（评测集条目缺标注）"
+    except Exception as exc:
+        logger.exception("评测评分失败 run=%s", run_id)
+        run.error = f"采集完成，但评分失败：{exc}"
+
+
+async def rescore_run(db: AsyncSession, run_id: str) -> dict:
+    """重新评分：不重新采集，直接对已留存结果重跑 ragas。
+
+    适用：评分失败、部分条目缺分（LLM 输出解析失败/超时被置 NaN）、更换评估模型后想重打分。
+    """
+    r = await db.get(EvalRun, run_id)
+    if not r:
+        raise ValueError("评测任务不存在")
+    if r.status in ("running", "pending", "scoring") or r.id in _active_run_tasks:
+        raise ValueError("任务正在执行，无法重评")
+    if not r.done:
+        raise ValueError("无已采集结果，无法重评（请重新发起评测）")
+    config = json.loads(r.config_json or "{}")
+    unknown = [m for m in (config.get("metrics") or []) if m not in METRIC_SPECS]
+    if unknown:
+        raise ValueError(f"配置含未知指标：{', '.join(unknown)}")
+    r.status = "scoring"
+    r.error = ""
+    await db.commit()
+    _publish_event({"type": "status", "run_id": run_id, "status": "scoring",
+                    "done": r.done, "total": r.total})
+    task = asyncio.create_task(_rescore_task(run_id))
+    _active_run_tasks[run_id] = task
+    task.add_done_callback(lambda _t: _active_run_tasks.pop(run_id, None))
+    names = await _testset_name_map(db, [r.testset_id])
+    return _run_row(r, names.get(r.testset_id, ""))
+
+
+async def _rescore_task(run_id: str) -> None:
+    from database import async_session
+
+    async with async_session() as db:
+        run = await db.get(EvalRun, run_id)
+        if run is None or run.status != "scoring":
+            return
+        config = json.loads(run.config_json or "{}")
+        try:
+            await _score_and_fill(db, run, config)
+            if run.status == "scoring":
+                run.status = "done"
+        except asyncio.CancelledError:
+            run.status = "cancelled"
+            raise
+        except Exception as exc:
+            logger.exception("重评任务异常 run=%s", run_id)
             run.status = "failed"
             run.error = str(exc)
         finally:

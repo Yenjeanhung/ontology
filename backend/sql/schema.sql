@@ -803,6 +803,7 @@ CREATE TABLE IF NOT EXISTS eval_runs (
     done INTEGER NOT NULL DEFAULT 0,
     failed_count INTEGER NOT NULL DEFAULT 0,
     metrics_summary_json TEXT DEFAULT '',
+    scored_count_json TEXT DEFAULT '',
     error TEXT DEFAULT '',
     created_by VARCHAR(64) DEFAULT '',
     created_at VARCHAR,

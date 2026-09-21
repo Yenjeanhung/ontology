@@ -6,7 +6,7 @@ import ModalDialog from '../common/ModalDialog.vue'
 import Pagination from '../common/Pagination.vue'
 import {
   fetchEvalRun, fetchEvalRunItems, fetchEvalRunItem, fetchEvalRuns,
-  markBadcase, markBadcaseBatch, backflowBadcases, fetchTestsets,
+  markBadcase, markBadcaseBatch, backflowBadcases, fetchTestsets, rescoreEvalRun,
 } from '../../api/eval'
 
 const props = defineProps({ runId: { type: String, default: '' } })
@@ -42,6 +42,16 @@ const FILTERS = [
 const metricEntries = computed(() => Object.entries(run.value?.metrics || {}))
 const canBackflow = computed(() => selected.value.length > 0)
 const isDone = computed(() => run.value?.status === 'done')
+const canRescore = computed(() =>
+  ['done', 'failed', 'cancelled'].includes(run.value?.status) && run.value?.done > 0)
+
+const STATUS_LABEL = { pending: '排队中', running: '执行中', scoring: '评分中', done: '已完成', failed: '失败', cancelled: '已取消' }
+
+// 指标成功评分条数 < 总条数 = 有条目评分失败（ragas 置 NaN → 页面显示「—」）
+function coverShort(k) {
+  const n = run.value?.scored?.[k]
+  return n != null && run.value?.total > 0 && n < run.value.total
+}
 
 onMounted(() => { if (props.runId) load() })
 onBeforeUnmount(stopPoll)
@@ -58,7 +68,7 @@ function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = nul
 async function load(silent = false) {
   if (!silent) loading.value = true
   await Promise.all([loadRun(true), loadItems(), loadPrevMetrics()])
-  if (run.value?.status === 'running' || run.value?.status === 'pending') startPoll()
+  if (['running', 'pending', 'scoring'].includes(run.value?.status)) startPoll()
   loading.value = false
 }
 
@@ -149,7 +159,18 @@ async function doBackflow() {
   d.loading = false
 }
 
-function scoreClass(v) { return v >= 0.8 ? 'good' : v >= 0.6 ? 'mid' : 'bad' }
+async function doRescore() {
+  try {
+    run.value = await rescoreEvalRun(props.runId)
+    toast.success('已开始重新评分，完成后自动刷新')
+    startPoll()
+  } catch (e) { toast.error(e.message) }
+}
+
+function scoreClass(v) {
+  if (v == null) return 'none'
+  return v >= 0.8 ? 'good' : v >= 0.6 ? 'mid' : 'bad'
+}
 function delta(cur, prev) {
   const d = (cur - prev).toFixed(3)
   const n = parseFloat(d)
@@ -164,9 +185,11 @@ function fmtTime(ts) { return ts ? String(ts).replace('T', ' ').slice(5, 19) : '
       <div class="bar">
         <button class="btn" @click="emit('back')">← 返回任务列表</button>
         <strong>{{ run.name }}</strong>
-        <span class="tag" :class="run.status">{{ run.status }}</span>
+        <span class="tag" :class="run.status">{{ STATUS_LABEL[run.status] || run.status }}</span>
         <span class="sub" v-if="run.total">{{ run.done }}/{{ run.total }}</span>
+        <span class="sub" v-if="run.status === 'scoring'">ragas 评分中（逐指标打 LLM，需数分钟）…</span>
         <span class="spacer"></span>
+        <button class="btn" :disabled="!canRescore" title="对已采集结果重跑 ragas 评分（不重新采集）" @click="doRescore">重新评分</button>
         <button class="btn" @click="load()">刷新</button>
       </div>
 
@@ -175,6 +198,10 @@ function fmtTime(ts) { return ts ? String(ts).replace('T', ' ').slice(5, 19) : '
         <div v-for="[k, v] in metricEntries" :key="k" class="metric-card">
           <div class="metric-name">{{ k }}</div>
           <div class="metric-val" :class="scoreClass(v)">{{ v.toFixed(3) }}</div>
+          <div v-if="run.total" class="metric-cover" :class="{ warn: coverShort(k) }"
+            :title="coverShort(k) ? '部分条目评分失败（LLM 输出解析失败或超时），均值仅来自成功条目，可点「重新评分」重试' : ''">
+            {{ run.scored?.[k] ?? run.total }}/{{ run.total }} 条
+          </div>
           <div v-if="prevMetrics && prevMetrics[k] != null" class="metric-delta" :class="delta(v, prevMetrics[k]).cls">
             {{ delta(v, prevMetrics[k]).text }}
           </div>
@@ -219,7 +246,8 @@ function fmtTime(ts) { return ts ? String(ts).replace('T', ' ').slice(5, 19) : '
               </td>
               <td>
                 <template v-if="Object.keys(it.metric_scores).length">
-                  <span v-for="(v, k) in it.metric_scores" :key="k" class="score-chip" :class="scoreClass(v)">
+                  <span v-for="(v, k) in it.metric_scores" :key="k" class="score-chip" :class="scoreClass(v)"
+                    :title="v == null ? '评分失败（LLM 输出解析失败或超时），可用「重新评分」重试' : ''">
                     {{ k.replace('relevancy', '_rel').slice(0, 14) }} {{ v ?? '—' }}
                   </span>
                 </template>
@@ -290,6 +318,8 @@ function fmtTime(ts) { return ts ? String(ts).replace('T', ' ').slice(5, 19) : '
 .metric-cards { display: flex; gap: 12px; flex-wrap: wrap; }
 .metric-card { min-width: 130px; padding: 10px 14px; border: 1px solid var(--c-border); border-radius: var(--radius); }
 .metric-name { font-size: 11px; color: var(--c-secondary); }
+.metric-cover { font-size: 11px; color: var(--c-secondary); margin-top: 2px; }
+.metric-cover.warn { color: var(--c-danger); cursor: help; }
 .metric-val { font-size: 20px; font-weight: 600; margin-top: 2px; }
 .metric-val.good { color: var(--c-accent); }
 .metric-val.mid { color: #d48806; }
@@ -309,9 +339,11 @@ tr.errored td { background: rgba(224, 82, 82, 0.04); }
 .score-chip.good { background: color-mix(in srgb, var(--c-accent) 10%, transparent); color: var(--c-accent); }
 .score-chip.mid { background: rgba(240, 160, 20, 0.12); color: #d48806; }
 .score-chip.bad { background: rgba(224, 82, 82, 0.1); color: var(--c-danger); }
+.score-chip.none { background: var(--c-muted); color: var(--c-secondary); cursor: help; }
 .tag { font-size: 11px; padding: 1px 8px; border-radius: 10px; }
 .tag.done { background: color-mix(in srgb, var(--c-accent) 12%, transparent); color: var(--c-accent); }
 .tag.running { background: rgba(24, 144, 255, 0.12); color: #1890ff; }
+.tag.scoring { background: rgba(114, 46, 209, 0.12); color: #9254de; }
 .tag.pending { background: rgba(24, 144, 255, 0.08); color: #69b1ff; }
 .tag.failed { background: rgba(224, 82, 82, 0.12); color: var(--c-danger); }
 .tag.cancelled { background: var(--c-muted); color: var(--c-secondary); }

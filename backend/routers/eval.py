@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -124,10 +125,14 @@ async def export_items(testset_id: str, format: str = "jsonl", db: AsyncSession 
         filename, mime, content = await svc.export_items(db, testset_id, fmt=format)
     except ValueError as e:
         _err(e)
+    # HTTP 头仅允许 latin-1，中文文件名须走 RFC 5987 filename*（ASCII 名兜底），否则 UnicodeEncodeError
+    fallback = filename.encode("ascii", "ignore").decode().strip() or "export.csv"
     return Response(
         content=content,
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": (
+            f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename)}"
+        )},
     )
 
 
@@ -200,6 +205,15 @@ async def cancel_run(run_id: str, db: AsyncSession = Depends(get_db)):
         _err(e)
 
 
+@router.post("/eval/runs/{run_id}/rescore")
+async def rescore_run(run_id: str, db: AsyncSession = Depends(get_db)):
+    """重新评分：对已采集结果重跑 ragas（评分失败/部分条目缺分的补救，不重新采集）。"""
+    try:
+        return await svc.rescore_run(db, run_id)
+    except ValueError as e:
+        _err(e)
+
+
 @router.delete("/eval/runs/{run_id}")
 async def delete_run(run_id: str, db: AsyncSession = Depends(get_db)):
     """删除评测任务及其全部结果条目（执行中的任务须先取消）。"""
@@ -244,10 +258,14 @@ async def export_report(run_id: str, db: AsyncSession = Depends(get_db)):
         filename, _mime, content = await svc.export_report(db, run_id)
     except ValueError as e:
         _err(e, 404)
+    # HTTP 头仅允许 latin-1，中文文件名须走 RFC 5987 filename*（ASCII 名兜底），否则 UnicodeEncodeError
+    fallback = filename.encode("ascii", "ignore").decode().strip() or "report.csv"
     return Response(
         content=content,
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": (
+            f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename)}"
+        )},
     )
 
 

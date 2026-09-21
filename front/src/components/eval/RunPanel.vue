@@ -48,13 +48,16 @@ const isActive = (r) => r.status === 'running' || r.status === 'pending' || r.st
 const hasRunning = computed(() => runs.value.some(isActive))
 
 let runStream = null
+let tickTimer = null
+const nowTick = ref(Date.now())   // 每秒跳一次，驱动进行中任务的「已运行」时长刷新
 
 onMounted(async () => {
   await Promise.all([loadRuns(), loadOptions()])
   // 事件驱动刷新：后端广播进度/状态事件才拉列表，空闲零请求（保留手动刷新兜底）
   runStream = connectRunStream({ onEvent: () => loadRuns(true) })
+  tickTimer = setInterval(() => { nowTick.value = Date.now() }, 1000)
 })
-onBeforeUnmount(() => { runStream?.close(); runStream = null })
+onBeforeUnmount(() => { runStream?.close(); runStream = null; if (tickTimer) clearInterval(tickTimer) })
 watch(page, loadRuns)
 
 async function loadRuns(silent = false) {
@@ -145,6 +148,22 @@ function fmtTime(ts) {
   if (!ts) return ''
   return String(ts).replace('T', ' ').slice(5, 19)
 }
+function fmtDuration(s) {
+  s = Math.round(s)
+  if (s < 60) return `${s} 秒`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} 分 ${s % 60} 秒`
+  return `${Math.floor(m / 60)} 时 ${m % 60} 分`
+}
+// 耗时：完成/失败/取消 = started_at→finished_at；进行中 = started_at→现在（随 tick 跳动）
+function durationText(r) {
+  if (!r.started_at) return ''
+  const start = new Date(r.started_at).getTime()
+  const end = r.finished_at ? new Date(r.finished_at).getTime()
+    : (isActive(r) ? nowTick.value : 0)
+  if (!end || end <= start) return ''
+  return fmtDuration((end - start) / 1000)
+}
 function pct(r) { return r.total ? Math.round((r.done / r.total) * 100) : 0 }
 function scoreClass(v) { return v >= 0.8 ? 'good' : v >= 0.6 ? 'mid' : 'bad' }
 function ablationText(r) {
@@ -169,7 +188,7 @@ function ablationText(r) {
         <thead>
           <tr>
             <th>任务</th><th>评测集</th><th>状态 / 进度</th>
-            <th>指标均值</th><th>消融配置</th><th>时间</th><th style="width:215px">操作</th>
+            <th>指标均值</th><th>消融配置</th><th>时间 / 耗时</th><th style="width:215px">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -197,7 +216,12 @@ function ablationText(r) {
               <span v-else class="dim">—</span>
             </td>
             <td class="sub">{{ ablationText(r) }}</td>
-            <td class="dim">{{ fmtTime(r.created_at) }}</td>
+            <td class="dim">
+              {{ fmtTime(r.created_at) }}
+              <div v-if="durationText(r)" class="sub">
+                {{ r.finished_at ? `耗时 ${durationText(r)}` : `已运行 ${durationText(r)}` }}
+              </div>
+            </td>
             <td>
               <button class="btn sm" :disabled="r.status !== 'done'" @click="emit('view-detail', r.id)">结果</button>
               <button class="btn sm" :disabled="r.status !== 'done'" @click="downloadReport(r)">报告</button>

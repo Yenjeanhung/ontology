@@ -108,6 +108,11 @@ export async function cancelEvalRun(id) {
   return handle(await fetch(`${API}/api/eval/runs/${id}/cancel`, { method: 'POST' }), '取消失败')
 }
 
+// 重新评分：对已采集结果重跑 ragas（评分失败/部分条目缺分时补救，不重新采集）
+export async function rescoreEvalRun(id) {
+  return handle(await fetch(`${API}/api/eval/runs/${id}/rescore`, { method: 'POST' }), '重新评分失败')
+}
+
 export async function deleteEvalRun(id) {
   return handle(await fetch(`${API}/api/eval/runs/${id}`, { method: 'DELETE' }), '删除失败')
 }

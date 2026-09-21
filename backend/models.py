@@ -1277,6 +1277,7 @@ class EvalRun(Base):
     done = Column(Integer, nullable=False, default=0)
     failed_count = Column(Integer, nullable=False, default=0)
     metrics_summary_json = Column(Text, default="")            # 各指标均值 JSON（结束时写入）
+    scored_count_json = Column(Text, default="")               # 各指标成功评分条数 JSON（NaN→null 的条目不计入，暴露评分失败覆盖面）
     error = Column(Text, default="")
     created_by = Column(String(64), default="")
     created_at = Column(String, default=lambda: datetime.now().isoformat())
