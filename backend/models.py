@@ -1224,3 +1224,88 @@ class AppSetting(Base):
     updated_by = Column(String(64), default="")
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
+
+# ===== RAG 评测（doc/知识库/RAG评测/RAG评测页面设计.md）=====
+
+
+class EvalTestset(Base):
+    """评测集：question + reference 的集合，被评测任务引用。"""
+
+    __tablename__ = "eval_testsets"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String(100), nullable=False)
+    description = Column(Text, default="")
+    default_kb_id = Column(String, default="")                 # 缺省知识库（条目可覆盖）
+    # manual=手工 / upload=导入 / synthesized=TestsetGenerator 合成
+    source = Column(String(20), nullable=False, default="manual")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class EvalTestsetItem(Base):
+    """评测集条目：origin=badcase 时 source_run_item_id 溯源到来源评测结果。"""
+
+    __tablename__ = "eval_testset_items"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    testset_id = Column(String, nullable=False, index=True)
+    question = Column(Text, nullable=False)
+    reference = Column(Text, default="")                       # 标准答案（缺失时跳过需 reference 的指标）
+    kb_id = Column(String, default="")                         # 覆盖评测集默认 KB（空=不覆盖）
+    enabled = Column(Integer, nullable=False, default=1)       # 软禁用：不参与评测但不物理删
+    # manual=手工 / upload=导入 / synthesized=合成 / badcase=回流
+    origin = Column(String(20), nullable=False, default="manual")
+    source_run_item_id = Column(String, default="")            # 回流溯源：eval_run_items.id
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
+class EvalRun(Base):
+    """评测任务：一次评测一行。config_json 存完整配置快照（含评估所用模型配置 id）。"""
+
+    __tablename__ = "eval_runs"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    testset_id = Column(String, nullable=False, index=True)
+    kb_id = Column(String, default="")                         # 缺省知识库
+    name = Column(String(200), default="")
+    status = Column(String(20), nullable=False, default="pending")
+    # pending | running | done | failed | cancelled
+    config_json = Column(Text, nullable=False, default="{}")   # 配置快照：指标/消融开关/llm_config_id 等
+    total = Column(Integer, nullable=False, default=0)
+    done = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    metrics_summary_json = Column(Text, default="")            # 各指标均值 JSON（结束时写入）
+    error = Column(Text, default="")
+    created_by = Column(String(64), default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    started_at = Column(String, nullable=True)
+    finished_at = Column(String, nullable=True)
+
+
+class EvalRunItem(Base):
+    """评测逐条结果：冗余存 question/reference/answer/contexts 构成当时快照，历史 run 不受评测集后续修改影响。"""
+
+    __tablename__ = "eval_run_items"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    run_id = Column(String, nullable=False, index=True)
+    item_id = Column(String, default="")                       # 来源评测集条目（评测集条目可能已被删）
+    question = Column(Text, nullable=False)
+    reference = Column(Text, default="")
+    kb_id = Column(String, default="")
+    answer = Column(Text, default="")
+    contexts_json = Column(Text, default="[]")                 # 检索上下文文本列表
+    retrieval_paths_json = Column(Text, default="[]")          # 每条 context 的检索路径（vector/bm25/both）
+    latency_s = Column(Float, default=0.0)
+    error = Column(Text, default="")
+    metric_scores_json = Column(Text, default="")              # 逐条各指标得分 JSON（评分阶段回填）
+    is_badcase = Column(Integer, nullable=False, default=0)    # 人工标记
+    # badcase_reason: retrieval_miss / bad_ranking / hallucination / off_topic / wrong_label / other
+    badcase_reason = Column(String(30), default="")
+    badcase_note = Column(Text, default="")
+    marked_by = Column(String(64), default="")
+    marked_at = Column(String, nullable=True)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+

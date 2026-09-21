@@ -32,6 +32,7 @@ import ServiceEditorPage from '../components/ontology/ServiceEditorPage.vue'
 import ScheduleListPage from '../components/scheduler/ScheduleListPage.vue'
 import ScheduleEditorPage from '../components/scheduler/ScheduleEditorPage.vue'
 import HumanTaskCenterPage from '../components/workflow/HumanTaskCenter.vue'
+import EvalCenter from '../components/eval/EvalCenter.vue'
 // 用户与权限
 import LoginView from '../components/LoginView.vue'
 import UserListView from '../components/system/UserListView.vue'
@@ -81,6 +82,8 @@ const routes = [
   // 定时管理
   { path: '/schedules', name: 'schedules', component: ScheduleListPage, meta: { keepAlive: true, perm: 'schedule:view' } },
   { path: '/schedules/:scheduleId', name: 'schedule-editor', component: ScheduleEditorPage, props: true, meta: { keepAlive: false, perm: 'schedule:view' } },
+  // 知识库评测中心（评测集 / 评测任务 / Badcase回流），挂知识库菜单
+  { path: '/eval', name: 'eval-center', component: EvalCenter, meta: { keepAlive: true, perm: 'eval:view' } },
   // 服务编辑器（本体服务 / 实体自定义动作，独立大页面）
   { path: '/ontology-services/new', name: 'ontology-service-new', component: ServiceEditorPage, meta: { keepAlive: false, fullscreen: true, perm: 'ontology:view' } },
   { path: '/ontology-services/:serviceId/edit', name: 'ontology-service-edit', component: ServiceEditorPage, props: true, meta: { keepAlive: false, fullscreen: true, perm: 'ontology:view' } },

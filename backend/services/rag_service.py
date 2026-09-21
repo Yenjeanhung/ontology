@@ -1,6 +1,8 @@
 import asyncio
+import contextlib
 import json
 import logging
+from contextvars import ContextVar
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +16,29 @@ from providers.llm import chunk_text, create_llm
 from providers.rerank import rerank
 
 logger = logging.getLogger(__name__)
+
+# ── 检索开关的 task 级覆盖（RAG 评测消融实验用，services/rag_eval_service.py）──
+# 评测任务在自己的 asyncio.Task 内覆盖开关（BM25 / 查询改写 / Rerank），
+# ContextVar 按 task 隔离，不影响同一进程内并发用户问答读取全局 settings。
+_ablation_ctx: ContextVar[dict] = ContextVar("rag_ablation", default={})
+
+
+@contextlib.contextmanager
+def ablation_override(flags: dict):
+    """在 with 块内覆盖检索开关（仅当前 task 生效）。flags 如 {"BM25_ENABLED": False}。"""
+    token = _ablation_ctx.set(dict(flags))
+    try:
+        yield
+    finally:
+        _ablation_ctx.reset(token)
+
+
+def _cfg(name: str):
+    """读取检索开关：优先取评测消融覆盖，否则回退全局 settings。"""
+    override = _ablation_ctx.get()
+    if name in override:
+        return override[name]
+    return getattr(settings, name)
 
 RAG_SYSTEM_PROMPT = (
     "你是一个知识库问答助手。请根据以下参考资料回答用户的问题。"
@@ -74,7 +99,7 @@ async def _expand_queries(llm, query: str) -> list[str]:
 
     任何异常或解析失败都退化为 [query]，行为与关闭改写时完全一致。
     """
-    if not settings.QUERY_REWRITE_ENABLED or llm is None:
+    if not _cfg("QUERY_REWRITE_ENABLED") or llm is None:
         return [query]
 
     count = max(1, int(settings.QUERY_REWRITE_COUNT))
@@ -164,7 +189,7 @@ class RAGService:
                 rank_lists.append(vec_rank)
 
             # ===== BM25 关键词召回 =====
-            if not settings.BM25_ENABLED:
+            if not _cfg("BM25_ENABLED"):
                 continue
             hits: list = []
             async with async_span("rag.recall.bm25") as bspan:
@@ -224,7 +249,7 @@ class RAGService:
         ordered_ids = [cid for cid, _ in fused]
 
         # 精排需要更大的候选池，否则只是把 TOP_N 内部重新排序，收益有限
-        if settings.RERANK_ENABLED:
+        if _cfg("RERANK_ENABLED"):
             candidate_limit = max(settings.HYBRID_TOP_N, settings.RERANK_CANDIDATE_K)
         else:
             candidate_limit = settings.HYBRID_TOP_N
@@ -244,7 +269,7 @@ class RAGService:
 
         # ===== Rerank 精排 =====
         limit = settings.HYBRID_TOP_N
-        if settings.RERANK_ENABLED and candidates:
+        if _cfg("RERANK_ENABLED") and candidates:
             async with async_span(
                 "rag.rerank", {"rag.candidates": len(candidates)}
             ) as rspan:

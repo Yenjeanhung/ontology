@@ -31,6 +31,7 @@ MODULES: list[tuple[str, str, list[str]]] = [
     ("agent", "智能体", ["agent", "agents"]),
     ("workflow", "工作流", ["workflow", "workflows"]),
     ("schedule", "定时管理", ["schedules"]),
+    ("eval", "知识库评测", ["eval"]),
     ("query", "知识问答", ["query"]),
     ("config", "系统配置", ["config", "monitor"]),
     ("system", "系统管理", [

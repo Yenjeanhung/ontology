@@ -162,6 +162,7 @@ const menuItems = [
     children: [
       { to: '/kb', label: '知识库列表', perm: 'kb:view' },
       { to: '/query', label: '知识库检索', perm: 'kb:query' },
+      { to: '/eval', label: '知识库评测', perm: 'eval:view' },
     ],
   },
   {

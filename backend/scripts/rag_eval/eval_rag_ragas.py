@@ -122,16 +122,11 @@ async def resolve_kb_name(kb_name: str) -> str:
     return str(kbs[0].id)
 
 # ────────────────────────── 指标定义 ──────────────────────────
-# name → (ragas.metrics 类名, 是否需要 reference)
-METRIC_SPECS = {
-    "faithfulness": ("Faithfulness", False),
-    "response_relevancy": ("ResponseRelevancy", False),
-    "context_precision": ("LLMContextPrecisionWithReference", True),
-    "context_recall": ("LLMContextRecall", True),
-    "factual_correctness": ("FactualCorrectness", True),
-    "noise_sensitivity": ("NoiseSensitivity", True),
-}
-DEFAULT_METRICS = "faithfulness,response_relevancy,context_precision,context_recall"
+# 与页面版（routers/eval.py）共用同一套定义，services/rag_eval_service.py 为单一来源
+from services.rag_eval_service import METRIC_SPECS  # noqa: E402
+from services.rag_eval_service import DEFAULT_METRICS as _DEFAULT_METRICS_LIST  # noqa: E402
+
+DEFAULT_METRICS = ",".join(_DEFAULT_METRICS_LIST)
 
 
 # ────────────────────────── 通用工具 ──────────────────────────

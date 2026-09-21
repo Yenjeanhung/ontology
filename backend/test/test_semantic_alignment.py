@@ -61,12 +61,16 @@ def _ent(eid: str, name: str, desc: str = "", etype: str = "产品", deg: int = 
     )
 
 
-async def _make_db():
+async def _make_db(full: bool = False):
+    """full=True 建全套表（集成用例需 entities 表），否则仅 entity_vectors。"""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
-        await conn.run_sync(
-            lambda sync: Base.metadata.create_all(sync, tables=[EntityVector.__table__])
-        )
+        if full:
+            await conn.run_sync(Base.metadata.create_all)
+        else:
+            await conn.run_sync(
+                lambda sync: Base.metadata.create_all(sync, tables=[EntityVector.__table__])
+            )
     return engine, async_sessionmaker(engine, expire_on_commit=False)
 
 
@@ -182,17 +186,17 @@ async def case_stale_recompute():
 async def case_suggest_cleanup_integration():
     """suggest_cleanup 集成：语义组与字面组有交集时整组去重，summary 计数正确。"""
     fake = FakeEmbeddings({
-        # 「问界M9」与「问界M9（尊界版）」字面相似(SequenceMatcher>0.72) → 字面通道出组
+        # 「问界M9」与「问界M9尊界」ratio≈0.8 ≥ 0.72 → 字面通道出组
         _text("问界M9"): [1.0, 0.0],
-        _text("问界M9（尊界版）"): [1.0, 0.0],
+        _text("问界M9尊界"): [1.0, 0.0],
     })
     orig = gcs.create_embeddings
     gcs.create_embeddings = lambda: fake
-    engine, maker = await _make_db()
+    engine, maker = await _make_db(full=True)
     async with maker() as db:
         ents = [
             _ent("m1", "问界M9"),
-            _ent("m2", "问界M9（尊界版）"),
+            _ent("m2", "问界M9尊界"),
         ]
         db.add_all(ents)
         await db.commit()
@@ -204,7 +208,7 @@ async def case_suggest_cleanup_integration():
         assert res["summary"]["semantic_merge_group_count"] == 0
     await engine.dispose()
     gcs.create_embeddings = orig
-    print("  ok: case_suggest_cleanup_integration")
+    print("  ok: case_suggest_cleanup_integration", flush=True)
 
 
 async def main() -> int:
@@ -224,7 +228,14 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    _code = asyncio.run(main())
-    # 异常时必须打印并走 os._exit：否则 aiosqlite 工作线程会挂住进程
+    try:
+        _code = asyncio.run(main())
+    except BaseException:
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # 必须走 os._exit：否则 aiosqlite 工作线程（非 daemon）会挂住进程
+        os._exit(1)
     sys.stdout.flush()
     os._exit(_code)

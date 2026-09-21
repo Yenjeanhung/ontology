@@ -765,3 +765,70 @@ CREATE TABLE IF NOT EXISTS ontology_versions (
     merged_suggestion_id VARCHAR DEFAULT '',
     created_at VARCHAR
 );
+
+-- ===== RAG评测（doc/知识库/RAG评测/RAG评测页面设计.md）=====
+
+CREATE TABLE IF NOT EXISTS eval_testsets (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT DEFAULT '',
+    default_kb_id VARCHAR DEFAULT '',
+    source VARCHAR(20) NOT NULL DEFAULT 'manual',
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS eval_testset_items (
+    id VARCHAR PRIMARY KEY,
+    testset_id VARCHAR NOT NULL,
+    question TEXT NOT NULL,
+    reference TEXT DEFAULT '',
+    kb_id VARCHAR DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    origin VARCHAR(20) NOT NULL DEFAULT 'manual',
+    source_run_item_id VARCHAR DEFAULT '',
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_eval_testset_items_ts ON eval_testset_items(testset_id);
+
+CREATE TABLE IF NOT EXISTS eval_runs (
+    id VARCHAR PRIMARY KEY,
+    testset_id VARCHAR NOT NULL,
+    kb_id VARCHAR DEFAULT '',
+    name VARCHAR(200) DEFAULT '',
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    config_json TEXT NOT NULL DEFAULT '{}',
+    total INTEGER NOT NULL DEFAULT 0,
+    done INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    metrics_summary_json TEXT DEFAULT '',
+    error TEXT DEFAULT '',
+    created_by VARCHAR(64) DEFAULT '',
+    created_at VARCHAR,
+    started_at VARCHAR,
+    finished_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_eval_runs_ts ON eval_runs(testset_id);
+
+CREATE TABLE IF NOT EXISTS eval_run_items (
+    id VARCHAR PRIMARY KEY,
+    run_id VARCHAR NOT NULL,
+    item_id VARCHAR DEFAULT '',
+    question TEXT NOT NULL,
+    reference TEXT DEFAULT '',
+    kb_id VARCHAR DEFAULT '',
+    answer TEXT DEFAULT '',
+    contexts_json TEXT DEFAULT '[]',
+    retrieval_paths_json TEXT DEFAULT '[]',
+    latency_s REAL DEFAULT 0,
+    error TEXT DEFAULT '',
+    metric_scores_json TEXT DEFAULT '',
+    is_badcase INTEGER NOT NULL DEFAULT 0,
+    badcase_reason VARCHAR(30) DEFAULT '',
+    badcase_note TEXT DEFAULT '',
+    marked_by VARCHAR(64) DEFAULT '',
+    marked_at VARCHAR,
+    created_at VARCHAR
+);
+CREATE INDEX IF NOT EXISTS idx_eval_run_items_run ON eval_run_items(run_id);

@@ -108,13 +108,13 @@ def build_llm(provider, api_key, base_url, model, max_tokens, temperature, chat_
     # 已自带 http_client（trust_env=False），不需要 langchain 再注入自定义 httpx
     # transport（它会遮蔽 httpx 的代理自动检测并刷 WARNING）；置空 socket options
     # 显式关闭该注入，连接复用交给上面的 httpx 连接池。
-    kwargs["http_socket_options"] = ()
-    try:
-        return cls(**kwargs)
-    except (TypeError, ValueError):
-        # 旧版 langchain-openai 无此字段，回退为默认行为
-        kwargs.pop("http_socket_options", None)
-        return cls(**kwargs)
+    # 仅在 langchain-openai 声明了该字段时才传：旧版（如 1.1.9）不认识时会把它
+    # 收进 model_kwargs，并在每次 completions.create() 透传给 OpenAI SDK，
+    # 报 "AsyncCompletions.create() got an unexpected keyword argument"。
+    _fields = getattr(cls, "model_fields", None)
+    if _fields is not None and "http_socket_options" in _fields:
+        kwargs["http_socket_options"] = ()
+    return cls(**kwargs)
 
 
 def create_llm():
