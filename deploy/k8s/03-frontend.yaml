@@ -1,0 +1,61 @@
+# ══════════════════════════════════════════════════════════════
+# 前端静态站点：nginx 托管 Vite dist（镜像见 front/Dockerfile）
+# 纯静态无状态，可多副本；入口路由由 02-app.yaml 的 Ingress 按路径拆分
+# ══════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: knowsource-frontend
+  namespace: knowsource
+  labels:
+    app: knowsource-frontend
+spec:
+  replicas: 2                     # 静态站点无单副本约束，可横向扩
+  selector:
+    matchLabels:
+      app: knowsource-frontend
+  template:
+    metadata:
+      labels:
+        app: knowsource-frontend
+    spec:
+      securityContext:
+        runAsNonRoot: true        # nginx-unprivileged 镜像（UID 101）
+      containers:
+        - name: frontend
+          image: knowsource-frontend:latest   # build.sh 会用 set image 覆盖为版本化镜像
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: knowsource-frontend
+  namespace: knowsource
+spec:
+  type: ClusterIP
+  selector:
+    app: knowsource-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

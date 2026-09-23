@@ -2,14 +2,36 @@
 
 > 三个模型，一条链路，正好覆盖大模型部署的三大角色：
 >
-> | 模型 | 角色 | 对应本项目环节 | 典型显存（BF16） |
-> |---|---|---|---|
-> | **Qwen3.5-9B** | 对话/生成大模型（原生多模态、262K 原生上下文、思考模式） | `LLM_MODEL`（问答、改写、抽取、摘要全走它） | 权重 ~18G，**24G 单卡直跑** |
-> | **Qwen3-Embedding-8B** | 向量嵌入（4096 维，指令感知） | `EMBEDDING_MODEL`（向量召回，替代 bge-small） | ~16G，24G 单卡可跑 |
-> | **Qwen3-Reranker-8B** | 相关性精排（query-doc 打分，输出 0~1） | `RERANK_MODEL`（RRF 融合后二次排序，替代 bge-reranker-base） | ~16G，24G 单卡可跑 |
+> | 模型                         | 角色                                                     | 对应本项目环节                                                 | 典型显存（BF16）                  |
+> | ---------------------------- | -------------------------------------------------------- | -------------------------------------------------------------- | --------------------------------- |
+> | **Qwen3.5-9B**         | 对话/生成大模型（原生多模态、262K 原生上下文、思考模式） | `LLM_MODEL`（问答、改写、抽取、摘要全走它）                  | 权重 ~18G，**24G 单卡直跑** |
+> | **Qwen3-Embedding-8B** | 向量嵌入（4096 维，指令感知）                            | `EMBEDDING_MODEL`（向量召回，替代 bge-small）                | ~16G，24G 单卡可跑                |
+> | **Qwen3-Reranker-8B**  | 相关性精排（query-doc 打分，输出 0~1）                   | `RERANK_MODEL`（RRF 融合后二次排序，替代 bge-reranker-base） | ~16G，24G 单卡可跑                |
 >
 > 全程在 AutoDL 云 GPU 上完成（本机显卡只做客户端验证），推理框架用 **vLLM**（PagedAttention +
 > 连续批处理，OpenAI 兼容 API 开箱即用）。
+
+---
+
+## 基础环境安装（新实例第一步，先选对镜像）
+
+创建实例时**镜像选错，后面全是坑**（社区 vLLM 镜像实测最高仅 v0.10.1，起 Qwen3.5 直接报架构不支持）：
+
+| 镜像选择                                                           | 结论                                                      |
+| ------------------------------------------------------------------ | --------------------------------------------------------- |
+| **官方基础镜像 `PyTorch 2.8.0 + Python 3.12 + CUDA 12.8`** | ✅ 文档主线；vLLM 按 §2 自装，~10 分钟                   |
+| 社区 vLLM 镜像（vllm-project/vllm 系列）                           | ✗ 最高 v0.10.1（2025-08 停更），不满足 Qwen3.5 的 ≥0.17 |
+| vllm-omni 等分支/预发布镜像                                        | ✗ 全模态分支 + rc 版本，不用于主线推理                   |
+
+选定官方基础镜像、开机连上后，先补装模型下载工具（镜像不预装）：
+
+```bash
+# ModelScope 下载器；显式清华源防 403
+pip install modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple
+python -c "import modelscope; print(modelscope.__version__)"
+```
+
+随后进 §2 装 vLLM。
 
 ---
 
@@ -27,11 +49,11 @@
 
 **GPU 选型决策表：**
 
-| 方案 | AutoDL 实例配置 | 分配方案 | 适合 |
-|---|---|---|---|
-| **默认（本文档主线）** | **1× RTX 4090 24G**（~¥2/时） | 9B BF16 直跑整卡；Embedding/Reranker 用 **0.6B 小杯**（各 ~1.5G）分时验证 | 部署实验、跑通全流程 |
-| 同卡三服务 | 1× RTX 4090 24G | LLM 换 9B **Int4** 量化版（~6G）+ 0.6B×2，三服务同卡并存（总权重 ~9G） | 极致省钱、流程演示 |
-| 满血档 | **3× 4090** 或 **2× L20 48G** | GPU0：9B BF16（要长上下文可加卡升 TP）；GPU1：Embedding-8B；GPU2：Reranker-8B（L20 则 8B 双件套同卡各占半） | 中小并发、8B 满配 |
+| 方案                         | AutoDL 实例配置                             | 分配方案                                                                                                    | 适合                 |
+| ---------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | -------------------- |
+| **默认（本文档主线）** | **1× RTX 4090 24G**（~¥2/时）       | 9B BF16 直跑整卡；Embedding/Reranker 用**0.6B 小杯**（各 ~1.5G）分时验证                              | 部署实验、跑通全流程 |
+| 同卡三服务                   | 1× RTX 4090 24G                            | LLM 换 9B**Int4** 量化版（~6G）+ 0.6B×2，三服务同卡并存（总权重 ~9G）                                | 极致省钱、流程演示   |
+| 满血档                       | **3× 4090** 或 **2× L20 48G** | GPU0：9B BF16（要长上下文可加卡升 TP）；GPU1：Embedding-8B；GPU2：Reranker-8B（L20 则 8B 双件套同卡各占半） | 中小并发、8B 满配    |
 
 > 显存估算公式：**权重字节数 ≈ 参数量 × 精度字节数**（BF16×2、Int4×0.5），再留 30%~50% 给
 > KV cache 与激活。9B BF16 ≈ 18G（单卡 24G 直跑）；Int4 ≈ 5~6G；8B 嵌入/精排各 ≈ 16G。
@@ -45,8 +67,8 @@
 
 1. **计费方式**：按量计费（关机即停止计费，精确到秒）；
 2. **GPU**：对照 §0 决策表选卡；同实例多卡必须同型号，按「有货 + 价格」选地区；
-3. **镜像**：选官方 `PyTorch 2.x + Python 3.12 + CUDA 12.8` 基础镜像（也可在社区镜像直接搜
-   「vLLM」省去安装，注意核对其 vLLM 版本 ≥0.17）；
+3. **镜像**：选官方 `PyTorch 2.8.0 + Python 3.12 + CUDA 12.8` 基础镜像——**别选社区 vLLM 镜像**，
+   实测版本最高仅 0.10.1，不满足 Qwen3.5 要求（详见开头「基础环境安装」）；
 4. **数据盘**：三个模型 BF16 权重合计 ~50G（9B 18G + 8B×2），数据盘**扩到 60G 以上**（无卡模式扩容，费用极低）；
 5. **连接**：控制台复制 SSH 指令（`ssh -p 39678 root@connect.nmb2.seetacloud.com`，以自己实例为准），
    或「JupyterLab」→ 终端；推荐 VSCode Remote-SSH 远程开发。
@@ -81,9 +103,27 @@ mkdir -p /root/autodl-tmp/models
 
 Qwen3.5 系列较新，**对 vLLM 有最低版本要求（≥0.17.0，旧版会报架构不支持）**，建议干净安装：
 
+> **社区 vLLM 镜像为何不用**：官方 `vllm-project/vllm` 镜像系列最高 v0.10.1（2025-08 停更），
+> 低于 Qwen3.5 要求的 ≥0.17；vllm-omni 为全模态分支 + rc 预发布。均不建议，用官方基础镜像干净安装。
+
 ```bash
-# 一条命令装 vLLM，--torch-backend=auto 自动匹配本机 CUDA 的 torch 构建
-pip install -U vllm --torch-backend=auto
+# 装 uv（vLLM 官方推荐的安装器）：--torch-backend 是 uv 的参数，pip 没有这个选项
+pip install -U uv -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# uv 缓存默认在系统盘 /root/.cache/uv：vLLM 全家桶 ~5G 解压缓存会把 30G 系统盘撑爆
+# （报 No space left on device）——必须挪到数据盘，写进 bashrc 一劳永逸
+echo 'export UV_CACHE_DIR=/root/autodl-tmp/uv-cache' >> ~/.bashrc && source ~/.bashrc
+
+# 安装vllm，大概30分左右
+# env -u 临时摘掉代理：uv 会读 http(s)_proxy，走学术加速代理连国内镜像下载大 wheel 会被重置；
+# --torch-backend=auto 按本机 CUDA 自动选 torch 构建；--python 指向当前环境解释器（uv 默认只认 venv）
+# env -u http_proxy -u https_proxy uv pip install vllm --torch-backend=auto --python $(which python)
+env -u http_proxy -u https_proxy uv pip install vllm --torch-backend=auto \
+  --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+  --python $(which python)
+
+# 备选：没有 uv 纯 pip 也行（AutoDL 镜像 CUDA 12.8，pip 默认 torch wheel 即 cu128 构建，效果相同）
+# pip install -U vllm
 
 # 验证：版本 + GPU 可见
 vllm --version
@@ -91,24 +131,30 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available(), tor
 # 预期：2.x+cu12x True <显卡数>；False 说明 torch 是 CPU 版，重装
 ```
 
-> 坑：若与镜像自带 torch 冲突（`libcudart.so` / `undefined symbol` 类报错），按
-> `python -c "import torch; print(torch.version.cuda)"` 的实际 CUDA 版本，到
-> https://download.pytorch.org/whl 重装对应构建（cu124/cu126/cu128）。
+![alt text](./assets/image-1.png)
 
 ---
 
 ## 3. 下载模型（ModelScope，国内直连无需加速）
 
 ```bash
-pip install -U modelscope
+# 安装 modelscope，验证一下即可；真要重装且 pip 报 403，换清华源：
+pip install modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple
+python -c "import modelscope; print(modelscope.__version__)"
 
 cd /root/autodl-tmp/models
+# 下载走 Python API：snapshot_download(模型ID, local_dir=目录名)，支持断点续传，中断重跑即续
+# （不用 `modelscope` CLI：本镜像该命令入口缺失，且 `python -m modelscope` 无 __main__ 跑不了）
 # 主模型（~18G BF16；走 §0「同卡三服务」方案就改下 GPTQ-Int4 量化版，仅 ~6G）
-modelscope download --model Qwen/Qwen3.5-9B --local_dir Qwen3.5-9B
+python -c "from modelscope import snapshot_download; snapshot_download('Qwen/Qwen3.5-9B', local_dir='Qwen3.5-9B')"
+Qwen/Qwen3.5-9B的权重大概20G
+![alt text](image-2.png)
+![alt text](image.png)
+
 
 # 嵌入 + 精排（各 ~16G；单卡方案可先下 0.6B 小杯：Qwen3-Embedding-0.6B / Qwen3-Reranker-0.6B）
-modelscope download --model Qwen/Qwen3-Embedding-8B --local_dir Qwen3-Embedding-8B
-modelscope download --model Qwen/Qwen3-Reranker-8B  --local_dir Qwen3-Reranker-8B
+python -c "from modelscope import snapshot_download; snapshot_download('Qwen/Qwen3-Embedding-8B', local_dir='Qwen3-Embedding-8B')"
+python -c "from modelscope import snapshot_download; snapshot_download('Qwen/Qwen3-Reranker-8B',  local_dir='Qwen3-Reranker-8B')"
 ```
 
 **下载完先验完整性**（缺文件启动必失败，省得白等加载）：
@@ -132,13 +178,22 @@ done
 vllm serve /root/autodl-tmp/models/Qwen3.5-9B \
   --host 0.0.0.0 --port 8000 \
   --served-model-name qwen3.5-9b \
-  --max-model-len 32768 \
+  --max-model-len 16384 \
+  --max-num-seqs 16 \
   --gpu-memory-utilization 0.90 \
   --enable-prefix-caching
 ```
+启动模型
+![alt text](./assets/start-model.png)
 
-> 9B BF16 权重 ~18G，单卡 24G 直接装下——这就是选 9B 做部署实验的原因：**不量化、不并行、
-> 一条命令起服务**。32K 上下文时 KV cache 约占 3~4G，宽裕；想再长就加卡。
+可以看到显存利用率上升
+![alt text](./assets/gpu-memory.png)
+
+> 9B BF16 权重 ~19G，24G 卡装下后余量仅 ~4G（还要扣 CUDA context ~1G）。
+> **`--max-model-len 32768` 实测 OOM**：启动时 vLLM 会按「长度 × 并发」做一次全量前向模拟
+> （profiling），32K 的激活峰值把最后几百 MB 挤爆。16K + 并发 16 稳，RAG 场景足够。
+> 真要 32K+：加 `--kv-cache-dtype fp8`、`--enforce-eager`（省 CUDA graph 显存），
+> 或换 GPTQ-Int4 量化版（权重仅 ~6G，余量随便造）。
 
 **进阶方案（多卡并行，撑长上下文）：**
 
@@ -158,26 +213,35 @@ Embedding/Reranker 换 0.6B 小杯（各 ~1.5G），三服务总权重 ~9G 同�
 
 ### 4.2 关键参数速查
 
-| 参数 | 说明 |
-|---|---|
-| `--served-model-name` | API 请求体里的 `model` 字段，起个短名方便客户端配置 |
-| `--tensor-parallel-size` | 张量并行卡数，必须 ≤ 实例卡数。9B 单卡就能装下、默认不用 TP；27B 级别才必须多卡切分 |
-| `--max-model-len` | 最大序列长度。模型原生支持 262K（可扩 1M），**按显存裁剪**：KV cache 随长度线性涨，24G 单卡建议 16K~32K |
-| `--gpu-memory-utilization` | vLLM 可占显存比例（0.8~0.95）。OOM 就往下调；同卡跑多服务时必须显式调低 |
-| `--kv-cache-dtype fp8` | KV cache 压到 FP8，显存减半，质量损失可忽略 |
-| `--enable-prefix-caching` | 前缀缓存，多轮对话/固定 system prompt 命中后首 token 延迟大幅下降 |
+| 参数                         | 说明                                                                                                          |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `--served-model-name`      | API 请求体里的 `model` 字段，起个短名方便客户端配置                                                         |
+| `--tensor-parallel-size`   | 张量并行卡数，必须 ≤ 实例卡数。9B 单卡就能装下、默认不用 TP；27B 级别才必须多卡切分                          |
+| `--max-model-len`          | 最大序列长度。模型原生支持 262K（可扩 1M），**按显存裁剪**：KV cache 与 profiling 激活都随长度涨，24G 单卡 + 9B BF16 建议 ≤16K |
+| `--max-num-seqs`         | 最大并发序列数（vLLM 默认很大）。同时决定 profiling 激活峰值，小显存单卡建议 8~16                                    |
+| `--gpu-memory-utilization` | vLLM 可占显存比例（0.8~0.95）。OOM 就往下调；同卡跑多服务时必须显式调低                                       |
+| `--kv-cache-dtype fp8`     | KV cache 压到 FP8，显存减半，质量损失可忽略                                                                   |
+| `--enable-prefix-caching`  | 前缀缓存，多轮对话/固定 system prompt 命中后首 token 延迟大幅下降                                             |
 
 ### 4.3 验证
 
 ```bash
-curl -s http://127.0.0.1:8000/v1/models | head -c 300   # 返回模型 JSON 即成功
+curl -s http://127.0.0.1:8000/v1/models   # 返回模型 JSON 即成功
+# 返回
+{"object":"list","data":[{"id":"qwen3.5-9b","object":"model","created":1790151407,"owned_by":"vllm","root":"/root/autodl-tmp/models/Qwen3.5-9B","parent":null,"max_model_len":16384,"permission":[{"id":"modelperm-97a6e2b5cc7221ee","object":"model_permission","created":1790151407,"allow_create_engine":false,"allow_sampling":true,"allow_logprobs":true,"allow_search_indices":false,"allow_view":true,"allow_fine_tuning":false,"organization":"*","group":null,"is_blocking":false}]}]}
+```
 
+```bash
 # OpenAI 兼容对话
 curl http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "qwen3.5-9b",
        "messages": [{"role": "user", "content": "用一句话解释 vLLM 的 PagedAttention"}]}'
 ```
+最高47.4tokens/s
+![alt text](image.png)
+![alt text](image-1.png)
+
 
 > **思考模式**：Qwen3.5 是推理模型，默认输出带思考段。要快、要省 token 的场景（如意图路由）
 > 在请求体加 `"chat_template_kwargs": {"enable_thinking": false}` 关闭；复杂推理场景保留默认。
@@ -219,7 +283,6 @@ curl http://127.0.0.1:8100/v1/embeddings \
    ```
 
    简单接入可两边都不加（有少量精度损失）。
-
 2. **MRL 套娃维度**：支持输出降维（32~4096 任取），`/v1/embeddings` 请求加
    `"dimensions": 1024` 即可换更小的向量——存储/精度折中的旋钮。**换维度必须全库重建**，
    新旧维度向量不可比。
@@ -243,10 +306,10 @@ vllm serve /root/autodl-tmp/models/Qwen3-Reranker-8B \
                    "is_original_qwen3_reranker": true}'
 ```
 
-| 字段 | 作用 |
-|---|---|
-| `architectures` | 让 vLLM 按分类头（而非生成模型）加载，取 "yes" 的 logit 当分数 |
-| `classifier_from_token` | 声明分类标签 token：`no`/`yes`，输出 = P(yes) ∈ [0,1] |
+| 字段                           | 作用                                                                             |
+| ------------------------------ | -------------------------------------------------------------------------------- |
+| `architectures`              | 让 vLLM 按分类头（而非生成模型）加载，取 "yes" 的 logit 当分数                   |
+| `classifier_from_token`      | 声明分类标签 token：`no`/`yes`，输出 = P(yes) ∈ [0,1]                       |
 | `is_original_qwen3_reranker` | 激活官方 prompt 构造逻辑（chat 模板 + 指令包裹），客户端**直接传原始文本** |
 
 验证（vLLM ≥0.9.2 内置 `/v1/rerank`、`/v1/score`，模板由服务端处理）：
@@ -290,7 +353,8 @@ LOG=/root/autodl-tmp/logs; mkdir -p $LOG
 
 # 主模型：GPU0
 nohup CUDA_VISIBLE_DEVICES=0 vllm serve $M --host 0.0.0.0 --port 8000 \
-  --served-model-name qwen3.5-9b --max-model-len 32768 \
+  --served-model-name qwen3.5-9b --max-model-len 16384 \
+  --max-num-seqs 16 \
   --gpu-memory-utilization 0.90 --enable-prefix-caching > $LOG/llm.log 2>&1 &
 
 # 嵌入：GPU1
@@ -376,17 +440,18 @@ OPENAI_EMBEDDING_DIMENSION=4096
 
 ## 9. 常见问题排查（速查表）
 
-| 现象 | 原因 | 解决 |
-|---|---|---|
-| 启动报 `Architecture xxx not supported` | vLLM 版本过旧，不认识 Qwen3.5 | 升级 `pip install -U vllm --torch-backend=auto`（≥0.17） |
-| OOM（`CUDA out of memory`） | 权重+KV 超显存 | 降 `--gpu-memory-utilization`、砍 `--max-model-len`、加 `--kv-cache-dtype fp8`、量化（GPTQ-Int4）或加卡升 TP |
-| Reranker 分数全 0 或报错 | 缺 `--hf_overrides` 三字段 | 按 §6 原样补上；检查 `--task score` |
-| Reranker 结果明显不合理 | 客户端自行拼了模板 | `is_original_qwen3_reranker: true` 时服务端已包模板，客户端传原始文本即可 |
-| HF 下载 401 / 大文件挂起 | Xet 协议与镜像不兼容 | `export HF_HUB_DISABLE_XET=1`（或 `pip uninstall -y hf_xet`），走 ModelScope 最稳 |
-| `CUDA_VISIBLE_DEVICES` 设置无效 | vLLM 启动太早读了环境 | 放在命令最前面：`CUDA_VISIBLE_DEVICES=1 vllm serve …` |
-| 加载卡在 Loading 很久后失败 | 模型目录不完整/路径错 | 回 §3 验完整性；`vllm serve` 后必须绝对路径 |
-| 并发一高就慢 | 批处理参数保守 | 调 `--max-num-seqs`、`--max-num-batched-tokens`；确认开了 prefix caching |
-| 关机再开服务没了 | nohup 进程不跨关机 | 数据在、进程不在：重新 `bash /root/start_vllm.sh` |
+| 现象                                                      | 原因                                             | 解决                                                                                                               |
+| --------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| 启动报 `Architecture xxx not supported`                 | vLLM 版本过旧，不认识 Qwen3.5                    | 升级 `uv pip install -U vllm --torch-backend=auto --python $(which python)`（≥0.17）                            |
+| OOM（`CUDA out of memory`）                             | 权重+激活+KV 超显存（9B BF16 在 24G 卡上余量仅 ~4G） | 砍 `--max-model-len`、限 `--max-num-seqs`、加 `--enforce-eager` / `--kv-cache-dtype fp8`、量化（GPTQ-Int4）或加卡升 TP |
+| Reranker 分数全 0 或报错                                  | 缺 `--hf_overrides` 三字段                     | 按 §6 原样补上；检查 `--task score`                                                                             |
+| Reranker 结果明显不合理                                   | 客户端自行拼了模板                               | `is_original_qwen3_reranker: true` 时服务端已包模板，客户端传原始文本即可                                        |
+| uv 下载报 `tunnel error` / `Connection reset by peer` | source 过学术加速，uv 走了本地代理连国内镜像被掐 | `unset http_proxy https_proxy all_proxy` 后直连重跑（官方源才需要加速）                                          |
+| HF 下载 401 / 大文件挂起                                  | Xet 协议与镜像不兼容                             | `export HF_HUB_DISABLE_XET=1`（或 `pip uninstall -y hf_xet`），走 ModelScope 最稳                              |
+| `CUDA_VISIBLE_DEVICES` 设置无效                         | vLLM 启动太早读了环境                            | 放在命令最前面：`CUDA_VISIBLE_DEVICES=1 vllm serve …`                                                           |
+| 加载卡在 Loading 很久后失败                               | 模型目录不完整/路径错                            | 回 §3 验完整性；`vllm serve` 后必须绝对路径                                                                     |
+| 并发一高就慢                                              | 批处理参数保守                                   | 调 `--max-num-seqs`、`--max-num-batched-tokens`；确认开了 prefix caching                                       |
+| 关机再开服务没了                                          | nohup 进程不跨关机                               | 数据在、进程不在：重新 `bash /root/start_vllm.sh`                                                                |
 
 ---
 
@@ -404,4 +469,3 @@ OPENAI_EMBEDDING_DIMENSION=4096
   在线 FP8（`--quantization fp8`，需 Ampere+ 架构）——显存、精度、成本的三角权衡；
 - **显存估算**：权重 = 参数量 × 精度字节，另留 KV cache（随并发×上下文线性涨）与激活值；
   这是选卡的第一性公式，比背「XX 模型要 XX 卡」更本质。
-

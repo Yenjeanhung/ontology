@@ -118,10 +118,35 @@ spec:
     - host: knowsource.example.com        # 替换为实际域名
       http:
         paths:
-          - path: /
+          # ── 后端 API（knowsource-backend 纯后端镜像）──
+          - path: /api
             pathType: Prefix
             backend:
               service:
                 name: knowsource
+                port:
+                  number: 80
+          - path: /docs
+            pathType: Prefix
+            backend:
+              service:
+                name: knowsource
+                port:
+                  number: 80
+          - path: /openapi.json
+            pathType: Prefix
+            backend:
+              service:
+                name: knowsource
+                port:
+                  number: 80
+          # ── 前端静态站点（knowsource-frontend，清单见 03-frontend.yaml）──
+          # 改用根目录全家桶镜像（后端自带页面托管）时：把本段 backend 改为
+          # knowsource，并删除 03-frontend.yaml
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: knowsource-frontend
                 port:
                   number: 80

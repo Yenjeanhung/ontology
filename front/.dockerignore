@@ -1,0 +1,5 @@
+# 构建上下文瘦身：只带源码进 Stage 1，运行时数据与依赖不进上下文
+node_modules
+dist
+.git
+*.log

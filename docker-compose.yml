@@ -1,5 +1,8 @@
 # 知识图谱平台的数据库环境
 #
+# 用途：本地开发环境中间件（生产/交付部署不要用本文件，统一走 deploy/docker/docker-compose.prod.yml，
+#       那边的全栈数据卷已通过 volumes.name 对接本 compose 产出的 ontology_* 卷）
+#
 # 组件：
 #   - PostgreSQL 16（关系数据库，主数据存储，替代 SQLite）
 #   - Neo4j 5.26（图数据库，预装 Graph Data Science 插件，供后续图计算使用）
