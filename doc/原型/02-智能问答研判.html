@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>智能问答研判 - 航班运行监控智能体平台</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:"Microsoft YaHei",sans-serif; }
+  body { background:#f5f7fa; color:#303133; height:100vh; display:flex; }
+  .sidebar { width:190px; background:#001529; color:#a6adb4; padding:14px 0; flex-shrink:0; }
+  .logo { color:#fff; font-size:14px; font-weight:600; padding:6px 18px 16px; }
+  .nav-item { padding:11px 18px; font-size:13px; cursor:pointer; }
+  .nav-item:hover { color:#fff; }
+  .nav-item.active { background:#1677ff; color:#fff; }
+  .chat-list { width:230px; background:#fff; border-right:1px solid #e4e7ed; flex-shrink:0; display:flex; flex-direction:column; }
+  .new-btn { margin:12px; padding:9px; background:#1677ff; color:#fff; border:none; border-radius:6px; font-size:13px; cursor:pointer; }
+  .conv { padding:11px 14px; font-size:13px; border-bottom:1px solid #f0f2f5; cursor:pointer; }
+  .conv:hover { background:#f5f7fa; }
+  .conv.active { background:#e8f3ff; border-left:3px solid #1677ff; }
+  .conv .t { color:#303133; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .conv .s { color:#909399; font-size:11px; margin-top:3px; }
+  .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .chat-head { padding:12px 20px; background:#fff; border-bottom:1px solid #e4e7ed; font-size:14px; font-weight:600; display:flex; justify-content:space-between; }
+  .mode { font-size:12px; font-weight:400; color:#909399; }
+  .messages { flex:1; overflow:auto; padding:18px 24px; }
+  .msg { margin-bottom:18px; display:flex; gap:10px; }
+  .avatar { width:32px; height:32px; border-radius:6px; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:15px; }
+  .a-user { background:#e8f3ff; } .a-ai { background:#001529; }
+  .bubble { max-width:82%; }
+  .bubble .who { font-size:11px; color:#909399; margin-bottom:5px; }
+  .bubble .content { background:#fff; border:1px solid #e4e7ed; border-radius:8px; padding:12px 14px; font-size:13px; line-height:1.8; }
+  .ai .content { border-left:3px solid #1677ff; }
+  .trace { margin-top:8px; background:#fafcff; border:1px dashed #b9d7ff; border-radius:6px; padding:8px 12px; font-size:12px; color:#5a76a0; }
+  .trace b { color:#1677ff; font-weight:500; }
+  .cite { display:inline-block; background:#f0f5ff; color:#2f54eb; border:1px solid #adc6ff; border-radius:3px; font-size:11px; padding:0 5px; margin:0 2px; cursor:pointer; }
+  .evi { margin-top:10px; display:flex; flex-wrap:wrap; gap:6px; }
+  .evi .chip { font-size:11px; padding:3px 10px; border-radius:12px; background:#f5f7fa; border:1px solid #dcdfe6; color:#606266; }
+  .evi .chip.g { background:#f6ffed; border-color:#b7eb8f; color:#389e0d; }
+  .input-bar { padding:14px 24px; background:#fff; border-top:1px solid #e4e7ed; display:flex; gap:10px; }
+  .input-bar input { flex:1; border:1px solid #dcdfe6; border-radius:6px; padding:10px 14px; font-size:13px; outline:none; }
+  .input-bar button { padding:0 26px; background:#1677ff; color:#fff; border:none; border-radius:6px; font-size:13px; cursor:pointer; }
+  .hint { font-size:11px; color:#c0c4cc; padding:6px 24px 10px; background:#fff; }
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <div class="logo">✈ 运行监控智能体平台</div>
+  <div class="nav-item">运行监控大屏</div>
+  <div class="nav-item active">智能问答研判</div>
+  <div class="nav-item">工作流编排</div>
+  <div class="nav-item">告警关联分析</div>
+  <div class="nav-item">知识图谱</div>
+  <div class="nav-item">知识库管理</div>
+  <div class="nav-item">本体管理</div>
+  <div class="nav-item">评测与监控</div>
+</div>
+
+<div class="chat-list">
+  <button class="new-btn">＋ 新建研判会话</button>
+  <div class="conv active"><div class="t">CA1832 备降影响面评估与处置</div><div class="s">今天 14:20 · Multi-Agent</div></div>
+  <div class="conv"><div class="t">今日华北区域流控汇总报告</div><div class="s">今天 11:03 · 报告生成</div></div>
+  <div class="conv"><div class="t">B-20AE 空调组件超温 MEL 咨询</div><div class="s">今天 10:47 · 知识库问答</div></div>
+  <div class="conv"><div class="t">上周雷暴绕飞燃油统计取数</div><div class="s">昨天 16:32 · 数据取证</div></div>
+</div>
+
+<div class="main">
+  <div class="chat-head">
+    <span>CA1832 备降影响面评估与处置</span>
+    <span class="mode">Multi-Agent ｜ 意图路由：graph+data 复合 · 置信度 0.94</span>
+  </div>
+  <div class="messages">
+    <div class="msg">
+      <div class="avatar a-user">👤</div>
+      <div class="bubble">
+        <div class="who">值班签派员 · 14:20</div>
+        <div class="content">CA1832 因 SHA 雷暴备降 TAO，帮我评估影响面：旅客衔接、后续航班链、机组执勤时间，并给出处置动作建议。</div>
+      </div>
+    </div>
+
+    <div class="msg ai">
+      <div class="avatar a-ai">🤖</div>
+      <div class="bubble">
+        <div class="who">运行研判智能体 · Plan-and-Execute · 耗时 18.2s</div>
+        <div class="content">
+          <div class="trace">
+            <b>执行轨迹</b>：意图路由(0.6s,微调小模型) → Planner 拆解 4 个子任务 → <b>并行执行</b> [航班链取数 | 旅客衔接分析 | 机组台账查询 | GraphRAG预案检索] → 质控校验 → 合成
+          </div>
+          <br><b>影响面评估：</b><br>
+          ① <b>旅客衔接</b>：机上 178 人中 43 人衔接 CA5623（TAO-PEK 16:30），衔接余量 55min，正常；9 人衔接国际段 CA433，需提前安排中转保障。<span class="cite">台账-旅客值机</span><br>
+          ② <b>后续航班链</b>：B-1832 执行下一班 CA1835 预计延误 40min，下游 3 个航段连锁影响已重算，其中 CA1835-CA2108 机组衔接变紧（余量 28min）。<span class="cite">航班动态</span><br>
+          ③ <b>机组执勤</b：机组当前执勤 7.2h，改航后预计 9.1h，未触及 10h 限制，无需换组。<span class="cite">机组台账</span><br>
+          <b>处置建议（按预案§4.2）</b>：<span class="cite">特情处置预案§4.2</span>
+          1) 通知 TAO 现场保障 + 国际段旅客中转引导；2) CA1835 发延误通告并同步 3 个下游航段；3) 备降油量复核已通过（余油 4.2t &gt; 最低 2.8t）。<span class="cite">运行手册§6.3</span>
+          <div class="evi">
+            <span class="chip g">图谱：CA1832 -[发生于]-&gt; 备降事件</span>
+            <span class="chip g">图谱：备降事件 -[导致]-&gt; CA1835延误</span>
+            <span class="chip">KB：特情处置预案§4.2（相似度0.91）</span>
+            <span class="chip">台账：航班动态 / 旅客 / 机组</span>
+            <span class="chip">工单：#2024-0891 同类处置</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="msg">
+      <div class="avatar a-user">👤</div>
+      <div class="bubble">
+        <div class="who">值班签派员 · 14:24</div>
+        <div class="content">好，把处置建议生成工单并推送给 TAO 现场和机组，CA1835 发延误通告。</div>
+      </div>
+    </div>
+
+    <div class="msg ai">
+      <div class="avatar a-ai">🤖</div>
+      <div class="bubble">
+        <div class="who">运行研判智能体 · 14:24</div>
+        <div class="content">已发起 <b>工作流实例 WF-20260922-036</b>：生成工单草稿 → 人工审批节点（你已确认）→ 推送 TAO 现场 + 机组终端 + 延误通告。<b>3 项动作执行完成，执行轨迹可在工作流编排页查看。</b></div>
+      </div>
+    </div>
+  </div>
+  <div class="input-bar">
+    <input placeholder="输入运行问题，如：CA1835 延误后下游哪些航班受影响？">
+    <button>发送</button>
+  </div>
+  <div class="hint">支持：自然语言问答 / 取数 / 报告生成 ｜ 简单问题由微调小模型直答，复合问题进入 Multi-Agent 编排 ｜ 回答均带溯源可点击</div>
+</div>
+</body>
+</html>

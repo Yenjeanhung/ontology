@@ -1,0 +1,27 @@
+# 构建上下文瘦身：只保留后端源码（上下文 = backend/）
+# 注意：sql/ 不能排除——init_db 启动建表与增量迁移依赖 schema.sql / migrations.sql
+
+# 运行时产物 / 本地数据（镜像内不携带，部署时挂卷）
+chunks
+data
+uploads
+logs
+test
+*.log
+*.log.*
+sem_test_*.txt
+
+# Python 缓存与虚拟环境
+__pycache__
+*.pyc
+.pytest_cache
+.venv
+venv
+
+# 构建定义自身（COPY . . 时不打进镜像）
+Dockerfile
+Dockerfile.*
+.dockerignore
+
+# 本地密钥与配置（运行时通过 env/Secret 注入）
+.env

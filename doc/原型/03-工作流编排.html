@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>工作流编排 - 航班运行监控智能体平台</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:"Microsoft YaHei",sans-serif; }
+  body { background:#f5f7fa; color:#303133; height:100vh; display:flex; }
+  .sidebar { width:190px; background:#001529; color:#a6adb4; padding:14px 0; flex-shrink:0; }
+  .logo { color:#fff; font-size:14px; font-weight:600; padding:6px 18px 16px; }
+  .nav-item { padding:11px 18px; font-size:13px; cursor:pointer; }
+  .nav-item:hover { color:#fff; }
+  .nav-item.active { background:#1677ff; color:#fff; }
+  .left { width:230px; background:#fff; border-right:1px solid #e4e7ed; padding:12px; flex-shrink:0; overflow:auto; }
+  .left h4 { font-size:13px; margin:8px 0; }
+  .node-palette { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+  .np { border:1px solid #dcdfe6; border-radius:6px; padding:9px 6px; font-size:12px; text-align:center; cursor:grab; background:#fafcff; }
+  .np:hover { border-color:#1677ff; color:#1677ff; }
+  .wf-item { font-size:12px; padding:9px 10px; border:1px solid #e4e7ed; border-radius:6px; margin-bottom:8px; cursor:pointer; }
+  .wf-item.active { border-color:#1677ff; background:#e8f3ff; }
+  .wf-item .s { color:#909399; font-size:11px; margin-top:3px; }
+  .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .toolbar { background:#fff; border-bottom:1px solid #e4e7ed; padding:10px 16px; display:flex; align-items:center; gap:10px; font-size:13px; }
+  .toolbar .title { font-weight:600; font-size:14px; }
+  .tagv { font-size:11px; padding:2px 8px; border-radius:10px; background:#f0f5ff; color:#2f54eb; border:1px solid #adc6ff; }
+  .btn { margin-left:auto; padding:6px 16px; border-radius:5px; border:1px solid #dcdfe6; background:#fff; font-size:12px; cursor:pointer; }
+  .btn.primary { background:#1677ff; color:#fff; border-color:#1677ff; }
+  .canvas { flex:1; position:relative; background:#fafbfc; background-image:radial-gradient(#e4e9f0 1px,transparent 1px); background-size:18px 18px; overflow:hidden; }
+  .node { position:absolute; width:168px; background:#fff; border:1.5px solid #dcdfe6; border-radius:8px; padding:10px 12px; font-size:12px; box-shadow:0 1px 4px rgba(0,0,0,.06); }
+  .node .nt { font-weight:600; font-size:12.5px; display:flex; align-items:center; gap:6px; }
+  .node .nd { color:#909399; font-size:11px; margin-top:4px; line-height:1.5; }
+  .node .st { margin-top:7px; font-size:11px; }
+  .node.running { border-color:#1677ff; box-shadow:0 0 0 3px rgba(22,119,255,.12); }
+  .node.done { border-color:#b7eb8f; }
+  .node.wait { border-color:#ffc53d; }
+  .st.run { color:#1677ff; } .st.ok { color:#52c41a; } .st.wt { color:#d48806; }
+  svg.wires { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  .right { width:300px; background:#fff; border-left:1px solid #e4e7ed; flex-shrink:0; display:flex; flex-direction:column; }
+  .rp { padding:12px 14px; border-bottom:1px solid #f0f2f5; }
+  .rp h4 { font-size:13px; margin-bottom:8px; }
+  .log { font-size:11.5px; line-height:1.8; color:#595959; max-height:300px; overflow:auto; }
+  .log b { font-weight:500; }
+  .log .t { color:#bfbfbf; margin-right:6px; }
+  .var { font-size:11.5px; background:#f6f8fa; border:1px solid #ebeef2; border-radius:5px; padding:6px 8px; margin-bottom:6px; color:#4e5969; }
+  .approve { background:#fffbe6; border:1px solid #ffe58f; border-radius:8px; padding:12px; font-size:12px; line-height:1.7; }
+  .approve button { margin-top:8px; margin-right:8px; padding:5px 16px; border:none; border-radius:4px; cursor:pointer; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <div class="logo">✈ 运行监控智能体平台</div>
+  <div class="nav-item">运行监控大屏</div>
+  <div class="nav-item">智能问答研判</div>
+  <div class="nav-item active">工作流编排</div>
+  <div class="nav-item">告警关联分析</div>
+  <div class="nav-item">知识图谱</div>
+  <div class="nav-item">知识库管理</div>
+  <div class="nav-item">本体管理</div>
+  <div class="nav-item">评测与监控</div>
+</div>
+
+<div class="left">
+  <h4>节点类型</h4>
+  <div class="node-palette">
+    <div class="np">⏱ 定时触发</div><div class="np">📡 Kafka订阅</div>
+    <div class="np">🗄 数据取数</div><div class="np">🤖 智能体研判</div>
+    <div class="np">🔀 条件分支</div><div class="np">👤 人工审批</div>
+    <div class="np">📨 消息推送</div><div class="np">📚 本体服务</div>
+  </div>
+  <h4>工作流实例</h4>
+  <div class="wf-item active"><div>气象告警自动研判</div><div class="s">运行中 · 实例 WF-20260922-031</div></div>
+  <div class="wf-item"><div>CA1832 处置工单下发</div><div class="s">已完成 · WF-20260922-036</div></div>
+  <div class="wf-item"><div>日运行报告生成</div><div class="s">每日 22:00 定时</div></div>
+  <div class="wf-item"><div>QAR超限事件入库</div><div class="s">Kafka 触发</div></div>
+</div>
+
+<div class="main">
+  <div class="toolbar">
+    <span class="title">气象告警自动研判</span>
+    <span class="tagv">DAG 声明式编排</span><span class="tagv">SSE 进度回传</span><span class="tagv">共享State</span>
+    <button class="btn">保存</button><button class="btn">发布</button><button class="btn primary">▶ 试运行</button>
+  </div>
+  <div class="canvas">
+    <svg class="wires">
+      <path d="M 200 96 C 240 96, 240 96, 280 96" stroke="#b9c6d8" stroke-width="1.8" fill="none"/>
+      <path d="M 368 96 C 408 96, 408 170, 448 170" stroke="#b9c6d8" stroke-width="1.8" fill="none"/>
+      <path d="M 368 96 C 408 96, 408 60, 448 60" stroke="#b9c6d8" stroke-width="1.8" fill="none"/>
+      <path d="M 616 170 C 656 170, 656 170, 696 170" stroke="#52c41a" stroke-width="1.8" fill="none"/>
+      <path d="M 616 60 C 656 60, 656 60, 696 60" stroke="#1677ff" stroke-width="1.8" fill="none" stroke-dasharray="5,4"/>
+    </svg>
+    <div class="node done" style="left:32px;top:70px">
+      <div class="nt">📡 Kafka 订阅</div><div class="nd">航班动态 + 气象告警流<br>topic: ops.alert.weather</div>
+      <div class="st ok">✓ 已连接 · 消费延迟 120ms</div>
+    </div>
+    <div class="node done" style="left:280px;top:70px">
+      <div class="nt">🗄 数据取数</div><div class="nd">告警关联航班/航段/机场上下文装配</div>
+      <div class="st ok">✓ 0.8s · 输出 alert_ctx</div>
+    </div>
+    <div class="node done" style="left:448px;top:34px">
+      <div class="nt">📚 本体服务</div><div class="nd">GraphRAG 图检索：关联历史工单+预案</div>
+      <div class="st ok">✓ 2.1s · 命中 5 条证据</div>
+    </div>
+    <div class="node running" style="left:448px;top:144px">
+      <div class="nt">🤖 智能体研判</div><div class="nd">告警处置方案生成 + 风险分级</div>
+      <div class="st run">● 执行中 · Token 1.2k / 已用 3.4s</div>
+    </div>
+    <div class="node wait" style="left:696px;top:34px">
+      <div class="nt">👤 人工审批</div><div class="nd">高风险处置方案需值班主管确认</div>
+      <div class="st wt">⏸ 待审批（human-in-the-loop）</div>
+    </div>
+    <div class="node" style="left:696px;top:144px">
+      <div class="nt">📨 消息推送</div><div class="nd">低风险自动下发：签派终端+企业微信</div>
+      <div class="st">待上游触发</div>
+    </div>
+  </div>
+</div>
+
+<div class="right">
+  <div class="rp">
+    <h4>节点配置 · 🤖 智能体研判</h4>
+    <div class="var">模型：Qwen3.5-27B（temperature 0.2）</div>
+    <div class="var">输入引用：{{ alert_ctx }} {{ kb_evidence }}</div>
+    <div class="var">输出写入 State：judge_result.risk_level / plan</div>
+    <div class="var">重试：失败 2 次回退规则模板兜底</div>
+  </div>
+  <div class="rp" style="flex:1">
+    <h4>执行日志（SSE 实时）</h4>
+    <div class="log">
+      <div><span class="t">14:31:02</span><b>[kafka]</b> 收到告警 wx-0922-118（SHA 雷暴）</div>
+      <div><span class="t">14:31:02</span><b>[dag]</b> 节点取数与本体检索无依赖，并行调度</div>
+      <div><span class="t">14:31:03</span><b>[fetch]</b> alert_ctx 装配完成（航段/机场/预报）</div>
+      <div><span class="t">14:31:05</span><b>[graphrag]</b> 三路召回融合 RRF，命中预案§4.2、工单×3</div>
+      <div><span class="t">14:31:06</span><b>[agent]</b> 研判生成中… 流式回传前端</div>
+      <div><span class="t">14:31:09</span><b>[branch]</b> 风险等级=高 → 路由至人工审批节点</div>
+      <div><span class="t">14:31:09</span><b>[hitl]</b> 已通知值班主管（企业微信卡片）</div>
+    </div>
+  </div>
+  <div class="rp">
+    <div class="approve">
+      ⏸ <b>待人工审批</b>：CA1832 雷暴绕飞方案（风险等级：高）<br>
+      研判摘要：保持绕飞路由 + 申请 HGH 备降，油量复核通过。
+      <button style="background:#1677ff;color:#fff">通过并下发</button>
+      <button style="background:#fff;border:1px solid #dcdfe6">驳回</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

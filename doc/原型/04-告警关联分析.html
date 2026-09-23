@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>告警关联分析 - 航班运行监控智能体平台</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:"Microsoft YaHei",sans-serif; }
+  body { background:#f5f7fa; color:#303133; height:100vh; display:flex; }
+  .sidebar { width:190px; background:#001529; color:#a6adb4; padding:14px 0; flex-shrink:0; }
+  .logo { color:#fff; font-size:14px; font-weight:600; padding:6px 18px 16px; }
+  .nav-item { padding:11px 18px; font-size:13px; cursor:pointer; }
+  .nav-item:hover { color:#fff; }
+  .nav-item.active { background:#1677ff; color:#fff; }
+  .left { width:280px; background:#fff; border-right:1px solid #e4e7ed; flex-shrink:0; overflow:auto; }
+  .lh { padding:12px 14px 6px; font-size:13px; font-weight:600; }
+  .filters { padding:0 14px 10px; display:flex; gap:6px; flex-wrap:wrap; }
+  .f { font-size:11px; padding:3px 10px; border:1px solid #dcdfe6; border-radius:12px; color:#606266; cursor:pointer; }
+  .f.on { background:#e8f3ff; color:#1677ff; border-color:#91caff; }
+  .al { padding:10px 14px; border-top:1px solid #f0f2f5; cursor:pointer; font-size:12px; }
+  .al:hover { background:#f5f7fa; }
+  .al.on { background:#e8f3ff; }
+  .al .r1 { display:flex; justify-content:space-between; color:#303133; font-weight:500; }
+  .sev { font-size:11px; padding:0 8px; border-radius:9px; }
+  .s1 { background:#fff1f0; color:#cf1322; border:1px solid #ffa39e; }
+  .s2 { background:#fffbe6; color:#d48806; border:1px solid #ffe58f; }
+  .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .mh { padding:12px 20px; background:#fff; border-bottom:1px solid #e4e7ed; font-size:14px; font-weight:600; display:flex; gap:10px; align-items:center; }
+  .mh .sub { font-size:12px; color:#909399; font-weight:400; }
+  .canvas { flex:1; background:#fafbfc; padding:14px 20px; overflow:auto; }
+  .card { background:#fff; border:1px solid #e4e7ed; border-radius:8px; margin-bottom:14px; }
+  .card .ch { padding:10px 16px; border-bottom:1px solid #f0f2f5; font-size:13px; font-weight:600; display:flex; justify-content:space-between; }
+  .card .ch .op { font-size:11px; color:#1677ff; font-weight:400; cursor:pointer; }
+  .chain { display:flex; align-items:center; gap:0; padding:20px 18px; flex-wrap:wrap; }
+  .cn { min-width:150px; border:1.5px solid #d9e2ec; border-radius:8px; padding:10px 12px; font-size:12px; background:#fbfdff; position:relative; }
+  .cn .k { font-size:10.5px; color:#909399; margin-bottom:3px; }
+  .cn .v { font-weight:600; color:#303133; font-size:12.5px; }
+  .cn.warn { border-color:#ffc53d; background:#fffbe6; }
+  .cn.root { border-color:#cf1322; background:#fff1f0; }
+  .cn .cf { margin-top:5px; font-size:10.5px; color:#8c8c8c; }
+  .arrow { padding:0 12px; color:#b9c6d8; font-size:11px; text-align:center; line-height:1.3; }
+  .arrow b { display:block; color:#7a93b4; font-weight:500; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { text-align:left; padding:8px 14px; background:#fafbfc; color:#909399; font-weight:500; border-bottom:1px solid #f0f2f5; }
+  td { padding:8px 14px; border-bottom:1px solid #f7f8fa; }
+  .pg { color:#2f54eb; font-weight:600; }
+  .right { width:300px; background:#fff; border-left:1px solid #e4e7ed; flex-shrink:0; overflow:auto; }
+  .rp { padding:12px 14px; border-bottom:1px solid #f0f2f5; font-size:12.5px; line-height:1.8; }
+  .rp h4 { font-size:13px; margin-bottom:6px; }
+  .kv { display:flex; justify-content:space-between; color:#606266; font-size:12px; padding:3px 0; }
+  .kv b { color:#303133; font-weight:500; }
+  .rule { background:#f6f8fa; border:1px solid #ebeef2; border-radius:6px; padding:7px 9px; font-size:11.5px; color:#4e5969; margin-bottom:7px; }
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <div class="logo">✈ 运行监控智能体平台</div>
+  <div class="nav-item">运行监控大屏</div>
+  <div class="nav-item">智能问答研判</div>
+  <div class="nav-item">工作流编排</div>
+  <div class="nav-item active">告警关联分析</div>
+  <div class="nav-item">知识图谱</div>
+  <div class="nav-item">知识库管理</div>
+  <div class="nav-item">本体管理</div>
+  <div class="nav-item">评测与监控</div>
+</div>
+
+<div class="left">
+  <div class="lh">今日告警</div>
+  <div class="filters">
+    <span class="f on">全部 47</span><span class="f">高险 6</span><span class="f">中险 15</span>
+    <span class="f">已定界 31</span><span class="f">部件 8</span><span class="f">气象 12</span>
+  </div>
+  <div class="al on">
+    <div class="r1"><span>B-20AE 空调组件超温</span><span class="sev s1">高</span></div>
+    <div style="color:#909399;margin-top:3px">CA1315 · 14:18 · 已还原根因链</div>
+  </div>
+  <div class="al">
+    <div class="r1"><span>CA1832 雷暴绕飞燃油复核</span><span class="sev s1">高</span></div>
+    <div style="color:#909399;margin-top:3px">气象 · 14:31 · AI已研判</div>
+  </div>
+  <div class="al">
+    <div class="r1"><span>B-1237 QAR 下降率超限</span><span class="sev s2">中</span></div>
+    <div style="color:#909399;margin-top:3px">落地阶段 · 13:40 · 关联历史2起</div>
+  </div>
+  <div class="al">
+    <div class="r1"><span>CA8901 机组执勤临近限制</span><span class="sev s2">中</span></div>
+    <div style="color:#909399;margin-top:3px">机组 · 13:21</div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="mh">B-20AE 空调组件超温 · 事件演化链
+    <span class="sub">图谱多跳推理：告警 → 故障模式 → 根因 → 部件 ｜ Neo4j GDS PageRank 关键部件识别</span>
+  </div>
+  <div class="canvas">
+    <div class="card">
+      <div class="ch"><span>因果传导链（3 跳 · 置信度随跳数衰减）</span><span class="op">在知识图谱中查看 ›</span></div>
+      <div class="chain">
+        <div class="cn"><div class="k">告警</div><div class="v">组件超温告警</div><div class="cf">14:18 · 阈值 85℃ / 实测 92℃</div></div>
+        <div class="arrow">—[发生于]→<b>置信度 1.00</b></div>
+        <div class="cn warn"><div class="k">故障模式</div><div class="v">空调系统降级</div><div class="cf">置信度 0.83</div></div>
+        <div class="arrow">—[导致]→<b>衰减 ×0.85</b></div>
+        <div class="cn warn"><div class="k">表现</div><div class="v">客舱温度不可控</div><div class="cf">置信度 0.71</div></div>
+        <div class="arrow">—[原因]→<b>根因定位</b></div>
+        <div class="cn root"><div class="k">根因 / 部件</div><div class="v">ACM 压气机叶轮磨损</div><div class="cf">置信度 0.62 · PageRank 0.87</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="ch"><span>告警关联定界（同机/同部件/同故障模式聚合）</span><span class="op">展开关联网络 ›</span></div>
+      <table>
+        <tr><th>关联告警</th><th>触发时间</th><th>关联路径</th><th>置信度</th><th>状态</th></tr>
+        <tr><td>组件超温告警（主告警）</td><td>14:18</td><td>—</td><td>1.00</td><td>已定界</td></tr>
+        <tr><td>客舱温度高 ASI 告警</td><td>14:11</td><td>发生于→导致（2跳）</td><td>0.79</td><td>并入本事件</td></tr>
+        <tr><td>空调组件流量低</td><td>14:05</td><td>组成→导致（3跳）</td><td>0.66</td><td>并入本事件</td></tr>
+        <tr><td>历史工单 #2024-1213</td><td>2024-11</td><td>同部件+同故障模式</td><td>0.74</td><td>处置参考</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="ch"><span>结构关键部件 PageRank（GDS 仅投影故障传播核心子图）</span>
+        <span class="op">重新投影 ›</span></div>
+      <table>
+        <tr><th>部件</th><th>所属系统</th><th>PageRank</th><th>近90天关联告警</th><th>建议</th></tr>
+        <tr><td>ACM 组件（B-20AE）</td><td>空调系统</td><td class="pg">0.87</td><td>4</td><td>提前换件，纳入 3 日计划</td></tr>
+        <tr><td>引气调节活门</td><td>气源系统</td><td>0.42</td><td>1</td><td>观察</td></tr>
+        <tr><td>温度控制器</td><td>空调系统</td><td>0.31</td><td>0</td><td>排除</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="right">
+  <div class="rp">
+    <h4>推理依据</h4>
+    <div class="rule"><b>上滚规则</b>：(ACM组件)-[组成]-&gt;(空调系统)-[组成]-&gt;(B-20AE)<br>子件故障归因到父系统/飞机</div>
+    <div class="rule"><b>传播衰减</b>：沿「导致」关系每跳 ×0.85，&lt;0.5 剪枝，防误连</div>
+    <div class="rule"><b>根因链</b>：原因→表现→征兆 双向传导，征兆出现时间序校验</div>
+    <div class="rule"><b>MEL 参照</b>：21-52-02 可保留放行，3 日内更换（KB检索命中）</div>
+  </div>
+  <div class="rp">
+    <h4>处置结论</h4>
+    <div class="kv"><span>根因部件</span><b>ACM 压气机叶轮</b></div>
+    <div class="kv"><span>运行影响</span><b>可保留放行（MEL）</b></div>
+    <div class="kv"><span>建议动作</span><b>3日内换件 + 换季检查</b></div>
+    <div class="kv"><span>生成工单</span><b>WO-0922-047（草稿）</b></div>
+    <div style="margin-top:10px"><button style="padding:6px 16px;background:#1677ff;color:#fff;border:none;border-radius:5px;font-size:12px;cursor:pointer">提交人工确认</button></div>
+  </div>
+</div>
+</body>
+</html>

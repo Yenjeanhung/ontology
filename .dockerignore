@@ -15,10 +15,11 @@ assets
 *.md
 
 # 运行时产物 / 本地数据（镜像内不携带，K8s 用 PVC）
+# ⚠️ backend/sql 不能排除：init_db 启动建表与增量迁移依赖 schema.sql/migrations.sql，
+#    排除后全新数据库会漏建表（存量库因表已存在而看不出问题）
 backend/chunks
 backend/data
 backend/uploads
-backend/sql
 backend/logs
 backend/test
 chunks

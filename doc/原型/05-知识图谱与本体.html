@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>知识图谱与本体管理 - 航班运行监控智能体平台</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:"Microsoft YaHei",sans-serif; }
+  body { background:#f5f7fa; color:#303133; height:100vh; display:flex; }
+  .sidebar { width:190px; background:#001529; color:#a6adb4; padding:14px 0; flex-shrink:0; }
+  .logo { color:#fff; font-size:14px; font-weight:600; padding:6px 18px 16px; }
+  .nav-item { padding:11px 18px; font-size:13px; cursor:pointer; }
+  .nav-item:hover { color:#fff; }
+  .nav-item.active { background:#1677ff; color:#fff; }
+  .left { width:240px; background:#fff; border-right:1px solid #e4e7ed; flex-shrink:0; overflow:auto; }
+  .lh { padding:12px 14px 4px; font-size:13px; font-weight:600; display:flex; justify-content:space-between; }
+  .lh .add { color:#1677ff; font-weight:400; font-size:12px; cursor:pointer; }
+  .grp { padding:8px 14px 2px; font-size:11px; color:#909399; }
+  .onto { padding:8px 14px; font-size:12.5px; display:flex; justify-content:space-between; align-items:center; cursor:pointer; }
+  .onto:hover { background:#f5f7fa; }
+  .onto.on { background:#e8f3ff; color:#1677ff; }
+  .dot { width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:7px; }
+  .cnt { font-size:11px; color:#909399; }
+  .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .tabs { background:#fff; border-bottom:1px solid #e4e7ed; padding:0 16px; display:flex; gap:4px; }
+  .tab { padding:11px 16px; font-size:13px; cursor:pointer; border-bottom:2px solid transparent; }
+  .tab.on { color:#1677ff; border-color:#1677ff; font-weight:600; }
+  .searchbar { display:flex; gap:8px; padding:10px 16px; background:#fff; border-bottom:1px solid #f0f2f5; align-items:center; }
+  .searchbar input { border:1px solid #dcdfe6; border-radius:5px; padding:6px 12px; font-size:12.5px; width:240px; outline:none; }
+  .sel { border:1px solid #dcdfe6; border-radius:5px; padding:6px 10px; font-size:12.5px; color:#606266; background:#fff; }
+  .btn { margin-left:auto; padding:6px 16px; background:#1677ff; color:#fff; border:none; border-radius:5px; font-size:12.5px; cursor:pointer; }
+  .canvas { flex:1; position:relative; background:#fafbfc; overflow:hidden; }
+  .legend { position:absolute; left:14px; top:14px; background:#fff; border:1px solid #e4e7ed; border-radius:8px; padding:10px 14px; font-size:11.5px; z-index:2; }
+  .legend div { margin:4px 0; }
+  .gnode { position:absolute; transform:translate(-50%,-50%); text-align:center; z-index:1; }
+  .gnode .circle { width:52px; height:52px; border-radius:50%; margin:0 auto; border:2.5px solid; display:flex; align-items:center; justify-content:center; font-size:10.5px; color:#fff; background:#fff; line-height:1.2; padding:2px; }
+  .gnode .lb { font-size:11px; margin-top:4px; color:#4e5969; background:rgba(255,255,255,.9); padding:1px 5px; border-radius:3px; }
+  .gnode.hl .circle { box-shadow:0 0 0 4px rgba(22,119,255,.25); }
+  svg.edges { position:absolute; inset:0; width:100%; height:100%; z-index:0; }
+  .etext { font-size:11px; fill:#8ca3c2; }
+  .right { width:300px; background:#fff; border-left:1px solid #e4e7ed; flex-shrink:0; overflow:auto; }
+  .rp { padding:12px 14px; border-bottom:1px solid #f0f2f5; }
+  .rp h4 { font-size:13px; margin-bottom:8px; }
+  .kv { display:flex; font-size:12px; padding:3px 0; }
+  .kv .k { width:76px; color:#909399; flex-shrink:0; }
+  .kv .v { color:#303133; }
+  .rel { font-size:11.5px; padding:6px 0; border-bottom:1px dashed #f0f2f5; color:#4e5969; }
+  .rel b { color:#1677ff; font-weight:500; }
+  .prop { display:flex; justify-content:space-between; font-size:11.5px; padding:4px 0; border-bottom:1px dashed #f0f2f5; }
+  .prop .n { color:#606266; } .prop .t { color:#909399; }
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <div class="logo">✈ 运行监控智能体平台</div>
+  <div class="nav-item">运行监控大屏</div>
+  <div class="nav-item">智能问答研判</div>
+  <div class="nav-item">工作流编排</div>
+  <div class="nav-item">告警关联分析</div>
+  <div class="nav-item active">知识图谱</div>
+  <div class="nav-item">知识库管理</div>
+  <div class="nav-item">本体管理</div>
+  <div class="nav-item">评测与监控</div>
+</div>
+
+<div class="left">
+  <div class="lh">本体树 · 航班运行本体<span class="add">＋ 分类</span></div>
+  <div class="grp">业务对象类</div>
+  <div class="onto"><span><span class="dot" style="background:#1677ff"></span>航班</span><span class="cnt">12.4k</span></div>
+  <div class="onto on"><span><span class="dot" style="background:#722ed1"></span>航段</span><span class="cnt">24.8k</span></div>
+  <div class="onto"><span><span class="dot" style="background:#13c2c2"></span>机场</span><span class="cnt">1.1k</span></div>
+  <div class="onto"><span><span class="dot" style="background:#52c41a"></span>飞机</span><span class="cnt">486</span></div>
+  <div class="grp">运行要素类</div>
+  <div class="onto"><span><span class="dot" style="background:#fa8c16"></span>机组</span><span class="cnt">3.2k</span></div>
+  <div class="onto"><span><span class="dot" style="background:#eb2f96"></span>气象事件</span><span class="cnt">8.6k</span></div>
+  <div class="onto"><span><span class="dot" style="background:#f5222d"></span>告警</span><span class="cnt">31.5k</span></div>
+  <div class="grp">故障域类</div>
+  <div class="onto"><span><span class="dot" style="background:#faad14"></span>部件</span><span class="cnt">15.7k</span></div>
+  <div class="onto"><span><span class="dot" style="background:#a0d911"></span>故障模式</span><span class="cnt">2.3k</span></div>
+</div>
+
+<div class="main">
+  <div class="tabs">
+    <span class="tab on">图谱可视化</span><span class="tab">本体定义</span><span class="tab">关系字典</span><span class="tab">三元组约束</span>
+  </div>
+  <div class="searchbar">
+    <input placeholder="搜索实体，如：CA1832 / B-20AE / SHA雷暴">
+    <span class="sel">展开深度：2跳 ▾</span><span class="sel">关系过滤：全部 ▾</span><span class="sel">本体裁剪：全部 ▾</span>
+    <button class="btn">以选中实体为起点分析</button>
+  </div>
+  <div class="canvas">
+    <svg class="edges">
+      <line x1="38%" y1="52%" x2="20%" y2="30%" stroke="#c9d6e8" stroke-width="1.6"/>
+      <line x1="38%" y1="52%" x2="62%" y2="28%" stroke="#c9d6e8" stroke-width="1.6"/>
+      <line x1="38%" y1="52%" x2="66%" y2="62%" stroke="#c9d6e8" stroke-width="1.6"/>
+      <line x1="38%" y1="52%" x2="18%" y2="74%" stroke="#c9d6e8" stroke-width="1.6"/>
+      <line x1="62%" y1="28%" x2="84%" y2="42%" stroke="#f3b7c9" stroke-width="1.6"/>
+      <line x1="66%" y1="62%" x2="84%" y2="42%" stroke="#c9d6e8" stroke-width="1.6"/>
+      <line x1="66%" y1="62%" x2="84%" y2="80%" stroke="#e8d8a8" stroke-width="1.6"/>
+      <text class="etext" x="27%" y="39%">执行于</text>
+      <text class="etext" x="49%" y="36%">发生于</text>
+      <text class="etext" x="50%" y="62%">执飞</text>
+      <text class="etext" x="23%" y="66%">组成</text>
+      <text class="etext" x="74%" y="32%">触发于</text>
+      <text class="etext" x="76%" y="50%">发生于</text>
+      <text class="etext" x="76%" y="75%">导致</text>
+    </svg>
+    <div class="legend">
+      <b style="font-size:12px">图例</b>
+      <div><span class="dot" style="background:#1677ff"></span>航班 (12.4k)</div>
+      <div><span class="dot" style="background:#f5222d"></span>告警 (31.5k)</div>
+      <div><span class="dot" style="background:#eb2f96"></span>气象事件 (8.6k)</div>
+      <div><span class="dot" style="background:#faad14"></span>部件 (15.7k)</div>
+      <div><span class="dot" style="background:#a0d911"></span>故障模式 (2.3k)</div>
+    </div>
+    <div class="gnode" style="left:38%;top:52%"><div class="circle hl" style="border-color:#1677ff;color:#1677ff">航班</div><div class="lb">CA1832</div></div>
+    <div class="gnode" style="left:20%;top:30%"><div class="circle" style="border-color:#722ed1;color:#722ed1">航段</div><div class="lb">PEK-SHA</div></div>
+    <div class="gnode" style="left:62%;top:28%"><div class="circle" style="border-color:#eb2f96;color:#eb2f96">气象</div><div class="lb">SHA雷暴0922</div></div>
+    <div class="gnode" style="left:66%;top:62%"><div class="circle" style="border-color:#52c41a;color:#52c41a">飞机</div><div class="lb">B-1832</div></div>
+    <div class="gnode" style="left:18%;top:74%"><div class="circle" style="border-color:#faad14;color:#faad14">部件</div><div class="lb">ACM组件</div></div>
+    <div class="gnode" style="left:84%;top:42%"><div class="circle" style="border-color:#f5222d;color:#f5222d">告警</div><div class="lb">绕飞燃油复核</div></div>
+    <div class="gnode" style="left:84%;top:80%"><div class="circle" style="border-color:#a0d911;color:#a0d911">故障</div><div class="lb">续航计划冲突</div></div>
+  </div>
+</div>
+
+<div class="right">
+  <div class="rp">
+    <h4>实体详情 · CA1832（航班）</h4>
+    <div class="kv"><span class="k">本体类型</span><span class="v">航班</span></div>
+    <div class="kv"><span class="k">来源</span><span class="v">FOC航班动态 / Kafka</span></div>
+    <div class="kv"><span class="k">更新时间</span><span class="v">2026-09-22 14:31</span></div>
+    <div style="margin-top:6px">
+      <div class="prop"><span class="n">航班号</span><span class="t">string · CA1832</span></div>
+      <div class="prop"><span class="n">机型</span><span class="t">string · A321</span></div>
+      <div class="prop"><span class="n">状态</span><span class="t">enum · 备降</span></div>
+      <div class="prop"><span class="n">计划ETA</span><span class="t">datetime · 15:40</span></div>
+    </div>
+  </div>
+  <div class="rp">
+    <h4>关系实例（6）</h4>
+    <div class="rel">CA1832 —<b>执行于</b>→ 航段 PEK-SHA</div>
+    <div class="rel">CA1832 —<b>发生于</b>→ 气象事件 SHA雷暴</div>
+    <div class="rel">CA1832 —<b>执飞</b>→ 飞机 B-1832</div>
+    <div class="rel">SHA雷暴 —<b>触发于</b>→ 告警 绕飞燃油复核</div>
+    <div class="rel">B-1832 —<b>组成</b>→ 部件 ACM组件</div>
+    <div class="rel">SHA雷暴 —<b>导致</b>→ 故障 续航计划冲突</div>
+  </div>
+  <div class="rp">
+    <h4>数据治理</h4>
+    <div class="kv"><span class="k">本体校验</span><span class="v" style="color:#52c41a">通过（类型/属性/三元组合规）</span></div>
+    <div class="kv"><span class="k">归一化</span><span class="v">机场码/注册号已对齐</span></div>
+    <div class="kv"><span class="k">答案溯源</span><span class="v">支持（节点→原文分块）</span></div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>运行监控大屏 - 航班运行监控智能体平台</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:"Microsoft YaHei",sans-serif; }
+  body { background:#0a1628; color:#cfe3ff; min-height:100vh; }
+  .header { display:flex; justify-content:space-between; align-items:center; padding:14px 28px;
+    background:linear-gradient(180deg,#0e2240,#0a1628); border-bottom:1px solid #1d3a63; }
+  .header h1 { font-size:20px; color:#fff; letter-spacing:2px; }
+  .header h1 span { color:#38bdf8; }
+  .header .time { font-size:13px; color:#7ea6d9; }
+  .kpi-row { display:grid; grid-template-columns:repeat(6,1fr); gap:14px; padding:16px 28px; }
+  .kpi { background:#0e2240; border:1px solid #1d3a63; border-radius:8px; padding:14px 16px; }
+  .kpi .label { font-size:12px; color:#7ea6d9; }
+  .kpi .value { font-size:26px; font-weight:700; color:#fff; margin-top:6px; }
+  .kpi .value.warn { color:#fbbf24; } .kpi .value.danger { color:#f87171; } .kpi .value.ok { color:#34d399; }
+  .kpi .trend { font-size:11px; margin-top:4px; color:#6487b8; }
+  .main { display:grid; grid-template-columns:400px 1fr 360px; gap:14px; padding:0 28px 20px; }
+  .panel { background:#0e2240; border:1px solid #1d3a63; border-radius:8px; display:flex; flex-direction:column; }
+  .panel-h { display:flex; justify-content:space-between; align-items:center; padding:10px 14px; border-bottom:1px solid #1d3a63; }
+  .panel-h .t { font-size:14px; font-weight:600; color:#e8f2ff; }
+  .panel-h .more { font-size:12px; color:#38bdf8; cursor:pointer; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; }
+  .b-high { background:#3d1a1a; color:#f87171; border:1px solid #7f1d1d; }
+  .b-mid  { background:#3a2c10; color:#fbbf24; border:1px solid #78520b; }
+  .b-low  { background:#10301f; color:#34d399; border:1px solid #14532d; }
+  .b-info { background:#12294a; color:#60a5fa; border:1px solid #1e40af; }
+  .alert-list { overflow:auto; max-height:520px; }
+  .alert-item { padding:10px 14px; border-bottom:1px solid #142c4f; cursor:pointer; }
+  .alert-item:hover { background:#122a4d; }
+  .alert-item .row1 { display:flex; justify-content:space-between; font-size:13px; color:#e8f2ff; }
+  .alert-item .row2 { display:flex; gap:10px; margin-top:5px; font-size:11px; color:#6487b8; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { text-align:left; padding:8px 10px; color:#7ea6d9; font-weight:500; border-bottom:1px solid #1d3a63; background:#0c1e3a; }
+  td { padding:8px 10px; border-bottom:1px solid #142c4f; color:#cfe3ff; }
+  tr:hover td { background:#122a4d; }
+  .ai-card { margin:10px 14px; background:#0b1f3d; border:1px solid #164e78; border-radius:8px; padding:12px; }
+  .ai-card .tag { font-size:11px; color:#38bdf8; margin-bottom:6px; }
+  .ai-card .p { font-size:12px; line-height:1.7; color:#b9d4f5; }
+  .ai-card .src { margin-top:8px; font-size:11px; color:#5584bd; }
+  .footer-tip { padding:8px 28px; font-size:11px; color:#40608f; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>✈ 国航航班运行监控智能体平台 <span>· 运行监控大屏</span></h1>
+  <div class="time">2026-09-22 14:32:08 ｜ 数据源：航班动态Kafka流 · 实时</div>
+</div>
+
+<div class="kpi-row">
+  <div class="kpi"><div class="label">当前在空航班</div><div class="value">186</div><div class="trend">较昨日 +4.2%</div></div>
+  <div class="kpi"><div class="label">今日告警总数</div><div class="value warn">47</div><div class="trend">高险 6 · 中险 15</div></div>
+  <div class="kpi"><div class="label">待人工处置</div><div class="value danger">3</div><div class="trend">超时预警 1</div></div>
+  <div class="kpi"><div class="label">AI自动研判</div><div class="value ok">38</div><div class="trend">自动研判率 80.9%</div></div>
+  <div class="kpi"><div class="label">平均响应时长</div><div class="value">2.6<span style="font-size:13px">min</span></div><div class="trend">人工模式 12min → -78%</div></div>
+  <div class="kpi"><div class="label">今日备降/返航</div><div class="value">2</div><div class="trend">CA1832 · CA2094</div></div>
+</div>
+
+<div class="main">
+  <div class="panel">
+    <div class="panel-h"><span class="t">实时告警</span><span class="more">全部 ›</span></div>
+    <div class="alert-list">
+      <div class="alert-item">
+        <div class="row1"><span>CA1832 雷暴绕飞燃油复核</span><span class="badge b-high">高风险</span></div>
+        <div class="row2"><span>气象告警</span><span>航段 PEK-SHA</span><span>14:31</span></div>
+      </div>
+      <div class="alert-item">
+        <div class="row1"><span>B-20AE 空调组件超温</span><span class="badge b-high">高风险</span></div>
+        <div class="row2"><span>部件告警</span><span>执行航班 CA1315</span><span>14:18</span></div>
+      </div>
+      <div class="alert-item">
+        <div class="row1"><span>CA2094 备降场天气低于标准</span><span class="badge b-high">高风险</span></div>
+        <div class="row2"><span>气象告警</span><span>备降 TNA</span><span>14:05</span></div>
+      </div>
+      <div class="alert-item">
+        <div class="row1"><span>CA4187 流控时间后移 25min</span><span class="badge b-mid">中风险</span></div>
+        <div class="row2"><span>流控告警</span><span>ATC</span><span>13:52</span></div>
+      </div>
+      <div class="alert-item">
+        <div class="row1"><span>B-1237 QAR 下降率超限</span><span class="badge b-mid">中风险</span></div>
+        <div class="row2"><span>QAR超限</span><span>落地阶段</span><span>13:40</span></div>
+      </div>
+      <div class="alert-item">
+        <div class="row1"><span>CA8901 机组执勤时间临近限制</span><span class="badge b-mid">中风险</span></div>
+        <div class="row2"><span>机组告警</span><span>预计超时 22min</span><span>13:21</span></div>
+      </div>
+      <div class="alert-item">
+        <div class="row1"><span>CA1356 过站时间紧张</span><span class="badge b-low">低风险</span></div>
+        <div class="row2"><span>保障告警</span><span>剩余 35min</span><span>13:07</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-h"><span class="t">航班动态态势</span>
+      <span>
+        <span class="badge b-info">航路</span>
+        <span class="badge b-info">进离港</span>
+        <span class="badge b-info">特情跟踪</span>
+      </span>
+    </div>
+    <table>
+      <tr><th>航班号</th><th>航段</th><th>机型/注册号</th><th>阶段</th><th>预计到达</th><th>状态</th></tr>
+      <tr><td>CA1832</td><td>PEK-SHA</td><td>A321 / B-1832</td><td>巡航</td><td>15:40</td><td><span class="badge b-high">绕飞复核</span></td></tr>
+      <tr><td>CA1315</td><td>PEK-HGH</td><td>B738 / B-20AE</td><td>爬升</td><td>16:05</td><td><span class="badge b-high">部件告警</span></td></tr>
+      <tr><td>CA2094</td><td>CTU-TNA</td><td>A320 / B-6987</td><td>下降</td><td>14:38</td><td><span class="badge b-high">备降评估</span></td></tr>
+      <tr><td>CA4187</td><td>PEK-CAN</td><td>B77W / B-2033</td><td>地面</td><td>18:20</td><td><span class="badge b-mid">流控</span></td></tr>
+      <tr><td>CA8901</td><td>PEK-SZX</td><td>B789 / B-20AG</td><td>巡航</td><td>17:50</td><td><span class="badge b-mid">机组时限</span></td></tr>
+      <tr><td>CA1521</td><td>PEK-XIY</td><td>A332 / B-6076</td><td>巡航</td><td>16:42</td><td><span class="badge b-low">正常</span></td></tr>
+      <tr><td>CA0976</td><td>SHA-PEK</td><td>A321 / B-1051</td><td>下降</td><td>14:55</td><td><span class="badge b-low">正常</span></td></tr>
+      <tr><td>CA4105</td><td>PEK-HAK</td><td>B738 / B-5476</td><td>起飞</td><td>17:12</td><td><span class="badge b-low">正常</span></td></tr>
+    </table>
+    <div class="panel-h" style="border-top:1px solid #1d3a63"><span class="t">AI 研判推送流（GraphRAG 自动研判）</span><span class="more">接入工作流 ›</span></div>
+    <div class="ai-card">
+      <div class="tag">🤖 智能研判 · CA1832 雷暴绕飞燃油复核 · 置信度 0.92</div>
+      <div class="p">当前绕飞方案额外燃油 1.8t，满足 CCAR-121 备降油量要求；SHA 14:00-16:00 持续雷暴概率 72%，建议保持现绕飞路由并申请 HGH 为 alternates。命中《运行手册》§6.3 油量政策 + 近30天同类告警工单 3 起（处置一致率 100%）。</div>
+      <div class="src">溯源：运行手册§6.3 ｜ 气象报文 METAR ｜ 历史工单 #2024-0891/#2024-1213</div>
+    </div>
+    <div class="ai-card">
+      <div class="tag">🤖 智能研判 · B-20AE 空调组件超温 · 触发人工介入</div>
+      <div class="p">沿「导致」关系推理：组件超温 → 空调系统降级 → 客舱温度不可控（置信度 0.83→0.71→0.62）。关联 MEL 21-52-02：可保留放行但需 3 日内更换。建议签派联系机务评估，已生成处置工单草稿，等待人工审批。</div>
+      <div class="src">溯源：MEL手册 ｜ 部件台账 ｜ 根因链推理（3跳）</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-h"><span class="t">处置建议与审批</span><span class="more">工作流实例 ›</span></div>
+    <div class="ai-card" style="border-color:#78520b">
+      <div class="tag" style="color:#fbbf24">⏸ 待人工审批 · CA2094 备降评估</div>
+      <div class="p">TNA 备降场 14:00 后天气低于机长标准，建议改备 TAO（余油满足，TAO 15:00-17:00 正常）。方案已按《特情处置预案》§4.2 生成，含旅客保障联动建议。</div>
+      <div class="src">
+        <button style="margin:6px 6px 0 0;padding:4px 14px;background:#166534;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px">同意下发</button>
+        <button style="margin:6px 0 0 0;padding:4px 14px;background:#1e3a5f;color:#9dc0ea;border:1px solid #2d517e;border-radius:4px;cursor:pointer;font-size:12px">修改方案</button>
+      </div>
+    </div>
+    <div class="ai-card">
+      <div class="tag" style="color:#34d399">✓ 已自动处置 · CA4187 流控后移</div>
+      <div class="p">已自动更新起飞时刻并重算 ETA， passengers 连接风险评估：后续衔接 CA1123（PEK）紧张，已加入关注清单。</div>
+      <div class="src">动作：更新FOC时刻 · 推送机组 · 14:02</div>
+    </div>
+    <div class="ai-card">
+      <div class="tag" style="color:#34d399">✓ 已自动处置 · CA1356 过站提醒</div>
+      <div class="p">已向现场保障单位推送催促消息，当前预计过站 42min，风险解除。</div>
+      <div class="src">动作：消息推送 · 13:15</div>
+    </div>
+  </div>
+</div>
+<div class="footer-tip">原型说明：左-告警流入，中-航班态势+AI研判流，右-处置审批；告警经 Agentic Workflow 自动研判，中高风险转人工（human-in-the-loop）。</div>
+</body>
+</html>

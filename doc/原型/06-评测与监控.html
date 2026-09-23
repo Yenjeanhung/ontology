@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>评测与监控 - 航班运行监控智能体平台</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:"Microsoft YaHei",sans-serif; }
+  body { background:#f5f7fa; color:#303133; height:100vh; display:flex; }
+  .sidebar { width:190px; background:#001529; color:#a6adb4; padding:14px 0; flex-shrink:0; }
+  .logo { color:#fff; font-size:14px; font-weight:600; padding:6px 18px 16px; }
+  .nav-item { padding:11px 18px; font-size:13px; cursor:pointer; }
+  .nav-item:hover { color:#fff; }
+  .nav-item.active { background:#1677ff; color:#fff; }
+  .main { flex:1; overflow:auto; padding:16px 20px; min-width:0; }
+  .sec-title { font-size:14px; font-weight:600; margin:4px 0 10px; }
+  .cards { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:16px; }
+  .card { background:#fff; border:1px solid #e4e7ed; border-radius:8px; padding:14px 16px; }
+  .card .l { font-size:12px; color:#909399; }
+  .card .v { font-size:24px; font-weight:700; margin-top:5px; color:#1677ff; }
+  .card .v.g { color:#52c41a; } .card .v.o { color:#fa8c16; }
+  .card .d { font-size:11px; margin-top:4px; color:#52c41a; }
+  .card .d.r { color:#f5222d; }
+  .row { display:grid; grid-template-columns:1.4fr 1fr; gap:12px; margin-bottom:16px; }
+  .panel { background:#fff; border:1px solid #e4e7ed; border-radius:8px; }
+  .ph { padding:10px 16px; border-bottom:1px solid #f0f2f5; font-size:13px; font-weight:600; display:flex; justify-content:space-between; }
+  .ph .op { font-size:11px; color:#1677ff; font-weight:400; cursor:pointer; }
+  .pb { padding:12px 16px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { text-align:left; padding:7px 10px; background:#fafbfc; color:#909399; font-weight:500; border-bottom:1px solid #f0f2f5; }
+  td { padding:7px 10px; border-bottom:1px solid #f7f8fa; }
+  .up { color:#52c41a; } .down { color:#f5222d; }
+  .bar-wrap { display:flex; align-items:center; gap:8px; font-size:11.5px; margin:8px 0; }
+  .bar-label { width:170px; color:#606266; text-align:right; }
+  .bar-track { flex:1; height:14px; background:#f0f2f5; border-radius:7px; overflow:hidden; display:flex; }
+  .bar-a { background:#91caff; height:100%; } .bar-b { background:#1677ff; height:100%; }
+  .legend2 { font-size:11px; color:#909399; display:flex; gap:14px; margin-top:8px; }
+  .sq { width:9px; height:9px; border-radius:2px; display:inline-block; margin-right:4px; }
+  .bad { font-size:12px; }
+  .bad td:first-child { color:#303133; }
+  .pill { font-size:11px; padding:1px 8px; border-radius:9px; }
+  .p-new { background:#fff1f0; color:#cf1322; border:1px solid #ffa39e; }
+  .p-fix { background:#f6ffed; color:#389e0d; border:1px solid #b7eb8f; }
+  .trace { display:flex; align-items:center; gap:4px; font-size:11px; margin:6px 0; }
+  .span { height:18px; border-radius:4px; display:flex; align-items:center; padding:0 6px; color:#fff; font-size:10px; white-space:nowrap; }
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <div class="logo">✈ 运行监控智能体平台</div>
+  <div class="nav-item">运行监控大屏</div>
+  <div class="nav-item">智能问答研判</div>
+  <div class="nav-item">工作流编排</div>
+  <div class="nav-item">告警关联分析</div>
+  <div class="nav-item">知识图谱</div>
+  <div class="nav-item">知识库管理</div>
+  <div class="nav-item">本体管理</div>
+  <div class="nav-item active">评测与监控</div>
+</div>
+
+<div class="main">
+  <div class="sec-title">RAG 效果评测（RAGAS · 测试集 3,214 条 · 本轮 2026-09-21 回归）</div>
+  <div class="cards">
+    <div class="card"><div class="l">Faithfulness 忠实度</div><div class="v g">0.95</div><div class="d">≥0.90 达标 · 环比 +0.02</div></div>
+    <div class="card"><div class="l">Answer Relevancy</div><div class="v">0.91</div><div class="d">环比 +0.01</div></div>
+    <div class="card"><div class="l">Context Precision</div><div class="v">0.91</div><div class="d">升级 GraphRAG 后 +6%</div></div>
+    <div class="card"><div class="l">Context Recall</div><div class="v g">0.90</div><div class="d">环比 +0.04</div></div>
+    <div class="card"><div class="l">检索命中率</div><div class="v">91%</div><div class="d">基线 78% · <b style="color:#52c41a">+13pct</b></div></div>
+  </div>
+
+  <div class="row">
+    <div class="panel">
+      <div class="ph"><span>检索组件消融实验（同测试集）</span><span class="op">查看实验配置 ›</span></div>
+      <div class="pb">
+        <div class="bar-wrap"><span class="bar-label">BM25 单路</span><div class="bar-track"><div class="bar-a" style="width:64%"></div></div>0.64</div>
+        <div class="bar-wrap"><span class="bar-label">向量 单路</span><div class="bar-track"><div class="bar-a" style="width:71%"></div></div>0.71</div>
+        <div class="bar-wrap"><span class="bar-label">BM25+向量 RRF</span><div class="bar-track"><div class="bar-a" style="width:78%"></div></div>0.78（原基线）</div>
+        <div class="bar-wrap"><span class="bar-label">+ 多查询改写</span><div class="bar-track"><div class="bar-a" style="width:83%"></div></div>0.83</div>
+        <div class="bar-wrap"><span class="bar-label">+ 本体GraphRAG三路</span><div class="bar-track"><div class="bar-b" style="width:88%"></div></div>0.88</div>
+        <div class="bar-wrap"><span class="bar-label">+ Reranker 精排（现网）</span><div class="bar-track"><div class="bar-b" style="width:91%"></div></div><b>0.91</b></div>
+        <div class="legend2"><span><span class="sq" style="background:#91caff"></span>消融对照</span><span><span class="sq" style="background:#1677ff"></span>现网链路</span></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="ph"><span>意图路由小模型（Qwen3-0.6B · LoRA+DPO）</span><span class="op">评测明细 ›</span></div>
+      <div class="pb">
+        <table>
+          <tr><th>指标</th><th>提示词基线</th><th>LoRA</th><th>+DPO</th></tr>
+          <tr><td>意图路由准确率</td><td>85.0%</td><td>90.0%</td><td class="up"><b>98.6%</b></td></tr>
+          <tr><td>NL2Filter 抽取成功率</td><td>87.3%</td><td>95.2%</td><td class="up"><b>98.1%</b></td></tr>
+          <tr><td>路由响应时间</td><td>5~10s</td><td>&lt;100ms</td><td class="up"><b>&lt;100ms</b></td></tr>
+        </table>
+        <div style="font-size:11.5px;color:#909399;margin-top:8px">低置信/超时/解析失败自动回退规则兜底，判错只损失降本、不劣化效果。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row" style="grid-template-columns:1fr 1.4fr">
+    <div class="panel">
+      <div class="ph"><span>Badcase 回流与修复追踪</span><span class="op">全部 42 条 ›</span></div>
+      <div class="pb">
+        <table class="bad">
+          <tr><th>问题</th><th>归因</th><th>状态</th></tr>
+          <tr><td>「备降油量政策」漏召回</td><td>手册切片过粗</td><td><span class="pill p-fix">已修复·重切策略</span></td></tr>
+          <tr><td>机场码 TNA/TAO 混淆</td><td>实体归一化缺失</td><td><span class="pill p-fix">已修复·别名表</span></td></tr>
+          <tr><td>跨表取数改写失败</td><td>NL2Filter 枚举漂移</td><td><span class="pill p-fix">已修复·DPO偏好对</span></td></tr>
+          <tr><td>历史工单时间表述歧义</td><td>查询改写不足</td><td><span class="pill p-new">待回归</span></td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="ph"><span>全链路追踪（OpenTelemetry · Trace 采样回溯）</span><span class="op">接口耗时聚合 ›</span></div>
+      <div class="pb">
+        <table>
+          <tr><th>Trace</th><th>场景</th><th>总耗时</th><th>瓶颈定位</th></tr>
+          <tr><td>9f2c…a1</td><td>告警研判 WF</td><td>18.2s</td><td>GraphRAG 检索 6.1s（三路并发）</td></tr>
+          <tr><td>3e8b…72</td><td>问答-数据类</td><td>4.8s</td><td>NL2Filter 0.6s · SQL 0.3s</td></tr>
+          <tr><td>7c1d…09</td><td>问答-闲聊直答</td><td>0.9s</td><td>路由 80ms · 直答 0.8s</td></tr>
+        </table>
+        <div class="trace" style="margin-top:10px">
+          <span style="width:60px;color:#909399">Span树：</span>
+          <span class="span" style="width:110px;background:#5b8ff9">意图路由 80ms</span>
+          <span class="span" style="width:150px;background:#5ad8a6">Planner 1.2s</span>
+          <span class="span" style="width:210px;background:#f6bd16">GraphRAG检索 6.1s</span>
+          <span class="span" style="width:150px;background:#e8684a">LLM合成 9.8s</span>
+        </div>
+        <div style="font-size:11.5px;color:#909399">Span 落库留存按天滚动清理；开发环境接 LangSmith 看推理中间态。</div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
