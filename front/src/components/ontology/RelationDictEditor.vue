@@ -17,13 +17,13 @@ const adding = ref(false)
 const newName = ref('')
 const newCode = ref('')
 const newDesc = ref('')
-const newCardinality = ref('MANY_TO_MANY')
 const newInverse = ref('')
 const newSymmetric = ref(false)
 const newTransitive = ref(false)
 const newStatus = ref('active')
 const savingNew = ref(false)
 
+// 编辑弹窗（基数等语义在三元组约束上配置；词典只维护名称/编码/描述）
 const editingId = ref('')
 const editName = ref('')
 const editCode = ref('')
@@ -36,18 +36,10 @@ const pagedRelations = computed(() =>
 )
 watch(() => props.relations, () => { page.value = 1 }, { deep: true })
 
-const CARD_OPTIONS = [
-  { value: 'ONE_TO_ONE', label: '一对一 (1:1)' },
-  { value: 'ONE_TO_MANY', label: '一对多 (1:N)' },
-  { value: 'MANY_TO_MANY', label: '多对多 (N:N)' },
-]
-function cardLabel(c) { return (CARD_OPTIONS.find(o => o.value === c) || {}).label || c || '多对多' }
-
 function startAdd() {
   newName.value = ''
   newCode.value = ''
   newDesc.value = ''
-  newCardinality.value = 'MANY_TO_MANY'
   newInverse.value = ''
   newSymmetric.value = false
   newTransitive.value = false
@@ -61,7 +53,7 @@ async function submitAdd() {
   try {
     await createRelation(props.categoryId, {
       name: newName.value.trim(), code: newCode.value.trim(), description: newDesc.value.trim(),
-      cardinality: newCardinality.value, inverse_name: newInverse.value,
+      inverse_name: newInverse.value,
       is_symmetric: newSymmetric.value, is_transitive: newTransitive.value, status: newStatus.value,
     })
     adding.value = false
@@ -84,11 +76,11 @@ function cancelEdit() {
   editingId.value = ''
 }
 
-async function submitEdit(rel) {
-  if (!editName.value.trim()) return
-  savingId.value = rel.id
+async function submitEdit() {
+  if (!editingId.value || !editName.value.trim()) return
+  savingId.value = editingId.value
   try {
-    await updateRelation(props.categoryId, rel.id, { name: editName.value.trim(), code: editCode.value.trim(), description: editDesc.value.trim() })
+    await updateRelation(props.categoryId, editingId.value, { name: editName.value.trim(), code: editCode.value.trim(), description: editDesc.value.trim() })
     editingId.value = ''
     emit('changed')
   } catch (e) {
@@ -111,7 +103,7 @@ async function remove(rel) {
 // ══════════ S5：链接高级语义 + 关系属性 ══════════
 const showAdv = ref(false)
 const advRel = ref(null)
-const advForm = ref({ cardinality: 'MANY_TO_MANY', inverse_name: '', is_symmetric: false, is_transitive: false, status: 'active' })
+const advForm = ref({ inverse_name: '', is_symmetric: false, is_transitive: false, status: 'active' })
 const advSaving = ref(false)
 const relProps = ref([])
 const propsLoading = ref(false)
@@ -120,12 +112,12 @@ const propEditor = ref({ id: '', name: '', code: '', data_type: 'string', descri
 // 弹窗支持按 ESC 关闭
 useEscClose(() => [
   [showAdv.value, () => { showAdv.value = false }],
+  [!!editingId.value, () => { editingId.value = '' }],
 ])
 
 async function openAdv(rel) {
   advRel.value = rel
   advForm.value = {
-    cardinality: rel.cardinality || 'MANY_TO_MANY',
     inverse_name: rel.inverse_name || '',
     is_symmetric: !!rel.is_symmetric,
     is_transitive: !!rel.is_transitive,
@@ -194,7 +186,6 @@ async function saveAdv() {
   advSaving.value = true
   try {
     await updateRelation(props.categoryId, advRel.value.id, {
-      cardinality: advForm.value.cardinality,
       inverse_name: advForm.value.inverse_name,
       is_symmetric: advForm.value.is_symmetric,
       is_transitive: advForm.value.is_transitive,
@@ -229,9 +220,6 @@ async function saveAdv() {
         <input type="text" v-model="newName" placeholder="关系名称，如：任职于" class="rde-name-input" @keydown.enter="submitAdd">
         <input type="text" v-model="newCode" placeholder="编码（该类别内唯一）" class="rde-code-input">
         <input type="text" v-model="newDesc" placeholder="描述（可选）" class="rde-desc-input">
-        <select v-model="newCardinality" class="rde-card-input" title="端点基数">
-          <option v-for="o in CARD_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-        </select>
       </div>
       <div class="rde-row-actions">
         <button class="btn sm" @click="adding = false">取消</button>
@@ -244,42 +232,26 @@ async function saveAdv() {
     <!-- 列表 -->
     <div v-if="relations.length" class="rde-list">
       <div v-for="rel in pagedRelations" :key="rel.id" class="rde-row">
-        <template v-if="editingId === rel.id">
-          <div class="rde-form">
-            <input type="text" v-model="editName" class="rde-name-input" @keydown.enter="submitEdit(rel)">
-            <input type="text" v-model="editCode" placeholder="编码（该类别内唯一）" class="rde-code-input">
-            <input type="text" v-model="editDesc" placeholder="描述（可选）" class="rde-desc-input">
-          </div>
-          <div class="rde-row-actions">
-            <button class="btn sm" @click="cancelEdit">取消</button>
-            <button class="btn primary sm" @click="submitEdit(rel)" :disabled="savingId === rel.id || !editName.trim()">
-              <span v-if="savingId === rel.id" class="spinner"></span> 保存
-            </button>
-          </div>
-        </template>
-        <template v-else>
-          <div class="rde-row-body">
-            <span class="rde-name">{{ rel.name }}</span>
-            <span class="rde-code-tag" v-if="rel.code">{{ rel.code }}</span>
-            <span class="rde-desc" v-if="rel.description">{{ rel.description }}</span>
-            <span class="rde-pill" v-if="rel.cardinality && rel.cardinality !== 'MANY_TO_MANY'">{{ cardLabel(rel.cardinality) }}</span>
-            <span class="rde-pill sym" v-if="rel.is_symmetric">对称</span>
-            <span class="rde-pill tr" v-if="rel.is_transitive">传递</span>
-            <span class="rde-pill inv" v-if="rel.inverse_name">⇄ {{ rel.inverse_name }}</span>
-            <span class="rde-pill dep" v-if="rel.status === 'deprecated'">已弃用</span>
-          </div>
-          <div class="rde-row-actions">
-            <button class="icon-btn sm" @click="startEdit(rel)" title="编辑基本信息">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
-            </button>
-            <button class="icon-btn sm" @click="openAdv(rel)" title="高级：基数 / 反向 / 关系属性">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
-            </button>
-            <button class="rm-btn sm" @click="remove(rel)" title="删除">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-            </button>
-          </div>
-        </template>
+        <div class="rde-row-body">
+          <span class="rde-name">{{ rel.name }}</span>
+          <span class="rde-code-tag" v-if="rel.code">{{ rel.code }}</span>
+          <span class="rde-desc" v-if="rel.description">{{ rel.description }}</span>
+          <span class="rde-pill sym" v-if="rel.is_symmetric">对称</span>
+          <span class="rde-pill tr" v-if="rel.is_transitive">传递</span>
+          <span class="rde-pill inv" v-if="rel.inverse_name">⇄ {{ rel.inverse_name }}</span>
+          <span class="rde-pill dep" v-if="rel.status === 'deprecated'">已弃用</span>
+        </div>
+        <div class="rde-row-actions">
+          <button class="icon-btn sm" @click="startEdit(rel)" title="编辑基本信息">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+          </button>
+          <button class="icon-btn sm" @click="openAdv(rel)" title="高级：反向 / 对称 / 传递 / 关系属性">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+          </button>
+          <button class="rm-btn sm" @click="remove(rel)" title="删除">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
+        </div>
       </div>
       <Pagination v-if="relations.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="relations.length" />
     </div>
@@ -296,13 +268,8 @@ async function saveAdv() {
           <button class="rde-close" @click="showAdv = false">×</button>
         </div>
         <div class="rde-modal-body">
+          <div class="rde-hint">基数（一对一/一对多等）在「三元组关系」里按两端本体配置，此处维护词典级语义。</div>
           <div class="rde-grid2">
-            <div class="rde-field">
-              <label>链接基数（端点基数）</label>
-              <select v-model="advForm.cardinality">
-                <option v-for="o in CARD_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-              </select>
-            </div>
             <div class="rde-field">
               <label>状态</label>
               <select v-model="advForm.status">
@@ -310,6 +277,7 @@ async function saveAdv() {
                 <option value="deprecated">已弃用</option>
               </select>
             </div>
+            <div class="rde-field"></div>
           </div>
           <div class="rde-field">
             <label>反向展示名（如：雇佣 ↔ 任职于）</label>
@@ -371,6 +339,38 @@ async function saveAdv() {
         </div>
       </div>
     </div>
+
+    <!-- 编辑关系基本信息弹窗 -->
+    <Teleport to="body">
+      <div v-if="editingId" class="rde-mask" @click.self="cancelEdit">
+        <div class="rde-modal rde-edit-modal">
+          <div class="rde-modal-head">
+            <h3>编辑关系</h3>
+            <button class="rde-close" @click="cancelEdit">×</button>
+          </div>
+          <div class="rde-modal-body">
+            <div class="rde-field">
+              <label>关系名称</label>
+              <input type="text" v-model="editName" @keydown.enter="submitEdit()">
+            </div>
+            <div class="rde-field">
+              <label>编码（该类别内唯一，Neo4j 边类型名）</label>
+              <input type="text" v-model="editCode" placeholder="如 rel_flights_tickets">
+            </div>
+            <div class="rde-field">
+              <label>描述（可选）</label>
+              <input type="text" v-model="editDesc">
+            </div>
+          </div>
+          <div class="rde-modal-foot">
+            <button class="btn sm" @click="cancelEdit">取消</button>
+            <button class="btn sm primary" @click="submitEdit()" :disabled="savingId === editingId || !editName.trim()">
+              <span v-if="savingId === editingId" class="spinner"></span> 保存
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -391,7 +391,6 @@ async function saveAdv() {
 .rde-name-input { flex: 0 0 180px; }
 .rde-code-input { flex: 0 0 160px; }
 .rde-desc-input { flex: 1; min-width: 0; }
-.rde-card-input { flex: 0 0 150px; }
 .rde-form input, .rde-form select {
   width: 100%; padding: 6px 10px; border: 1px solid var(--c-border); border-radius: var(--radius-sm);
   background: var(--c-panel); color: var(--c-fg); font-size: 13px; font-family: var(--font); outline: none;
@@ -435,6 +434,7 @@ async function saveAdv() {
 /* S5 弹窗 */
 .rde-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 300; }
 .rde-modal { width: 680px; max-width: 94vw; max-height: 88vh; overflow-y: auto; background: var(--c-panel); border: 1px solid var(--c-border); border-radius: var(--radius); display: flex; flex-direction: column; }
+.rde-modal.rde-edit-modal { width: 480px; }
 .rde-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--c-border); }
 .rde-modal-head h3 { margin: 0; font-size: 14px; font-weight: 700; color: var(--c-fg); }
 .rde-close { width: 26px; height: 26px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--c-secondary); font-size: 16px; cursor: pointer; }

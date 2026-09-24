@@ -196,6 +196,9 @@ async def update_relation(
         relation_id,
         relation_type=req.relation_type,
         description=req.description,
+        relation_def_id=req.relation_def_id,
+        source_entity_id=req.source_entity_id,
+        target_entity_id=req.target_entity_id,
     )
     if not res:
         raise _nf("Relation not found")

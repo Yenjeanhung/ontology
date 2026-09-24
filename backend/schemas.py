@@ -409,6 +409,11 @@ class CreateRelationConstraintRequest(BaseModel):
     relation_id: str
     target_ontology_id: str
     description: str | None = ""
+    # join 字段映射：[{"left":"flight_no","right":"flight_no"}]，NL2SQL ON 条件来源（可多字段）
+    join_condition: list[dict] | None = None
+    # 基数（source→target 视角）：ONE_TO_ONE/ONE_TO_MANY/MANY_TO_ONE/MANY_TO_MANY，
+    # 映射到 source_max/target_max（基数真源在约束层）
+    cardinality: str | None = None
 
 
 class UpdateRelationConstraintRequest(BaseModel):
@@ -416,6 +421,9 @@ class UpdateRelationConstraintRequest(BaseModel):
     relation_id: str | None = None
     target_ontology_id: str | None = None
     description: str | None = None
+    join_condition: list[dict] | None = None
+    # 基数枚举（优先于下面的细粒度端点上限）
+    cardinality: str | None = None
     # S5：端点基数
     source_min: int | None = None
     source_max: int | None = None
@@ -633,8 +641,12 @@ class UpdateEntityRequest(BaseModel):
 
 
 class UpdateRelationRequest(BaseModel):
+    # 除 description/relation_type 外支持换键：定义/两端任一变化由 service 删旧建新（复用 upsert 与图同步）
     relation_type: str | None = None
     description: str | None = None
+    relation_def_id: str | None = None
+    source_entity_id: str | None = None
+    target_entity_id: str | None = None
 
 
 class CreateEntityRequest(BaseModel):
@@ -647,7 +659,9 @@ class CreateEntityRequest(BaseModel):
 
 
 class CreateRelationRequest(BaseModel):
-    kb_id: str
+    # kb_id 可选：抽取链路显式传（归属知识库）；实体页手工建边不传（默认空串，
+    # 与手工创建实体 kb_id="" 的口径一致，upsert 去重键同为空串）
+    kb_id: str = ""
     relation_def_id: str
     relation_type: str
     source_entity_id: str

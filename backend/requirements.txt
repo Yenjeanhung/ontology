@@ -27,6 +27,9 @@ langchain-experimental>=0.3.0          # CHUNK_BACKEND=langchain + 策略 semant
 # 工作流引擎（调度层，services/workflow_engine.py）
 langgraph>=0.2.0
 langgraph-checkpoint-sqlite>=2.0.0   # 预留：断点恢复/重放时启用
+deepagents>=0.7.15                   # DeepAgents 深度模式 harness（多智能体第二执行路径
+                                     #   deep_agent.py；要求 langchain 1.x + langgraph 1.x，
+                                     #   未安装时深度模式自动回落普通团队路径）
 
 # MCP（Model Context Protocol）：外部工具接入（services/tool_registry.py）
 # 锁 1.x：mcp 2.x 依赖的 starlette 与 fastapi 0.115（需 starlette<0.42）冲突

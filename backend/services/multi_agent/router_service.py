@@ -48,13 +48,19 @@ SLIM_ROSTERS: dict[str, list[str]] = {
 VALID_MODES = {"chat", "data", "graph", "kb"}
 NL2FILTER_KEYS = ("entity_type", "name", "metric", "time_range")
 
-# 第一级路由提示词（v6 服务内置分类输出 {mode, confidence} 时仅兜底对齐）
+# 第一级路由提示词（v6 服务内置分类输出 {mode, confidence} 时仅兜底对齐）。
+# 判性边界（v6.4 补）：0.6B 曾把「CA1503有哪些乘客」判成 graph（0.93）——它把
+# "航班→乘客"理解成实体关联；但名单/明细/有哪些X 语义上是台账结构化查询（data），
+# 只有问实体之间的关联/关系网络（谁和谁有关系/关系链/共现网络）才是 graph。
 _INTENT_SYSTEM = (
     "你是意图路由器。判断用户请求属于哪一类，只输出 JSON："
     '{"mode": "chat|data|graph|kb", "confidence": 0~1}。'
-    "chat=闲聊问答/写作等通用请求；data=查实体台账结构化数据（数量/统计/明细）；"
-    "graph=查实体之间关联关系；kb=查知识库文档资料；无法判断时 mode 取最可能的一类"
-    "并给低 confidence。不要输出其他文字。"
+    "chat=闲聊问答/写作等通用请求；data=查实体台账结构化数据（数量/统计/明细/名单/清单）；"
+    "graph=查实体之间关联关系（谁与谁关联/关系链/共现网络）；kb=查知识库文档资料；"
+    "无法判断时 mode 取最可能的一类并给低 confidence。"
+    "注意：「X有哪些Y」「X的Y名单/清单/明细」是查台账数据=data；"
+    "例：CA1503有哪些乘客→data；MU5307的机组名单→data；"
+    "CA1503与哪些航班共用机型→graph。不要输出其他文字。"
 )
 
 # 第二级 NL2Filter few-shot（LoRA 未部署时的同服务兜底抽取）
@@ -216,8 +222,32 @@ _CLARIFY_SYSTEM = (
     "（如对象/范围/时间范围/统计口径/输出形式等）。信息充足只输出 {\"need_clarify\": false}；"
     "信息不足输出 {\"need_clarify\": true, \"question\": \"一句话澄清提问\", "
     "\"options\": [\"候选项1\", \"候选项2\", \"候选项3\"]}，候选项 2~4 个、每个不超过 20 字。"
+    "注意：只罗列了几个名词/实体、没说要做什么的任务属于信息不足，必须判 true。"
+    "示例：\n"
+    "问：北京重庆\n"
+    "答：{\"need_clarify\": true, \"question\": \"你想了解北京和重庆的什么？\", "
+    "\"options\": [\"城市概况介绍\", \"多维度对比分析\", \"两地旅游攻略\"]}\n"
+    "问：对比分析北京和重庆\n答：{\"need_clarify\": false}\n"
+    "问：介绍一下北京的城市概况\n答：{\"need_clarify\": false}\n"
+    "问：CA1503有哪些乘客\n答：{\"need_clarify\": false}\n"
+    "（有明确查询对象+要查的内容时不算信息不足，即使没有更多细节）"
     "只输出 JSON，不要输出任何其他文字。"
 )
+
+# 超短模糊任务本地短路：0.6B 对「纯名词串」判定不可靠（实测 need_clarify 恒 false），
+# 任务过短且无任何意图动词时不再依赖模型，本地直接判澄清（确定性兜底）。
+_VAGUE_LEN = 16
+_INTENT_HINT_RE = re.compile(
+    r"介绍|对比|分析|查询|查一下|查找|列出|统计|总结|摘要|生成|撰写|编写|翻译|解释|说明"
+    r"|多少|哪些|什么|怎么|如何|为什么|帮我|帮忙|请|看看|了解|搜索|找一?找|评估|预测|报告")
+_VAGUE_QUESTION = "这个任务比较简短，你想让我具体做什么？（可从下面选，或自己填写）"
+_VAGUE_OPTIONS = ["介绍相关概况", "多维度对比分析", "查询相关数据", "总结生成报告"]
+
+
+def _vague_task(task: str) -> bool:
+    """超短且无意图动词 → 视为信息不足（如「北京重庆」「CA1503和MU5307」）。"""
+    t = (task or "").strip()
+    return 0 < len(t) < _VAGUE_LEN and not _INTENT_HINT_RE.search(t)
 
 
 async def clarify_check(task: str) -> Optional[dict]:
@@ -228,16 +258,26 @@ async def clarify_check(task: str) -> Optional[dict]:
     """
     if not getattr(settings, "CLARIFY_ENABLED", True):
         return None
+    # 超短模糊任务本地短路（不调 0.6B，省一次调用且判定确定）
+    if _vague_task(task):
+        logger.info("[澄清判定] 超短任务无意图词 → 本地规则澄清：%r", _short(task))
+        return {"question": _VAGUE_QUESTION, "options": _VAGUE_OPTIONS}
     url = ((getattr(settings, "CLARIFY_URL", "") or "").strip()
            or (getattr(settings, "NL2FILTER_URL", "") or "").strip()
            or (getattr(settings, "INTENT_ROUTER_URL", "") or "").strip())
     if not url:
         return None
+    # model 与 url 同源回退：CLARIFY_MODEL 留空 → NL2FILTER_MODEL → INTENT_ROUTER_MODEL
+    # （此前 config 默认值 "qwen3-0.6b-router" 与实际部署名 qwen06b-router 不一致 → 404 → 静默放行）
+    model = ((getattr(settings, "CLARIFY_MODEL", "") or "").strip()
+             or (getattr(settings, "NL2FILTER_MODEL", "") or "").strip()
+             or (getattr(settings, "INTENT_ROUTER_MODEL", "") or "").strip()
+             or "qwen3-0.6b-router")
     try:
         raw = await _chat_once(
             _CLARIFY_SYSTEM, task,
             url=url,
-            model=getattr(settings, "CLARIFY_MODEL", "qwen3-0.6b-router"),
+            model=model,
             timeout=float(getattr(settings, "CLARIFY_TIMEOUT", 5.0)),
             tag="澄清判定",
         )

@@ -837,3 +837,12 @@ CREATE INDEX IF NOT EXISTS idx_eval_run_items_run ON eval_run_items(run_id);
 
 -- migration_041: 评测任务各指标成功评分条数（ragas 逐条评分失败返回 NaN→null，均值卡需暴露覆盖面）
 ALTER TABLE eval_runs ADD COLUMN IF NOT EXISTS scored_count_json TEXT DEFAULT '';
+
+-- migration_042: DataAgent 本体驱动 NL2SQL（doc/智能体/多智能体/多智能体DataAgent·本体驱动NL2SQL.md §2.1）
+-- 数据源类别（dialect 非空 = 启用 NL2SQL；dsn 空 = 用平台库）+ 表/字段/关系别名 + join 字段映射
+ALTER TABLE ontology_categories ADD COLUMN datasource_dialect VARCHAR(20) DEFAULT '';
+ALTER TABLE ontology_categories ADD COLUMN datasource_dsn TEXT DEFAULT '';
+ALTER TABLE ontologies ADD COLUMN alias VARCHAR(200) DEFAULT '';
+ALTER TABLE ontology_attributes ADD COLUMN alias VARCHAR(200) DEFAULT '';
+ALTER TABLE ontology_relations ADD COLUMN alias VARCHAR(200) DEFAULT '';
+ALTER TABLE ontology_relation_constraints ADD COLUMN join_condition TEXT DEFAULT '';

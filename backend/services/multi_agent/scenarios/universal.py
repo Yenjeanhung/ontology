@@ -31,6 +31,7 @@ from typing import Callable, Optional
 from sqlalchemy import and_, func, or_, select
 
 from providers.llm import create_llm
+from config import settings
 from ..engine import MultiAgentEngine
 from ..router_service import nl2filter as _nl2filter_extract
 from ..router_service import routing_decision
@@ -207,6 +208,12 @@ class UniversalScenario(MultiAgentScenario):
             return self._build_direct(task, route)   # chat → 直答，编排不启动
         if not explicit and route.get("agents"):
             agents = list(route["agents"])           # 路由精简组合
+        elif not explicit:
+            # 自动路由且路由未接管（0.6B 不可达/低置信 fallback / 非四类高置信标签）
+            # → 默认全组合兜底。前端自动路由恒传 agents=[]（非 None），若不在此归
+            # None，caps 会落成空组合 = 「纯模型协作」（v6.4 修复：曾因此 0.6B 一抖
+            # 就整轮零取证，答案纯靠模型知识无事实卡）。
+            agents = None
 
         caps = _normalize_agents(agents)
         if not explicit and _looks_like_chart_task(task):
@@ -225,10 +232,19 @@ class UniversalScenario(MultiAgentScenario):
                      "summary": f"LLM 分解 {len(goals)} 个并行子任务"})
 
         # ── 第二级：NL2Filter（仅 data 类放行；抽不出 → DataAgent 词频老路兜底） ──
+        #   手动组队勾了 DataAgent 时同样放行：用户显式点名数据查询，路由把任务
+        #   误判成 graph 等类别不应拦住抽取（抽不出 → 词频兜底，零副作用）；
+        #   总开关 NL2FILTER_ENABLED 仍然生效（与路由侧口径一致）。
         nl_filter: Optional[dict] = None
-        if route.get("nl2filter") and "data_agent" in caps:
+        nl2f_go = (
+            "data_agent" in caps
+            and bool(getattr(settings, "NL2FILTER_ENABLED", True))
+            and (bool(route.get("nl2filter")) or explicit)
+        )
+        if nl2f_go:
             _t0 = time.perf_counter()
             nl_filter = await _nl2filter_extract(task)
+            route["nl2filter"] = True   # 手动放行时回写，前端/回放口径一致
             route["nl2filter_ms"] = int((time.perf_counter() - _t0) * 1000)
             route["nl2filter_hit"] = nl_filter is not None
             if on_step:   # 抽取一完成即外抛，不等后续装配
@@ -299,12 +315,39 @@ class UniversalScenario(MultiAgentScenario):
 
         team_info["route"] = route   # 两级路由决策透出（前端可渲染，不认识则忽略）
 
-        return MultiAgentEngine(
+        eng = MultiAgentEngine(
             context={"task": task, "agents": caps, "route": route},
             team_info=team_info,
             plan=plan,
             node_factory=lambda eng: self._make_nodes(
                 eng, plan, task, nl_filter=nl_filter, rewrite_gate=rewrite_gate),
+            pacing=0.1,
+        )
+        # 断点恢复材料（Checkpointer P0）：不进黑板、重建节点闭包所需，
+        # engine.run() 登记时随 agent_runs 行落库
+        eng.replay_materials = {"nl_filter": nl_filter, "rewrite_gate": rewrite_gate}
+        return eng
+
+    def build_engine_from_replay(self, context: dict, team_info: dict,
+                                 plan: list[dict], materials: dict) -> MultiAgentEngine:
+        """断点恢复重建引擎（Checkpointer P0）：checkpoint 只存黑板状态，
+        图结构与节点闭包由落库的 plan/materials 在此重建（与 build_engine_from_task
+        产物同构）。
+
+        差异：跳过意图路由 / LLM 规划 / NL2Filter 抽取 / 自定义智能体查库——
+        这些产物已随 agent_runs 行落库（materials = nl_filter + rewrite_gate，
+        custom 配置随 plan step 自带）。DataAgent 在 nl_filter 缺失时走词频老路，
+        语义一致。
+        """
+        task = str((context or {}).get("task", ""))
+        return MultiAgentEngine(
+            context=dict(context or {}),
+            team_info=dict(team_info or {}),
+            plan=[dict(s) for s in (plan or [])],
+            node_factory=lambda eng: self._make_nodes(
+                eng, plan, task,
+                nl_filter=materials.get("nl_filter"),
+                rewrite_gate=bool(materials.get("rewrite_gate"))),
             pacing=0.1,
         )
 
@@ -632,20 +675,24 @@ class UniversalScenario(MultiAgentScenario):
 
     def _make_data_agent(self, eng: MultiAgentEngine, task: str,
                          nl_filter: Optional[dict] = None):
-        goal = "NL2Filter 结构化取数与统计" if nl_filter else "实体台账结构化查询与统计"
+        goal = ("结构化取数与统计（NL2SQL → NL2Filter → 词频）"
+                if nl_filter else "结构化取数与统计（NL2SQL → 台账词频）")
 
         async def _fn(state: dict) -> dict:
             eng.emit({"type": "node_start", "node": "data_agent", "role": "data_agent",
                       "goal": goal})
             facts = await _data_facts(task, nl_filter)
             eng.emit({"type": "fact", "facts": facts})
-            eng.emit({
-                "type": "node_done", "node": "data_agent",
-                "summary": (f"台账命中，产出 {len(facts)} 张数据卡"
-                            f"（1 统计 + {len(facts) - 1} 明细）"
-                            if facts else "台账未查询到结构化数据（NL2Filter 未命中，词频兜底亦空）"
-                            if nl_filter else "台账未查询到结构化数据"),
-            })
+            if facts and facts[0].get("id") == "fact-data-sql":
+                summary = (f"NL2SQL 本体取数命中，产出 {len(facts)} 张数据卡"
+                           f"（1 口径 + {len(facts) - 1} 明细）")
+            elif facts:
+                summary = (f"台账命中，产出 {len(facts)} 张数据卡"
+                           f"（1 统计 + {len(facts) - 1} 明细）")
+            else:
+                summary = ("台账未查询到结构化数据（NL2SQL 未启用/未命中，NL2Filter 未命中，词频兜底亦空）"
+                           if nl_filter else "台账未查询到结构化数据")
+            eng.emit({"type": "node_done", "node": "data_agent", "summary": summary})
             return {"facts": facts}
 
         return _fn
@@ -1057,18 +1104,58 @@ def _type_scope_text(total: int, type_rows: list) -> str:
     return f"共 {total} 条记录；按实体类型：{groups}"
 
 
+async def _data_facts_nl2sql(task: str) -> Optional[list[dict]]:
+    """三级链第一级：本体驱动 NL2SQL（schema_store 检索 + 受约束生成 + 只读执行）。
+
+    数据源本体类别（datasource_dialect 非空）存在且任务命中其表/字段/关系时生效；
+    返回 None = 未启用 / 检索 0 命中 / 生成或执行失败 → 调用方回落 NL2Filter → 词频老路。
+    """
+    try:
+        from services.multi_agent import nl2sql_service
+        res = await nl2sql_service.nl2sql_query(task)
+    except Exception:
+        return None
+    if not res:
+        return None
+    cols = res["columns"]
+    used = " → ".join(res["used_tables"] or res["tables"][:3])
+    facts = [{
+        "id": "fact-data-sql",
+        "grade": "data_fact",
+        "title": f"NL2SQL · 命中 {res['rowcount']} 条",
+        "detail": (f"本体驱动取数（{res['category']}，{res['dialect']}）：关联 {used}"
+                   + (f"；口径：{res['explain']}" if res.get("explain") else ""))[:300],
+        # 完整 SQL 单独透传：前端事实卡渲染可复制代码块，供用户取出去自跑
+        "sql": (res.get("sql") or "").strip(),
+        "dialect": res.get("dialect") or "",
+    }]
+    for i, row in enumerate(res["rows"][:8]):
+        kv = "；".join(f"{c}={row[c]}" for c in cols[:6] if row.get(c) is not None)
+        facts.append({
+            "id": f"fact-data-sql-{i}",
+            "grade": "data_fact",
+            "title": f"{row.get(cols[0], '') if cols else ''} · 查询明细 {i + 1}".strip(" ·"),
+            "detail": (kv or str(row))[:200],
+        })
+    return facts
+
+
 async def _data_facts(task: str, nl_filter: Optional[dict] = None) -> list[dict]:
     """实体台账结构化查询（业务无关）：关键词命中 → 聚合统计 + 明细事实卡。
 
-    两级路由接线：nl_filter 非空时先走 NL2Filter 结构化取数
-    （_data_facts_by_filter），未命中 / 抽错 / 异常 → 回落词频老路（本函数主体），
-    即「抽不出/抽错 → 词频老路兜底」。
+    三级路由接线：先 NL2SQL（数据源本体，schema_store 检索命中才生效）→
+    nl_filter 非空时 NL2Filter 结构化取数 → 均未命中/抽错/异常 → 回落词频老路
+    （本函数主体），即「本体取数 → 抽不出/抽错 → 词频老路兜底」。
 
     与 GraphAgent 的差异：不只找「关联实体」，而是给出台账口径的真实数据——
     命中总量、按实体类型聚合计数、最新若干条记录的关键属性，供合成官引用
     真实数字（而非模型编造）。关键词同时匹配实体类型（如「告警」→ 运行告警），
     命中为 0 时回退全库统计并在卡片中注明口径。
     """
+    nl2sql_facts = await _data_facts_nl2sql(task)
+    if nl2sql_facts:
+        return nl2sql_facts          # 本体取数链命中，不再走老两级
+
     from database import async_session
     from models import Entity
 

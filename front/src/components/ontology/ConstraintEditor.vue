@@ -6,7 +6,7 @@ const _persistedView = ref('list')
 
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { createConstraint, deleteConstraint } from '../../api'
+import { createConstraint, updateConstraint, deleteConstraint } from '../../api'
 import SearchableSelect from '../common/SearchableSelect.vue'
 import RelationGraph from './RelationGraph.vue'
 import Pagination from '../common/Pagination.vue'
@@ -59,22 +59,58 @@ const relationOptions = computed(() =>
 
 const canCreate = computed(() => sourceId.value && relationId.value && targetId.value)
 
+// ── 基数（source→target 视角）：真源在约束层（映射 source_max/target_max，NL2SQL 翻倍防护按此判读）──
+const CARD_OPTIONS = [
+  { value: 'ONE_TO_ONE', label: '一对一 (1:1)' },
+  { value: 'ONE_TO_MANY', label: '一对多 (1:N)' },
+  { value: 'MANY_TO_ONE', label: '多对一 (N:1)' },
+  { value: 'MANY_TO_MANY', label: '多对多 (N:N)' },
+]
+function cardLabel(c) { return (CARD_OPTIONS.find(o => o.value === c) || {}).label || '' }
+const newCard = ref('MANY_TO_MANY')
+const editCard = ref('MANY_TO_MANY')
+
+// ── 关联字段映射（join_condition）：NL2SQL 生成 ON 条件的来源，支持多字段对 ──
+function attrOptions(ontologyId) {
+  const o = props.ontologies.find(x => x.id === ontologyId)
+  return (o?.attributes || []).map(a => ({
+    value: a.code, label: a.code === a.name ? a.code : `${a.code}（${a.name}）`,
+  }))
+}
+const validJoin = rows => (rows || []).filter(r => r.left && r.right).map(r => ({ left: r.left, right: r.right }))
+const newJoin = ref([{ left: '', right: '' }])
+const editJoin = ref([])
+function joinText(c) {
+  return (c.join_condition || []).map(j => `${j.left} = ${j.right}`).join(' AND ')
+}
+
 const hasOntologies = computed(() => props.ontologies.length > 0)
 const hasRelations = computed(() => props.relations.length > 0)
 
 async function submit() {
   if (!canCreate.value) return
   error.value = ''
+  // 与后端同规则的预校验：每对 source-target 本体只允许一条约束（不限关系与方向）
+  const dup = props.constraints.find(
+    c => c.source_ontology_id === sourceId.value && c.target_ontology_id === targetId.value
+  )
+  if (dup) {
+    error.value = `「${dup.source_ontology_name}」与「${dup.target_ontology_name}」之间已存在关系约束（每对本体只能建立一个关系）；如需调整请使用该行的编辑功能`
+    return
+  }
   creating.value = true
   try {
     await createConstraint(props.categoryId, {
       source_ontology_id: sourceId.value,
       relation_id: relationId.value,
       target_ontology_id: targetId.value,
+      join_condition: validJoin(newJoin.value),
+      cardinality: newCard.value,
     })
     sourceId.value = null
     relationId.value = null
     targetId.value = null
+    newJoin.value = [{ left: '', right: '' }]
     emit('changed')
   } catch (e) {
     error.value = '创建失败：' + e.message
@@ -99,6 +135,54 @@ function resetForm() {
   relationId.value = null
   targetId.value = null
   error.value = ''
+}
+
+// ── 弹窗编辑：改起点/关系/终点与关联字段（PUT /constraints/{id} 支持三端与描述）──
+const editingId = ref('')
+const editSourceId = ref(null)
+const editRelationId = ref(null)
+const editTargetId = ref(null)
+const saving = ref(false)
+
+function openEdit(c) {
+  editingId.value = c.id
+  editSourceId.value = c.source_ontology_id || null
+  editRelationId.value = c.relation_id || null
+  editTargetId.value = c.target_ontology_id || null
+  editCard.value = c.cardinality || 'MANY_TO_MANY'
+  editJoin.value = (c.join_condition && c.join_condition.length)
+    ? c.join_condition.map(j => ({ left: j.left, right: j.right }))
+    : [{ left: '', right: '' }]
+  error.value = ''
+}
+
+function cancelEdit() {
+  editingId.value = ''
+  error.value = ''
+}
+
+async function saveEdit() {
+  if (!editSourceId.value || !editRelationId.value || !editTargetId.value) {
+    error.value = '请完整选择起点、关系与终点'
+    return
+  }
+  saving.value = true
+  error.value = ''
+  try {
+    await updateConstraint(props.categoryId, editingId.value, {
+      source_ontology_id: editSourceId.value,
+      relation_id: editRelationId.value,
+      target_ontology_id: editTargetId.value,
+      join_condition: validJoin(editJoin.value),
+      cardinality: editCard.value,
+    })
+    editingId.value = ''
+    emit('changed')
+  } catch (e) {
+    error.value = '保存失败：' + e.message
+  } finally {
+    saving.value = false
+  }
 }
 </script>
 
@@ -160,7 +244,7 @@ function resetForm() {
               v-model="sourceId"
               :options="ontologyOptions"
               placeholder="选择起点本体..."
-              @change="relationId = null; targetId = null"
+              @change="relationId = null; targetId = null; newJoin = [{ left: '', right: '' }]"
             />
           </div>
           <div class="ce-arrow">→</div>
@@ -179,7 +263,14 @@ function resetForm() {
               v-model="targetId"
               :options="ontologyOptions"
               placeholder="选择终点本体..."
+              @change="newJoin = [{ left: '', right: '' }]"
             />
+          </div>
+          <div class="ce-pick ce-card-pick">
+            <label class="ce-pick-label">基数</label>
+            <select v-model="newCard" class="ce-card-select" title="起点→终点视角的基数，用于 NL2SQL join 翻倍防护">
+              <option v-for="o in CARD_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
           </div>
           <button
             class="btn primary ce-add-btn"
@@ -190,20 +281,45 @@ function resetForm() {
             添加
           </button>
         </div>
+        <div v-if="sourceId && targetId" class="ce-join-box">
+          <div class="ce-join-head">
+            <span class="ce-join-title">关联字段（生成 SQL 的 ON 条件，可配多个）</span>
+            <button class="ce-join-add" @click="newJoin.push({ left: '', right: '' })">＋ 字段对</button>
+          </div>
+          <div v-for="(j, i) in newJoin" :key="'nj' + i" class="ce-join-row">
+            <SearchableSelect v-model="j.left" :options="attrOptions(sourceId)" placeholder="起点字段" />
+            <span class="ce-join-eq">=</span>
+            <SearchableSelect v-model="j.right" :options="attrOptions(targetId)" placeholder="终点字段" />
+            <button v-if="newJoin.length > 1" class="rm-btn sm" @click="newJoin.splice(i, 1)" title="移除">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+        </div>
         <div v-if="error" class="ce-error">{{ error }}</div>
       </div>
 
       <!-- 现有约束列表 -->
       <div class="ce-list" v-if="pagedConstraints.length">
         <div v-for="c in pagedConstraints" :key="c.id" class="ce-item">
-          <div class="ce-tri-display">
-            <span class="ce-node">{{ c.source_ontology_name }}</span>
-            <span class="ce-rel">—{{ c.relation_name }}→</span>
-            <span class="ce-node">{{ c.target_ontology_name }}</span>
+          <div>
+            <div class="ce-tri-display">
+              <span class="ce-node">{{ c.source_ontology_name }}</span>
+              <span class="ce-rel">—{{ c.relation_name }}→</span>
+              <span class="ce-node">{{ c.target_ontology_name }}</span>
+              <span v-if="c.cardinality" class="ce-card-pill">{{ cardLabel(c.cardinality) }}</span>
+            </div>
+            <div v-if="c.join_condition && c.join_condition.length" class="ce-join-line">
+              关联：{{ c.source_ontology_name }}.{{ (c.join_condition[0] || {}).left }} = {{ c.target_ontology_name }}.{{ (c.join_condition[0] || {}).right }}<template v-if="c.join_condition.length > 1"> 等 {{ c.join_condition.length }} 对字段</template>
+            </div>
           </div>
-          <button class="rm-btn sm" @click="remove(c)" title="删除">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-          </button>
+          <div class="ce-item-ops">
+            <button class="rm-btn sm" @click="openEdit(c)" title="编辑">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+            </button>
+            <button class="rm-btn sm" @click="remove(c)" title="删除">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
         </div>
         <Pagination v-if="filteredConstraints.length > pageSize" v-model:page="page" v-model:page-size="pageSize" :total="filteredConstraints.length" />
       </div>
@@ -225,6 +341,62 @@ function resetForm() {
         @changed="emit('changed')"
       />
     </template>
+
+    <!-- 编辑三元组约束弹窗 -->
+    <Teleport to="body">
+      <div v-if="editingId" class="ce-modal-mask" @click.self="cancelEdit">
+        <div class="ce-modal">
+          <div class="ce-modal-head">
+            <h3>编辑三元组约束</h3>
+            <button class="ce-modal-close" @click="cancelEdit">✕</button>
+          </div>
+          <div class="ce-modal-body">
+            <div class="ce-tri-grid">
+              <div class="ce-pick">
+                <label class="ce-pick-label">起点本体</label>
+                <SearchableSelect v-model="editSourceId" :options="ontologyOptions" placeholder="起点本体" @change="editJoin = [{ left: '', right: '' }]" />
+              </div>
+              <div class="ce-pick">
+                <label class="ce-pick-label">关系</label>
+                <SearchableSelect v-model="editRelationId" :options="relationOptions" placeholder="关系" />
+              </div>
+              <div class="ce-pick">
+                <label class="ce-pick-label">终点本体</label>
+                <SearchableSelect v-model="editTargetId" :options="ontologyOptions" placeholder="终点本体" @change="editJoin = [{ left: '', right: '' }]" />
+              </div>
+            </div>
+            <div class="ce-modal-card-row">
+              <label class="ce-pick-label">基数（起点 → 终点）</label>
+              <select v-model="editCard" class="ce-card-select">
+                <option v-for="o in CARD_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+              </select>
+            </div>
+            <div v-if="editSourceId && editTargetId" class="ce-join-box">
+              <div class="ce-join-head">
+                <span class="ce-join-title">关联字段（生成 SQL 的 ON 条件，可配多个）</span>
+                <button class="ce-join-add" @click="editJoin.push({ left: '', right: '' })">＋ 字段对</button>
+              </div>
+              <div v-for="(j, i) in editJoin" :key="'ej' + i" class="ce-join-row">
+                <SearchableSelect v-model="j.left" :options="attrOptions(editSourceId)" placeholder="起点字段" />
+                <span class="ce-join-eq">=</span>
+                <SearchableSelect v-model="j.right" :options="attrOptions(editTargetId)" placeholder="终点字段" />
+                <button v-if="editJoin.length > 1" class="rm-btn sm" @click="editJoin.splice(i, 1)" title="移除">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </div>
+            <div v-if="error" class="ce-error">{{ error }}</div>
+          </div>
+          <div class="ce-modal-foot">
+            <button class="btn" @click="cancelEdit">取消</button>
+            <button class="btn primary" :disabled="saving || !editSourceId || !editRelationId || !editTargetId" @click="saveEdit">
+              <span v-if="saving" class="spinner"></span>
+              保存
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -286,11 +458,48 @@ function resetForm() {
 .ce-list-head { font-size: 13px; font-weight: 600; color: var(--c-secondary); }
 .ce-list { display: flex; flex-direction: column; gap: 6px; max-width: 880px; }
 .ce-item {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
   padding: 10px 14px; border: 1px solid var(--c-border); border-radius: var(--radius-sm);
   background: var(--c-panel);
 }
+.ce-join-box { width: 100%; margin-top: 4px; padding: 8px 10px; border: 1px dashed var(--c-border); border-radius: var(--radius-sm); }
+.ce-join-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.ce-join-title { font-size: 11px; color: var(--c-secondary); }
+.ce-join-add { font-size: 11px; padding: 1px 8px; border: 1px solid var(--c-border); border-radius: 999px;
+  background: transparent; color: var(--c-secondary); cursor: pointer; }
+.ce-join-add:hover { color: var(--c-accent); border-color: var(--c-accent); }
+.ce-join-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.ce-join-row:last-child { margin-bottom: 0; }
+.ce-join-row > *:first-child, .ce-join-row > *:nth-child(3) { flex: 1; min-width: 110px; }
+.ce-join-eq { flex-shrink: 0; font-size: 12px; font-weight: 700; color: var(--c-accent); }
+.ce-join-line { margin-top: 5px; font-size: 11px; color: var(--c-secondary);
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace); }
 .ce-tri-display { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ce-card-pill { font-size: 11px; padding: 1px 8px; border-radius: 9px; background: rgba(59, 130, 246, 0.14); color: #60a5fa; flex-shrink: 0; }
+.ce-card-select {
+  height: 33px; padding: 0 8px; border: 1px solid var(--c-border); border-radius: var(--radius-sm);
+  background: var(--c-panel); color: var(--c-fg); font-size: 12px; outline: none; width: 100%;
+  box-sizing: border-box;
+}
+.ce-card-select:focus { border-color: var(--c-fg); }
+.ce-card-pick { flex: 0 0 140px; }
+.ce-modal-card-row { display: flex; flex-direction: column; gap: 5px; }
+.ce-modal-card-row select { height: 34px; }
+
+/* 编辑弹窗 */
+.ce-modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
+.ce-modal { width: 640px; max-width: 92vw; max-height: 86vh; overflow-y: auto; background: var(--c-panel); border: 1px solid var(--c-border); border-radius: var(--radius); box-shadow: 0 20px 60px rgba(0,0,0,0.35); }
+.ce-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--c-border); }
+.ce-modal-head h3 { margin: 0; font-size: 14px; font-weight: 700; color: var(--c-fg); }
+.ce-modal-close { border: 0; background: transparent; color: var(--c-secondary); font-size: 16px; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.ce-modal-close:hover { background: var(--c-muted); color: var(--c-fg); }
+.ce-modal-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.ce-modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 13px 16px; border-top: 1px solid var(--c-border); }
+.ce-tri-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.ce-tri-grid .ce-pick { min-width: 0; }
+@media (max-width: 640px) { .ce-tri-grid { grid-template-columns: 1fr; } }
+.ce-item-ops { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.ce-item > .ce-error { width: 100%; }
 .ce-node {
   font-size: 13px; font-weight: 600; color: var(--c-fg);
   padding: 3px 10px; border-radius: 12px; background: var(--c-muted);

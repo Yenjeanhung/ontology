@@ -51,12 +51,13 @@ export async function streamScenarioRun(scenarioId, targetId, { onEvent, signal 
  * @param {string[]} agents 可选能力智能体 id 列表（空数组 = 后端默认组合）
  * @param {{ onEvent?: (evt: object) => void, signal?: AbortSignal }} handlers
  */
-export async function streamTaskRun(scenarioId, task, agents = [], { onEvent, signal, sessionId, clarified } = {}) {
+export async function streamTaskRun(scenarioId, task, agents = [], { onEvent, signal, sessionId, clarified, deep } = {}) {
   await _stream(
     `${API}/api/agent/multi/scenarios/${encodeURIComponent(scenarioId)}/run`,
     { task, agents,
       ...(sessionId ? { session_id: sessionId } : {}),
-      ...(clarified ? { clarified: true } : {}) },
+      ...(clarified ? { clarified: true } : {}),
+      ...(deep ? { deep: true } : {}) },
     { onEvent, signal },
   )
 }

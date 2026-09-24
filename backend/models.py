@@ -125,6 +125,9 @@ class OntologyCategory(Base):
     name = Column(String, nullable=False)
     description = Column(Text, default="")
     is_system = Column(Integer, nullable=False, default=0)
+    # ── 数据源本体（NL2SQL，migration_042）──
+    datasource_dialect = Column(String(20), default="")   # sqlite/mysql/postgres；空 = 普通业务本体类别
+    datasource_dsn = Column(Text, default="")             # 只读连接串；空 = 用平台库 DATABASE_URL
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
@@ -141,6 +144,7 @@ class Ontology(Base):
     # ── 对象类型元数据（对标 Palantir Object type）──
     code = Column(String, nullable=True)                      # 类型 API 名，如 person
     display_name = Column(String, default="")                 # 显示名（可与 name 不同）
+    alias = Column(String(200), default="")                   # 检索别名，逗号分隔（NL2SQL，migration_042）
     plural_name = Column(String, default="")                  # 复数名
     title_key = Column(String, default="")                    # 标题属性名，空则回落 name
     primary_key = Column(String, default="name")              # 主键属性名
@@ -163,6 +167,7 @@ class OntologyAttribute(Base):
     ontology_id = Column(String, nullable=False)
     name = Column(String, nullable=False)
     code = Column(String, nullable=True)
+    alias = Column(String(200), default="")                   # 字段别名，逗号分隔（NL2SQL，migration_042）
     data_type = Column(String, nullable=False)
     description = Column(String, default="")
     is_required = Column(Integer, nullable=False, default=0)
@@ -198,6 +203,7 @@ class OntologyRelation(Base):
     category_id = Column(String, nullable=False)
     name = Column(String, nullable=False)
     code = Column(String, nullable=True)
+    alias = Column(String(200), default="")                   # 关系别名，逗号分隔（NL2SQL，migration_042）
     description = Column(String, default="")
     # ── 链接语义（S5：对标 Palantir Link type）──
     cardinality = Column(String(16), default="MANY_TO_MANY")  # ONE_TO_ONE/ONE_TO_MANY/MANY_TO_MANY
@@ -218,6 +224,7 @@ class OntologyRelationConstraint(Base):
     relation_id = Column(String, nullable=False)
     target_ontology_id = Column(String, nullable=False)
     description = Column(String, default="")
+    join_condition = Column(Text, default="")                 # join 字段映射 JSON：[{"left":"flight_no","right":"flight_no"}]（NL2SQL，migration_042）
     # ── 端点基数（S5）──
     source_min = Column(Integer, default=0)   # 0 = 不限
     source_max = Column(Integer, default=0)   # 0 = 不限

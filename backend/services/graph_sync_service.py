@@ -43,6 +43,7 @@ from models import (
     Ontology,
     OntologyCategory,
     OntologyRelation,
+    OntologyRelationConstraint,
     Relation,
 )
 from providers.graph_store import gds
@@ -263,6 +264,41 @@ class GraphSyncService:
         )).scalars().all()
         return [_run_to_dict(r) for r in runs]
 
+    # ───────────────────────── 约束 join_condition → 图边属性 ─────────────────────────
+
+    @staticmethod
+    async def sync_constraint_join_props(db: AsyncSession, category_id: str) -> int:
+        """把该类别三元组约束的 join_condition 收敛到 Neo4j 分析图实例边属性。
+
+        PG 权威、单向流：约束增删改后调用（迁入完成时也会跑一遍）；
+        Neo4j 不可用/未配置时静默返回 0，不影响约束保存，待下次收敛。
+        """
+        crows = (await db.execute(
+            select(OntologyRelationConstraint).where(
+                OntologyRelationConstraint.category_id == category_id
+            )
+        )).scalars().all()
+        rows = _join_rows_from_constraints(crows)
+
+        def _job() -> int:
+            driver = _neo4j_driver()
+            try:
+                driver.verify_connectivity()
+            except Exception:  # noqa: BLE001
+                driver.close()
+                return 0
+            try:
+                with driver.session(database=settings.NEO4J_DATABASE) as s:
+                    return _apply_join_props(s, category_id, rows)
+            finally:
+                driver.close()
+
+        try:
+            return await asyncio.to_thread(_job)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("同步约束关联字段到 Neo4j 失败（cid=%s）：%s", category_id, exc)
+            return 0
+
     # ───────────────────────── 后台执行 ─────────────────────────
 
     @staticmethod
@@ -405,6 +441,73 @@ def _clear_category_graph(s, category_id: str) -> int:
         deleted += cnt
         if cnt < DELETE_BATCH:
             return deleted
+
+
+def _join_rows_from_constraints(crows) -> list[dict]:
+    """约束 ORM 行 → join 属性写入行（join_condition JSON 解析失败按空处理）。
+
+    形态：平行列表 join_left/join_right（位置对齐），Neo4j 关系属性不支持嵌套对象。
+    """
+    rows = []
+    for c in crows:
+        pairs: list[tuple[str, str]] = []
+        try:
+            raw = json.loads(c.join_condition) if c.join_condition else []
+            for j in raw if isinstance(raw, list) else []:
+                if isinstance(j, dict) and j.get("left") and j.get("right"):
+                    pairs.append((str(j["left"]), str(j["right"])))
+        except Exception:  # noqa: BLE001
+            pairs = []
+        rows.append({
+            "key": f"{c.source_ontology_id}|{c.relation_id}|{c.target_ontology_id}",
+            "src": c.source_ontology_id or "",
+            "rel": c.relation_id or "",
+            "tgt": c.target_ontology_id or "",
+            "lefts": [l for l, _ in pairs],
+            "rights": [r for _, r in pairs],
+        })
+    return rows
+
+
+def _apply_join_props(s, category_id: str, rows: list[dict]) -> int:
+    """把三元组约束的 join_condition 冗余写到分析图实例边属性（幂等收敛）。
+
+    - 写：有 join 的约束按 (a.ontology_id, rel.relation_def_id, b.ontology_id)
+      精准 SET join_left/join_right 平行列表（同三元组多条实例边全部命中）；
+    - 清：带 join 属性但三元组不在当前约束集合的边 REMOVE
+      （覆盖「约束被删」「join 被清空」两种情况）；
+    - 圈定 category_id：只碰分析图（业务抽取图无该属性，天然隔离）。
+    返回写入约束的条数。
+    """
+    write = [r for r in rows if r["lefts"]]
+    if write:
+        s.run(
+            "UNWIND $rows AS row "
+            "MATCH (a:Entity {category_id: $cid, ontology_id: row.src}) "
+            "-[rel]->(b:Entity {category_id: $cid, ontology_id: row.tgt}) "
+            "WHERE rel.relation_def_id = row.rel "
+            "SET rel.join_left = row.lefts, rel.join_right = row.rights",
+            cid=category_id, rows=write,
+        )
+    keys = [r["key"] for r in rows]
+    key_expr = (
+        "coalesce(a.ontology_id, '') + '|' + coalesce(rel.relation_def_id, '') + '|' + coalesce(b.ontology_id, '')"
+    )
+    if keys:
+        s.run(
+            f"MATCH (a:Entity {{category_id: $cid}})-[rel]->(b:Entity {{category_id: $cid}}) "
+            f"WHERE rel.join_left IS NOT NULL AND NOT ({key_expr}) IN $keys "
+            f"REMOVE rel.join_left, rel.join_right",
+            cid=category_id, keys=keys,
+        )
+    else:
+        s.run(
+            "MATCH (a:Entity {category_id: $cid})-[rel]->(:Entity {category_id: $cid}) "
+            "WHERE rel.join_left IS NOT NULL "
+            "REMOVE rel.join_left, rel.join_right",
+            cid=category_id,
+        )
+    return len(write)
 
 
 def _run_full_sync(category_id: str, progress: dict[str, int]) -> dict:
@@ -571,6 +674,14 @@ async def _import_category(category_id: str, progress: dict[str, int]) -> dict:
                         )
                         rel_counts[rtype] = rel_counts.get(rtype, 0) + len(payloads)
                         progress["relations"] += len(payloads)
+
+                # ── 约束 join_condition 冗余到实例边属性（迁入即带上，随全量重建收敛） ──
+                crows = (await db.execute(
+                    select(OntologyRelationConstraint).where(
+                        OntologyRelationConstraint.category_id == category_id
+                    )
+                )).scalars().all()
+                join_edges = _apply_join_props(s, category_id, _join_rows_from_constraints(crows))
     finally:
         driver.close()
         await engine.dispose()
@@ -578,5 +689,6 @@ async def _import_category(category_id: str, progress: dict[str, int]) -> dict:
     return {
         "entity_types": label_counts,
         "relation_types": rel_counts,
+        "join_edges": join_edges,
         "elapsed_seconds": round(time.time() - t0, 1),
     }

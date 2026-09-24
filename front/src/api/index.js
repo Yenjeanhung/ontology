@@ -1376,12 +1376,15 @@ export async function fetchConstraints(categoryId) {
   return res.json()
 }
 
-export async function createConstraint(categoryId, { source_ontology_id, relation_id, target_ontology_id, description = '' }) {
+export async function createConstraint(categoryId, { source_ontology_id, relation_id, target_ontology_id, description = '', join_condition = null }) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}/constraints`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_ontology_id, relation_id, target_ontology_id, description }),
+    body: JSON.stringify({ source_ontology_id, relation_id, target_ontology_id, description, join_condition }),
   })
-  if (!res.ok) throw new Error('Create constraint failed')
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(apiDetail(e, 'Create constraint failed'))
+  }
   return res.json()
 }
 
@@ -1979,6 +1982,50 @@ export async function fetchEntities({ kb_id = '', ontology_id = '', category_id 
   params.set('page_size', String(page_size))
   const res = await fetch(`${API}/api/entities?${params.toString()}`)
   if (!res.ok) throw new Error('Fetch entities failed')
+  return res.json()
+}
+
+// 实例层关系 API：供实体页手工建边/管理关系实例（与定义层关系字典 API 严格区分）
+export async function fetchEntityRelations(entityId) {
+  const params = new URLSearchParams({ entity_id: entityId })
+  const res = await fetch(`${API}/api/relations?${params.toString()}`)
+  if (!res.ok) throw new Error('Fetch entity relations failed')
+  return res.json()
+}
+
+export async function createEntityRelation({ relation_def_id, relation_type, source_entity_id, target_entity_id, description = '' }) {
+  // kb_id 不传：手工维护的实例边不归属知识库（后端默认空串，与手工实体口径一致）
+  const res = await fetch(`${API}/api/relations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ relation_def_id, relation_type, source_entity_id, target_entity_id, description }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '创建关系失败'))
+  }
+  return res.json()
+}
+
+export async function updateEntityRelation(relationId, { relation_def_id, relation_type, source_entity_id, target_entity_id, description = '' }) {
+  const res = await fetch(`${API}/api/relations/${relationId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ relation_def_id, relation_type, source_entity_id, target_entity_id, description }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '更新关系失败'))
+  }
+  return res.json()
+}
+
+export async function deleteEntityRelation(relationId) {
+  const res = await fetch(`${API}/api/relations/${relationId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '删除关系失败'))
+  }
   return res.json()
 }
 

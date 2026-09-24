@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch, nextTick, onActivated } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl, fetchEntityServices, copyServiceToEntity, deleteOntologyService, resolveObjectView, fetchEntities, getMergedAttributes, fetchEntityDerivedProperties } from '../../api'
+import { getEntityDetail, updateEntity, deleteEntity, fetchFileContent, getFilePreviewUrl, fetchEntityServices, copyServiceToEntity, deleteOntologyService, resolveObjectView, fetchEntities, getMergedAttributes, fetchEntityDerivedProperties, fetchRelations, fetchConstraints, createEntityRelation, updateEntityRelation, deleteEntityRelation } from '../../api'
 import { marked } from 'marked'
 import ServiceInvokeDialog from './ServiceInvokeDialog.vue'
 import ConfirmDialog from '../common/ConfirmDialog.vue'
@@ -619,6 +619,191 @@ function relOtherType(rel) {
     : rel.source_entity_type || rel.relation_type || rel.relation_def_name
 }
 
+// ===== 实体关系实例管理（手工建边/删边） =====
+const relModal = ref({ show: false, loading: false, saving: false, error: '', editId: null })
+const relDefs = ref([])        // 关系字典（该类别，定义层）
+const relCons = ref([])        // 三元组约束（该类别，用于方向/对端本体过滤）
+const relForm = ref({ relation_def_id: '', direction: 'out', description: '' })
+const relTargetQuery = ref('')
+const relTargetOptions = ref([])
+const relTargetPicked = ref(null)
+let relTargetTimer = null
+const relDelete = ref({ show: false, target: null, loading: false, error: '' })
+
+const myOntologyId = computed(() => entity.value?.ontology_id || '')
+
+async function loadRelMeta() {
+  const cat = entity.value?.category_id
+  const [rels, cons] = await Promise.all([
+    cat ? fetchRelations(cat).catch(() => []) : Promise.resolve([]),
+    cat ? fetchConstraints(cat).catch(() => []) : Promise.resolve([]),
+  ])
+  relDefs.value = Array.isArray(rels) ? rels : (rels?.items || [])
+  relCons.value = Array.isArray(cons) ? cons : (cons?.items || [])
+}
+
+async function openRelModal() {
+  relForm.value = { relation_def_id: '', direction: 'out', description: '' }
+  relTargetQuery.value = ''
+  relTargetOptions.value = []
+  relTargetPicked.value = null
+  relModal.value = { show: true, loading: true, saving: false, error: '', editId: null }
+  try {
+    await loadRelMeta()
+  } finally {
+    relModal.value.loading = false
+  }
+}
+
+// 编辑：预填关系/方向/对端/描述。relForm 赋值会触发 watcher 清空对端选择，
+// 故对端回填放在元数据加载 + nextTick 之后
+async function openEditRelation(rel) {
+  relModal.value = { show: true, loading: true, saving: false, error: '', editId: rel.id }
+  relForm.value = {
+    relation_def_id: rel.relation_def_id || '',
+    direction: rel.role === 'source' ? 'out' : 'in',
+    description: rel.description || '',
+  }
+  relTargetQuery.value = ''
+  relTargetOptions.value = []
+  relTargetPicked.value = null
+  try {
+    await loadRelMeta()
+    await nextTick()
+    const asSource = rel.role === 'source'
+    const otherId = asSource ? rel.target_entity_id : rel.source_entity_id
+    const otherName = relOtherName(rel) || ''
+    if (otherId) {
+      relTargetPicked.value = { id: otherId, name: otherName, entity_type: relOtherType(rel) || '' }
+      relTargetQuery.value = otherName
+    }
+  } finally {
+    relModal.value.loading = false
+  }
+}
+
+// 当前实体在某关系下可担任的端点：按约束 source/target 本体判读；无约束覆盖的关系双向放开
+function relDirections(relationId) {
+  const myOnt = myOntologyId.value
+  const cons = relCons.value.filter((c) => c.relation_id === relationId)
+  if (!cons.length) return ['out', 'in']
+  const dirs = []
+  if (cons.some((c) => c.source_ontology_id === myOnt)) dirs.push('out')
+  if (cons.some((c) => c.target_ontology_id === myOnt)) dirs.push('in')
+  return dirs.length ? dirs : ['out', 'in']
+}
+
+// 候选关系：约束存在但两端都不含当前实体本体的关系不可选
+const relDefOptions = computed(() =>
+  relDefs.value
+    .map((r) => ({ ...r, dirs: relDirections(r.id) }))
+    .filter((r) => r.dirs.length)
+)
+
+// 约束确定的对端本体（唯一时才下发到实体搜索过滤，多个/无约束则放开）
+const relTargetOntology = computed(() => {
+  const rid = relForm.value.relation_def_id
+  if (!rid) return ''
+  const cons = relCons.value.filter((c) => c.relation_id === rid)
+  if (!cons.length) return ''
+  const myOnt = myOntologyId.value
+  const asSource = relForm.value.direction === 'out'
+  let matching = asSource
+    ? cons.filter((c) => c.source_ontology_id === myOnt)
+    : cons.filter((c) => c.target_ontology_id === myOnt)
+  if (!matching.length) matching = cons
+  const targets = [...new Set(matching.map((c) => (asSource ? c.target_ontology_id : c.source_ontology_id)))]
+  return targets.length === 1 ? targets[0] : ''
+})
+
+watch(() => [relForm.value.relation_def_id, relForm.value.direction], () => {
+  const rid = relForm.value.relation_def_id
+  if (rid) {
+    const dirs = relDirections(rid)
+    if (!dirs.includes(relForm.value.direction)) relForm.value.direction = dirs[0]
+  }
+  relTargetPicked.value = null
+  relTargetQuery.value = ''
+  relTargetOptions.value = []
+})
+
+watch(relTargetQuery, (v) => {
+  clearTimeout(relTargetTimer)
+  relTargetTimer = setTimeout(async () => {
+    const cat = entity.value?.category_id
+    if (!cat) return
+    try {
+      const params = { category_id: cat, q: (v || '').trim(), page_size: 20 }
+      const ont = relTargetOntology.value
+      if (ont) params.ontology_id = ont
+      const res = await fetchEntities(params)
+      relTargetOptions.value = (res.items || []).filter((e) => e.id !== props.entityId)
+    } catch {
+      relTargetOptions.value = []
+    }
+  }, 250)
+})
+
+function pickRelTarget(e) {
+  relTargetPicked.value = e
+  relTargetQuery.value = e.name
+  relTargetOptions.value = []
+}
+
+async function submitRelation() {
+  if (!relForm.value.relation_def_id) { relModal.value.error = '请选择关系'; return }
+  if (!relTargetPicked.value) { relModal.value.error = '请选择对端实体'; return }
+  const def = relDefs.value.find((r) => r.id === relForm.value.relation_def_id)
+  const asSource = relForm.value.direction === 'out'
+  relModal.value.saving = true
+  relModal.value.error = ''
+  try {
+    // relation_type 与数据迁入管线同口径：优先关系编码，无编码回落名称（图边类型一致）
+    const payload = {
+      relation_def_id: def.id,
+      relation_type: def.code || def.name,
+      source_entity_id: asSource ? props.entityId : relTargetPicked.value.id,
+      target_entity_id: asSource ? relTargetPicked.value.id : props.entityId,
+      description: relForm.value.description,
+    }
+    if (relModal.value.editId) {
+      await updateEntityRelation(relModal.value.editId, payload)
+    } else {
+      await createEntityRelation(payload)
+    }
+    relModal.value.show = false
+    await load()
+  } catch (e) {
+    relModal.value.error = e.message || (relModal.value.editId ? '更新关系失败' : '创建关系失败')
+  } finally {
+    relModal.value.saving = false
+  }
+}
+
+function askRemoveRelation(rel) {
+  relDelete.value = { show: true, target: rel, loading: false, error: '' }
+}
+
+async function confirmRemoveRelation() {
+  const d = relDelete.value
+  d.loading = true
+  d.error = ''
+  try {
+    await deleteEntityRelation(d.target.id)
+    d.show = false
+    await load()
+  } catch (e) {
+    d.error = e.message || '删除关系失败'
+  } finally {
+    d.loading = false
+  }
+}
+
+function relDirHint(dirs) {
+  if (dirs.length === 2) return '可作起点或终点'
+  return dirs[0] === 'out' ? '仅可作起点' : '仅可作终点'
+}
+
 async function openSourcePreview() {
   if (!entity.value?.source_file_id) return
   previewAsset.value = {
@@ -645,6 +830,8 @@ async function openSourcePreview() {
 // 弹窗支持按 ESC 关闭
 useEscClose(() => [
   [!!previewAsset.value, closePreview],
+  [relDelete.value.show, () => { relDelete.value.show = false }],
+  [relModal.value.show, () => { relModal.value.show = false }],
 ])
 
 function closePreview() {
@@ -1154,6 +1341,7 @@ onMounted(load)
         <div class="detail-section">
           <div class="section-head">
             <span class="section-title">关联关系 · {{ entity.relations?.length || 0 }}</span>
+            <button class="btn sm primary" @click="openRelModal">＋ 新增关系</button>
           </div>
           <div v-if="entity.relations?.length" class="rel-list">
             <div v-for="rel in entity.relations" :key="rel.id" class="rel-item">
@@ -1165,9 +1353,71 @@ onMounted(load)
                 <span class="rel-other-name">{{ relOtherName(rel) || '—' }}</span>
                 <span class="rel-other-type" v-if="relOtherType(rel)">{{ relOtherType(rel) }}</span>
               </span>
+              <button class="rm-btn rel-edit-btn" title="编辑关系" @click="openEditRelation(rel)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+              </button>
+              <button class="rm-btn rel-del-btn" title="删除关系" @click="askRemoveRelation(rel)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
             </div>
           </div>
           <div v-else class="props-empty">无关联关系</div>
+        </div>
+      </div>
+
+      <!-- 新增关系弹窗 -->
+      <div class="modal-mask" v-if="relModal.show" @click.self="relModal.show = false">
+        <div class="rel-modal" @click.stop>
+          <div class="rel-modal-head">
+            <div class="rel-modal-title">{{ relModal.editId ? '编辑关系' : '新增关系' }}</div>
+            <button class="icon-btn" @click="relModal.show = false">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+          </div>
+          <div class="rel-modal-body">
+            <div v-if="relModal.loading" class="props-empty">加载关系定义…</div>
+            <template v-else>
+              <div class="rel-field">
+                <span class="rel-label">关系</span>
+                <select v-model="relForm.relation_def_id" class="rel-input">
+                  <option value="" disabled>选择关系…</option>
+                  <option v-for="r in relDefOptions" :key="r.id" :value="r.id">
+                    {{ r.name + (r.code ? `（${r.code}）` : '') }} · {{ relDirHint(r.dirs) }}
+                  </option>
+                </select>
+                <div v-if="!relDefOptions.length" class="rel-error">该类别暂无可用关系，请先在「本体管理 → 关系字典」中维护</div>
+              </div>
+              <div class="rel-field" v-if="relForm.relation_def_id">
+                <span class="rel-label">方向</span>
+                <select v-model="relForm.direction" class="rel-input" :disabled="relDirections(relForm.relation_def_id).length < 2">
+                  <option value="out">{{ entity.name }} → 对端实体</option>
+                  <option value="in">对端实体 → {{ entity.name }}</option>
+                </select>
+              </div>
+              <div class="rel-field" v-if="relForm.relation_def_id">
+                <span class="rel-label">对端实体{{ relTargetOntology ? '（已按本体过滤）' : '' }}</span>
+                <input class="rel-input" type="text" v-model="relTargetQuery" placeholder="输入名称搜索实体…" autocomplete="off" />
+                <ul v-if="relTargetOptions.length" class="rel-target-list">
+                  <li v-for="o in relTargetOptions" :key="o.id" @mousedown.prevent="pickRelTarget(o)">
+                    <span>{{ o.name }}</span>
+                    <span class="rel-target-type">{{ o.entity_type }}</span>
+                  </li>
+                </ul>
+                <div v-if="relTargetPicked" class="rel-picked">已选择：{{ relTargetPicked.name }}（{{ relTargetPicked.entity_type }}）</div>
+              </div>
+              <div class="rel-field" v-if="relForm.relation_def_id">
+                <span class="rel-label">描述（可选）</span>
+                <input class="rel-input" type="text" v-model="relForm.description" placeholder="补充说明…" />
+              </div>
+              <div v-if="relModal.error" class="rel-error">{{ relModal.error }}</div>
+            </template>
+          </div>
+          <div class="rel-modal-foot">
+            <button class="btn sm" @click="relModal.show = false">取消</button>
+            <button class="btn sm primary" :disabled="relModal.saving || relModal.loading" @click="submitRelation">
+              {{ relModal.saving ? '保存中…' : '保存' }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1224,6 +1474,16 @@ onMounted(load)
         :loading="deleteLoading"
         :error="deleteError"
         @confirm="confirmRemove"
+      />
+
+      <ConfirmDialog
+        v-model="relDelete.show"
+        title="删除关系"
+        :message="relDelete.target ? `确认删除关系「${relDelete.target.relation_def_name || relDelete.target.relation_type}」？\n图谱同步更新。` : ''"
+        confirm-text="删除"
+        :loading="relDelete.loading"
+        :error="relDelete.error"
+        @confirm="confirmRemoveRelation"
       />
     </div>
   </div>
@@ -1313,6 +1573,42 @@ onMounted(load)
 .rel-role.source { background: rgba(22, 163, 74, 0.15); color: var(--c-success); }
 .rel-role.target { background: rgba(37, 99, 235, 0.15); color: #2563EB; }
 .rel-arrow { color: var(--c-secondary); }
+
+/* 手工维护关系实例（新增关系弹窗 / 行内删除） */
+.rel-edit-btn,
+.rel-del-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--c-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 120ms, color 120ms;
+}
+.rel-edit-btn { margin-left: auto; }
+.rel-del-btn { margin-left: 6px; }
+.rel-edit-btn:hover { background: rgba(148, 163, 184, 0.12); color: var(--c-fg); }
+.rel-del-btn:hover { background: rgba(220, 38, 38, 0.1); color: var(--c-danger); }
+.rel-modal { width: 460px; max-width: 92vw; max-height: 86vh; overflow-y: auto; background: var(--c-panel); border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: 16px; }
+.rel-modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.rel-modal-title { font-size: 14px; font-weight: 600; color: var(--c-fg); }
+.rel-field { position: relative; margin-bottom: 12px; }
+.rel-label { display: block; font-size: 12px; color: var(--c-secondary); margin-bottom: 5px; }
+.rel-input { width: 100%; box-sizing: border-box; padding: 6px 10px; font-size: 12.5px; font-family: var(--font); border: 1px solid var(--c-border); border-radius: var(--radius-sm); background: transparent; color: var(--c-fg); }
+.rel-input:focus { outline: none; border-color: var(--c-accent); }
+.rel-target-list { position: absolute; z-index: 40; left: 0; right: 0; top: 100%; max-height: 220px; overflow-y: auto; margin: 4px 0 0; padding: 4px; list-style: none; background: var(--c-panel); border: 1px solid var(--c-border); border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0, 0, 0, .25); }
+.rel-target-list li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 4px; font-size: 12.5px; cursor: pointer; }
+.rel-target-list li:hover { background: rgba(56, 189, 248, .12); }
+.rel-target-type { color: var(--c-secondary); font-size: 11px; flex-shrink: 0; }
+.rel-picked { margin-top: 6px; font-size: 12px; color: var(--c-accent); }
+.rel-error { color: #f87171; font-size: 12px; margin-top: 6px; }
+.rel-modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .rel-type { font-weight: 600; color: var(--c-accent); padding: 0 4px; }
 .rel-other { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .rel-other-name { font-weight: 600; color: var(--c-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

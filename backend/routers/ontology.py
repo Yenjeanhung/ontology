@@ -286,7 +286,8 @@ async def batch_create_constraints(category_id: str, req: BatchCreateConstraints
 async def create_constraint(category_id: str, req: CreateRelationConstraintRequest, db: AsyncSession = Depends(get_db)):
     try:
         return await OntologyService.create_constraint(
-            db, category_id, req.source_ontology_id, req.relation_id, req.target_ontology_id, req.description or ""
+            db, category_id, req.source_ontology_id, req.relation_id, req.target_ontology_id,
+            req.description or "", req.join_condition, req.cardinality,
         )
     except ValueError as e:
         raise _bad_request(str(e))

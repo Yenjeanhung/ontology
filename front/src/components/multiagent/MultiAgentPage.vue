@@ -30,6 +30,7 @@ const loadError = ref('')
 const taskInput = ref('')
 const taskForm = ref({ show: false, id: '', name: '', prompt: '' })
 const savingTask = ref(false)
+const deepMode = ref(false)   // 深度模式：DeepAgents 自主规划+多轮取证（需后端总闸开启）
 
 // 智能体名册（后端下发，本地兜底）
 const FALLBACK_ROSTER = {
@@ -333,9 +334,11 @@ function routeSteps(r) {
     label: 'NL2Filter · 0.6B 小模型',
     ms: nlReady ? rt.nl2filter_ms : null,
     desc: !rt.nl2filter
-      ? (rt.mode === 'data'
-        ? (rt.source === 'router' ? '未启用（NL2FILTER_ENABLED 开关关闭）' : '未启用（路由不可用，全组合兜底）')
-        : (rt.mode ? `未启用（路由判为 ${rt.mode} 类，仅 data 台账查询类启用）` : '未启用（路由不可用，全组合兜底）'))
+      ? (rt.manual && rt.mode && rt.mode !== 'data'
+        ? `手动组队 · 路由判为 ${rt.mode} 类未触发抽取，DataAgent 走词频口径`
+        : (rt.mode === 'data'
+          ? (rt.source === 'router' ? '未启用（NL2FILTER_ENABLED 开关关闭）' : '未启用（路由不可用，全组合兜底）')
+          : (rt.mode ? `未启用（路由判为 ${rt.mode} 类，仅 data 台账查询类启用）` : '未启用（路由不可用，全组合兜底）')))
       : (nlReady
         ? (rt.nl2filter_hit ? '抽取命中 → DataAgent 精准口径' : '未命中 → 词频老路兜底')
         : '0.6B 抽取结构化查询条件…'),
@@ -421,6 +424,7 @@ function handleEvent(r, evt) {
           : f.grade === 'chart_result' ? '图表智能体 · 可视化产出' : '本体图谱 · 结构化事实',
         title: f.title, summary: f.detail, quote: '', stance: 'fact',
         image: f.image || '',
+        sql: f.sql || '', dialect: f.dialect || '',
       })) }]
       break
     case 'conflict':
@@ -478,6 +482,7 @@ async function sendWithTask(task, agents = [], opts = {}) {
       signal: abortCtrl.signal,
       sessionId: activeSessionId.value || undefined,
       clarified: opts.clarified,
+      deep: opts.deep,
     })
   } catch (err) {
     if (err?.name !== 'AbortError') rx.error = err?.message || '协作请求失败'
@@ -500,7 +505,8 @@ async function sendClarify(r) {
   if (!extra) return
   r.clarifyAnswered = extra
   r.clarify = null
-  await sendWithTask(`${r.task}（补充说明：${extra}）`, [], { clarified: true })
+  await sendWithTask(`${r.task}（补充说明：${extra}）`, [],
+    { clarified: true, deep: deepMode.value })
 }
 }
 
@@ -510,7 +516,7 @@ function send() {
   if (!task) return
   const agents = pickAgents()
   taskInput.value = ''
-  sendWithTask(task, agents)
+  sendWithTask(task, agents, { deep: deepMode.value })
 }
 
 // ── 协作会话：列表刷新 / 多轮回放 / 管理 ──
@@ -621,7 +627,7 @@ function quickRun(t) {
   const q = taskInput.value.trim()
   const task = q ? composeTask() : t.prompt
   taskInput.value = ''
-  sendWithTask(task, pickAgents())
+  sendWithTask(task, pickAgents(), { deep: deepMode.value })
 }
 
 // ── 任务库 CRUD ──
@@ -665,6 +671,24 @@ async function removeTask(t) {
   } catch (err) {
     loadError.value = err?.message || '删除任务失败'
   }
+}
+
+// 复制事实卡上的完整 SQL（NL2SQL 口径卡），供用户取出去自行执行
+async function copySql(c) {
+  try {
+    await navigator.clipboard.writeText(c.sql || '')
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = c.sql || ''
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
+  c._sqlCopied = true
+  setTimeout(() => { c._sqlCopied = false }, 1600)
 }
 
 function gradeLabel(grade) {
@@ -920,6 +944,13 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="ma-card-title">{{ c.title }}</div>
                   <p class="ma-card-sum">{{ c.summary }}</p>
+                  <div v-if="c.sql" class="ma-sql-wrap">
+                    <div class="ma-sql-bar">
+                      <span class="ma-sql-tag">SQL{{ c.dialect ? ` · ${c.dialect}` : '' }}</span>
+                      <button class="ma-sql-copy" @click="copySql(c)">{{ c._sqlCopied ? '已复制 ✓' : '复制 SQL' }}</button>
+                    </div>
+                    <pre class="ma-card-sql">{{ c.sql }}</pre>
+                  </div>
                   <img v-if="c.image" :src="c.image" class="ma-card-img"
                        loading="lazy" alt="图表产出" @click="openImage(c.image)" />
                   <blockquote v-if="c.quote" class="ma-card-quote">{{ c.quote }}</blockquote>
@@ -979,6 +1010,9 @@ onBeforeUnmount(() => {
       </div>
       <!-- 底部输入区（任务库/组队已上移至协作配置面板） -->
       <div class="ma-composer">
+        <label class="ma-deep-toggle" title="DeepAgents 深度模式：LLM 自主规划待办 + 多轮工具取证，适合复杂多阶段任务（耗时较长）">
+          <input type="checkbox" v-model="deepMode" /> 深度模式
+        </label>
         <div class="ma-comp-main">
           <textarea v-model="taskInput" rows="2"
             :placeholder="selectedTask
@@ -1171,6 +1205,16 @@ onBeforeUnmount(() => {
 .ma-card-img { display: block; width: auto; max-width: 100%; max-height: 260px;
   margin: 6px auto 0; border: 1px solid var(--c-border); border-radius: 8px;
   background: #fff; cursor: zoom-in; object-fit: contain; }
+.ma-sql-wrap { margin-top: 6px; }
+.ma-sql-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ma-sql-tag { font-size: 10.5px; font-weight: 700; color: var(--c-accent); letter-spacing: .4px; }
+.ma-sql-copy { font-size: 10.5px; padding: 1px 8px; border: 1px solid var(--c-border);
+  border-radius: 999px; background: transparent; color: var(--c-secondary); cursor: pointer; }
+.ma-sql-copy:hover { color: var(--c-accent); border-color: var(--c-accent); }
+.ma-card-sql { margin: 4px 0 0; padding: 8px 10px; max-height: 180px; overflow: auto;
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace); font-size: 11px;
+  line-height: 1.6; color: var(--c-fg); background: var(--c-bg-soft, rgba(127,127,127,.08));
+  border: 1px solid var(--c-border); border-radius: 8px; white-space: pre-wrap; word-break: break-all; }
 .ma-card-quote { margin: 0; padding: 5px 9px; border-left: 3px solid var(--c-accent);
   background: var(--c-muted); border-radius: 0 8px 8px 0;
   font-size: 11.5px; color: var(--c-fg); line-height: 1.5; }
@@ -1273,6 +1317,10 @@ onBeforeUnmount(() => {
   font-size: 12px; border-radius: 999px; padding: 2px 10px; cursor: pointer; }
 .ma-agent-chip.on { color: var(--c-accent); border-color: var(--c-accent); background: var(--c-accent-weak); }
 .ma-pick-hint { flex-basis: 100%; font-size: 11.5px; color: var(--c-secondary); }
+.ma-deep-toggle { display: inline-flex; align-items: center; gap: 5px; align-self: flex-start;
+  font-size: 12px; color: var(--c-secondary); cursor: pointer; user-select: none; }
+.ma-deep-toggle input { accent-color: var(--c-accent); cursor: pointer; }
+.ma-deep-toggle:has(input:checked) { color: var(--c-accent); font-weight: 600; }
 .ma-comp-main { display: flex; align-items: flex-end; gap: 10px; }
 .ma-comp-main textarea { flex: 1; resize: none; border: 1px solid var(--c-border); border-radius: 10px;
   background: var(--c-panel-elevated); color: var(--c-fg); font-size: 14px; padding: 9px 12px;

@@ -28,6 +28,7 @@ import json
 import logging
 import math
 import time
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -145,6 +146,7 @@ class TaskBody(BaseModel):
     agents: list[str] = []         # 自由组合：可选能力智能体 id 列表（空 = 场景默认组合）
     session_id: str | None = None  # 协作会话 id：传了续聊（校验属主+场景），不传自动新建
     clarified: bool = False        # True = 澄清补充后的重发，跳过澄清判定（防循环）
+    deep: bool = False             # 深度模式：DeepAgents 自主规划+多轮取证（需 DEEP_AGENT_ENABLED 总闸开）
 
 
 @router.post("/scenarios/{scenario_id}/run")
@@ -177,10 +179,22 @@ async def run_scenario_task(scenario_id: str, body: TaskBody,
 
     # 构建以工厂传入：SSE 先开流并先跑意图路由（预告帧即时可见）；工厂接收
     # on_step 进度回调（Planner 规划 / NL2Filter 每步完成即时外抛事件）
+    # 深度模式（body.deep + DEEP_AGENT_ENABLED 双确认）：走 DeepAgents 第二
+    # 执行路径（services/multi_agent/deep_agent.py），同契约适配零改动；
+    # 总闸关闭或未安装 deepagents 时回落普通团队路径（行为与旧版一致）。
+    from config import settings as _settings
+    use_deep = bool(body.deep) and bool(getattr(_settings, "DEEP_AGENT_ENABLED", False))
+    if use_deep:
+        from services.multi_agent.deep_agent import build_deep_engine
+        engine_source = lambda route, on_step=None: build_deep_engine(task)  # noqa: E731
+    else:
+        engine_source = lambda route, on_step=None: scenario.build_engine_from_task(
+            task, agents=body.agents, route=route, on_step=on_step)          # noqa: E731
     return _stream_engine(
-        engine_source=lambda route, on_step=None: scenario.build_engine_from_task(
-            task, agents=body.agents, route=route, on_step=on_step),
-        session=session, task_text=task, clarified=body.clarified)
+        engine_source,
+        session=session, task_text=task, clarified=body.clarified,
+        team_label="深度智能体" if use_deep else "",
+        manual_agents=list(body.agents) if (body.agents and not use_deep) else None)
 
 
 # ─────────────────────── MCP 注册中心（工具服务器管理） ───────────────────────
@@ -396,8 +410,55 @@ async def delete_multi_session(session_id: str, db: AsyncSession = Depends(get_d
     return {"status": "deleted"}
 
 
+@router.get("/sessions/{session_id}/runs")
+async def list_session_runs(session_id: str, db: AsyncSession = Depends(get_db),
+                            user_id: str = Depends(get_current_user_id)):
+    """会话的引擎运行登记（Checkpointer P0 诊断）：状态 / 错误 / 时间线。"""
+    if not await _get_multi_session(db, session_id, user_id):
+        raise HTTPException(404, "会话不存在或已被删除")
+    from services.multi_agent.engine import runs_list, runs_latest_pending
+    return {"runs": await runs_list(session_id),
+            "pending": await runs_latest_pending(session_id)}
+
+
+@router.post("/sessions/{session_id}/resume")
+async def resume_session_run(session_id: str, db: AsyncSession = Depends(get_db),
+                             user_id: str = Depends(get_current_user_id)):
+    """断点续跑该会话最近一次未完成的运行（SSE，事件契约同 /scenarios/{id}/run）。
+
+    Checkpointer P0：服务重启 / 节点异常后，从最后 checkpoint 恢复——已完成
+    节点不重复执行（不重复取证、不重复花 token），pending 节点经同一 SSE 契约
+    续推，成果照常落协作会话留痕。引擎按落库 plan/materials 重建（同构）。
+    """
+    session = await _get_multi_session(db, session_id, user_id)
+    if not session:
+        raise HTTPException(404, "会话不存在或已被删除")
+    from services.multi_agent.engine import _get_checkpointer, runs_latest_pending
+
+    if await _get_checkpointer() is None:
+        raise HTTPException(409, "Checkpointer 未启用（MULTI_AGENT_CHECKPOINTER=false）")
+    row = await runs_latest_pending(session_id)
+    if not row:
+        raise HTTPException(404, "该会话没有待恢复的运行（均已正常结束）")
+
+    scenario = get_scenario("universal")
+    if scenario is None:
+        raise HTTPException(500, "universal 场景未注册")
+    try:
+        engine = scenario.build_engine_from_replay(
+            row["context"], row["team_info"], row["plan"], row["materials"])
+    except Exception as exc:
+        raise HTTPException(500, f"恢复重建引擎失败：{exc}")
+    engine.thread_id = row["thread_id"]
+    return _stream_engine(engine, session=session, task_text=row["task"],
+                          clarified=True, team_label="断点恢复",
+                          resume_thread=row["thread_id"])
+
+
 def _stream_engine(engine_source, session=None, task_text: str = "",
-                   clarified: bool = False) -> StreamingResponse:
+                   clarified: bool = False, team_label: str = "",
+                   resume_thread: str = "",
+                   manual_agents: list[str] | None = None) -> StreamingResponse:
     """引擎执行 → SSE 事件流（session 首帧 / team / 过程事件 / done 收尾，公共实现）。
 
     engine_source 可以是引擎实例，也可以是「返回引擎的 awaitable」（自由任务
@@ -446,7 +507,8 @@ def _stream_engine(engine_source, session=None, task_text: str = "",
             turn_meta["domains"].append({"domain": "__facts__", "cards": [
                 {"grade": f.get("grade", ""), "source": "", "title": f.get("title", ""),
                  "summary": f.get("detail", ""), "quote": "", "stance": "fact",
-                 "image": f.get("image", "")}   # 图表卡（chart_result）内嵌图片回放
+                 "image": f.get("image", ""),   # 图表卡（chart_result）内嵌图片回放
+                 "sql": f.get("sql", ""), "dialect": f.get("dialect", "")}  # NL2SQL 完整 SQL 回放
                 for f in evt.get("facts") or []
             ]})
         elif t == "conflict":
@@ -496,8 +558,14 @@ def _stream_engine(engine_source, session=None, task_text: str = "",
             # 立即发 team 预告帧（含 route），随后 LLM 规划（可达十余秒）期间前端
             # 可见团队与路由，不再长时间只见一行 planner 干等（过程不可见根因）。
             # route 传给工厂后 build 内不再重复路由（route is None 才自跑）。
-            # ── 澄清判定：任务缺关键信息先问清再开工（clarified=True 的补充重发跳过，防循环） ──
-            if not clarified:
+            from services.multi_agent.router_service import routing_decision
+            _rt0 = time.perf_counter()
+            route = await routing_decision(task_text)
+            # 0.6B 真实耗时在此补记：build 侧因 route 已就绪会跳过计时分支
+            route["elapsed_ms"] = int((time.perf_counter() - _rt0) * 1000)
+            # ── 澄清判定：任务缺关键信息先问清再开工（clarified=True 的补充重发跳过，
+            #    防循环；chat 直答是闲聊/明确指令，无澄清价值，同样跳过） ──
+            if not clarified and not route.get("chat_direct"):
                 from services.multi_agent.router_service import clarify_check
                 _clar = await clarify_check(task_text)
                 if _clar:
@@ -507,13 +575,18 @@ def _stream_engine(engine_source, session=None, task_text: str = "",
                     return
             yield _sse_evt({"type": "node_start", "node": "planner",
                             "role": "planner", "goal": "任务规划中（LLM 分解子任务）…"})
-            from services.multi_agent.router_service import routing_decision
-            _rt0 = time.perf_counter()
-            route = await routing_decision(task_text)
-            # 0.6B 真实耗时在此补记：build 侧因 route 已就绪会跳过计时分支
-            route["elapsed_ms"] = int((time.perf_counter() - _rt0) * 1000)
+            manual = bool(manual_agents)
+            if manual:
+                # 预告帧先行于 build（manual 标记原本 build 内才打上）：
+                # 手动组队时组合由用户指定，路由仅辅助 NL2Filter/改写门控，
+                # 预告帧与 route 明细不得显示路由精简组合（曾误导用户以为
+                # 勾选被路由覆盖——实际 caps 一直是手动清单，v6.4 修复；
+                # 前端 routeSteps 按 rt.manual 显示「手动组队，组合由用户指定」）
+                route["manual"] = True
             yield _sse_evt({"type": "team",
-                            "team": f"通用智能体团队（{_route_label(route)} · 子任务规划中…）",
+                            "team": (f"{team_label or '通用智能体团队'}（手动组队 · 子任务规划中…）"
+                                     if manual else
+                                     f"{team_label or '通用智能体团队'}（{_route_label(route)} · 子任务规划中…）"),
                             "members": [], "route": route})
             # 构建放后台任务并发执行：build 内每步（LLM 规划 / NL2Filter 抽取）
             # 一完成即经 on_step 把事件 put 进桥接队列，本生成器取出即刻 yield——
@@ -558,13 +631,21 @@ def _stream_engine(engine_source, session=None, task_text: str = "",
                 yield "data: [DONE]\n\n"
                 return
 
+        # Checkpointer thread（P0 断点恢复）：MultiAgentEngine 专有属性
+        # （DeepAgentRunner 无 thread_id，hasattr 天然跳过）。新运行生成
+        # "会话ID::随机token"（一轮一条）；断点恢复流沿用原 thread 不换号。
+        if hasattr(engine, "thread_id"):
+            engine.thread_id = resume_thread or (
+                f"{(session.id if session else '')}::{uuid.uuid4().hex[:8]}")
+
         await engine.q.put({"type": "team", **engine.team_info()})
 
         final: dict = {}
 
         async def _run():
             try:
-                final.update(await engine.run())
+                # resume_thread 非空 = 断点恢复：从最后 checkpoint 续跑 pending 节点
+                final.update(await (engine.resume() if resume_thread else engine.run()))
             except Exception as exc:  # 流水线级兜底：不让 SSE 断流
                 await engine.q.put({"type": "error", "content": f"多智能体流水线异常：{exc}"})
             finally:

@@ -84,6 +84,10 @@ CREATE TABLE IF NOT EXISTS ontology_categories (
     name VARCHAR NOT NULL,
     description TEXT DEFAULT '',
     is_system INTEGER NOT NULL DEFAULT 0,
+    -- 数据源本体（NL2SQL）：dialect 非空 = 该类别是数据源（sqlite/mysql/postgres）；
+    -- dsn 空 = 直接用平台库 DATABASE_URL 连接
+    datasource_dialect VARCHAR(20) DEFAULT '',
+    datasource_dsn TEXT DEFAULT '',
     created_at VARCHAR,
     updated_at VARCHAR,
     UNIQUE(name)
@@ -98,6 +102,7 @@ CREATE TABLE IF NOT EXISTS ontologies (
     sort_order INTEGER NOT NULL DEFAULT 0,
     code VARCHAR(64) DEFAULT NULL,
     display_name VARCHAR(100) DEFAULT '',
+    alias VARCHAR(200) DEFAULT '',
     plural_name VARCHAR(100) DEFAULT '',
     title_key VARCHAR(64) DEFAULT '',
     primary_key VARCHAR(64) DEFAULT 'name',
@@ -115,6 +120,7 @@ CREATE TABLE IF NOT EXISTS ontology_attributes (
     ontology_id VARCHAR NOT NULL,
     name VARCHAR(50) NOT NULL,
     code VARCHAR(50) DEFAULT NULL,
+    alias VARCHAR(200) DEFAULT '',
     data_type VARCHAR(20) NOT NULL,
     description VARCHAR(500) DEFAULT '',
     is_required INTEGER NOT NULL DEFAULT 0,
@@ -135,6 +141,8 @@ CREATE TABLE IF NOT EXISTS ontology_relations (
     id VARCHAR PRIMARY KEY,
     category_id VARCHAR NOT NULL,
     name VARCHAR(50) NOT NULL,
+    code VARCHAR(64) DEFAULT NULL,
+    alias VARCHAR(200) DEFAULT '',
     description VARCHAR(500) DEFAULT '',
     cardinality VARCHAR(16) DEFAULT 'MANY_TO_MANY',
     inverse_name VARCHAR(50) DEFAULT '',
@@ -153,6 +161,7 @@ CREATE TABLE IF NOT EXISTS ontology_relation_constraints (
     relation_id VARCHAR NOT NULL,
     target_ontology_id VARCHAR NOT NULL,
     description VARCHAR(500) DEFAULT '',
+    join_condition TEXT DEFAULT '',
     source_min INTEGER DEFAULT 0,
     source_max INTEGER DEFAULT 0,
     target_min INTEGER DEFAULT 0,

@@ -858,13 +858,42 @@ class EntityService:
         *,
         relation_type: str | None = None,
         description: str | None = None,
+        relation_def_id: str | None = None,
+        source_entity_id: str | None = None,
+        target_entity_id: str | None = None,
     ) -> dict | None:
         row = await db.execute(select(Relation).where(Relation.id == relation_id))
         rel = row.scalar_one_or_none()
         if not rel:
             return None
-        if relation_type is not None:
-            rel.relation_type = relation_type
+        new_def = relation_def_id if relation_def_id is not None else rel.relation_def_id
+        new_type = relation_type if relation_type is not None else rel.relation_type
+        new_src = source_entity_id if source_entity_id is not None else rel.source_entity_id
+        new_tgt = target_entity_id if target_entity_id is not None else rel.target_entity_id
+        if (new_def, new_type, new_src, new_tgt) != (
+            rel.relation_def_id,
+            rel.relation_type,
+            rel.source_entity_id,
+            rel.target_entity_id,
+        ):
+            # 键（定义/类型/两端）变更：删旧建新，复用 create 的 upsert 去重与图同步（旧边删、新边建）
+            kb_id = rel.kb_id
+            file_id, chunk_id = rel.source_file_id, rel.source_chunk_id
+            old_desc = rel.description or ""
+            await db.delete(rel)
+            await db.commit()
+            _sync_delete_relation(relation_id)
+            return await EntityService.create_relation(
+                db,
+                kb_id=kb_id,
+                relation_def_id=new_def,
+                relation_type=new_type,
+                source_entity_id=new_src,
+                target_entity_id=new_tgt,
+                description=description if description is not None else old_desc,
+                source_file_id=file_id,
+                source_chunk_id=chunk_id,
+            )
         if description is not None:
             rel.description = description.strip()
         rel.updated_at = datetime.now().isoformat()

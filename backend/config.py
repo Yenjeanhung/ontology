@@ -117,6 +117,22 @@ class Settings(BaseSettings):
     # 平台自身也可作为 MCP 服务器被外部 Agent 消费：python scripts/mcp_server.py
     MCP_SERVERS: str = ""
 
+    # ───────────────── DeepAgents 深度模式（第二执行路径） ─────────────────
+    # services/multi_agent/deep_agent.py：LangChain 官方 agent harness（deepagents>=0.7，
+    # LangGraph 1.x 运行时同源）作为复杂任务深度模式，与 StateGraph 团队并存、零替换。
+    # 前端「深度模式」勾选（请求体 deep=true）+ 总闸双确认；关闭或未安装时回落普通团队。
+    DEEP_AGENT_ENABLED: bool = False      # 总闸：false 时 deep=true 一律回落普通团队
+    DEEP_AGENT_TIMEOUT: float = 300.0     # 整轮超时（秒）：多轮工具循环比常规节点慢
+    DEEP_AGENT_SUBAGENTS: bool = False    # True=子智能体模式（主代理经 task 派发，
+                                          #   子研究员上下文隔离；默认主代理直带工具）
+
+    # ───────────────── LangGraph Checkpointer 断点恢复（P0） ─────────────────
+    # services/multi_agent/engine.py：协作团队 StateGraph 每步落 checkpoint，
+    # 服务崩溃/异常后按 thread_id 断点续跑（已完成节点不重复执行），并可回放
+    # 状态历史。thread_id = 会话ID::随机token（路由层生成，一轮运行一条）。
+    MULTI_AGENT_CHECKPOINTER: bool = True     # 总闸：false 时行为同无 checkpointer 旧版
+    MULTI_AGENT_CHECKPOINT_DB: str = ""       # checkpoint 库路径（空 = data/multi_agent_checkpoints.db）
+
     # ───────────────── 单智能体问答工具循环（L2：agent loop + tools） ─────────────────
     # 问答页 /agent/query 的生成阶段允许 LLM 自主调用平台工具（kb_search/graph_search/
     # data_query + MCP）补充检索：检索管线照跑（引用体系不变），工具作为口径补充与
@@ -185,8 +201,13 @@ class Settings(BaseSettings):
     # 任务澄清判定：开跑前 0.6B 判断任务是否缺关键信息，缺则先发澄清选项（用户补充后跳过，防循环）
     CLARIFY_ENABLED: bool = True
     CLARIFY_URL: str = ""                # 留空复用 NL2FILTER_URL → INTENT_ROUTER_URL（同服务多模式）
-    CLARIFY_MODEL: str = "qwen3-0.6b-router"
+    CLARIFY_MODEL: str = ""              # 留空回退 NL2FILTER_MODEL → INTENT_ROUTER_MODEL（.env 未配时默认值曾指向不存在的模型 → 404 静默失效）
     CLARIFY_TIMEOUT: float = 5.0
+    # DataAgent 本体驱动 NL2SQL（三级链第一级；失败回落 NL2Filter → 词频老路）
+    NL2SQL_ENABLED: bool = True
+    NL2SQL_MAX_ROWS: int = 500           # 行数上限（校验器自动纠偏 LIMIT）
+    NL2SQL_TIMEOUT_S: float = 8.0        # 只读执行超时（秒）
+    NL2SQL_MAX_RETRIES: int = 2          # 执行/校验失败回灌重试轮数上限
 
     # Rerank 精排：RRF 融合后用 cross-encoder / LLM 二次打分再截断。
     # 默认关闭：cross-encoder 需首次下载模型，开启前请确认 RERANK_MODEL 可访问。

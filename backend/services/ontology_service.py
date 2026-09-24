@@ -222,6 +222,65 @@ def _apply_ontology_meta(ont: Ontology, meta: dict | None) -> None:
         ont.code = (meta["code"] or "").strip() or None
 
 
+async def _sync_constraint_join(db: AsyncSession, category_id: str) -> None:
+    """约束增删改后把 join_condition 冗余同步到 Neo4j 分析图边属性。
+
+    PG 权威：失败只告警不回滚（约束已落库，待下次迁入/编辑收敛）。
+    """
+    try:
+        from services.graph_sync_service import GraphSyncService
+        await GraphSyncService.sync_constraint_join_props(db, category_id)
+    except Exception:
+        logger.warning("同步约束关联字段到 Neo4j 失败（不影响约束保存）", exc_info=True)
+
+
+def _parse_join_condition(raw: str) -> list:
+    """join_condition JSON 文本 → [{"left","right"}] 数组（空/非法返回 []）。"""
+    if not raw:
+        return []
+    try:
+        import json as _json
+        val = _json.loads(raw)
+        if isinstance(val, list):
+            return [{"left": str(i.get("left", "")), "right": str(i.get("right", ""))}
+                    for i in val if isinstance(i, dict) and i.get("left") and i.get("right")]
+    except Exception:
+        pass
+    return []
+
+
+def _dump_join_condition(items) -> str:
+    """前端字段对数组 → 规范化 JSON 文本（丢弃缺 left/right 的行）。"""
+    norm = [{"left": str(i.get("left", "")).strip(), "right": str(i.get("right", "")).strip()}
+            for i in (items or []) if isinstance(i, dict) and str(i.get("left", "")).strip() and str(i.get("right", "")).strip()]
+    import json as _json
+    return _json.dumps(norm, ensure_ascii=False) if norm else ""
+
+
+# 约束基数（cardinality）：真源在三元组约束层（source_max/target_max 承载，
+# NL2SQL 的 join 翻倍防护按此判读）；关系字典层不再配置基数，仅保留历史列。
+_CARDINALITY_OPTIONS = {"ONE_TO_ONE", "ONE_TO_MANY", "MANY_TO_ONE", "MANY_TO_MANY"}
+
+
+def _cardinality_from_extents(source_max: int, target_max: int) -> str:
+    """端点上限 → 基数枚举（0 = 不限）。"""
+    if source_max == 1 and target_max == 1:
+        return "ONE_TO_ONE"
+    if source_max == 1:
+        return "ONE_TO_MANY"
+    if target_max == 1:
+        return "MANY_TO_ONE"
+    return "MANY_TO_MANY"
+
+
+def _apply_cardinality(c: OntologyRelationConstraint, cardinality: str | None) -> None:
+    """基数枚举 → 端点上限（source_min/target_min 语义为可空性，不动）。"""
+    if cardinality not in _CARDINALITY_OPTIONS:
+        return
+    c.source_max = 1 if cardinality in ("ONE_TO_ONE", "ONE_TO_MANY") else 0
+    c.target_max = 1 if cardinality in ("ONE_TO_ONE", "MANY_TO_ONE") else 0
+
+
 async def _serialize_constraint(db: AsyncSession, c: OntologyRelationConstraint) -> dict:
     src = await db.execute(select(Ontology.name).where(Ontology.id == c.source_ontology_id))
     tgt = await db.execute(select(Ontology.name).where(Ontology.id == c.target_ontology_id))
@@ -236,11 +295,16 @@ async def _serialize_constraint(db: AsyncSession, c: OntologyRelationConstraint)
         "target_ontology_id": c.target_ontology_id,
         "target_ontology_name": tgt.scalar_one_or_none(),
         "description": c.description or "",
+        "join_condition": _parse_join_condition(getattr(c, "join_condition", "") or ""),
         "created_at": c.created_at,
         "source_min": getattr(c, "source_min", 0) or 0,
         "source_max": getattr(c, "source_max", 0) or 0,
         "target_min": getattr(c, "target_min", 0) or 0,
         "target_max": getattr(c, "target_max", 0) or 0,
+        # 派生展示：source→target 视角的基数（ONE_TO_ONE/ONE_TO_MANY/MANY_TO_ONE/MANY_TO_MANY）
+        "cardinality": _cardinality_from_extents(
+            getattr(c, "source_max", 0) or 0, getattr(c, "target_max", 0) or 0
+        ),
         "is_required": bool(getattr(c, "is_required", 0)),
     }
 
@@ -348,7 +412,16 @@ class OntologyService:
             .order_by(OntologyRelation.created_at)
         )
         relations = [
-            {"id": r.id, "name": r.name, "description": r.description or "", "created_at": r.created_at}
+            {
+                "id": r.id, "name": r.name, "code": r.code,
+                "description": r.description or "", "created_at": r.created_at,
+                # S5 语义字段：详情接口此前漏吐，导致页面编码/高级语义全部显示为空
+                "cardinality": getattr(r, "cardinality", "") or "MANY_TO_MANY",
+                "inverse_name": getattr(r, "inverse_name", "") or "",
+                "is_symmetric": bool(getattr(r, "is_symmetric", 0)),
+                "is_transitive": bool(getattr(r, "is_transitive", 0)),
+                "status": getattr(r, "status", "") or "active",
+            }
             for r in relations_result.scalars().all()
         ]
 
@@ -933,6 +1006,7 @@ class OntologyService:
     async def create_constraint(
         db: AsyncSession, category_id: str, source_ontology_id: str,
         relation_id: str, target_ontology_id: str, description: str = "",
+        join_condition=None, cardinality: str | None = None,
     ) -> dict:
         # 校验：两个本体之间只能建立唯一的关系（同一对 source-target 不可重复）
         existing = await db.execute(
@@ -948,10 +1022,13 @@ class OntologyService:
             category_id=category_id, source_ontology_id=source_ontology_id,
             relation_id=relation_id, target_ontology_id=target_ontology_id,
             description=(description or "").strip(),
+            join_condition=_dump_join_condition(join_condition),
         )
+        _apply_cardinality(c, cardinality)
         db.add(c)
         await db.commit()
         await db.refresh(c)
+        await _sync_constraint_join(db, category_id)
         return await _serialize_constraint(db, c)
 
     @staticmethod
@@ -984,6 +1061,11 @@ class OntologyService:
             c.target_ontology_id = req.target_ontology_id
         if req.description is not None:
             c.description = req.description.strip()
+        if req.join_condition is not None:
+            c.join_condition = _dump_join_condition(req.join_condition)
+        # 基数枚举优先映射端点上限；显式 source_max/target_max 仍可细粒度覆盖
+        if getattr(req, "cardinality", None) is not None:
+            _apply_cardinality(c, req.cardinality)
         for fld in ("source_min", "source_max", "target_min", "target_max"):
             val = getattr(req, fld, None)
             if val is not None:
@@ -991,6 +1073,7 @@ class OntologyService:
         if req.is_required is not None:
             c.is_required = int(bool(req.is_required))
         await db.commit()
+        await _sync_constraint_join(db, c.category_id)
         return await _serialize_constraint(db, c)
 
     @staticmethod
@@ -1001,8 +1084,10 @@ class OntologyService:
         c = result.scalar_one_or_none()
         if not c:
             return False
+        category_id = c.category_id
         await db.delete(c)
         await db.commit()
+        await _sync_constraint_join(db, category_id)
         return True
 
     @staticmethod
@@ -1018,6 +1103,7 @@ class OntologyService:
             await db.flush()
             out.append({"id": c.id})
         await db.commit()
+        await _sync_constraint_join(db, category_id)
         return out
 
     # ===== 知识库绑定 =====
