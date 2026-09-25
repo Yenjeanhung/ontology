@@ -491,13 +491,16 @@ async function sendWithTask(task, agents = [], opts = {}) {
     rx.live = false
     runState.value.reviewing = false
   }
+}
 
 /** 澄清卡：选中候选项；「__custom__」= 转自由填写。 */
 function pickClarify(r, opt) {
   r.clarify.picked = opt
 }
 
-/** 澄清补充提交：原任务 + 补充说明作为新一轮重发（clarified 标记跳过再次澄清，防循环）。 */
+/** 澄清补充提交：原任务 + 补充说明作为新一轮重发（clarified 标记跳过再次澄清，防循环）。
+ *  组队沿用当前面板选择（pickAgents：手动勾选带回清单 / 自动模式传空走路由）——
+ *  曾写死空数组导致「勾选 DataAgent → 触发澄清 → 补充重发」丢勾选变自动组队。 */
 async function sendClarify(r) {
   const c = r.clarify
   if (!c) return
@@ -505,9 +508,8 @@ async function sendClarify(r) {
   if (!extra) return
   r.clarifyAnswered = extra
   r.clarify = null
-  await sendWithTask(`${r.task}（补充说明：${extra}）`, [],
+  await sendWithTask(`${r.task}（补充说明：${extra}）`, pickAgents(),
     { clarified: true, deep: deepMode.value })
-}
 }
 
 /** 底部输入区发送：选中任务 = 提示词模板 + 输入问题；未选 = 自由任务。 */
@@ -988,21 +990,25 @@ onBeforeUnmount(() => {
             <p v-else class="ma-typing">团队协作中…</p>
           </div>
 
-          <!-- 澄清卡：任务信息不足 → 候选项选择（最后一项自由填写），补充后自动续跑 -->
+          <!-- 澄清卡：CodeBuddy 风格候选列表（一行一项，末项自由填写），选择/填写后点提交重发 -->
           <div v-if="r.clarify" class="ma-clarify">
             <p class="ma-clr-q">{{ r.clarify.question }}</p>
-            <div class="ma-clr-opts">
-              <button v-for="o in r.clarify.options" :key="o" class="ma-clr-opt"
-                      :class="{ active: r.clarify.picked === o }" @click="pickClarify(r, o)">{{ o }}</button>
-              <button class="ma-clr-opt" :class="{ active: r.clarify.picked === '__custom__' }"
-                      @click="pickClarify(r, '__custom__')">自己填写…</button>
+            <div class="ma-clr-list">
+              <button v-for="o in r.clarify.options" :key="o" class="ma-clr-item"
+                      :class="{ active: r.clarify.picked === o }" @click="pickClarify(r, o)">
+                <span class="ma-clr-dot" /><span class="ma-clr-label">{{ o }}</span>
+              </button>
+              <button class="ma-clr-item" :class="{ active: r.clarify.picked === '__custom__' }"
+                      @click="pickClarify(r, '__custom__')">
+                <span class="ma-clr-dot" /><span class="ma-clr-label">自己填写…</span>
+              </button>
             </div>
-            <div v-if="r.clarify.picked" class="ma-clr-input">
+            <div v-if="r.clarify.picked" class="ma-clr-foot">
               <input v-if="r.clarify.picked === '__custom__'" v-model="r.clarify.text" class="ma-clr-txt"
-                     placeholder="补充关键信息后发送…" @keyup.enter="sendClarify(r)" />
+                     placeholder="补充关键信息…" @keyup.enter="sendClarify(r)" />
               <button class="ma-clr-send"
                       :disabled="r.clarify.picked === '__custom__' && !r.clarify.text.trim()"
-                      @click="sendClarify(r)">补充并继续协作</button>
+                      @click="sendClarify(r)">提交</button>
             </div>
           </div>
           <p v-else-if="r.clarifyAnswered" class="ma-clr-answered">已补充「{{ r.clarifyAnswered }}」，见下方新一轮回复</p>
@@ -1268,12 +1274,16 @@ onBeforeUnmount(() => {
 .ma-clarify { border: 1px solid var(--c-border); border-radius: 10px; padding: 10px 12px;
   background: var(--c-muted); display: flex; flex-direction: column; gap: 8px; max-width: 720px; }
 .ma-clr-q { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--c-fg); }
-.ma-clr-opts { display: flex; flex-wrap: wrap; gap: 6px; }
-.ma-clr-opt { border: 1px solid var(--c-border); border-radius: 14px; background: var(--c-panel);
-  color: var(--c-fg); font-size: 12.5px; padding: 4px 12px; cursor: pointer; }
-.ma-clr-opt:hover { border-color: var(--c-accent); color: var(--c-accent); }
-.ma-clr-opt.active { background: var(--c-accent); border-color: var(--c-accent); color: #fff; }
-.ma-clr-input { display: flex; gap: 6px; }
+.ma-clr-list { display: flex; flex-direction: column; gap: 5px; }
+.ma-clr-item { display: flex; align-items: center; gap: 9px; text-align: left;
+  border: 1px solid var(--c-border); border-radius: 8px; background: var(--c-panel);
+  color: var(--c-fg); font-size: 12.5px; padding: 7px 11px; cursor: pointer; }
+.ma-clr-item:hover { border-color: var(--c-accent); }
+.ma-clr-item.active { border-color: var(--c-accent); box-shadow: inset 0 0 0 1px var(--c-accent); }
+.ma-clr-dot { width: 12px; height: 12px; border-radius: 50%; flex: none;
+  border: 1.5px solid var(--c-border); background: transparent; transition: all .12s; }
+.ma-clr-item.active .ma-clr-dot { border-color: var(--c-accent); border-width: 3.5px; }
+.ma-clr-foot { display: flex; gap: 6px; align-items: center; }
 .ma-clr-txt { flex: 1; border: 1px solid var(--c-border); border-radius: 8px;
   background: var(--c-panel); color: var(--c-fg); font-size: 12.5px; padding: 5px 10px; outline: none; }
 .ma-clr-txt:focus { border-color: var(--c-accent); }

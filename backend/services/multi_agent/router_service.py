@@ -245,9 +245,52 @@ _VAGUE_OPTIONS = ["介绍相关概况", "多维度对比分析", "查询相关�
 
 
 def _vague_task(task: str) -> bool:
-    """超短且无意图动词 → 视为信息不足（如「北京重庆」「CA1503和MU5307」）。"""
+    """超短且无意图动词 → 视为信息不足（如「北京重庆」「CA1503和MU5307」）。
+
+    完整疑问句（「…吗/…呢/…？」）不拦：用户已给出明确问题，澄清反而打断
+    （如「北京到南京有航班吗」应直接进 data 链路查询）。
+    """
     t = (task or "").strip()
-    return 0 < len(t) < _VAGUE_LEN and not _INTENT_HINT_RE.search(t)
+    if len(t) >= _VAGUE_LEN or not t:
+        return False
+    if _INTENT_HINT_RE.search(t) or re.search(r"[吗呢]$|[？?]\s*$", t):
+        return False
+    return True
+
+
+# 澄清选项生成器（只生成不判定——0.6B 判 need_clarify 不可靠，但生成贴合任务的
+# 问句/候选项没问题）：是否澄清由本地规则/判定先行确定，这里只负责产出动态选项。
+_CLARIFY_GEN_SYSTEM = (
+    "你是澄清选项生成器。用户的任务信息不足需要澄清，请针对这个任务生成"
+    "一句话澄清提问和 2~4 个最相关的候选项（每个不超过 20 字）。"
+    "候选项必须贴合任务内容（如航班类任务给「查询航班时刻」「查询票价」），"
+    "禁止给「介绍概况」「生成报告」这类与任务无关的泛泛选项。"
+    "只输出 JSON：{\"question\": \"一句话提问\", \"options\": [\"候选项\", \"…\"]}，"
+    "不要输出任何其他文字。"
+)
+
+
+async def _clarify_generate(task: str, url: str, model: str) -> Optional[dict]:
+    """针对信息不足任务动态生成澄清问句与候选项；失败返回 None（调用方通用选项兜底）。"""
+    try:
+        raw = await _chat_once(
+            _CLARIFY_GEN_SYSTEM, task,
+            url=url, model=model,
+            timeout=float(getattr(settings, "CLARIFY_TIMEOUT", 5.0)),
+            tag="澄清生成",
+        )
+    except Exception as exc:
+        logger.warning("[澄清生成] 0.6B 调用失败（%s: %s）→ 通用选项兜底",
+                       type(exc).__name__, exc)
+        return None
+    data = _parse_json_block(raw)
+    if not isinstance(data, dict):
+        return None
+    question = str(data.get("question") or "").strip()
+    options = [str(o).strip() for o in (data.get("options") or []) if str(o).strip()][:4]
+    if not question or not options:
+        return None
+    return {"question": question, "options": options}
 
 
 async def clarify_check(task: str) -> Optional[dict]:
@@ -258,21 +301,27 @@ async def clarify_check(task: str) -> Optional[dict]:
     """
     if not getattr(settings, "CLARIFY_ENABLED", True):
         return None
-    # 超短模糊任务本地短路（不调 0.6B，省一次调用且判定确定）
-    if _vague_task(task):
-        logger.info("[澄清判定] 超短任务无意图词 → 本地规则澄清：%r", _short(task))
-        return {"question": _VAGUE_QUESTION, "options": _VAGUE_OPTIONS}
     url = ((getattr(settings, "CLARIFY_URL", "") or "").strip()
            or (getattr(settings, "NL2FILTER_URL", "") or "").strip()
            or (getattr(settings, "INTENT_ROUTER_URL", "") or "").strip())
-    if not url:
-        return None
     # model 与 url 同源回退：CLARIFY_MODEL 留空 → NL2FILTER_MODEL → INTENT_ROUTER_MODEL
     # （此前 config 默认值 "qwen3-0.6b-router" 与实际部署名 qwen06b-router 不一致 → 404 → 静默放行）
     model = ((getattr(settings, "CLARIFY_MODEL", "") or "").strip()
              or (getattr(settings, "NL2FILTER_MODEL", "") or "").strip()
              or (getattr(settings, "INTENT_ROUTER_MODEL", "") or "").strip()
              or "qwen3-0.6b-router")
+    # 超短模糊任务：是否澄清由本地规则确定（不依赖 0.6B 判性），
+    # 候选项动态生成贴合任务内容；生成失败回退通用四选项
+    if _vague_task(task):
+        gen = await _clarify_generate(task, url, model) if url else None
+        if gen:
+            logger.info("[澄清判定] 超短任务 → 动态澄清选项：%s %s",
+                        _short(gen["question"], 60), gen["options"])
+            return gen
+        logger.info("[澄清判定] 超短任务无意图词 → 通用澄清：%r", _short(task))
+        return {"question": _VAGUE_QUESTION, "options": _VAGUE_OPTIONS}
+    if not url:
+        return None
     try:
         raw = await _chat_once(
             _CLARIFY_SYSTEM, task,

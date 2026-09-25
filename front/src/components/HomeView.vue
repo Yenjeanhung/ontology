@@ -927,8 +927,10 @@ onBeforeUnmount(() => {
 
 .step-number,
 .start-chip,
+.define-chip,
 .branch-chip,
-.agent-chip {
+.agent-chip,
+.flow-chip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -961,6 +963,13 @@ onBeforeUnmount(() => {
   box-shadow: inset 0 0 0 1px rgba(14, 107, 133, 0.2);
 }
 
+.flow-chip {
+  padding: 0 9px;
+  background: rgba(219, 39, 119, 0.13);
+  color: #be185d;
+  box-shadow: inset 0 0 0 1px rgba(190, 24, 93, 0.22);
+}
+
 .branch-chip {
   padding: 0 9px;
   background: rgba(134, 201, 87, 0.2);
@@ -979,6 +988,18 @@ onBeforeUnmount(() => {
   background: rgba(139, 92, 246, 0.18);
   color: #b79bf7;
   box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.32);
+}
+
+:root[data-theme='dark'] .define-chip {
+  background: rgba(53, 198, 211, 0.16);
+  color: #7fdcea;
+  box-shadow: inset 0 0 0 1px rgba(53, 198, 211, 0.32);
+}
+
+:root[data-theme='dark'] .flow-chip {
+  background: rgba(244, 114, 182, 0.16);
+  color: #f9a8d4;
+  box-shadow: inset 0 0 0 1px rgba(244, 114, 182, 0.32);
 }
 
 .flow-role {
