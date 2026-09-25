@@ -945,28 +945,81 @@ export async function getOntologyCategoryDetail(categoryId) {
   return res.json()
 }
 
-export async function createOntologyCategory({ name, description }) {
+export async function createOntologyCategory({ name, description, datasource_id }) {
   const res = await fetch(`${API}/api/ontology-categories`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description }),
+    body: JSON.stringify({ name, description, datasource_id: datasource_id || '' }),
   })
-  if (!res.ok) throw new Error('Create ontology category failed')
+  if (!res.ok) throw new Error(await _errDetail(res, '创建本体类别失败'))
   return res.json()
 }
 
-export async function updateOntologyCategory(categoryId, { name, description }) {
+export async function updateOntologyCategory(categoryId, { name, description, datasource_id }) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description }),
+    // datasource_id: undefined = 不改；null/'' = 解绑——区分二者由调用方控制
+    body: JSON.stringify({ name, description, ...(datasource_id !== undefined ? { datasource_id } : {}) }),
   })
-  if (!res.ok) throw new Error('Update ontology category failed')
+  if (!res.ok) throw new Error(await _errDetail(res, '更新本体类别失败'))
   return res.json()
 }
 
 export async function deleteOntologyCategory(categoryId) {
   const res = await fetch(`${API}/api/ontology-categories/${categoryId}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error('Delete ontology category failed')
+  if (!res.ok) throw new Error(await _errDetail(res, '删除本体类别失败'))
   return res.json()
+}
+
+// ── 数据源管理（外部数据源注册表，本体类别单选引用） ──
+
+export async function fetchDataSources() {
+  const res = await fetch(`${API}/api/datasources`)
+  if (!res.ok) throw new Error(await _errDetail(res, '加载数据源列表失败'))
+  return res.json()
+}
+
+export async function createDataSource(data) {
+  const res = await fetch(`${API}/api/datasources`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error(await _errDetail(res, '新增数据源失败'))
+  return res.json()
+}
+
+export async function updateDataSource(id, data) {
+  const res = await fetch(`${API}/api/datasources/${encodeURIComponent(id)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error(await _errDetail(res, '更新数据源失败'))
+  return res.json()
+}
+
+export async function deleteDataSource(id) {
+  const res = await fetch(`${API}/api/datasources/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await _errDetail(res, '删除数据源失败'))
+  return res.json()
+}
+
+/** 不落库试连：data 可透传表单，或传 {id} 按库中配置测。失败也是 200 + ok:false。 */
+export async function testDataSource(data) {
+  const res = await fetch(`${API}/api/datasources/test`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error(await _errDetail(res, '连接测试请求失败'))
+  return res.json()
+}
+
+/** 从错误响应提取后端 detail（中文校验信息），失败回退默认文案。 */
+async function _errDetail(res, fallback) {
+  try {
+    const body = await res.json()
+    return body?.detail || fallback
+  } catch {
+    return fallback
+  }
 }
 
 // 模块八：本体 Excel 导入 / 导出

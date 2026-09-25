@@ -141,12 +141,50 @@ async def run_scenario_target(scenario_id: str, target_id: str):
     return _stream_engine(engine)
 
 
+@router.get("/datasources")
+async def list_datasources(db: AsyncSession = Depends(get_db)):
+    """DataAgent 可选数据源清单 = 挂了数据源的类别（多选来源，勾选维度 = 类别 id）。
+
+    对应关系：一个类别 = 一个库的 schema 映射，通过 datasource_id 单选引用数据源
+    注册表（数据源管理页维护）；连接信息经 resolve_category_datasource 解析
+    （注册表优先，内联字段兜底），dsn 掩码返回；解析不出连接的类别不出现在清单里。
+    """
+    from sqlalchemy import select, func, or_
+    from models import OntologyCategory, Ontology
+    from services.datasource_service import mask_dsn, resolve_category_datasource
+    cats = (await db.execute(
+        select(OntologyCategory)
+        .where(or_(OntologyCategory.datasource_dialect != "",
+                   OntologyCategory.datasource_id != ""))
+        .where(OntologyCategory.datasource_dialect.isnot(None))
+        .order_by(OntologyCategory.created_at)
+    )).scalars().all()
+    counts = dict((await db.execute(
+        select(Ontology.category_id, func.count())
+        .select_from(Ontology).group_by(Ontology.category_id)
+    )).all())
+    out = []
+    for c in cats:
+        dialect, dsn = await resolve_category_datasource(db, c)
+        if not dsn:
+            continue                    # 位置不明（未绑定且内联空），不进清单
+        out.append({
+            "id": c.id, "name": c.name,
+            "dialect": dialect,
+            "dsn": mask_dsn(dsn),
+            "tables": int(counts.get(c.id, 0)),
+            "description": (c.description or "")[:120],
+        })
+    return out
+
+
 class TaskBody(BaseModel):
     task: str = ""
     agents: list[str] = []         # 自由组合：可选能力智能体 id 列表（空 = 场景默认组合）
     session_id: str | None = None  # 协作会话 id：传了续聊（校验属主+场景），不传自动新建
     clarified: bool = False        # True = 澄清补充后的重发，跳过澄清判定（防循环）
     deep: bool = False             # 深度模式：DeepAgents 自主规划+多轮取证（需 DEEP_AGENT_ENABLED 总闸开）
+    data_sources: list[str] = []   # DataAgent 可操作数据源 = 本体类别 id 多选（空 = 自动检索全部数据源类别）
 
 
 @router.post("/scenarios/{scenario_id}/run")
@@ -189,7 +227,8 @@ async def run_scenario_task(scenario_id: str, body: TaskBody,
         engine_source = lambda route, on_step=None: build_deep_engine(task)  # noqa: E731
     else:
         engine_source = lambda route, on_step=None: scenario.build_engine_from_task(
-            task, agents=body.agents, route=route, on_step=on_step)          # noqa: E731
+            task, agents=body.agents, route=route, on_step=on_step,
+            data_sources=body.data_sources or None)                          # noqa: E731
     return _stream_engine(
         engine_source,
         session=session, task_text=task, clarified=body.clarified,

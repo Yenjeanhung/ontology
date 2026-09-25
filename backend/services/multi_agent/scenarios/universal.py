@@ -52,7 +52,7 @@ OPTIONAL_AGENTS = [
     {"id": "retriever", "name": "Retriever · 知识库取证",
      "desc": "为每个子任务检索平台全部知识库向量语料（RAG 增强）"},
     {"id": "data_agent", "name": "DataAgent · 数据查询",
-     "desc": "查询实体台账结构化数据：总量/分类聚合统计 + 最新明细（真实数据，杜绝编造)"},
+     "desc": "查询实体台账结构化数据：总量/分类聚合统计 + 最新明细（真实数据，杜绝编造)；可多选数据源（本体类别）限定取数范围"},
     {"id": "graph_agent", "name": "GraphAgent · 图谱事实",
      "desc": "实体图谱关键词检索，产出结构化事实卡"},
     {"id": "tool_agent", "name": "ToolAgent · 工具调用",
@@ -167,6 +167,7 @@ class UniversalScenario(MultiAgentScenario):
         self, task: str, agents: Optional[list[str]] = None,
         route: Optional[dict] = None,
         on_step: Optional[Callable[[dict], None]] = None,
+        data_sources: Optional[list[str]] = None,
     ) -> MultiAgentEngine:
         """自由任务入口：两级路由（0.6B）→ 组合归一化 → LLM 动态规划 → 按组合装配 → 引擎。
 
@@ -320,12 +321,14 @@ class UniversalScenario(MultiAgentScenario):
             team_info=team_info,
             plan=plan,
             node_factory=lambda eng: self._make_nodes(
-                eng, plan, task, nl_filter=nl_filter, rewrite_gate=rewrite_gate),
+                eng, plan, task, nl_filter=nl_filter, rewrite_gate=rewrite_gate,
+                data_sources=data_sources),
             pacing=0.1,
         )
         # 断点恢复材料（Checkpointer P0）：不进黑板、重建节点闭包所需，
         # engine.run() 登记时随 agent_runs 行落库
-        eng.replay_materials = {"nl_filter": nl_filter, "rewrite_gate": rewrite_gate}
+        eng.replay_materials = {"nl_filter": nl_filter, "rewrite_gate": rewrite_gate,
+                                "data_sources": list(data_sources or [])}
         return eng
 
     def build_engine_from_replay(self, context: dict, team_info: dict,
@@ -347,7 +350,8 @@ class UniversalScenario(MultiAgentScenario):
             node_factory=lambda eng: self._make_nodes(
                 eng, plan, task,
                 nl_filter=materials.get("nl_filter"),
-                rewrite_gate=bool(materials.get("rewrite_gate"))),
+                rewrite_gate=bool(materials.get("rewrite_gate")),
+                data_sources=materials.get("data_sources") or None),
             pacing=0.1,
         )
 
@@ -468,7 +472,8 @@ class UniversalScenario(MultiAgentScenario):
 
     def _make_nodes(self, eng: MultiAgentEngine, plan: list[dict], task: str,
                     nl_filter: Optional[dict] = None,
-                    rewrite_gate: bool = False) -> dict:
+                    rewrite_gate: bool = False,
+                    data_sources: Optional[list[str]] = None) -> dict:
         nodes = {}
         for step in plan:
             if step["role"] == "retriever":
@@ -478,7 +483,8 @@ class UniversalScenario(MultiAgentScenario):
             elif step["role"] == "custom":
                 nodes[step["node"]] = self._make_custom_agent(eng, step, task)
             elif step["role"] == "data_agent":
-                nodes[step["node"]] = self._make_data_agent(eng, task, nl_filter)
+                nodes[step["node"]] = self._make_data_agent(
+                    eng, task, nl_filter, data_sources)
             elif step["role"] == "tool_agent":
                 nodes[step["node"]] = self._make_tool_agent(eng, task)
             elif step["role"] == "graph_agent":
@@ -674,14 +680,16 @@ class UniversalScenario(MultiAgentScenario):
         return _fn
 
     def _make_data_agent(self, eng: MultiAgentEngine, task: str,
-                         nl_filter: Optional[dict] = None):
-        goal = ("结构化取数与统计（NL2SQL → NL2Filter → 词频）"
-                if nl_filter else "结构化取数与统计（NL2SQL → 台账词频）")
+                         nl_filter: Optional[dict] = None,
+                         data_sources: Optional[list[str]] = None):
+        scope = f"，指定数据源 ×{len(data_sources)}" if data_sources else ""
+        goal = (("结构化取数与统计（NL2SQL → NL2Filter → 词频" + scope + "）")
+                if nl_filter else "结构化取数与统计（NL2SQL → 台账词频" + scope + "）")
 
         async def _fn(state: dict) -> dict:
             eng.emit({"type": "node_start", "node": "data_agent", "role": "data_agent",
                       "goal": goal})
-            facts = await _data_facts(task, nl_filter)
+            facts = await _data_facts(task, nl_filter, data_sources)
             eng.emit({"type": "fact", "facts": facts})
             if facts and facts[0].get("id") == "fact-data-sql":
                 summary = (f"NL2SQL 本体取数命中，产出 {len(facts)} 张数据卡"
@@ -1104,15 +1112,17 @@ def _type_scope_text(total: int, type_rows: list) -> str:
     return f"共 {total} 条记录；按实体类型：{groups}"
 
 
-async def _data_facts_nl2sql(task: str) -> Optional[list[dict]]:
+async def _data_facts_nl2sql(task: str,
+                             category_ids: Optional[list[str]] = None) -> Optional[list[dict]]:
     """三级链第一级：本体驱动 NL2SQL（schema_store 检索 + 受约束生成 + 只读执行）。
 
+    category_ids 非空 = 只在用户勾选的数据源类别（本体）中检索取数；
     数据源本体类别（datasource_dialect 非空）存在且任务命中其表/字段/关系时生效；
     返回 None = 未启用 / 检索 0 命中 / 生成或执行失败 → 调用方回落 NL2Filter → 词频老路。
     """
     try:
         from services.multi_agent import nl2sql_service
-        res = await nl2sql_service.nl2sql_query(task)
+        res = await nl2sql_service.nl2sql_query(task, category_ids)
     except Exception:
         return None
     if not res:
@@ -1140,7 +1150,8 @@ async def _data_facts_nl2sql(task: str) -> Optional[list[dict]]:
     return facts
 
 
-async def _data_facts(task: str, nl_filter: Optional[dict] = None) -> list[dict]:
+async def _data_facts(task: str, nl_filter: Optional[dict] = None,
+                      data_sources: Optional[list[str]] = None) -> list[dict]:
     """实体台账结构化查询（业务无关）：关键词命中 → 聚合统计 + 明细事实卡。
 
     三级路由接线：先 NL2SQL（数据源本体，schema_store 检索命中才生效）→
@@ -1152,7 +1163,7 @@ async def _data_facts(task: str, nl_filter: Optional[dict] = None) -> list[dict]
     真实数字（而非模型编造）。关键词同时匹配实体类型（如「告警」→ 运行告警），
     命中为 0 时回退全库统计并在卡片中注明口径。
     """
-    nl2sql_facts = await _data_facts_nl2sql(task)
+    nl2sql_facts = await _data_facts_nl2sql(task, data_sources)
     if nl2sql_facts:
         return nl2sql_facts          # 本体取数链命中，不再走老两级
 

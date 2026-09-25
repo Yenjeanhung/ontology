@@ -148,6 +148,7 @@ const menuItems = [
       { to: '/ontology/templates', label: '本体模板', perm: 'ontology:view' },
       { to: '/ontology/shared-properties', label: '共享属性', perm: 'ontology:view' },
       { to: '/ontology/ontologies', label: '本体管理', perm: 'ontology:view' },
+      { to: '/ontology/datasources', label: '数据源管理', perm: 'ontology:view' },
       { to: '/ontology/functions', label: '函数与派生属性', perm: 'ontology:view' },
       { to: '/ontology/relations-dict', label: '关系字典', perm: 'ontology:view' },
       { to: '/ontology/constraints', label: '本体关系', perm: 'ontology:view' },

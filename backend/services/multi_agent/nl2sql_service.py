@@ -326,14 +326,16 @@ def _is_complex(task: str, n_edges: int) -> bool:
     return any(h in low for h in _REACT_HINTS) or n_edges >= 2
 
 
-async def nl2sql_query(task: str) -> Optional[dict]:
-    """三级链第一级总入口。返回事实数据 dict 或 None（回落 NL2Filter 老路）。"""
+async def nl2sql_query(task: str,
+                       category_ids: Optional[list[str]] = None) -> Optional[dict]:
+    """三级链第一级总入口。category_ids 非空 = 只在用户勾选的数据源类别中检索。
+    返回事实数据 dict 或 None（回落 NL2Filter 老路）。"""
     if getattr(settings, "NL2SQL_ENABLED", True) is False:
         return None
     from providers.llm import create_llm
     if create_llm() is None:            # LLM 未配置：直接回落老链，不空转重试
         return None
-    prep = await prepare_nl2sql(task)
+    prep = await prepare_nl2sql(task, category_ids)
     if prep is None:
         return None
     if not (prep.get("dsn") or "").strip():
@@ -404,6 +406,7 @@ async def nl2sql_query(task: str) -> Optional[dict]:
                                           for j in e.join)}
                       for e in sub.edges],
             "tables": sub_tables, "category": sub.graph.category_name,
+            "category_id": sub.graph.category_id,
         })
         logger.info("[NL2SQL] ok tables=%s rows=%s retries=%s %.0fms",
                     sub_tables[:4], result["rowcount"], result["retries"], result["elapsed_ms"])

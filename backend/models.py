@@ -118,6 +118,30 @@ class CrawlJob(Base):
 
 # ===== 本体定义层（无外键，逻辑关联由 service 层维护）=====
 
+class DataSource(Base):
+    """外部数据源注册表（数据源管理页维护）：集中管理连接配置。
+
+    本体类别通过 datasource_id 单选引用（一个类别 = 一个库的 schema 映射，
+    一条 SQL 单连接执行）；多数据源诉求由任务层 DataAgent 多选类别覆盖。
+    password 明文存库（单机内网口径），接口一律掩码/不回传。
+    """
+    __tablename__ = "data_sources"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String, nullable=False, unique=True)
+    dialect = Column(String(20), nullable=False, default="postgres")  # sqlite/mysql/postgres
+    host = Column(String(255), default="")
+    port = Column(Integer, default=0)
+    dbname = Column(String(255), default="")              # sqlite = 文件路径
+    username = Column(String(128), default="")
+    password = Column(Text, default="")
+    dsn = Column(Text, default="")                        # 完整连接串（结构化字段自动拼接，也可直填覆盖）
+    description = Column(Text, default="")
+    enabled = Column(Integer, nullable=False, default=1)  # 停用 = 从 NL2SQL 链与清单消失
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
 class OntologyCategory(Base):
     __tablename__ = "ontology_categories"
 
@@ -127,7 +151,8 @@ class OntologyCategory(Base):
     is_system = Column(Integer, nullable=False, default=0)
     # ── 数据源本体（NL2SQL，migration_042）──
     datasource_dialect = Column(String(20), default="")   # sqlite/mysql/postgres；空 = 普通业务本体类别
-    datasource_dsn = Column(Text, default="")             # 只读连接串；空 = 用平台库 DATABASE_URL
+    datasource_dsn = Column(Text, default="")             # 内联连接串（存量兜底；注册表引用优先）
+    datasource_id = Column(String, default="")            # 数据源注册表引用（migration_044，单选；空 = 未绑定）
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 

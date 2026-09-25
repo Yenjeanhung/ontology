@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   fetchOntologyCategories,
+  fetchDataSources,
   getOntologyCategoryDetail,
   createOntologyCategory,
   updateOntologyCategory,
@@ -36,13 +37,22 @@ const detailTab = ref('ont')
 const showCreate = ref(false)
 const createName = ref('')
 const createDesc = ref('')
+const createDsId = ref('')          // 数据源注册表引用（单选；空 = 不绑定）
 const creating = ref(false)
+const dsOptions = ref([])           // 数据源清单（/api/datasources）
+
+async function loadDsOptions() {
+  try { dsOptions.value = await fetchDataSources() } catch { /* 静默：下拉留空 */ }
+}
+
+const dsById = (id) => dsOptions.value.find((d) => d.id === id)
 
 // 编辑弹窗
 const showEdit = ref(false)
 const editId = ref('')
 const editName = ref('')
 const editDesc = ref('')
+const editDsId = ref(null)          // null = 不改；'' = 解绑；值 = 绑定/换绑
 const saving = ref(false)
 
 // 删除确认
@@ -223,6 +233,8 @@ async function onSubChanged() {
 function openCreate() {
   createName.value = ''
   createDesc.value = ''
+  createDsId.value = ''
+  loadDsOptions()
   showCreate.value = true
 }
 
@@ -231,7 +243,9 @@ async function submitCreate() {
   if (!n) return
   creating.value = true
   try {
-    const cat = await createOntologyCategory({ name: n, description: createDesc.value.trim() })
+    const cat = await createOntologyCategory({
+      name: n, description: createDesc.value.trim(), datasource_id: createDsId.value,
+    })
     showCreate.value = false
     await loadCategories()
     selectCategory(cat.id)
@@ -247,6 +261,8 @@ function openEdit(cat) {
   editId.value = cat.id
   editName.value = cat.name
   editDesc.value = cat.description || ''
+  editDsId.value = cat.datasource_id || ''   // '' 未绑定；回显当前引用
+  loadDsOptions()
   showEdit.value = true
 }
 
@@ -255,7 +271,11 @@ async function submitEdit() {
   if (!n) return
   saving.value = true
   try {
-    await updateOntologyCategory(editId.value, { name: n, description: editDesc.value.trim() })
+    await updateOntologyCategory(editId.value, {
+      name: n, description: editDesc.value.trim(),
+      // editDsId 为 null 时字段不出现在 body（后端 None = 不改）；'' = 解绑
+      datasource_id: editDsId.value,
+    })
     showEdit.value = false
     await loadCategories()
     if (editId.value === selectedId.value) loadDetail()
@@ -387,6 +407,10 @@ onMounted(async () => {
               <div class="cat-item-title">
                 {{ cat.name }}
                 <span v-if="cat.is_system" class="tag system">系统</span>
+                <span v-if="cat.datasource" class="tag ds-tag"
+                      :title="`数据源：${cat.datasource.name} · ${cat.datasource.dsn}`">
+                  {{ cat.datasource.dialect }}{{ cat.datasource.enabled === false ? '（停用）' : '' }}
+                </span>
               </div>
               <div class="cat-item-meta">{{ cat.ontology_count }} 个本体</div>
             </div>
@@ -476,6 +500,18 @@ onMounted(async () => {
         <label>描述（可选）</label>
         <textarea v-model="createDesc" rows="3" placeholder="该本体类别覆盖的业务场景..."></textarea>
       </div>
+      <div class="field" v-if="dsOptions.length">
+        <label>数据源（可选，单选引用）</label>
+        <select v-model="createDsId">
+          <option value="">不绑定（不参与 NL2SQL 取数）</option>
+          <option v-for="d in dsOptions" :key="d.id" :value="d.id">
+            {{ d.name }}（{{ d.dialect }}{{ d.used_by ? ` · 被 ${d.used_by} 个类别引用` : '' }}）
+          </option>
+        </select>
+        <p class="field-hint" v-if="createDsId && dsById(createDsId)">
+          连接：{{ dsById(createDsId).dsn }}
+        </p>
+      </div>
     </ModalDialog>
 
     <!-- 编辑弹窗 -->
@@ -495,6 +531,18 @@ onMounted(async () => {
       <div class="field">
         <label>描述（可选）</label>
         <textarea v-model="editDesc" rows="3" placeholder="该本体类别覆盖的业务场景..."></textarea>
+      </div>
+      <div class="field">
+        <label>数据源（单选引用）</label>
+        <select v-model="editDsId">
+          <option value="">不绑定（不参与 NL2SQL 取数）</option>
+          <option v-for="d in dsOptions" :key="d.id" :value="d.id">
+            {{ d.name }}（{{ d.dialect }}{{ d.used_by ? ` · 被 ${d.used_by} 个类别引用` : '' }}）
+          </option>
+        </select>
+        <p class="field-hint" v-if="editDsId && dsById(editDsId)">
+          连接：{{ dsById(editDsId).dsn }} —— 换绑后下一次 NL2SQL 查询即按新连接执行
+        </p>
       </div>
     </ModalDialog>
 
@@ -677,6 +725,8 @@ onMounted(async () => {
 .tag { display: inline-flex; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: 600; }
 .tag.system { background: var(--c-muted-hover); color: var(--c-secondary); }
 .tag.custom { background: var(--c-muted); color: var(--c-secondary); }
+.tag.ds-tag { background: rgba(45, 212, 191, 0.12); color: var(--c-accent, #2dd4bf); }
+.field-hint { margin: 4px 0 0; font-size: 12px; color: var(--c-text-3, #8b96a5); word-break: break-all; }
 
 /* 右侧详情面板 */
 .detail-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }

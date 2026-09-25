@@ -846,3 +846,32 @@ ALTER TABLE ontologies ADD COLUMN alias VARCHAR(200) DEFAULT '';
 ALTER TABLE ontology_attributes ADD COLUMN alias VARCHAR(200) DEFAULT '';
 ALTER TABLE ontology_relations ADD COLUMN alias VARCHAR(200) DEFAULT '';
 ALTER TABLE ontology_relation_constraints ADD COLUMN join_condition TEXT DEFAULT '';
+
+-- migration_044: 数据源管理（doc/本体管理/数据源管理/00-数据源管理设计方案.md）
+-- 外部数据源注册表 + 本体类别单选引用；存量内联 dialect/dsn 类别自动迁移入注册表
+CREATE TABLE IF NOT EXISTS data_sources (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL UNIQUE,
+    dialect VARCHAR(20) NOT NULL DEFAULT 'postgres',
+    host VARCHAR(255) DEFAULT '',
+    port INTEGER DEFAULT 0,
+    dbname VARCHAR(255) DEFAULT '',
+    username VARCHAR(128) DEFAULT '',
+    password TEXT DEFAULT '',
+    dsn TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+ALTER TABLE ontology_categories ADD COLUMN datasource_id VARCHAR DEFAULT '';
+INSERT INTO data_sources (id, name, dialect, dsn, description, enabled, created_at, updated_at)
+SELECT 'dsmig' || c.id, '迁移 · ' || c.name, c.datasource_dialect, c.datasource_dsn,
+       'migration_044 自类别内联配置迁移', 1,
+       '2026-09-25T00:00:00', '2026-09-25T00:00:00'
+FROM ontology_categories c
+WHERE c.datasource_dialect IS NOT NULL AND c.datasource_dialect != ''
+  AND c.datasource_dsn IS NOT NULL AND c.datasource_dsn != '';
+UPDATE ontology_categories SET datasource_id = 'dsmig' || id
+WHERE datasource_id = '' AND datasource_dialect IS NOT NULL AND datasource_dialect != ''
+  AND datasource_dsn IS NOT NULL AND datasource_dsn != '';

@@ -18,6 +18,7 @@ import {
   listMultiSessions,
   listMultiTasks,
   renameMultiSession,
+  listDataSources,
   streamTaskRun,
   updateMultiTask,
 } from '../../api/multiAgent'
@@ -83,6 +84,19 @@ watch(agentsMode, (mode) => {
 
 function pickAgents() {
   return agentsMode.value === 'manual' ? [...manualAgents.value] : []
+}
+
+// ── DataAgent 数据源范围：多选本体类别（一个类别 = 一个绑定 DSN 的独立数据源） ──
+const dsOptions = ref([])        // 后端 /datasources 下发（dialect 非空的本体类别）
+const pickedSources = ref([])    // 勾选的类别 id（空 = 自动在全部数据源类别中检索）
+function toggleSource(id) {
+  pickedSources.value = pickedSources.value.includes(id)
+    ? pickedSources.value.filter((x) => x !== id)
+    : [...pickedSources.value, id]
+}
+/** 统一出口（sendWithTask 内调用，所有发送路径共用）：仅手动勾了 DataAgent 时生效。 */
+function pickDataSources() {
+  return manualAgents.value.includes('data_agent') ? [...pickedSources.value] : []
 }
 
 const agentHint = computed(() => agentsMode.value === 'auto'
@@ -483,6 +497,7 @@ async function sendWithTask(task, agents = [], opts = {}) {
       sessionId: activeSessionId.value || undefined,
       clarified: opts.clarified,
       deep: opts.deep,
+      dataSources: pickDataSources(),
     })
   } catch (err) {
     if (err?.name !== 'AbortError') rx.error = err?.message || '协作请求失败'
@@ -785,6 +800,7 @@ function renderMd(text, ri) {
 onMounted(async () => {
   window.addEventListener('keydown', onLbKey)
   refreshSessions()
+  listDataSources().then((r) => { dsOptions.value = r || [] }).catch(() => {})
   try {
     const scenarios = await listMultiScenarios()
     scenario.value = scenarios.find((s) => s.adhoc) || scenarios[0] || null
@@ -872,6 +888,21 @@ onBeforeUnmount(() => {
               <label><input v-model="agentsMode" type="radio" value="auto" /> 自动路由</label>
               <label><input v-model="agentsMode" type="radio" value="manual" /> 手动勾选</label>
               <span class="ma-pick-hint">{{ agentHint }}</span>
+            </div>
+          </div>
+          <div v-if="manualAgents.includes('data_agent') && dsOptions.length" class="ma-setup-row">
+            <span class="ma-comp-label">数据源</span>
+            <div class="ma-pick">
+              <button v-for="d in dsOptions" :key="d.id" type="button"
+                      class="ma-agent-chip"
+                      :class="{ on: pickedSources.includes(d.id) }"
+                      :title="`${d.dialect} · ${d.tables} 张表 · ${d.dsn}`"
+                      @click="toggleSource(d.id)">
+                {{ d.name }}（{{ d.dialect }} · {{ d.tables }} 表）
+              </button>
+              <span class="ma-pick-hint">{{ pickedSources.length
+                ? `NL2SQL 只在勾选的 ${pickedSources.length} 个数据源中检索取数（可多选）`
+                : '未勾选 = NL2SQL 自动在全部数据源类别中按命中度选库' }}</span>
             </div>
           </div>
         </div>

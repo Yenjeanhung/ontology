@@ -79,15 +79,34 @@ CREATE TABLE IF NOT EXISTS crawl_jobs (
 
 -- ===== 本体定义层（无外键，逻辑关联由 service 层维护）=====
 
+-- 外部数据源注册表（数据源管理页）：集中管理连接配置，本体类别单选引用
+CREATE TABLE IF NOT EXISTS data_sources (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL UNIQUE,
+    dialect VARCHAR(20) NOT NULL DEFAULT 'postgres',
+    host VARCHAR(255) DEFAULT '',
+    port INTEGER DEFAULT 0,
+    dbname VARCHAR(255) DEFAULT '',
+    username VARCHAR(128) DEFAULT '',
+    password TEXT DEFAULT '',
+    dsn TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+
 CREATE TABLE IF NOT EXISTS ontology_categories (
     id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL,
     description TEXT DEFAULT '',
     is_system INTEGER NOT NULL DEFAULT 0,
     -- 数据源本体（NL2SQL）：dialect 非空 = 该类别是数据源（sqlite/mysql/postgres）；
-    -- dsn 空 = 直接用平台库 DATABASE_URL 连接
+    -- datasource_id 非空 = 引用数据源注册表（优先）；内联 dsn 为存量兜底，
+    -- 两者皆空 = 数据源位置不明，NL2SQL 回落老链
     datasource_dialect VARCHAR(20) DEFAULT '',
     datasource_dsn TEXT DEFAULT '',
+    datasource_id VARCHAR DEFAULT '',
     created_at VARCHAR,
     updated_at VARCHAR,
     UNIQUE(name)

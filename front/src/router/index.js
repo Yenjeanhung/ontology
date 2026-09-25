@@ -14,6 +14,7 @@ import GraphView from '../components/GraphView.vue'
 import AttributeTemplateList from '../components/ontology/AttributeTemplateList.vue'
 import SharedPropertyList from '../components/ontology/SharedPropertyList.vue'
 import OntologyManagePage from '../components/ontology/OntologyManagePage.vue'
+import DataSourceManagePage from '../components/ontology/DataSourceManagePage.vue'
 import RelationDictPage from '../components/ontology/RelationDictPage.vue'
 import ConstraintPage from '../components/ontology/ConstraintPage.vue'
 import SuggestionListPage from '../components/ontology/SuggestionListPage.vue'
@@ -49,6 +50,7 @@ const routes = [
   { path: '/ontology/templates', name: 'ontology-templates', component: AttributeTemplateList, meta: { keepAlive: true, perm: 'ontology:view' } },
   { path: '/ontology/shared-properties', name: 'ontology-shared-properties', component: SharedPropertyList, meta: { keepAlive: true, perm: 'ontology:view' } },
   { path: '/ontology/ontologies', name: 'ontology-ontologies', component: OntologyManagePage, meta: { keepAlive: true, perm: 'ontology:view' } },
+  { path: '/ontology/datasources', name: 'ontology-datasources', component: DataSourceManagePage, meta: { keepAlive: true, perm: 'ontology:view' } },
   { path: '/ontology/relations-dict', name: 'ontology-relations-dict', component: RelationDictPage, meta: { keepAlive: true, perm: 'ontology:view' } },
   { path: '/ontology/constraints', name: 'ontology-constraints', component: ConstraintPage, meta: { keepAlive: true, perm: 'ontology:view' } },
   { path: '/ontology/suggestions', name: 'ontology-suggestions', component: SuggestionListPage, meta: { keepAlive: true, perm: 'ontology:view' } },

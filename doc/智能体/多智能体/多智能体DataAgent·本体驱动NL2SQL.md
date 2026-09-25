@@ -466,6 +466,12 @@ async def _data_facts(task: str, nl_filter: Optional[dict] = None) -> list[dict]
 - data 意图精简组合不变（`SLIM_ROSTERS["data"]`）；
 - NL2SQL 是 data_agent 节点内部的**第一优先取数手段**，门控在节点内
   （无数据源本体类别 = 静默跳过，与 OTel/图表 MCP 的「缺失自动降级」同风格）；
+- **数据源多选（任务层入口）**：`TaskBody.data_sources`（本体类别 id 多选）→
+  `build_engine_from_task` → data_agent 节点 → `prepare_nl2sql(task, category_ids)`
+  只在勾选类别中检索取数；空 = 自动在全部数据源类别按命中度选库（默认行为不变）。
+  前端协作页组队面板勾选 DataAgent 后出现「数据源」chips 多选（清单来自
+  `GET /api/agent/multi/datasources`：绑定 DSN 的类别 + 方言 + 表数 + dsn 掩码）；
+  勾选清单随 `replay_materials.data_sources` 落库，断点恢复后范围不丢；
 - ToolAgent 的内置工具 `data_query`（tool_registry）P2 同源升级：同一
   schema_store + nl2sql_service 换个入口，多智能体两条取数车道口径一致。
 
@@ -589,7 +595,8 @@ seed_chart_agent --update）；④ `--drop` 整体清理独立实例本域十一
 **schema 建模与检索**
 
 - [ ] 播种脚本幂等：重复执行不重复建类别/表本体/关系；`--update` 可刷新别名
-- [ ] 本体管理页可见「数据源本体·国航旅客运输」类别及 11 表/字段/关系；类别编辑含方言/DSN 字段（DSN 指向独立业务实例）
+- [ ] 协作页勾选 DataAgent 出现「数据源」多选（清单 = 绑定 DSN 的类别，dsn 掩码）；勾选后 NL2SQL 只在所选类别检索，伪造 id 过滤后回落老链；不选 = 自动选库
+
 - [ ] 「旅客的会员等级」→ 检索出 passengers→members 2 跳链路；「两表无关联」的问题如实拒答
 - [ ] 「CA1501 的机长是谁」→ 走 flights→crew_assignments→crew_members 桥 + `role='机长'` 出正确姓名（不误连 passengers 同名人员）
 

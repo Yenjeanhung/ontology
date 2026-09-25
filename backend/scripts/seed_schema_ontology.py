@@ -568,7 +568,16 @@ async def seed_ontology(target: str, dsn: str = "", update_only: bool = False,
                                      .where(OntologyRelation.id.in_(rel_ids)))
                 await db.delete(cat)
                 await db.commit()
-                print(f"[seed] 本体类别「{CATEGORY_NAME}」已清理")
+                # 注册表记录（连接配置）一并清理：seed 专有，避免残留失效记录
+                from sqlalchemy import delete as _del
+                from models import DataSource
+                await db.execute(_del(DataSource).where(
+                    DataSource.id == f"dsmig{cat.id}"))
+                await db.execute(_del(DataSource).where(
+                    DataSource.name.in_([f"迁移 · {CATEGORY_NAME}",
+                                         f"业务实例 · {CATEGORY_NAME}"])))
+                await db.commit()
+                print(f"[seed] 本体类别「{CATEGORY_NAME}」已清理（含注册表记录）")
             else:
                 print("[seed] 本体类别不存在，无需清理")
             return
@@ -582,7 +591,26 @@ async def seed_ontology(target: str, dsn: str = "", update_only: bool = False,
             await db.flush()
         else:
             cat.datasource_dialect, cat.datasource_dsn = dialect, dsn
-        print(f"[seed] 类别就绪：{CATEGORY_NAME}（dialect={dialect}, 业务实例={dsn}）")
+
+        # 数据源注册表同步（migration_044 起：解析链注册表引用优先，内联字段双写兜底）
+        from models import DataSource
+        ds = None
+        if cat.datasource_id:
+            ds = (await db.execute(select(DataSource).where(
+                DataSource.id == cat.datasource_id))).scalars().first()
+        if ds is None:
+            ds = (await db.execute(select(DataSource).where(
+                DataSource.name.in_([f"迁移 · {CATEGORY_NAME}",
+                                     f"业务实例 · {CATEGORY_NAME}"])))).scalars().first()
+        if ds is None:
+            ds = DataSource(name=f"业务实例 · {CATEGORY_NAME}",
+                            description="seed_schema_ontology 播种的独立业务实例")
+            db.add(ds)
+            await db.flush()
+        ds.dialect, ds.dsn, ds.enabled = dialect, dsn, 1
+        cat.datasource_id = ds.id
+        print(f"[seed] 类别就绪：{CATEGORY_NAME}（dialect={dialect}, "
+              f"业务实例={dsn}，注册表记录={ds.name}）")
 
         # 表 + 字段
         for spec in TABLE_SPECS:

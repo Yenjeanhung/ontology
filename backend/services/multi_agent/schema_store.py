@@ -168,10 +168,12 @@ def _parse_join(raw: str) -> list:
 
 async def load_schema_graph(db: AsyncSession, cat: OntologyCategory) -> SchemaGraph:
     """装载一个数据源类别的完整 schema 图（表级批量查询，量小常驻一轮）。"""
+    # 连接解析唯一入口：数据源注册表引用优先（数据源管理页维护），内联字段兜底
+    from services.datasource_service import resolve_category_datasource
+    dialect, dsn = await resolve_category_datasource(db, cat)
     graph = SchemaGraph(
         category_id=cat.id, category_name=cat.name,
-        datasource_dialect=(cat.datasource_dialect or "").strip(),
-        datasource_dsn=(cat.datasource_dsn or "").strip(),
+        datasource_dialect=dialect, datasource_dsn=dsn,
     )
 
     ont_rows = (await db.execute(
@@ -245,9 +247,16 @@ async def load_schema_graph(db: AsyncSession, cat: OntologyCategory) -> SchemaGr
 
 
 async def find_datasource_graphs(db: AsyncSession) -> list:
-    """全部启用 NL2SQL 的数据源类别（dialect 非空），各装载成 SchemaGraph。"""
+    """全部启用 NL2SQL 的数据源类别，各装载成 SchemaGraph。
+
+    类别入选条件：内联 dialect 非空（存量）或挂了数据源注册表引用
+    （migration_044 起，数据源管理页维护）；无连接信息的类别在 load 时回落。
+    """
+    from sqlalchemy import or_
     cats = (await db.execute(
-        select(OntologyCategory).where(OntologyCategory.datasource_dialect != "")
+        select(OntologyCategory).where(
+            or_(OntologyCategory.datasource_dialect != "",
+                OntologyCategory.datasource_id != ""))
         .where(OntologyCategory.datasource_dialect.isnot(None))
     )).scalars().all()
     graphs = []
@@ -445,11 +454,14 @@ def render_context(sub: SchemaSubGraph) -> str:
 
 # ────────────────────────── 顶层入口 ──────────────────────────
 
-async def prepare_nl2sql(task: str) -> Optional[dict]:
+async def prepare_nl2sql(task: str,
+                         category_ids: Optional[list[str]] = None) -> Optional[dict]:
     """NL2SQL 检索总入口：找数据源类别 → 种子命中 → 子图 → prompt 上下文。
 
+    category_ids 非空时只在指定本体类别（用户勾选的数据源）中检索，
+    空/None = 自动在全部数据源类别里按命中得分选优。
     返回 {"graph", "sub", "ctx", "dialect", "dsn"}；无类别/0 命中返回 None
-    （调用方回落 NL2Filter 老路）。多个数据源类别时取命中种子最多的一个。
+    （调用方回落 NL2Filter 老路）。
     """
     if not task or not task.strip():
         return None
@@ -460,6 +472,12 @@ async def prepare_nl2sql(task: str) -> Optional[dict]:
     except Exception:
         logger.exception("[NL2SQL][schema_store] 图谱装载失败，回落老链")
         return None
+    if category_ids:
+        allow = set(category_ids)
+        graphs = [g for g in graphs if g.category_id in allow]
+    # 剔除解析不出连接的类别（未绑定 / 数据源被停用 / 注册表记录缺失且无内联）
+    # ——位置不明即回落老链，与 nl2sql_query 入口的 dsn 空拦截同口径
+    graphs = [g for g in graphs if (g.datasource_dsn or "").strip()]
     if not graphs:
         return None
 

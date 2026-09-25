@@ -7,6 +7,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
+    DataSource,
     Entity,
     KbOntologyBinding,
     Ontology,
@@ -28,6 +29,21 @@ import logging
 from services.ontology_action_service import OntologyServiceService
 
 logger = logging.getLogger(__name__)
+
+
+async def _datasource_infos(db: AsyncSession, cats: list) -> dict:
+    """批量取类别所挂数据源摘要（dsn 掩码），类别列表/详情序列化共用。"""
+    from services.datasource_service import effective_dsn, mask_dsn
+    ids = sorted({(c.datasource_id or "").strip() for c in cats} - {""})
+    if not ids:
+        return {}
+    rows = (await db.execute(
+        select(DataSource).where(DataSource.id.in_(ids)))).scalars().all()
+    return {
+        ds.id: {"id": ds.id, "name": ds.name, "dialect": ds.dialect,
+                "dsn": mask_dsn(effective_dsn(ds)), "enabled": bool(ds.enabled)}
+        for ds in rows
+    }
 
 # 本体编码（Ontology.code）：图库标签/API 名使用的稳定标识（对标 Palantir API Name），
 # 显示名（name）可随意重命名而不影响图标签；编码一经使用不建议修改
@@ -340,6 +356,7 @@ class OntologyService:
             )
             ent_counts = dict(ent_rows.all())
 
+        ds_infos = await _datasource_infos(db, cats)
         out = []
         for cat in cats:
             out.append({
@@ -349,6 +366,8 @@ class OntologyService:
                 "is_system": bool(cat.is_system),
                 "ontology_count": ont_counts.get(cat.id, 0),
                 "entity_count": ent_counts.get(cat.id, 0),
+                "datasource_id": cat.datasource_id or "",
+                "datasource": ds_infos.get(cat.datasource_id or ""),
                 "created_at": cat.created_at,
             })
         return out
@@ -450,6 +469,8 @@ class OntologyService:
             "name": cat.name,
             "description": cat.description or "",
             "is_system": bool(cat.is_system),
+            "datasource_id": cat.datasource_id or "",
+            "datasource": (await _datasource_infos(db, [cat])).get(cat.datasource_id or ""),
             "created_at": cat.created_at,
             "entity_count": sum(int(entity_counts.get(ont.id, 0)) for ont in ontology_rows),
             "ontologies": ontology_list,
@@ -459,16 +480,20 @@ class OntologyService:
         }
 
     @staticmethod
-    async def create_category(db: AsyncSession, name: str, description: str = "") -> dict:
-        cat = OntologyCategory(name=name.strip(), description=(description or "").strip())
+    async def create_category(db: AsyncSession, name: str, description: str = "",
+                              datasource_id: str = "") -> dict:
+        cat = OntologyCategory(name=name.strip(), description=(description or "").strip(),
+                               datasource_id=(datasource_id or "").strip())
         db.add(cat)
         await db.commit()
         await db.refresh(cat)
-        return {"id": cat.id, "name": cat.name, "description": cat.description}
+        return {"id": cat.id, "name": cat.name, "description": cat.description,
+                "datasource_id": cat.datasource_id}
 
     @staticmethod
     async def update_category(
-        db: AsyncSession, category_id: str, name: str | None, description: str | None
+        db: AsyncSession, category_id: str, name: str | None, description: str | None,
+        datasource_id: str | None = None,
     ) -> dict | None:
         result = await db.execute(
             select(OntologyCategory).where(OntologyCategory.id == category_id)
@@ -480,9 +505,12 @@ class OntologyService:
             cat.name = name.strip()
         if description is not None:
             cat.description = description.strip()
+        if datasource_id is not None:            # None = 不改；"" = 解绑；值 = 绑定/换绑
+            cat.datasource_id = datasource_id.strip()
         cat.updated_at = datetime.now().isoformat()
         await db.commit()
-        return {"id": cat.id, "name": cat.name, "description": cat.description}
+        return {"id": cat.id, "name": cat.name, "description": cat.description,
+                "datasource_id": cat.datasource_id}
 
     @staticmethod
     async def delete_category(db: AsyncSession, category_id: str) -> bool:

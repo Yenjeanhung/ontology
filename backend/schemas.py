@@ -177,11 +177,13 @@ class CreateCrawlJobRequest(BaseModel):
 class CreateOntologyCategoryRequest(BaseModel):
     name: str
     description: str | None = ""
+    datasource_id: str = ""      # 数据源注册表引用（单选；空 = 不绑定）
 
 
 class UpdateOntologyCategoryRequest(BaseModel):
     name: str | None = None
     description: str | None = None
+    datasource_id: str | None = None   # None = 不改；"" = 解绑；值 = 绑定/换绑
 
 
 class CreateOntologyRequest(BaseModel):

@@ -82,10 +82,11 @@ async def part_a() -> bool:
     async with async_session() as db:
         cat = (await db.execute(select(OntologyCategory).where(
             OntologyCategory.name == CATEGORY_NAME))).scalars().first()
-    if cat is None or not (cat.datasource_dsn or "").strip():
+        from services.datasource_service import resolve_category_datasource
+        dialect, dsn = (await resolve_category_datasource(db, cat)) if cat else ("", "")
+    if cat is None or not dsn.strip():
         print("  [FAIL] 数据源类别缺失或 DSN 未配置")
         return False
-    dialect, dsn = cat.datasource_dialect, cat.datasource_dsn
     print(f"  类别 dialect={dialect} dsn={dsn[:66]}")
     from models import OntologyRelation
     rels = (await db.execute(select(OntologyRelation).where(

@@ -51,15 +51,28 @@ export async function streamScenarioRun(scenarioId, targetId, { onEvent, signal 
  * @param {string[]} agents 可选能力智能体 id 列表（空数组 = 后端默认组合）
  * @param {{ onEvent?: (evt: object) => void, signal?: AbortSignal }} handlers
  */
-export async function streamTaskRun(scenarioId, task, agents = [], { onEvent, signal, sessionId, clarified, deep } = {}) {
+export async function streamTaskRun(scenarioId, task, agents = [], { onEvent, signal, sessionId, clarified, deep, dataSources } = {}) {
   await _stream(
     `${API}/api/agent/multi/scenarios/${encodeURIComponent(scenarioId)}/run`,
     { task, agents,
       ...(sessionId ? { session_id: sessionId } : {}),
       ...(clarified ? { clarified: true } : {}),
-      ...(deep ? { deep: true } : {}) },
+      ...(deep ? { deep: true } : {}),
+      ...(dataSources?.length ? { data_sources: dataSources } : {}) },
     { onEvent, signal },
   )
+}
+
+// ─────────────────────── DataAgent 数据源（本体类别多选） ───────────────────────
+
+/** DataAgent 可选数据源清单 = 绑定了独立实例 DSN 的本体类别（一个类别即一个数据源）。 */
+export async function listDataSources() {
+  const res = await fetch(`${API}/api/agent/multi/datasources`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '加载数据源清单失败'))
+  }
+  return res.json()
 }
 
 // ─────────────────────── 协作会话（协作历史 / 短期记忆） ───────────────────────

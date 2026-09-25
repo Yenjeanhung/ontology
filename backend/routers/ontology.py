@@ -55,7 +55,8 @@ async def list_categories(q: str = "", db: AsyncSession = Depends(get_db)):
 
 @router.post("/ontology-categories")
 async def create_category(req: CreateOntologyCategoryRequest, db: AsyncSession = Depends(get_db)):
-    return await OntologyService.create_category(db, req.name, req.description or "")
+    return await OntologyService.create_category(
+        db, req.name, req.description or "", datasource_id=req.datasource_id or "")
 
 
 @router.get("/ontology-categories/{category_id}")
@@ -68,7 +69,8 @@ async def get_category_detail(category_id: str, db: AsyncSession = Depends(get_d
 
 @router.put("/ontology-categories/{category_id}")
 async def update_category(category_id: str, req: UpdateOntologyCategoryRequest, db: AsyncSession = Depends(get_db)):
-    res = await OntologyService.update_category(db, category_id, req.name, req.description)
+    res = await OntologyService.update_category(
+        db, category_id, req.name, req.description, datasource_id=req.datasource_id)
     if not res:
         raise _nf("Ontology category not found")
     return res
