@@ -28,6 +28,7 @@ from typing import Any, Optional
 
 from config import settings
 from core.otel import async_span
+from providers.llm import chunk_reasoning
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +60,12 @@ class DeepAgentRunner:
     run 内流出的全部 AI 文本（token 累积）即 conclusion。
     """
 
-    def __init__(self, task: str, kb_id: str = "") -> None:
+    def __init__(self, task: str, kb_id: str = "",
+                 data_sources: Optional[list[str]] = None) -> None:
         self.q: asyncio.Queue = asyncio.Queue()
         self._task = (task or "").strip()
         self._kb_id = kb_id or ""
+        self._data_sources = list(data_sources) if data_sources else None
         self._facts = 0                                  # 事实卡编号（fact-deep-N）
         self._node_t0: dict[str, float] = {}             # 节点计时（与 engine.emit 同口径）
         self._pending_tools: dict[str, str] = {}         # tool_call_id → 工具名
@@ -150,7 +153,8 @@ class DeepAgentRunner:
             """实体台账结构化查询：返回统计计数、聚合与最新明细（真实业务数据）。
             凡涉及「多少条 / 数量 / 统计 / 台账明细」类问题使用。"""
             from services.multi_agent.scenarios.universal import _data_facts
-            facts = await _data_facts(query)
+            # 取数范围与普通团队同口径：任务勾选的数据源类别（None/空 = 自动检索全部）
+            facts = await _data_facts(query, data_sources=runner._data_sources)
             if not facts:
                 return "（台账未命中；可换更具体的实体/指标措辞重试）"
             runner._emit_fact(facts[:8])
@@ -240,6 +244,13 @@ class DeepAgentRunner:
                 ):
                     if mode == "messages":
                         chunk = payload[0] if isinstance(payload, tuple) else payload
+                        # 思考链（GLM reasoning_content 等）先于正文产出且耗时最长，
+                        # 单独以 reasoning 标记流式外抛——深度模式不再长时间零输出；
+                        # 不计入 conclusion（非正文）。
+                        reasoning = chunk_reasoning(chunk)
+                        if reasoning:
+                            self.emit({"type": "token", "content": reasoning,
+                                       "reasoning": True})
                         text = _chunk_text(chunk)
                         if text:
                             text_parts.append(text)
@@ -298,12 +309,17 @@ def _chunk_text(chunk) -> str:
 
 
 async def build_deep_engine(task: str, route: Optional[dict] = None,
-                            kb_id: str = "") -> DeepAgentRunner:
-    """深度模式引擎工厂（与 scenario.build_engine_from_task 同形，供路由层分支）。"""
+                            kb_id: str = "",
+                            data_sources: Optional[list[str]] = None) -> DeepAgentRunner:
+    """深度模式引擎工厂（与 scenario.build_engine_from_task 同形，供路由层分支）。
+
+    data_sources：DataAgent 取数范围 = 本体类别 id 多选（None/空 = 自动检索全部），
+    与 build_engine_from_task 同名参数同语义，经 deep_data_query 透传至 NL2SQL 链。
+    """
     task = (task or "").strip()
     if not task:
         raise ValueError("任务描述不能为空")
     if route:
         logger.info("[deep] 深度模式启动 route=%s task=%s",
                     route.get("mode"), _short(task))
-    return DeepAgentRunner(task, kb_id=kb_id)
+    return DeepAgentRunner(task, kb_id=kb_id, data_sources=data_sources)

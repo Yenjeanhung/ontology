@@ -893,6 +893,7 @@ class Agent(Base):
     is_preset = Column(Integer, nullable=False, default=0)  # 1 = 内置（不可删除）
     is_enabled = Column(Integer, nullable=False, default=1)
     use_tools = Column(Integer, nullable=False, default=0)  # 1 = 协作时启用 Function Calling 工具循环（内置 + MCP，如图表 MCP）
+    tool_names = Column(Text, default="[]")   # 工具白名单 JSON 数组：内置工具名 + "mcp:<server>"；空 = 全部可用
     created_at = Column(String, default=lambda: datetime.now().isoformat())
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 

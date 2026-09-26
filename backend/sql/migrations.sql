@@ -875,3 +875,7 @@ WHERE c.datasource_dialect IS NOT NULL AND c.datasource_dialect != ''
 UPDATE ontology_categories SET datasource_id = 'dsmig' || id
 WHERE datasource_id = '' AND datasource_dialect IS NOT NULL AND datasource_dialect != ''
   AND datasource_dsn IS NOT NULL AND datasource_dsn != '';
+
+-- migration_045: 浮标单智能体（doc/智能体/单智能体/智能体浮标_功能设计.md §单智能体改造）
+-- agents 表加工具白名单：内置工具名 + "mcp:<server>"；空数组 = 全部可用（向后兼容）
+ALTER TABLE agents ADD COLUMN tool_names TEXT DEFAULT '[]';

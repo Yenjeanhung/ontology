@@ -44,6 +44,7 @@ class AgentCreate(BaseModel):
     skill_ids: list[str] = []
     is_enabled: int = 1
     use_tools: int = 0  # 1 = 多智能体协作时启用工具循环（内置 + MCP，如图表 MCP）
+    tool_names: list[str] = []  # 工具白名单：内置工具名 + "mcp:<server>"；空 = 全部
 
 
 class AgentUpdate(BaseModel):
@@ -54,6 +55,7 @@ class AgentUpdate(BaseModel):
     skill_ids: list[str] | None = None
     is_enabled: int | None = None
     use_tools: int | None = None
+    tool_names: list[str] | None = None
 
 
 # ===== 工作流 =====

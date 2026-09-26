@@ -46,6 +46,14 @@ class MultiAgentScenario:
         """为目标构建执行引擎；目标不存在时抛 KeyError（路由层转 404）。"""
         raise NotImplementedError
 
+    async def target_task(self, target_id: str) -> str:
+        """目标对应的任务文本（深度模式取任务用）；目标不存在返回空串。
+
+        深度路径不走 build_engine（那是普通团队装配），路由层先取任务全文
+        再交 DeepAgents 自主规划；默认不支持（空串 = 路由层 404）。
+        """
+        return ""
+
     async def build_engine_from_task(
         self, task: str, agents: Optional[list[str]] = None
     ) -> MultiAgentEngine:

@@ -40,8 +40,9 @@ export async function listScenarioTargets(scenarioId) {
  * @param {string} targetId
  * @param {{ onEvent?: (evt: object) => void, signal?: AbortSignal }} handlers
  */
-export async function streamScenarioRun(scenarioId, targetId, { onEvent, signal } = {}) {
-  await _stream(`${API}/api/agent/multi/scenarios/${encodeURIComponent(scenarioId)}/targets/${encodeURIComponent(targetId)}/run`, {}, { onEvent, signal })
+export async function streamScenarioRun(scenarioId, targetId, { onEvent, signal, deep } = {}) {
+  await _stream(`${API}/api/agent/multi/scenarios/${encodeURIComponent(scenarioId)}/targets/${encodeURIComponent(targetId)}/run`,
+    { ...(deep ? { deep: true } : {}) }, { onEvent, signal })
 }
 
 /**

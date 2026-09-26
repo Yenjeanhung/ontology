@@ -471,6 +471,46 @@ export async function queryAgentStream(kbId, query, { onEntities, onSubgraph, on
   }
 }
 
+// ───────────────────── 智能助手（全局浮标，单智能体） ─────────────────────
+
+// 浮标 SSE：LLM + Function Calling 工具循环（智能体配置页「智能助手」驱动）
+// 事件：session / tools / token(可带 reasoning) / tool_call / tool_result /
+//       tool_calls / tool_degrade / done / error
+export async function streamAssistantRun(query, { onEvent, signal, sessionId } = {}) {
+  const res = await fetch(`${API}/api/agent/assistant/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, session_id: sessionId || null }),
+    signal,
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, `HTTP ${res.status}`))
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const payload = line.slice(6)
+      if (payload === '[DONE]') return
+      try {
+        onEvent?.(JSON.parse(payload))
+      } catch { /* skip malformed lines */ }
+    }
+  }
+}
+
 // ───────────────────── 智能体会话（短期记忆） ─────────────────────
 
 export async function fetchChatSessions(agentId = null) {
@@ -694,11 +734,11 @@ export async function fetchDefaultPersona() {
   return res.json()
 }
 
-export async function createAgent({ name, description = '', kbId, systemPrompt = '', skillIds = [], useTools = 0 }) {
+export async function createAgent({ name, description = '', kbId, systemPrompt = '', skillIds = [], useTools = 0, toolNames = [] }) {
   const res = await fetch(`${API}/api/agents`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, kb_id: kbId, system_prompt: systemPrompt, skill_ids: skillIds, use_tools: useTools }),
+    body: JSON.stringify({ name, description, kb_id: kbId, system_prompt: systemPrompt, skill_ids: skillIds, use_tools: useTools, tool_names: toolNames }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
@@ -716,6 +756,7 @@ export async function updateAgent(agentId, data = {}) {
   if (data.skillIds != null) body.skill_ids = data.skillIds
   if (data.isEnabled != null) body.is_enabled = data.isEnabled
   if (data.useTools != null) body.use_tools = data.useTools
+  if (data.toolNames != null) body.tool_names = data.toolNames
   const res = await fetch(`${API}/api/agents/${agentId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

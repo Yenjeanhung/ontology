@@ -65,11 +65,13 @@ async def run_tool_loop(
     tool_timeout: Optional[float] = None,
     on_event: Optional[Callable[[dict], None]] = None,
     history: Optional[list] = None,
+    stream_tokens: bool = False,
 ) -> ToolLoopResult:
     """运行工具调用循环，返回最终回答与全部工具调用记录。
 
     - max_iterations：LLM 轮数上限（默认取 settings.TOOL_LOOP_MAX_ITERATIONS）；
     - on_event：过程事件回调，事件类型 tool_call / tool_result / tool_degrade；
+      stream_tokens=True 时额外外抛 token（正文增量）与 token+reasoning（思考链增量）；
     - history：多轮对话的 LangChain 消息序列（旧→新），插入 System 之后、当前问题之前；
     - RuntimeError（LLM 未配置）原样上抛，其余 LLM 异常折入 final_text 降级返回。
     """
@@ -84,6 +86,24 @@ async def run_tool_loop(
                 on_event(evt)
             except Exception:
                 pass
+
+    async def _ainvoke(bound_llm, msgs) -> Any:
+        """执行一轮 LLM 调用：stream_tokens=True 时 astream 聚合并逐 chunk
+        外抛 token / 思考链事件（与聚合结果互不干扰），否则一次性 ainvoke。"""
+        if not stream_tokens:
+            return await bound_llm.ainvoke(msgs)
+        from providers.llm import chunk_reasoning
+
+        agg = None
+        async for chunk in bound_llm.astream(msgs):
+            reasoning = chunk_reasoning(chunk)
+            if reasoning:
+                _emit({"type": "token", "content": reasoning, "reasoning": True})
+            text = _content_text(getattr(chunk, "content", None))
+            if text:
+                _emit({"type": "token", "content": text})
+            agg = chunk if agg is None else agg + chunk
+        return agg
 
     specs = registry.specs() if hasattr(registry, "specs") else []
     tool_llm = llm
@@ -101,7 +121,7 @@ async def run_tool_loop(
     for iteration in range(1, max_iterations + 1):
         result.iterations = iteration
         try:
-            msg: AIMessage = await asyncio.wait_for(tool_llm.ainvoke(messages),
+            msg: AIMessage = await asyncio.wait_for(_ainvoke(tool_llm, messages),
                                                     timeout=turn_timeout)
         except RuntimeError:
             raise   # LLM 未配置等致命错误，交上层处理
@@ -146,7 +166,7 @@ async def run_tool_loop(
 
     # 达到最大轮数仍想继续调工具 → 摘除工具强制收尾一轮，保证循环终止
     try:
-        msg = await asyncio.wait_for(llm.ainvoke(messages), timeout=turn_timeout)
+        msg = await asyncio.wait_for(_ainvoke(llm, messages), timeout=turn_timeout)
         result.final_text = _content_text(msg.content)
     except Exception as exc:
         result.final_text = f"（收尾回答失败：{type(exc).__name__}）"

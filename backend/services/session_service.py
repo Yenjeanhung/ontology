@@ -78,7 +78,8 @@ class SessionService:
             device=parse_device(ua)[:100],
             login_at=now.isoformat(),
             last_active_at=now.isoformat(),
-            expires_at=(now + timedelta(seconds=max(60, ttl_seconds))).isoformat(),
+            # ttl_seconds<=0（访问令牌有效期=0 即不限）时会话不设过期时间
+            expires_at=(now + timedelta(seconds=ttl_seconds)).isoformat() if ttl_seconds > 0 else "",
             created_at=now.isoformat(),
         )
         db.add(session)

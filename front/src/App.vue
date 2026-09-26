@@ -6,6 +6,7 @@ import { authApi, isLoggedIn } from './api/auth'
 import { auth, clearAuth, hasPerm, loadAuthStatus, loadMe } from './stores/auth'
 import { bindVisibilityRefresh, notifications, refreshNotifications, startNotificationStream, stopNotificationStream } from './stores/notifications'
 import ToastContainer from './components/ToastContainer.vue'
+import AssistantWidget from './components/agent/AssistantWidget.vue'
 import { useToast } from './composables/useToast'
 
 const router = useRouter()
@@ -613,6 +614,9 @@ onBeforeUnmount(() => {
         </router-view>
       </div>
     </main>
+
+    <!-- 全局智能体浮标：所有页面可见，复用 universal 多智能体链路 -->
+    <AssistantWidget />
 
     <ToastContainer />
   </div>

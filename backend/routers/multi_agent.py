@@ -128,12 +128,32 @@ async def scenario_targets(scenario_id: str):
     return {"scenario": scenario_id, "targets": await scenario.list_targets()}
 
 
+class TargetRunBody(BaseModel):
+    """目标研判请求体（可选，兼容旧版空体调用）。"""
+    deep: bool = False             # 深度模式：DeepAgents 自主规划（需 DEEP_AGENT_ENABLED 总闸开）
+
+
 @router.post("/scenarios/{scenario_id}/targets/{target_id}/run")
-async def run_scenario_target(scenario_id: str, target_id: str):
-    """对指定目标发起多智能体研判，SSE 流式返回过程事件与结论。"""
+async def run_scenario_target(scenario_id: str, target_id: str,
+                              body: TargetRunBody | None = None):
+    """对指定目标发起多智能体研判，SSE 流式返回过程事件与结论。
+
+    深度模式（body.deep + DEEP_AGENT_ENABLED 双确认）：经 target_task 取回
+    目标任务全文后走 DeepAgents 第二执行路径；总闸关闭或未安装 deepagents
+    时回落普通团队路径（行为与旧版一致）。深度路径无协作会话留痕（与旧版同）。
+    """
     scenario: MultiAgentScenario | None = get_scenario(scenario_id)
     if not scenario:
         raise HTTPException(404, f"场景 {scenario_id} 未注册")
+    from config import settings as _settings
+    use_deep = bool(body and body.deep) and bool(getattr(_settings, "DEEP_AGENT_ENABLED", False))
+    if use_deep:
+        task = (await scenario.target_task(target_id)).strip()
+        if not task:
+            raise HTTPException(404, f"目标 {target_id} 在场景 {scenario_id} 中不存在")
+        from services.multi_agent.deep_agent import build_deep_engine
+        engine = await build_deep_engine(task)
+        return _stream_engine(engine, team_label="深度智能体")
     try:
         engine = await scenario.build_engine(target_id)
     except KeyError:
@@ -224,7 +244,8 @@ async def run_scenario_task(scenario_id: str, body: TaskBody,
     use_deep = bool(body.deep) and bool(getattr(_settings, "DEEP_AGENT_ENABLED", False))
     if use_deep:
         from services.multi_agent.deep_agent import build_deep_engine
-        engine_source = lambda route, on_step=None: build_deep_engine(task)  # noqa: E731
+        engine_source = lambda route, on_step=None: build_deep_engine(     # noqa: E731
+            task, data_sources=body.data_sources or None)
     else:
         engine_source = lambda route, on_step=None: scenario.build_engine_from_task(
             task, agents=body.agents, route=route, on_step=on_step,
@@ -598,6 +619,10 @@ def _stream_engine(engine_source, session=None, task_text: str = "",
             # 可见团队与路由，不再长时间只见一行 planner 干等（过程不可见根因）。
             # route 传给工厂后 build 内不再重复路由（route is None 才自跑）。
             from services.multi_agent.router_service import routing_decision
+            # 路由可见：0.6B 决策（可达数秒，不可达时等超时回落）期间先给前端
+            # 一帧过程状态，不再整体停在初始「思考中…」（静默窗口根因之一）。
+            yield _sse_evt({"type": "node_start", "node": "router",
+                            "role": "router", "goal": "意图路由中…"})
             _rt0 = time.perf_counter()
             route = await routing_decision(task_text)
             # 0.6B 真实耗时在此补记：build 侧因 route 已就绪会跳过计时分支

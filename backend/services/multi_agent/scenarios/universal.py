@@ -163,6 +163,10 @@ class UniversalScenario(MultiAgentScenario):
             raise KeyError(target_id)
         return await self.build_engine_from_task(task)
 
+    async def target_task(self, target_id: str) -> str:
+        """按 id 找回示例任务全文（深度模式入口用，与 build_engine 同源）。"""
+        return next((ex["task"] for ex in EXAMPLES if ex["id"] == target_id), "")
+
     async def build_engine_from_task(
         self, task: str, agents: Optional[list[str]] = None,
         route: Optional[dict] = None,

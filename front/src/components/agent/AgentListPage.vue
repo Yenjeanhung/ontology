@@ -5,7 +5,7 @@ import {
   fetchKbs, fetchAgentSkills, fetchDefaultPersona,
 } from '../../api'
 import { useToast } from '../../composables/useToast'
-import { listMultiScenarios } from '../../api/multiAgent'
+import { listMultiScenarios, listMcpServers } from '../../api/multiAgent'
 import ModalDialog from '../common/ModalDialog.vue'
 import Pagination from '../common/Pagination.vue'
 
@@ -27,9 +27,23 @@ const editForm = ref({
   skill_ids: [],
   system_prompt: '',
   use_tools: false,
+  tool_names: [],   // 工具白名单：内置工具名 + "mcp:<server>"；空 = 全部可用
 })
 
+// 内置工具清单（与后端 PlatformTools 同口径）
+const BUILTIN_TOOLS = [
+  { name: 'kb_search', label: '知识检索', desc: '跨全部知识库的向量语义检索' },
+  { name: 'graph_search', label: '图谱检索', desc: '实体图谱关键词检索（实体+关系链）' },
+  { name: 'data_query', label: '数据查询', desc: '实体台账结构化查询（计数+明细）' },
+]
+
 const enabledSkills = computed(() => skills.value.filter(s => s.is_enabled))
+// 已启用的 MCP 服务器（工具白名单可选项；粒度=服务器级）
+const mcpServers = ref([])
+async function loadMcpServers() {
+  try { mcpServers.value = await listMcpServers() } catch { mcpServers.value = [] }
+}
+onMounted(loadMcpServers)
 // 系统默认人设（智能体人设留空时实际生效的内容，来自后端 OAG_SYSTEM_PROMPT）
 const defaultPersona = ref('')
 const presetAgents = computed(() => agents.value.filter(a => a.is_preset))
@@ -98,13 +112,14 @@ function selectAgent(id) {
     skill_ids: a.skill_ids || [],
     system_prompt: a.system_prompt || '',
     use_tools: !!a.use_tools,
+    tool_names: a.tool_names || [],
   }
 }
 
 function newAgent() {
   selectedId.value = null
   isNew.value = true
-  editForm.value = { name: '', description: '', kb_id: '', skill_ids: [], system_prompt: '', use_tools: false }
+  editForm.value = { name: '', description: '', kb_id: '', skill_ids: [], system_prompt: '', use_tools: false, tool_names: [] }
 }
 
 function cancelEdit() {
@@ -116,6 +131,12 @@ function toggleSkill(id) {
   const idx = editForm.value.skill_ids.indexOf(id)
   if (idx >= 0) editForm.value.skill_ids.splice(idx, 1)
   else editForm.value.skill_ids.push(id)
+}
+
+function toggleToolName(id) {
+  const idx = editForm.value.tool_names.indexOf(id)
+  if (idx >= 0) editForm.value.tool_names.splice(idx, 1)
+  else editForm.value.tool_names.push(id)
 }
 
 async function toggleEnabled(a) {
@@ -140,6 +161,7 @@ async function save() {
         skillIds: editForm.value.skill_ids,
         systemPrompt: editForm.value.system_prompt,
         useTools: editForm.value.use_tools ? 1 : 0,
+        toolNames: editForm.value.tool_names,
       })
       toast.success('智能体已创建')
       selectedId.value = created.id
@@ -152,6 +174,7 @@ async function save() {
         skillIds: editForm.value.skill_ids,
         systemPrompt: editForm.value.system_prompt,
         useTools: editForm.value.use_tools ? 1 : 0,
+        toolNames: editForm.value.tool_names,
       })
       toast.success('已保存')
     }
@@ -357,7 +380,36 @@ async function doRemove() {
                 <input type="checkbox" v-model="editForm.use_tools" />
                 <span>工具调用（Function Calling · 内置工具 + MCP 外部工具）</span>
               </label>
-              <span class="hint">开启后该智能体在多智能体协作中可自主调用工具，如取台账数据、用图表 MCP 生成柱状图/饼图/表格（产出进「图表产出」tab）</span>
+              <span class="hint">开启后该智能体在多智能体协作与智能助手浮标中可自主调用工具，如取台账数据、用图表 MCP 生成柱状图/饼图/表格（产出进「图表产出」tab）</span>
+              <div v-if="editForm.use_tools" class="tool-whitelist">
+                <div class="wl-title">工具白名单</div>
+                <div class="wl-row">
+                  <button
+                    v-for="t in BUILTIN_TOOLS" :key="t.name"
+                    type="button"
+                    class="skill-chip" :class="{ active: editForm.tool_names.includes(t.name) }"
+                    :title="t.desc"
+                    @click="toggleToolName(t.name)"
+                  >
+                    <span class="chip-ic" v-if="editForm.tool_names.includes(t.name)">✓</span>
+                    <span class="chip-ic" v-else>+</span>
+                    {{ t.label }}
+                  </button>
+                  <button
+                    v-for="s in mcpServers.filter(x => x.enabled)" :key="s.name"
+                    type="button"
+                    class="skill-chip" :class="{ active: editForm.tool_names.includes(`mcp:${s.name}`) }"
+                    :title="`MCP 服务器 ${s.name}（勾选后其全部工具对该智能体开放）`"
+                    @click="toggleToolName(`mcp:${s.name}`)"
+                  >
+                    <span class="chip-ic" v-if="editForm.tool_names.includes(`mcp:${s.name}`)">✓</span>
+                    <span class="chip-ic" v-else>+</span>
+                    MCP·{{ s.name }}
+                  </button>
+                </div>
+                <span class="hint" v-if="!editForm.tool_names.length">未勾选任何工具 = 默认开放全部内置工具与已启用的 MCP 服务器；勾选后仅开放所选（内置按工具、MCP 按服务器）。「智能助手」浮标使用此配置</span>
+                <span class="hint" v-else>已勾选 {{ editForm.tool_names.length }} 项，仅开放所选工具</span>
+              </div>
             </div>
           </div>
 
@@ -483,6 +535,9 @@ async function doRemove() {
 }
 
 .skill-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.tool-whitelist { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.tool-whitelist .wl-title { font-size: 12px; font-weight: 600; color: var(--c-secondary); }
+.tool-whitelist .wl-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .skill-chip {
   display: inline-flex; align-items: center; gap: 4px; padding: 4px 12px;
   border-radius: 20px; font-size: 12px; font-weight: 500;

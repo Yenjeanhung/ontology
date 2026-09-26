@@ -469,60 +469,75 @@ class PlatformTools:
             status = pt.mcp_status   # 各 MCP 服务器连接状态（接口展示用）
     """
 
-    def __init__(self) -> None:
+    def __init__(self, include: Optional[list[str]] = None) -> None:
+        """include：工具白名单（内置工具名 + "mcp:<服务器名>"）；None/空 = 全部可用。
+
+        白名单语义：非空列表时，未列入的内置工具不注册、未列入的 MCP 服务器整台
+        跳过（配置粒度=服务器级，避免逐工具巡检）。供智能体配置页按智能体勾选。
+        """
+        self.include = {str(x) for x in include} if include else None
         self.registry = ToolRegistry()
         self.mcp_status: list[dict] = []
         self._conns: list[McpConnection] = []
 
-    async def __aenter__(self) -> "PlatformTools":
-        # 1) 内置工具（永远可用）
-        self.registry.register(Tool(
-            name="kb_search",
-            description="跨全部知识库的向量语义检索，返回最相关的语料片段（含来源知识库/文件/页码/相似度）。适用于需要平台文档依据的任何问题。",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "检索问题或关键词"},
-                    "top_k": {"type": "integer", "description": "每库取回条数，默认 5"},
-                },
-                "required": ["query"],
-            },
-            handler=builtin_kb_search,
-        ))
-        self.registry.register(Tool(
-            name="graph_search",
-            description="实体图谱关键词检索，返回命中实体（类型/描述）及其邻接关系链。适用于实体关联、依赖结构类问题。",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "keywords": {"type": "array", "items": {"type": "string"},
-                                 "description": "实体名/描述的关键词列表，1~6 个"},
-                    "limit": {"type": "integer", "description": "返回实体数上限，默认 5"},
-                },
-                "required": ["keywords"],
-            },
-            handler=builtin_graph_search,
-        ))
-        self.registry.register(Tool(
-            name="data_query",
-            description="实体台账结构化查询：返回命中总量、按实体类型的聚合计数与最新明细记录（真实数据，禁止编造数字时使用）。",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "keywords": {"type": "array", "items": {"type": "string"},
-                                 "description": "实体类型/名称/描述的关键词列表，可为空（全库口径）"},
-                    "limit": {"type": "integer", "description": "明细记录条数上限，默认 8"},
-                },
-                "required": [],
-            },
-            handler=builtin_data_query,
-        ))
+    def _want(self, name: str) -> bool:
+        return self.include is None or name in self.include
 
-        # 2) MCP 外部工具（可选依赖 + 逐服务器降级；注册中心热加载，改配置即生效）
+    async def __aenter__(self) -> "PlatformTools":
+        # 1) 内置工具（按智能体白名单过滤；include=None = 全部，向后兼容既有调用方）
+        if self._want("kb_search"):
+            self.registry.register(Tool(
+                name="kb_search",
+                description="跨全部知识库的向量语义检索，返回最相关的语料片段（含来源知识库/文件/页码/相似度）。适用于需要平台文档依据的任何问题。",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "检索问题或关键词"},
+                        "top_k": {"type": "integer", "description": "每库取回条数，默认 5"},
+                    },
+                    "required": ["query"],
+                },
+                handler=builtin_kb_search,
+            ))
+        if self._want("graph_search"):
+            self.registry.register(Tool(
+                name="graph_search",
+                description="实体图谱关键词检索，返回命中实体（类型/描述）及其邻接关系链。适用于实体关联、依赖结构类问题。",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "keywords": {"type": "array", "items": {"type": "string"},
+                                     "description": "实体名/描述的关键词列表，1~6 个"},
+                        "limit": {"type": "integer", "description": "返回实体数上限，默认 5"},
+                    },
+                    "required": ["keywords"],
+                },
+                handler=builtin_graph_search,
+            ))
+        if self._want("data_query"):
+            self.registry.register(Tool(
+                name="data_query",
+                description="实体台账结构化查询：返回命中总量、按实体类型的聚合计数与最新明细记录（真实数据，禁止编造数字时使用）。",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "keywords": {"type": "array", "items": {"type": "string"},
+                                     "description": "实体类型/名称/描述的关键词列表，可为空（全库口径）"},
+                        "limit": {"type": "integer", "description": "明细记录条数上限，默认 8"},
+                    },
+                    "required": [],
+                },
+                handler=builtin_data_query,
+            ))
+
+        # 2) MCP 外部工具（可选依赖 + 逐服务器降级；注册中心热加载，改配置即生效）；
+        #    白名单按 "mcp:<server>" 服务器级过滤，未勾选的整台不连接。
         servers = await load_mcp_servers()
         if not servers:
             return self
         for server in servers:
+            if not self._want(f"mcp:{server['name']}"):
+                continue
             status = {"server": server["name"], "ok": False, "tools": 0, "error": ""}
             conn = McpConnection(server)
             try:

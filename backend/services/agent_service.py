@@ -26,6 +26,10 @@ def _skill_ids_to_list(raw: str | None) -> list[str]:
         return []
 
 
+# 复用同一 JSON 容错口径：tool_names（工具白名单）与 skill_ids 同构
+_tool_names_to_list = _skill_ids_to_list
+
+
 def _serialize(
     a: Agent,
     *,
@@ -45,6 +49,7 @@ def _serialize(
         "is_preset": a.is_preset,
         "is_enabled": a.is_enabled,
         "use_tools": int(getattr(a, "use_tools", 0) or 0),
+        "tool_names": _tool_names_to_list(getattr(a, "tool_names", None)),
         "created_at": a.created_at,
         "updated_at": a.updated_at,
     }
@@ -103,6 +108,41 @@ async def ensure_default_agent(db: AsyncSession) -> bool:
     return True
 
 
+ASSISTANT_AGENT_ID = "agent_assistant"
+ASSISTANT_AGENT_DESCRIPTION = (
+    "内置「智能助手」（全局浮标）：单智能体架构（LLM + Function Calling 工具循环，"
+    "非多智能体协作）。技能 / 工具 / 人设均在本配置页维护，保存后浮标即时生效。不可删除。"
+)
+# 浮标助手默认人设：用户改配置后以配置页为准，此默认只在 seed 时写入一次
+ASSISTANT_DEFAULT_PROMPT = (
+    "你是「智能助手」，一个常驻系统右下角的单智能体，面向全平台用户答疑与取数。\n"
+    "能力与口径：\n"
+    "1. 平台内数据（台账数值、实体、关系、文档依据）必须以工具返回为准，绝不编造；\n"
+    "2. 问数量/统计/明细 → data_query；查文档/制度/说明 → kb_search；"
+    "实体关联/依赖结构 → graph_search；接入的 MCP 外部工具按需调用；\n"
+    "3. 依据充分时直接回答，不要为调工具而调工具；闲聊/功能咨询可直接回答；\n"
+    "4. 回答用中文、简洁结构化（分点/小标题），关键数字注明来自哪次工具调用。"
+)
+
+
+async def ensure_assistant_agent(db: AsyncSession) -> bool:
+    """启动 seed：确保内置「智能助手」（浮标单智能体）存在（幂等；不覆盖用户修改）。"""
+    if await db.get(Agent, ASSISTANT_AGENT_ID) is not None:
+        return False
+    db.add(Agent(
+        id=ASSISTANT_AGENT_ID,
+        name="智能助手",
+        description=ASSISTANT_AGENT_DESCRIPTION,
+        system_prompt=ASSISTANT_DEFAULT_PROMPT,
+        is_preset=1,
+        is_enabled=1,
+        use_tools=1,          # 浮标默认启用工具循环
+        tool_names="[]",      # 空 = 全部内置工具 + 全部已启用 MCP
+    ))
+    await db.commit()
+    return True
+
+
 class AgentService:
     @staticmethod
     async def list(db: AsyncSession) -> list[dict]:
@@ -142,6 +182,8 @@ class AgentService:
     async def create(db: AsyncSession, data: dict) -> dict:
         if isinstance(data.get("skill_ids"), list):
             data["skill_ids"] = json.dumps(data["skill_ids"], ensure_ascii=False)
+        if isinstance(data.get("tool_names"), list):
+            data["tool_names"] = json.dumps(data["tool_names"], ensure_ascii=False)
         data = dict(data)
         data.setdefault("is_preset", 0)  # 页面创建的都是自定义智能体
         agent = Agent(**data)
@@ -157,6 +199,8 @@ class AgentService:
             return None
         if isinstance(data.get("skill_ids"), list):
             data["skill_ids"] = json.dumps(data["skill_ids"], ensure_ascii=False)
+        if isinstance(data.get("tool_names"), list):
+            data["tool_names"] = json.dumps(data["tool_names"], ensure_ascii=False)
         # 内置智能体：允许改名称/描述/KB/技能/人设；禁止禁用、禁止篡改内置标识
         if agent.is_preset:
             data = {k: v for k, v in data.items() if k not in ("is_enabled", "is_preset")}
@@ -197,4 +241,6 @@ class AgentService:
             "kb_id": kb_id,
             "system_prompt": agent.system_prompt or "",
             "skill_ids": _skill_ids_to_list(agent.skill_ids),
+            "use_tools": int(getattr(agent, "use_tools", 0) or 0),
+            "tool_names": _tool_names_to_list(getattr(agent, "tool_names", None)),
         }

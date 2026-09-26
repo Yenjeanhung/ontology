@@ -182,6 +182,15 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to seed default agent")
 
+    # Seed 内置「智能助手」（浮标单智能体，幂等；技能/工具/人设经配置页维护）
+    from services.agent_service import ensure_assistant_agent
+    async for db in get_db():
+        try:
+            if await ensure_assistant_agent(db):
+                logger.info("Seeded built-in assistant agent")
+        except Exception:
+            logger.exception("Failed to seed assistant agent")
+
     # 存量迁移：旧版本创建的会话不记录 agent_id（空串），新版按智能体过滤后
     # 这些历史会话在任何智能体下都不可见 → 统一归入内置「系统默认」（幂等）
     from sqlalchemy import update
@@ -296,7 +305,7 @@ app.add_middleware(AuditMiddleware)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(AccessLogMiddleware)
 
-from routers import app_settings, agent, audit, auth, chat, config, datasource, entity, eval, files, graph, graph_analysis, graph_sync, kb, library, monitor, multi_agent, notifications, ontology, ontology_function, ontology_interface, ontology_service, ontology_version, ontology_view, query, role, scheduler, session, user, vector_data, workflow
+from routers import app_settings, agent, assistant, audit, auth, chat, config, datasource, entity, eval, files, graph, graph_analysis, graph_sync, kb, library, monitor, multi_agent, notifications, ontology, ontology_function, ontology_interface, ontology_service, ontology_version, ontology_view, query, role, scheduler, session, user, vector_data, workflow
 
 app.include_router(kb.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
@@ -306,6 +315,7 @@ app.include_router(graph_sync.router, prefix="/api")
 app.include_router(graph_analysis.router, prefix="/api")
 app.include_router(query.router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
+app.include_router(assistant.router, prefix="/api")
 app.include_router(multi_agent.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(vector_data.router, prefix="/api")
