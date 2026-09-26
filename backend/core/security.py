@@ -101,18 +101,18 @@ def _exp(minutes: int = 0, days: int = 0) -> datetime:
     return _now() + timedelta(minutes=minutes, days=days)
 
 
-def _settings_int(db_key: str, env_fallback: int) -> int:
-    """令牌有效期优先读安全策略（运行时可改），读不到回退 .env 配置。"""
+def _settings_int(db_key: str, default: int) -> int:
+    """令牌有效期读安全策略（页面可改，security_settings 表）；异常时用默认值兜底。"""
     try:
         from services.security_settings_service import SecuritySettingsService
-        return SecuritySettingsService.get_int(db_key, env_fallback)
+        return SecuritySettingsService.get_int(db_key, default)
     except Exception:
-        return env_fallback
+        return default
 
 
 def create_access_token(user_id: str, username: str, sid: str, token_version: int) -> tuple[str, int]:
     """返回 (token, expires_in_seconds)。TTL<=0 表示永不过期（不写 exp）。"""
-    ttl_minutes = _settings_int("access_token_ttl_minutes", int(getattr(settings, "ACCESS_TOKEN_TTL_MINUTES", 120)))
+    ttl_minutes = _settings_int("access_token_ttl_minutes", 120)
     payload = {
         "sub": user_id,
         "username": username,
@@ -129,7 +129,7 @@ def create_access_token(user_id: str, username: str, sid: str, token_version: in
 
 def create_refresh_token(user_id: str, sid: str, token_version: int) -> tuple[str, int]:
     """返回 (token, expires_in_seconds)。TTL<=0 表示永不过期（不写 exp）。"""
-    ttl_days = _settings_int("refresh_token_ttl_days", int(getattr(settings, "REFRESH_TOKEN_TTL_DAYS", 7)))
+    ttl_days = _settings_int("refresh_token_ttl_days", 7)
     payload = {
         "sub": user_id,
         "sid": sid,

@@ -336,8 +336,7 @@ class Settings(BaseSettings):
     # JWT 签名密钥：留空时首次启动自动生成并持久化到 data/.auth_secret_key，之后复用
     AUTH_SECRET_KEY: str = ""
     AUTH_ENABLED: bool = True              # 总开关：false 时全站免登录（本地调试用）
-    ACCESS_TOKEN_TTL_MINUTES: int = 120    # access token 有效期
-    REFRESH_TOKEN_TTL_DAYS: int = 7        # refresh token 有效期
+    # access/refresh 令牌有效期在「角色权限 → 安全策略」页面配置（security_settings 表）
     # 会话状态缓存 TTL（秒）：决定"踢人"在多副本间的生效延迟上限
     AUTH_CACHE_TTL_SECONDS: int = 10
     # 审计日志异步落库：批量大小与刷写间隔
