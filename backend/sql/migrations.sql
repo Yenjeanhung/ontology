@@ -879,3 +879,24 @@ WHERE datasource_id = '' AND datasource_dialect IS NOT NULL AND datasource_diale
 -- migration_045: 浮标单智能体（doc/智能体/单智能体/智能体浮标_功能设计.md §单智能体改造）
 -- agents 表加工具白名单：内置工具名 + "mcp:<server>"；空数组 = 全部可用（向后兼容）
 ALTER TABLE agents ADD COLUMN tool_names TEXT DEFAULT '[]';
+
+-- migration_046: Agent 每日调研量统计（一次智能体执行一行明细，按天/智能体/场景等维度聚合）
+-- 仅保留最近 N 天（默认 30，见 AgentStatsService.cleanup）：写入时按天节流清理，页面可手动清理。
+CREATE TABLE IF NOT EXISTS agent_research_logs (
+    id           VARCHAR PRIMARY KEY,
+    stat_date    VARCHAR(10) NOT NULL DEFAULT '',  -- YYYY-MM-DD（本地日期，按天聚合直接用等值/范围比较）
+    user_id      VARCHAR NOT NULL DEFAULT '',
+    username     VARCHAR NOT NULL DEFAULT '',
+    agent_id     VARCHAR NOT NULL DEFAULT '',
+    agent_name   VARCHAR NOT NULL DEFAULT '',
+    scene        VARCHAR(32) NOT NULL DEFAULT '',  -- single|assistant|multi|deep|target
+    model        VARCHAR(128) NOT NULL DEFAULT '',
+    success      INTEGER NOT NULL DEFAULT 1,
+    duration_ms  INTEGER NOT NULL DEFAULT 0,
+    error_msg    TEXT NOT NULL DEFAULT '',
+    created_at   VARCHAR NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_arl_date       ON agent_research_logs(stat_date);
+CREATE INDEX IF NOT EXISTS idx_arl_agent_date ON agent_research_logs(agent_id, stat_date);
+CREATE INDEX IF NOT EXISTS idx_arl_user_date  ON agent_research_logs(user_id, stat_date);
+CREATE INDEX IF NOT EXISTS idx_arl_scene_date ON agent_research_logs(scene, stat_date);

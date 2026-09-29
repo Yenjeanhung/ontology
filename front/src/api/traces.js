@@ -1,7 +1,6 @@
 // 接口链路追踪 API 封装（OpenTelemetry span 自托管查询，后端见 core/otel.py）
-const API = import.meta.env.DEV
-  ? ''  // dev mode uses Vite proxy
-  : 'http://localhost:8000'
+// 开发/生产统一走相对路径：开发由 Vite 代理、生产由 Nginx 反代 /api（同源，无 CORS）
+const API = ''
 
 // 接口聚合榜（慢接口定位）：按 p95 倒序
 export async function fetchTraceStats(hours = 24) {

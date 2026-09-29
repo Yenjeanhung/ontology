@@ -413,3 +413,78 @@ async def trace_detail(trace_id: str):
     if not data["spans"]:
         raise HTTPException(404, f"trace 不存在: {trace_id}")
     return data
+
+
+# ═══════════════════════ Agent 调用量统计 ═══════════════════════
+# 数据来源：agent_research_logs（一次智能体执行一行，埋点在各执行链路收尾处）。
+# 维度：date（每日趋势）/ agent / scene / user / model / success；最多回看 30 天。
+
+_AGENT_RESEARCH_DAYS = Query(7, ge=1, le=30, description="回看天数（最多 30 天，与保留期一致）")
+_AGENT_RESEARCH_GROUP = Query("date", description="聚合维度：date|agent|scene|user|model|success")
+
+
+@router.get("/monitor/agent-research/overview")
+async def agent_research_overview(days: int = _AGENT_RESEARCH_DAYS):
+    """概览：窗口内总调用量 / 今日量 / 成功率 / 平均耗时 / 活跃智能体与用户数。"""
+    from services.agent_stats_service import AgentStatsService
+
+    async with async_session() as db:
+        return await AgentStatsService.overview(db, days=days)
+
+
+@router.get("/monitor/agent-research/stats")
+async def agent_research_stats(
+    days: int = _AGENT_RESEARCH_DAYS,
+    group_by: str = _AGENT_RESEARCH_GROUP,
+    agent_id: str = Query("", description="按智能体 id 过滤"),
+    scene: str = Query("", description="按场景过滤：single|assistant|multi|deep|target"),
+    user_id: str = Query("", description="按用户 id 过滤"),
+    model: str = Query("", description="按模型名过滤"),
+    success: bool | None = Query(None, description="按成败过滤；不传=全部"),
+):
+    """按维度聚合调用量（总量/成功/失败/成功率/平均耗时）。"""
+    from services.agent_stats_service import AgentStatsService
+
+    async with async_session() as db:
+        return await AgentStatsService.stats(
+            db, days=days, group_by=group_by, agent_id=agent_id,
+            scene=scene, user_id=user_id, model=model, success=success)
+
+
+@router.get("/monitor/agent-research/logs")
+async def agent_research_logs(
+    days: int = _AGENT_RESEARCH_DAYS,
+    agent_id: str = Query(""),
+    scene: str = Query(""),
+    user_id: str = Query(""),
+    model: str = Query(""),
+    success: bool | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+):
+    """调用明细（倒序分页）。"""
+    from services.agent_stats_service import AgentStatsService
+
+    async with async_session() as db:
+        return await AgentStatsService.logs(
+            db, days=days, agent_id=agent_id, scene=scene, user_id=user_id,
+            model=model, success=success, page=page, page_size=page_size)
+
+
+@router.get("/monitor/agent-research/agents")
+async def agent_research_agents(days: int = Query(30, ge=1, le=30)):
+    """筛选下拉：窗口内出现过的智能体（id + 名称 + 次数）。"""
+    from services.agent_stats_service import AgentStatsService
+
+    async with async_session() as db:
+        return {"items": await AgentStatsService.agents(db, days=days)}
+
+
+@router.post("/monitor/agent-research/cleanup")
+async def agent_research_cleanup(days: int = Query(30, ge=1, le=365, description="保留最近 N 天")):
+    """手动清理：删除 N 天之前的明细（写入时每天也会自动清一次）。"""
+    from services.agent_stats_service import AgentStatsService
+
+    async with async_session() as db:
+        removed = await AgentStatsService.cleanup(db, days=days)
+    return {"removed": removed, "keep_days": days}

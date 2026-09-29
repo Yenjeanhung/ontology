@@ -342,6 +342,8 @@ class Settings(BaseSettings):
     # 审计日志异步落库：批量大小与刷写间隔
     AUDIT_BATCH_SIZE: int = 100
     AUDIT_FLUSH_INTERVAL_SECONDS: float = 1.0
+    # Agent 调研量统计总开关（明细表 agent_research_logs，保留 30 天）
+    AGENT_STATS_ENABLED: bool = True
     AUDIT_QUEUE_MAXSIZE: int = 5000
     # CORS 白名单（逗号分隔，留空 = 沿用 *）；开启鉴权后建议显式配置
     CORS_ALLOW_ORIGINS: str = ""

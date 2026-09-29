@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.deps import get_current_user_id
+from core.deps import get_current_user_id, get_current_username
 from database import get_db
 from services.assistant_service import AssistantUnavailable, prepare_turn, stream_turn
 
@@ -28,7 +28,8 @@ class AssistantRunRequest(BaseModel):
 
 @router.post("/agent/assistant/run")
 async def assistant_run(req: AssistantRunRequest, db: AsyncSession = Depends(get_db),
-                        user_id: str = Depends(get_current_user_id)):
+                        user_id: str = Depends(get_current_user_id),
+                        username: str = Depends(get_current_username)):
     query = (req.query or "").strip()
     if not query:
         raise HTTPException(400, "提问内容不能为空")
@@ -36,6 +37,7 @@ async def assistant_run(req: AssistantRunRequest, db: AsyncSession = Depends(get
         ctx = await prepare_turn(db, query, req.session_id, user_id)
     except AssistantUnavailable as exc:
         raise HTTPException(404, str(exc))
+    ctx["username"] = username      # 调研量统计按用户维度下钻用
 
     async def _stream():
         async for evt in stream_turn(ctx):

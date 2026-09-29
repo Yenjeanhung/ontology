@@ -1,7 +1,6 @@
 // 系统监控 API 封装
-const API = import.meta.env.DEV
-  ? ''  // dev mode uses Vite proxy
-  : 'http://localhost:8000'
+// 开发/生产统一走相对路径：开发由 Vite 代理、生产由 Nginx 反代 /api（同源，无 CORS）
+const API = ''
 
 // 首次加载快照（组件全景 + 状态摘要 + 系统信息）
 export async function fetchMonitorOverview() {

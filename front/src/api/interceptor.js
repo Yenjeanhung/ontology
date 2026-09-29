@@ -18,8 +18,8 @@ function isSameApi(url) {
   if (typeof url !== 'string') return false
   if (url.startsWith('/api/')) return true
   try {
-    // 只判断路径：生产构建里 API 走绝对地址 http://localhost:8000，
-    // 与页面可能不同源（如用别的端口打开前端），因此不能校验 origin。
+    // 只判断路径：API 统一走相对地址（生产由 Nginx 反代 /api），
+    // 页面可能从别的源打开，因此不能校验 origin。
     return new URL(url, window.location.origin).pathname.startsWith('/api/')
   } catch {
     return false

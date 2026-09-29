@@ -40,9 +40,10 @@ RUN pip install --no-cache-dir torch \
 COPY . ./backend/
 
 # 非 root 运行；uploads/data 为运行时可写目录（K8s 中挂 PVC）
+# /srv/logs 也必须预建并放开写权限：server.py 启动即 LOG_DIR.mkdir（server.py 的上上级目录）
 RUN useradd -m -u 10001 appuser \
-    && mkdir -p /srv/backend/uploads /srv/backend/data \
-    && chown -R appuser:appuser /srv/backend
+    && mkdir -p /srv/backend/uploads /srv/backend/data /srv/logs \
+    && chown -R appuser:appuser /srv
 USER appuser
 
 WORKDIR /srv/backend

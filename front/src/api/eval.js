@@ -1,7 +1,6 @@
 // RAG 评测 API 封装（评测集 / 评测任务 / Badcase 标记回流）
-const API = import.meta.env.DEV
-  ? ''  // dev mode uses Vite proxy
-  : 'http://localhost:8000'
+// 开发/生产统一走相对路径：开发由 Vite 代理、生产由 Nginx 反代 /api（同源，无 CORS）
+const API = ''
 
 import { apiDetail } from './index'
 

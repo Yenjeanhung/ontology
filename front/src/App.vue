@@ -195,6 +195,7 @@ const menuItems = [
       { to: '/config/models', label: '模型配置', perm: 'config:view' },
       { to: '/config/monitor', label: '系统监控', perm: 'config:view' },
       { to: '/config/trace', label: '接口追踪', perm: 'config:view' },
+      { to: '/config/agent-research', label: 'Agent 调用统计', perm: 'config:view' },
       { to: '/config/api-docs', label: 'API 文档', perm: 'config:view' },
     ],
   },

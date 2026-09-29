@@ -36,7 +36,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.deps import get_current_user_id
+from core.deps import get_current_user, get_current_user_id, get_current_username
 from database import get_db
 from schemas import ChatSessionRename
 from services.chat_service import ChatService
@@ -48,6 +48,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agent/multi", tags=["agent-multi"])
 
 MULTI_SCENE = "multi"   # chat_sessions.scene 取值：多智能体协作会话（空串 = 智能体问答）
+
+# 调研量统计：场景 → 统计用的智能体标识（多智能体没有单一 Agent 记录，按团队口径统计）
+_STAT_AGENT_IDS = {"multi": "multi_agent", "deep": "deep_agent", "target": "target_agent"}
+_STAT_AGENT_NAMES = {"multi": "通用智能体团队", "deep": "深度研究员", "target": "目标研判团队"}
 
 # SSE 内落库用的 async session 工厂（请求级 db 已随响应释放，落库须新开会话）；None = 全局 async_session，测试可注入
 _SESSION_FACTORY = None
@@ -135,7 +139,8 @@ class TargetRunBody(BaseModel):
 
 @router.post("/scenarios/{scenario_id}/targets/{target_id}/run")
 async def run_scenario_target(scenario_id: str, target_id: str,
-                              body: TargetRunBody | None = None):
+                              body: TargetRunBody | None = None,
+                              user: dict = Depends(get_current_user)):
     """对指定目标发起多智能体研判，SSE 流式返回过程事件与结论。
 
     深度模式（body.deep + DEEP_AGENT_ENABLED 双确认）：经 target_task 取回
@@ -146,6 +151,8 @@ async def run_scenario_target(scenario_id: str, target_id: str,
     if not scenario:
         raise HTTPException(404, f"场景 {scenario_id} 未注册")
     from config import settings as _settings
+
+    actor = {"user_id": user.get("user_id", ""), "username": user.get("username", "")}
     use_deep = bool(body and body.deep) and bool(getattr(_settings, "DEEP_AGENT_ENABLED", False))
     if use_deep:
         task = (await scenario.target_task(target_id)).strip()
@@ -153,12 +160,13 @@ async def run_scenario_target(scenario_id: str, target_id: str,
             raise HTTPException(404, f"目标 {target_id} 在场景 {scenario_id} 中不存在")
         from services.multi_agent.deep_agent import build_deep_engine
         engine = await build_deep_engine(task)
-        return _stream_engine(engine, team_label="深度智能体")
+        return _stream_engine(engine, team_label="深度智能体",
+                              actor=actor, scene="deep")
     try:
         engine = await scenario.build_engine(target_id)
     except KeyError:
         raise HTTPException(404, f"目标 {target_id} 在场景 {scenario_id} 中不存在")
-    return _stream_engine(engine)
+    return _stream_engine(engine, actor=actor, scene="target")
 
 
 @router.get("/datasources")
@@ -210,7 +218,8 @@ class TaskBody(BaseModel):
 @router.post("/scenarios/{scenario_id}/run")
 async def run_scenario_task(scenario_id: str, body: TaskBody,
                             db: AsyncSession = Depends(get_db),
-                            user_id: str = Depends(get_current_user_id)):
+                            user_id: str = Depends(get_current_user_id),
+                            username: str = Depends(get_current_username)):
     """自由任务研判（adhoc 场景）：任务文本 + 智能体组合 → 动态建团，SSE 返回。
 
     会话留痕（协作历史）：user 任务在开流前落库，assistant 成果与过程摘要
@@ -254,7 +263,9 @@ async def run_scenario_task(scenario_id: str, body: TaskBody,
         engine_source,
         session=session, task_text=task, clarified=body.clarified,
         team_label="深度智能体" if use_deep else "",
-        manual_agents=list(body.agents) if (body.agents and not use_deep) else None)
+        manual_agents=list(body.agents) if (body.agents and not use_deep) else None,
+        actor={"user_id": user_id, "username": username},
+        scene="deep" if use_deep else "multi")
 
 
 # ─────────────────────── MCP 注册中心（工具服务器管理） ───────────────────────
@@ -512,13 +523,16 @@ async def resume_session_run(session_id: str, db: AsyncSession = Depends(get_db)
     engine.thread_id = row["thread_id"]
     return _stream_engine(engine, session=session, task_text=row["task"],
                           clarified=True, team_label="断点恢复",
-                          resume_thread=row["thread_id"])
+                          resume_thread=row["thread_id"],
+                          actor={"user_id": getattr(session, "user_id", ""), "username": ""})
 
 
 def _stream_engine(engine_source, session=None, task_text: str = "",
                    clarified: bool = False, team_label: str = "",
                    resume_thread: str = "",
-                   manual_agents: list[str] | None = None) -> StreamingResponse:
+                   manual_agents: list[str] | None = None,
+                   actor: dict | None = None,
+                   scene: str = "multi") -> StreamingResponse:
     """引擎执行 → SSE 事件流（session 首帧 / team / 过程事件 / done 收尾，公共实现）。
 
     engine_source 可以是引擎实例，也可以是「返回引擎的 awaitable」（自由任务
@@ -535,6 +549,8 @@ def _stream_engine(engine_source, session=None, task_text: str = "",
     def _collect(turn_meta: dict, evt: dict) -> None:
         """过程事件 → 回放元数据（字段语义与前端 MultiAgentPage 渲染状态一致）。"""
         t = evt.get("type")
+        if t == "error":
+            turn_meta["error"] = (evt.get("content") or "")[:500]
         if t == "team":
             turn_meta["team"] = evt.get("team", "")
             turn_meta["members"] = evt.get("members") or []
@@ -603,6 +619,32 @@ def _stream_engine(engine_source, session=None, task_text: str = "",
             logger.warning("协作会话成果落库失败: session=%s", session.id, exc_info=True)
 
     async def _stream():
+        _t0 = time.perf_counter()
+        engine = None       # 供统计闭包安全读取（构建失败时仍可记一笔）
+
+        async def _stat(success: bool, error_msg: str = "") -> None:
+            """一次研判 = 一次调研（尽力而为，失败只记日志，不影响 SSE 交付）。"""
+            try:
+                from services.agent_stats_service import AgentStatsService
+
+                team_name = ""
+                try:
+                    if engine is not None:
+                        team_name = (engine.team_info() or {}).get("team", "")
+                except Exception:
+                    team_name = ""
+                await AgentStatsService.record(
+                    user_id=(actor or {}).get("user_id", ""),
+                    username=(actor or {}).get("username", ""),
+                    agent_id=_STAT_AGENT_IDS.get(scene, "multi_agent"),
+                    agent_name=team_name or team_label or _STAT_AGENT_NAMES.get(scene, ""),
+                    scene=scene, success=success,
+                    duration_ms=int((time.perf_counter() - _t0) * 1000),
+                    error_msg=error_msg,
+                )
+            except Exception:
+                logger.warning("调研量统计写入失败", exc_info=True)
+
         turn_meta: dict = {
             "task": task_text, "team": "", "members": [], "plan": [],
             "nodes": [], "domains": [], "conflicts": [], "verdict": None,
@@ -636,6 +678,7 @@ def _stream_engine(engine_source, session=None, task_text: str = "",
                     yield _sse_evt({"type": "clarify", **_clar})
                     yield _sse_evt({"type": "done", "conclusion": "", "elapsed_ms": 0})
                     yield "data: [DONE]\n\n"
+                    await _stat(True)      # 澄清也是一次有效交互，不计失败
                     return
             yield _sse_evt({"type": "node_start", "node": "planner",
                             "role": "planner", "goal": "任务规划中（LLM 分解子任务）…"})
@@ -680,6 +723,7 @@ def _stream_engine(engine_source, session=None, task_text: str = "",
                 yield _sse_evt({"type": "error", "content": f"团队构建失败：{exc}"})
                 yield _sse_evt({"type": "done", "conclusion": "", "elapsed_ms": 0})
                 yield "data: [DONE]\n\n"
+                await _stat(False, f"团队构建失败：{exc}")
                 return
             finally:
                 if engine is None and not build_task.done():
@@ -693,6 +737,7 @@ def _stream_engine(engine_source, session=None, task_text: str = "",
                 yield _sse_evt({"type": "error", "content": f"团队构建失败：{exc}"})
                 yield _sse_evt({"type": "done", "conclusion": "", "elapsed_ms": 0})
                 yield "data: [DONE]\n\n"
+                await _stat(False, f"团队构建失败：{exc}")
                 return
 
         # Checkpointer thread（P0 断点恢复）：MultiAgentEngine 专有属性
@@ -732,6 +777,7 @@ def _stream_engine(engine_source, session=None, task_text: str = "",
         yield _sse_evt({"type": "done", "conclusion": conclusion,
                         "elapsed_ms": turn_meta["elapsed_ms"]})
         await _persist(turn_meta, conclusion)
+        await _stat(not turn_meta.get("error"), turn_meta.get("error", ""))
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

@@ -2,12 +2,13 @@
 import asyncio
 import json
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, File, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.deps import get_current_user_id
+from core.deps import get_current_user_id, get_current_username
 from database import get_db
 from schemas import (
     AgentCreate,
@@ -696,7 +697,8 @@ async def _persist_turn(session_id: str, query: str, answer: str,
 
 @router.post("/agent/query")
 async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db),
-                      user_id: str = Depends(get_current_user_id)):
+                      user_id: str = Depends(get_current_user_id),
+                      username: str = Depends(get_current_username)):
     # 引用智能体（可选）：传 agent_id 时以其 KB / 技能 / 人设为准；
     # 内置「默认智能体」未绑 KB → 回退页面传的 kb_id；技能以智能体绑定为准（配置页/问答页同一份数据）
     agent = None
@@ -778,20 +780,35 @@ async def agent_query(req: AgentQueryRequest, db: AsyncSession = Depends(get_db)
         # 首事件：会话锚点（新建会话时前端据此记录 session_id 并刷新会话列表）
         yield _sse_evt({"type": "session", "session_id": session.id, "title": session.title})
         answer_parts: list[str] = []
-        async for event in inner:
-            # 累积回答正文，流结束后落库 + 写长期记忆
-            if event.startswith("data: "):
-                payload = event[6:].strip()
-                if payload and payload != "[DONE]":
-                    try:
-                        evt = json.loads(payload)
-                        if evt.get("type") == "token":
-                            answer_parts.append(evt.get("content") or "")
-                    except ValueError:
-                        pass
-            yield event
-        await _persist_turn(session.id, req.query, "".join(answer_parts),
-                            agent_scope, user_id)
+        _t0 = time.monotonic()
+        _err = ""
+        try:
+            async for event in inner:
+                # 累积回答正文，流结束后落库 + 写长期记忆
+                if event.startswith("data: "):
+                    payload = event[6:].strip()
+                    if payload and payload != "[DONE]":
+                        try:
+                            evt = json.loads(payload)
+                            if evt.get("type") == "token":
+                                answer_parts.append(evt.get("content") or "")
+                        except ValueError:
+                            pass
+                yield event
+        except Exception as exc:      # 流中断仍计一次失败调研（不改变异常传播行为）
+            _err = str(exc)
+            raise
+        finally:
+            await _persist_turn(session.id, req.query, "".join(answer_parts),
+                                agent_scope, user_id)
+            from services.agent_stats_service import AgentStatsService
+            await AgentStatsService.record(
+                user_id=user_id, username=username,
+                agent_id=agent_scope, agent_name=(agent["name"] if agent else ""),
+                scene="single", success=not _err,
+                duration_ms=int((time.monotonic() - _t0) * 1000),
+                error_msg=_err,
+            )
 
     return StreamingResponse(
         _stream(),

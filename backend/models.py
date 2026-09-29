@@ -898,6 +898,31 @@ class Agent(Base):
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
+class AgentResearchLog(Base):
+    """Agent 调研量明细：一次智能体执行（问答/协作/深度/研判）落一行。
+
+    统计口径：埋点在各执行链路的收尾处（单智能体问答、浮标助手、多智能体、
+    深度模式、目标研判），按 stat_date（本地日期 YYYY-MM-DD）聚合即得「每日
+    调研量」，可按 agent / scene / user / model / success 等维度下钻。
+    只保留最近 N 天（默认 30，见 services.agent_stats_service 的 cleanup）。
+    """
+
+    __tablename__ = "agent_research_logs"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    stat_date = Column(String(10), default="", index=True)      # YYYY-MM-DD
+    user_id = Column(String, default="", index=True)
+    username = Column(String, default="")
+    agent_id = Column(String, default="", index=True)
+    agent_name = Column(String, default="")
+    scene = Column(String(32), default="", index=True)          # single|assistant|multi|deep|target
+    model = Column(String(128), default="")
+    success = Column(Integer, default=1)
+    duration_ms = Column(Integer, default=0)
+    error_msg = Column(Text, default="")
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
 class ChatSession(Base):
     """对话会话：智能体短期记忆的载体（doc/智能体/智能体会话_功能设计.md）。
 

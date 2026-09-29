@@ -23,6 +23,7 @@ import ModelConfigPage from '../components/config/ModelConfigPage.vue'
 import ApiDocsPage from '../components/config/ApiDocsPage.vue'
 import MonitorPage from '../components/monitor/MonitorPage.vue'
 import TracePage from '../components/trace/TracePage.vue'
+import AgentResearchStatsPage from '../components/agent/AgentResearchStatsPage.vue'
 import EntityListPage from '../components/entity/EntityListPage.vue'
 import EntityDetailPage from '../components/entity/EntityDetailPage.vue'
 import GraphCleanupPage from '../components/entity/GraphCleanupPage.vue'
@@ -97,6 +98,8 @@ const routes = [
   // 接口链路追踪（OpenTelemetry，独立二级菜单，与系统监控平级）
   { path: '/config/trace', name: 'config-trace', component: TracePage, meta: { keepAlive: true, perm: 'config:view' } },
   { path: '/config/api-docs', name: 'config-api-docs', component: ApiDocsPage, meta: { keepAlive: true, perm: 'config:view' } },
+  // Agent 每日调用量统计（明细保留 30 天，按日期/智能体/场景/用户/模型/成败下钻）
+  { path: '/config/agent-research', name: 'config-agent-research', component: AgentResearchStatsPage, meta: { keepAlive: true, perm: 'config:view' } },
   // 系统管理（用户与权限）
   { path: '/system/users', name: 'system-users', component: UserListView, meta: { perm: 'system:user:manage' } },
   { path: '/system/roles', name: 'system-roles', component: RoleListView, meta: { perm: 'system:role:manage' } },

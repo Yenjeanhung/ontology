@@ -204,6 +204,18 @@ async def stream_turn(ctx: dict) -> AsyncGenerator[str, None]:
     # ── 留痕（db 已释放，自开会话；尽力而为不影响已下发内容）──
     await _persist_turn(ctx, conclusion)
 
+    # ── 调研量统计（一次助手执行 = 一次调研）──
+    try:
+        from services.agent_stats_service import AgentStatsService
+        await AgentStatsService.record(
+            user_id=ctx.get("user_id", ""), username=ctx.get("username", ""),
+            agent_id=ctx["agent"]["id"], agent_name=ctx["agent"]["name"],
+            scene="assistant", success=not failed,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        )
+    except Exception:
+        logger.warning("调研量统计写入失败", exc_info=True)
+
 
 async def _persist_turn(ctx: dict, answer: str) -> None:
     """助手消息落库 + 滚动摘要（后台）+ mem0 长期记忆（后台）。"""

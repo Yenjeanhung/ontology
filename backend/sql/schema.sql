@@ -415,6 +415,26 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS idx_agents_kb ON agents(kb_id);
 
+-- ===== Agent 调研量明细（每日调研量统计，保留最近 30 天）=====
+CREATE TABLE IF NOT EXISTS agent_research_logs (
+    id VARCHAR PRIMARY KEY,
+    stat_date VARCHAR(10) NOT NULL DEFAULT '',
+    user_id VARCHAR NOT NULL DEFAULT '',
+    username VARCHAR NOT NULL DEFAULT '',
+    agent_id VARCHAR NOT NULL DEFAULT '',
+    agent_name VARCHAR NOT NULL DEFAULT '',
+    scene VARCHAR(32) NOT NULL DEFAULT '',
+    model VARCHAR(128) NOT NULL DEFAULT '',
+    success INTEGER NOT NULL DEFAULT 1,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    error_msg TEXT NOT NULL DEFAULT '',
+    created_at VARCHAR NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_arl_date       ON agent_research_logs(stat_date);
+CREATE INDEX IF NOT EXISTS idx_arl_agent_date ON agent_research_logs(agent_id, stat_date);
+CREATE INDEX IF NOT EXISTS idx_arl_user_date  ON agent_research_logs(user_id, stat_date);
+CREATE INDEX IF NOT EXISTS idx_arl_scene_date ON agent_research_logs(scene, stat_date);
+
 -- ===== 智能体会话（短期记忆：会话 + 消息）=====
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id VARCHAR PRIMARY KEY,

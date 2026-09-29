@@ -124,9 +124,9 @@
 <script setup>
 import { computed, ref } from 'vue'
 
-// dev 模式走 Vite 代理（相对路径）；生产模式直连后端
-const base = import.meta.env.DEV ? '' : 'http://localhost:8000'
-const apiBase = import.meta.env.DEV ? 'http://localhost:8000' : base
+// 统一走相对路径：dev 由 Vite 代理、生产由 Nginx 反代 /api（同源，无 CORS）
+const base = ''
+const apiBase = base
 
 const activeGroup = ref('all')
 const keyword = ref('')
