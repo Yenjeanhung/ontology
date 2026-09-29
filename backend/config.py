@@ -117,6 +117,16 @@ class Settings(BaseSettings):
     # 平台自身也可作为 MCP 服务器被外部 Agent 消费：python scripts/mcp_server.py
     MCP_SERVERS: str = ""
 
+    # ───────────────── A2A 智能体互操作（Agent-to-Agent） ─────────────────
+    # 与 MCP 的分工：MCP=Agent↔工具（纵向，函数粒度），A2A=Agent↔Agent
+    # （横向，任务粒度，不透明协作）。设计见 doc/智能体/A2A/00-*.md。
+    A2A_ENABLED: bool = True               # 客户端总闸（关闭 = a2a_agent 角色不入选、面板隐藏）
+    A2A_TIMEOUT: float = 60.0              # 单次委派超时（秒，远端智能体慢于单工具）
+    A2A_CARD_TIMEOUT: float = 8.0          # AgentCard 拉取超时（秒，探测类）
+    A2A_RESULT_MAX_CHARS: int = 4000       # artifact 回灌黑板截断（防黑板爆炸，对齐 RESULT_MAX_CHARS）
+    # 平台自身也可作为 A2A Server 被外部 Agent 组队消费：python scripts/a2a_server.py --port 9801
+    A2A_EXPOSE_TOKEN: str = ""             # 对外 Bearer 令牌，空 = 不鉴权（仅内网）
+
     # ───────────────── DeepAgents 深度模式（第二执行路径） ─────────────────
     # services/multi_agent/deep_agent.py：LangChain 官方 agent harness（deepagents>=0.7，
     # LangGraph 1.x 运行时同源）作为复杂任务深度模式，与 StateGraph 团队并存、零替换。

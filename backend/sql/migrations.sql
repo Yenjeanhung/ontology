@@ -900,3 +900,21 @@ CREATE INDEX IF NOT EXISTS idx_arl_date       ON agent_research_logs(stat_date);
 CREATE INDEX IF NOT EXISTS idx_arl_agent_date ON agent_research_logs(agent_id, stat_date);
 CREATE INDEX IF NOT EXISTS idx_arl_user_date  ON agent_research_logs(user_id, stat_date);
 CREATE INDEX IF NOT EXISTS idx_arl_scene_date ON agent_research_logs(scene, stat_date);
+
+-- migration_047: A2A 远端智能体注册表（Agent-to-Agent 横向协作，注册中心可视化管理）。
+-- 与 mcp_servers 的分工：MCP=Agent↔工具（纵向，函数粒度），A2A=Agent↔Agent
+-- （横向，任务粒度）。组队勾选后经 message/send 委派子任务，artifact 转事实卡。
+-- auth_token 明文落库、接口永不回传；card_json 缓存最近一次成功拉取的 AgentCard。
+CREATE TABLE IF NOT EXISTS a2a_agents (
+    id           VARCHAR PRIMARY KEY,
+    name         VARCHAR(64) NOT NULL,             -- 唯一，[a-zA-Z0-9_-]{1,32}，事实卡来源标识
+    base_url     VARCHAR(500) NOT NULL DEFAULT '', -- 远端根地址（AgentCard 同源）
+    auth_token   VARCHAR(300) NOT NULL DEFAULT '', -- Bearer 令牌（接口永不回传）
+    card_json    TEXT NOT NULL DEFAULT '',         -- AgentCard 缓存（skills 展示/委派用）
+    description  VARCHAR(300) NOT NULL DEFAULT '',
+    enabled      INTEGER NOT NULL DEFAULT 1,       -- 停用 = 面板不可选 + 巡检跳过
+    sort_order   INTEGER NOT NULL DEFAULT 0,
+    created_at   VARCHAR NOT NULL DEFAULT '2026-01-01T00:00:00',
+    updated_at   VARCHAR NOT NULL DEFAULT '2026-01-01T00:00:00'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_a2a_agents_name ON a2a_agents(name);

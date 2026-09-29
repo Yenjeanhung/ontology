@@ -864,6 +864,33 @@ class McpServer(Base):
     updated_at = Column(String, default=lambda: datetime.now().isoformat())
 
 
+class A2aAgent(Base):
+    """A2A 远端智能体注册表：Agent-to-Agent 协议的跨平台组队成员（注册中心可视化管理）。
+
+    与 McpServer 的分工：MCP 管 Agent↔工具（纵向，函数粒度）；A2aAgent 管
+    Agent↔Agent（横向，任务粒度）——多智能体组队勾选后经 message/send 把
+    子任务委派给远端智能体，artifact 以事实卡回灌黑板（不透明协作：远端
+    只回结论，不暴露其记忆/工具/数据源）。
+    base_url 指向远端 AgentCard 同源根（http(s)://host:port），名片取自
+    /.well-known/agent-card.json（0.2 兼容 agent.json）；auth_token 明文落库、
+    接口永不回传（对齐数据源 password 口径）。card_json 缓存最近一次成功
+    拉取的名片（skills 展示/委派选技能用）。
+    """
+
+    __tablename__ = "a2a_agents"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    name = Column(String(64), nullable=False)                          # 唯一，事实卡来源标识
+    base_url = Column(String(500), nullable=False, default="")         # 远端根地址
+    auth_token = Column(String(300), nullable=False, default="")       # Bearer（不回传）
+    card_json = Column(Text, nullable=False, default="")               # AgentCard 缓存
+    description = Column(String(300), nullable=False, default="")
+    enabled = Column(Integer, nullable=False, default=1)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, default=lambda: datetime.now().isoformat())
+    updated_at = Column(String, default=lambda: datetime.now().isoformat())
+
+
 class AgentSkillSeedTombstone(Base):
     """已删除预设技能的 code 墓碑：seed_presets 跳过这些 code，防止重启复活。"""
 

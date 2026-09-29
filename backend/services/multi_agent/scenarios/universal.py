@@ -102,15 +102,16 @@ DATA_STRONG_MIN = 3        # 类型/名称级命中数达到该值才视为强�
 
 
 def _normalize_agents(agents: Optional[list[str]]) -> list[str]:
-    """组合归一化：保留名册内能力智能体 id 与自定义智能体（custom:{id}）。
+    """组合归一化：保留名册内能力智能体 id 与自定义/远端智能体（custom:{id} / a2a:{name}）。
 
-    内置按名册顺序、自定义按传入顺序排后；None=默认组合。
+    内置按名册顺序、自定义与远端按传入顺序排后；None=默认组合。
     """
     if agents is None:
         return list(DEFAULT_AGENTS)
     req = [str(a).strip() for a in (agents or []) if str(a).strip()]
     builtin = [aid for aid in OPTIONAL_IDS if aid in req]
-    return builtin + [a for a in req if a.startswith("custom:")]
+    extra = [a for a in req if a.startswith("custom:") or a.startswith("a2a:")]
+    return builtin + extra
 
 
 # ── 场景定义 ─────────────────────────────────────────────────
@@ -260,6 +261,10 @@ class UniversalScenario(MultiAgentScenario):
 
         # 自定义智能体（智能体配置页，custom:{id}）：查库取启用配置，防脏 id
         custom_agents = await _load_custom_agents(caps)
+        # A2A 远端智能体（a2a:{name}，Agent↔Agent 横向协作，doc/智能体/A2A/00-*.md）：
+        # 注册中心启用中的远端智能体 → 每个一个委派节点。auth_token 仅节点运行时
+        # 使用，不进 plan（agent_runs 落库与回放材料均无 token，重建时节点按名现查）。
+        a2a_remotes = await _load_remote_agents(caps)
 
         # 计划：子任务执行者（并行） → 图谱（可选） → 评审（可选） → 合成（必在）
         plan: list[dict] = [
@@ -283,6 +288,15 @@ class UniversalScenario(MultiAgentScenario):
         for i, ca in enumerate(custom_agents, start=1):
             plan.append({"id": f"cu{i}", "node": f"custom_{i}", "role": "custom",
                          "goal": ca["goal"], "agent": ca})
+        for i, ra in enumerate(a2a_remotes, start=1):
+            # A2A 委派节点：goal 即随 message 发送的委派指令；skill 单技能卡片
+            # 自动带上 skillId，多技能远端由其对内自路由（协议层不猜）
+            plan.append({
+                "id": f"a2a{i}", "node": f"a2a_agent_{i}", "role": "a2a_agent",
+                "goal": f"将子任务「{(task or '')[:60]}」委派给远端智能体 {ra['card_name']}（{ra['name']}）",
+                "agent": {k: ra[k] for k in ("name", "card_name", "base_url",
+                                             "streaming", "skill_id")},
+            })
         if "critic" in caps:
             plan.append({"id": "c1", "node": "critic", "role": "critic",
                          "goal": "素材交叉验证与质量裁定"})
@@ -300,18 +314,21 @@ class UniversalScenario(MultiAgentScenario):
             ]
             + [
                 {"node": p["node"], "role": p["role"],
-                 "name": (p["agent"]["name"] if p["role"] == "custom" else {
+                 "name": (p["agent"].get("card_name") or p["agent"]["name"])
+                 if p["role"] in ("custom", "a2a_agent") else {
                           "data_agent": "DataAgent · 数据查询",
                           "graph_agent": "GraphAgent · 图谱事实",
                           "tool_agent": "ToolAgent · 工具调用",
                           "critic": "Critic · 评审质控",
-                          "synthesizer": "Synthesizer · 结果合成"}[p["role"]])}
+                          "synthesizer": "Synthesizer · 结果合成"}[p["role"]]}
                 for p in plan if p["role"] in ("data_agent", "graph_agent", "tool_agent",
-                                               "custom", "critic", "synthesizer")
+                                               "custom", "a2a_agent",
+                                               "critic", "synthesizer")
             ]
         )
         cap_names = [a["name"].split(" · ")[0] for a in OPTIONAL_AGENTS if a["id"] in caps]
         cap_names += [ca["name"] for ca in custom_agents]
+        cap_names += [f"A2A·{r['card_name']}" for r in a2a_remotes]
         cap_label = " + ".join(cap_names) or "纯模型协作"
         team_info = {
             "team": f"通用智能体团队（{cap_label}）",
@@ -486,6 +503,8 @@ class UniversalScenario(MultiAgentScenario):
                 nodes[step["node"]] = self._make_worker(eng, step, task)
             elif step["role"] == "custom":
                 nodes[step["node"]] = self._make_custom_agent(eng, step, task)
+            elif step["role"] == "a2a_agent":
+                nodes[step["node"]] = self._make_a2a_agent(eng, step, task)
             elif step["role"] == "data_agent":
                 nodes[step["node"]] = self._make_data_agent(
                     eng, task, nl_filter, data_sources)
@@ -709,6 +728,102 @@ class UniversalScenario(MultiAgentScenario):
 
         return _fn
 
+    def _make_a2a_agent(self, eng: MultiAgentEngine, step: dict, task: str):
+        """A2A-i：远程智能体成员——经 A2A 协议（message/stream 或 message/send）
+        把子任务委派给注册中心里的远端智能体（Agent↔Agent 横向协作，
+        doc/智能体/A2A/00-A2A智能体互操作协议设计方案.md）。
+
+        与 ToolAgent（MCP，函数粒度）的本质区别：发出去的是一句「任务」，
+        收回来的是 Task.artifacts 工件——不透明协作，远端只回结论，不暴露
+        其记忆/工具/数据源。工件逐份转事实卡（grade=a2a_result）入黑板，
+        文本结论转素材卡；失败/超时只报错不阻断全图（对齐 MCP 逐台降级）。
+        auth_token 不落 plan：运行时按远端名从注册表现查（断点恢复重建同成立）。
+        """
+        node, domain = step["node"], step["id"]
+        agent_cfg = step.get("agent") or {}
+        remote_name = str(agent_cfg.get("name") or "")
+        aname = str(agent_cfg.get("card_name") or remote_name or "远程智能体")
+        base_url = str(agent_cfg.get("base_url") or "")
+        skill_id = str(agent_cfg.get("skill_id") or "")
+        streaming = bool(agent_cfg.get("streaming"))
+        goal = step["goal"]
+
+        async def _resolve_token() -> str:
+            """远端 Bearer：运行时按名现查注册表（plan/回放材料不含 token）。"""
+            try:
+                from database import async_session
+                from services.a2a_store import load_enabled_agents
+                async with async_session() as db:
+                    remotes = await load_enabled_agents(db)
+                return next((r.get("auth_token", "") for r in remotes
+                             if r.get("name") == remote_name), "")
+            except Exception:
+                return ""
+
+        async def _fn(state: dict) -> dict:
+            token = await _resolve_token()
+            eng.emit({"type": "node_start", "node": node,
+                      "goal": f"A2A 委派 {aname}", "role": "a2a_agent"})
+            facts: list[dict] = []
+            cards: list[dict] = []
+            text, summary = "", ""
+            try:
+                from services import a2a_client
+                res: dict = {}
+                if streaming:
+                    # 名片声明 capabilities.streaming → message/stream：远端
+                    # 状态机进度（working 等）逐帧透出，收尾 done 帧兜底解析
+                    last_state = ""
+                    async for evt in a2a_client.stream_task(
+                            base_url, goal, skill_id=skill_id, token=token):
+                        if evt["type"] == "status" and evt["state"] != last_state:
+                            last_state = evt["state"]
+                            eng.emit({"type": "node", "node": node,
+                                      "summary": f"远端任务状态：{evt['state']}"})
+                        elif evt["type"] == "done":
+                            res = evt
+                    if not res:
+                        res = {"ok": False, "error": "远端流式无响应帧"}
+                else:
+                    res = await a2a_client.send_task(
+                        base_url, goal, skill_id=skill_id, token=token)
+                if not res.get("ok"):
+                    raise RuntimeError(res.get("error") or "远端任务失败")
+                text = res.get("text") or ""
+                src = f"A2A · {aname}"
+                extra = {"a2a": {"agent": remote_name, "base_url": base_url,
+                                 "task_id": str(res.get("task_id") or ""),
+                                 "skill_id": skill_id}}
+                for idx, art in enumerate(res.get("artifacts") or [], start=1):
+                    facts.append({
+                        "id": f"fact-a2a-{idx}", "grade": "a2a_result",
+                        "title": str(art.get("name") or f"{aname} 工件 {idx}"),
+                        "detail": (a2a_client.clip_text(a2a_client.artifact_text(art))
+                                   or json.dumps(art.get("parts") or [],
+                                                 ensure_ascii=False)[:2000]),
+                        "source": src, "extra": extra,
+                    })
+                if not facts and text:      # 极简远端只回文本：整段结论作一张工件卡
+                    facts.append({"id": "fact-a2a-1", "grade": "a2a_result",
+                                  "title": f"{aname} 结论", "detail": text,
+                                  "source": src, "extra": extra})
+                summary = (f"A2A 委派 {aname}：产出 {len(facts)} 张工件事实卡，"
+                           f"耗时 {(res.get('elapsed_ms') or 0) / 1000:.1f}s")
+                if text:
+                    cards.append({"role": "a2a_agent", "source": src,
+                                  "text": a2a_client.clip_text(text)})
+            except Exception as exc:   # 委派失败不阻断全图，其余成员照常
+                summary = f"A2A 委派失败（{type(exc).__name__}: {exc}），其余成员照常"
+                eng.emit({"type": "node", "node": node, "summary": summary})
+            if facts:
+                eng.emit({"type": "fact", "facts": facts})
+            for c in cards:
+                eng.emit({"type": "model_output", "model_output": c, "node": node})
+            eng.emit({"type": "node_done", "node": node, "summary": summary})
+            return {"facts": facts, "evidence": {domain: cards}}
+
+        return _fn
+
     def _make_tool_agent(self, eng: MultiAgentEngine, task: str):
         """ToolAgent：Function Calling 自主取证。
 
@@ -880,6 +995,47 @@ async def _load_custom_agents(caps: list[str]) -> list[dict]:
                 "system_prompt": r.system_prompt or "",
                 "kb_id": (r.kb_id or "").strip(),
                 "use_tools": bool(int(getattr(r, "use_tools", 0) or 0)),
+            })
+        return out
+    except Exception:
+        return []
+
+
+async def _load_remote_agents(caps: list[str]) -> list[dict]:
+    """组合中的 A2A 远端智能体（a2a:{name}）→ 启用中的注册表配置（防脏名）。
+
+    与 _load_custom_agents 同构：无效/已停用/注册表停用均静默跳过，不中断
+    流水线；输出保持用户勾选顺序。总闸 A2A_ENABLED 关闭时整体不入选。
+    返回项带 auth_token（仅节点运行时使用，绝不进 plan / replay_materials）。
+    """
+    names = [a.split(":", 1)[1] for a in caps if a.startswith("a2a:")]
+    if not names:
+        return []
+    if not bool(getattr(settings, "A2A_ENABLED", True)):
+        return []
+    from database import async_session
+    from services.a2a_store import load_enabled_agents
+
+    try:
+        async with async_session() as db:
+            remotes = await load_enabled_agents(db)
+        by_name = {r["name"]: r for r in remotes}
+        out: list[dict] = []
+        for nm in names:
+            r = by_name.get(nm)
+            if not r:
+                continue
+            skills = r.get("skills") or []
+            out.append({
+                "id": r["id"],
+                "name": r["name"],
+                "card_name": r.get("card_name") or r["name"],
+                "base_url": r["base_url"],
+                "auth_token": r.get("auth_token", ""),
+                "streaming": bool(r.get("streaming")),
+                "skill_id": skills[0]["id"] if len(skills) == 1 else "",
+                "goal": (r.get("card_description") or "").strip()[:40]
+                        or f"{r.get('card_name') or r['name']} 远程协作",
             })
         return out
     except Exception:

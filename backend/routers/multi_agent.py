@@ -73,15 +73,37 @@ def _route_label(route: dict) -> str:
 async def multi_scenarios():
     """已注册场景列表（id / name / business / description / adhoc）。
 
-    universal 场景额外注入 agents.custom：智能体配置页的自定义智能体
-    （启用中、非内置）→ 前端组队勾选可直接选中（custom:{id} 透传后端装配）。
+    universal 场景额外注入 agents.custom / agents.a2a：智能体配置页的
+    自定义智能体（启用中、非内置）与 A2A 注册中心的远端智能体（启用中）
+    → 前端组队勾选可直接选中（custom:{id} / a2a:{name} 透传后端装配）。
     """
     data = list_scenarios()
     custom = await _list_custom_roster()
+    a2a = await _list_a2a_roster()
     for item in data:
         if item.get("id") == "universal":
             item.setdefault("agents", {})["custom"] = custom
+            item.setdefault("agents", {})["a2a"] = a2a
     return data
+
+
+async def _list_a2a_roster() -> list[dict]:
+    """A2A 远端智能体名册（组队勾选用）：启用中。失败降级为空。"""
+    from config import settings as _settings
+    if not bool(getattr(_settings, "A2A_ENABLED", True)):
+        return []
+    try:
+        from database import async_session
+        from services.a2a_store import load_enabled_agents
+        async with async_session() as db:
+            remotes = await load_enabled_agents(db)
+        return [{
+            "id": f"a2a:{r['name']}",
+            "name": r.get("card_name") or r["name"],
+            "desc": (r.get("card_description") or f"远程 A2A 智能体 · {r['base_url']}").strip()[:60],
+        } for r in remotes]
+    except Exception:
+        return []
 
 
 async def _list_custom_roster() -> list[dict]:
@@ -346,6 +368,110 @@ async def inspect_mcp_servers(db: AsyncSession = Depends(get_db)):
         probe = await probe_server(server)
         results.append({"server": server["name"], **probe})
     return {"servers": results}
+
+
+# ─────────────────────── A2A 注册中心（远端智能体管理） ───────────────────────
+# 与 MCP 的分工：MCP=Agent↔工具（纵向，函数粒度）；A2A=Agent↔Agent
+# （横向，任务粒度，不透明协作）。设计见 doc/智能体/A2A/00-*.md。
+
+
+class A2aAgentBody(BaseModel):
+    name: str = ""               # 唯一 [a-zA-Z0-9_-]{1,32}，事实卡来源标识
+    base_url: str = ""           # 远端根地址（AgentCard 同源，http(s)://）
+    auth_token: Optional[str] = None   # None=不改（编辑留空保持原值）；""=清除
+    description: str = ""
+    enabled: bool = True
+
+
+@router.get("/a2a/agents")
+async def list_a2a_agents(db: AsyncSession = Depends(get_db)):
+    """A2A 远端智能体注册表列表（含停用项；auth_token 永不回传，只回 has_token）。"""
+    from services.a2a_store import list_agents, serialize_agent
+    rows = await list_agents(db)
+    return {"agents": [serialize_agent(r) for r in rows]}
+
+
+@router.post("/a2a/agents")
+async def create_a2a_agent(req: A2aAgentBody, db: AsyncSession = Depends(get_db)):
+    """新增远端智能体；校验失败 / 重名抛 422。落库即组队面板可勾选（热生效）。"""
+    from services.a2a_store import (create_agent, list_agents,
+                                    serialize_agent, validate_agent)
+    data = req.model_dump()
+    errors = validate_agent(data)
+    if errors:
+        raise HTTPException(422, "；".join(errors))
+    name = str(data.get("name") or "").strip()
+    for row in await list_agents(db):
+        if row.name == name:
+            raise HTTPException(422, f"名称已存在：{name}")
+    row = await create_agent(db, data)
+    return serialize_agent(row)
+
+
+@router.put("/a2a/agents/{agent_id}")
+async def update_a2a_agent(agent_id: str, req: A2aAgentBody,
+                           db: AsyncSession = Depends(get_db)):
+    """更新远端智能体：auth_token=None=不改，""=清除；不存在返回 404。"""
+    from services.a2a_store import get_agent, serialize_agent, update_agent, validate_agent
+    data = req.model_dump(exclude_unset=True)
+    check = dict(data)
+    if "auth_token" in check and check["auth_token"] is None:
+        check.pop("auth_token")
+    row = await get_agent(db, agent_id)
+    if not row:
+        raise HTTPException(404, "A2A 智能体不存在")
+    merged = {"name": row.name, "base_url": row.base_url, "description": row.description,
+              **check}
+    errors = validate_agent(merged)
+    if errors:
+        raise HTTPException(422, "；".join(errors))
+    row = await update_agent(db, row, data)
+    return serialize_agent(row)
+
+
+@router.delete("/a2a/agents/{agent_id}")
+async def delete_a2a_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
+    """删除远端智能体（组队为运行时勾选，无引用约束）。"""
+    from services.a2a_store import delete_agent_row
+    if not await delete_agent_row(db, agent_id):
+        raise HTTPException(404, "A2A 智能体不存在")
+    return {"ok": True}
+
+
+@router.post("/a2a/test")
+async def test_a2a_agent(req: A2aAgentBody):
+    """试连（不落库）：拉取 AgentCard 并回 skills 摘要。
+
+    任何失败都返回 200 + ok:false + error 文本（管理界面直接展示，不抛 500）。
+    """
+    from services.a2a_client import fetch_agent_card
+    base_url = (req.base_url or "").strip().rstrip("/")
+    probe = await fetch_agent_card(base_url, token=(req.auth_token or "") or "")
+    if not probe.get("ok"):
+        return {"ok": False, "card": {}, "skills": [], "elapsed_ms": probe.get("elapsed_ms", 0),
+                "error": probe.get("error") or "名片拉取失败"}
+    card = probe["card"]
+    return {"ok": True, "card": {"name": card.get("name"),
+                                 "description": card.get("description"),
+                                 "protocolVersion": card.get("protocolVersion"),
+                                 "streaming": bool((card.get("capabilities") or {}).get("streaming")),
+                                 "url": card.get("url")},
+            "skills": [{"id": s.get("id"), "name": s.get("name")}
+                       for s in (card.get("skills") or []) if isinstance(s, dict)],
+            "elapsed_ms": probe.get("elapsed_ms", 0), "error": ""}
+
+
+@router.post("/a2a/inspect")
+async def inspect_a2a_agents(db: AsyncSession = Depends(get_db)):
+    """状态巡检：对已启用的远端智能体逐一拉卡（管理界面「巡检全部」）。"""
+    from services.a2a_client import fetch_agent_card
+    from services.a2a_store import load_enabled_agents
+    results = []
+    for agent in await load_enabled_agents(db):
+        probe = await fetch_agent_card(agent["base_url"], token=agent["auth_token"])
+        results.append({"agent": agent["name"],
+                        "card_name": agent["card_name"], **probe})
+    return {"agents": results}
 
 
 # ─────────────────────── 任务库（可配置任务提示词） ───────────────────────

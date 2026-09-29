@@ -181,6 +181,7 @@ const menuItems = [
     key: 'agent', label: '智能体', icon: 'agent',
     children: [
       { to: '/agent/mcp', label: 'MCP 工具管理', perm: 'agent:view' },
+      { to: '/agent/a2a', label: '智能体注册', perm: 'agent:view' },
       { to: '/agent/skills', label: '技能管理', perm: 'agent:view' },
       { to: '/agent/configs', label: '智能体配置', perm: 'agent:view' },
       { to: '/agent/multi-agent', label: '多智能体协作', perm: 'agent:view' },

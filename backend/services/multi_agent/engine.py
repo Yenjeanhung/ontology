@@ -230,7 +230,7 @@ class MultiAgentEngine:
     # （智能体配置页人设 + 绑定知识库，custom:{id} 勾选接入）；
     # 自由组合时由场景按所选智能体声明）
     PARALLEL_ROLES = {"retriever", "worker", "graph_agent", "data_agent",
-                      "tool_agent", "custom"}
+                      "tool_agent", "custom", "a2a_agent"}
 
     def __init__(
         self,

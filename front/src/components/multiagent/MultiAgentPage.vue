@@ -52,6 +52,7 @@ const roster = computed(() => scenario.value?.agents || FALLBACK_ROSTER)
 const optionalAgents = computed(() => [
   ...(roster.value.optional || []),
   ...(roster.value.custom || []),   // 自定义智能体（智能体配置页，custom:{id}）
+  ...(roster.value.a2a || []),      // A2A 远程智能体（注册中心，a2a:{name}）
 ])
 /** 欢迎区一行阵容展示：核心在前、可选在后（opt 标记 = 底部可手动勾选的能力智能体）。 */
 const allRoster = computed(() => [
@@ -156,7 +157,7 @@ function roundFromMeta(task, conclusion, meta) {
       // __facts__ 组的前端 domain 由 grade 推导（与实时 fact 事件处理一致）
       domain: d.domain === '__facts__'
         ? (c.grade === 'data_fact' ? 'data' : c.grade === 'tool_result' ? 'tool'
-          : c.grade === 'chart_result' ? 'chart' : 'graph')
+          : c.grade === 'chart_result' ? 'chart' : c.grade === 'a2a_result' ? 'a2a' : 'graph')
         : d.domain,
     })),
   }))
@@ -184,6 +185,7 @@ const KIND_META = {
   data: { label: '数据查询' },
   tool: { label: '工具产出' },
   chart: { label: '图表产出' },
+  a2a: { label: 'A2A 工件' },
 }
 
 function cardKind(c) {
@@ -191,6 +193,7 @@ function cardKind(c) {
   if (c.grade === 'data_fact') return 'data'
   if (c.grade === 'tool_result') return 'tool'
   if (c.grade === 'chart_result') return 'chart'
+  if (c.grade === 'a2a_result') return 'a2a'
   if (c.grade === 'model_output' || c.grade === 'model_knowledge') return 'model'
   return 'doc'
 }
@@ -208,7 +211,7 @@ function evTabsOf(r) {
   const counts = {}
   for (const c of cards) counts[c.kind] = (counts[c.kind] || 0) + 1
   const tabs = [{ key: 'all', label: '全部', count: cards.length }]
-  for (const k of ['doc', 'model', 'graph', 'data', 'tool', 'chart']) {
+  for (const k of ['doc', 'model', 'graph', 'data', 'tool', 'chart', 'a2a']) {
     if (counts[k]) tabs.push({ key: k, label: KIND_META[k].label, count: counts[k] })
   }
   return tabs
@@ -431,11 +434,12 @@ function handleEvent(r, evt) {
       r.evidenceDomains = [...r.evidenceDomains, { domain: '__facts__', cards: (evt.facts || []).map((f) => ({
         id: f.id,
         domain: f.grade === 'data_fact' ? 'data' : f.grade === 'tool_result' ? 'tool'
-          : f.grade === 'chart_result' ? 'chart' : 'graph',
+          : f.grade === 'chart_result' ? 'chart' : f.grade === 'a2a_result' ? 'a2a' : 'graph',
         grade: f.grade,
         source: f.grade === 'data_fact' ? '实体台账 · 结构化查询'
           : f.grade === 'tool_result' ? '工具链 · Function Calling'
-          : f.grade === 'chart_result' ? '图表智能体 · 可视化产出' : '本体图谱 · 结构化事实',
+          : f.grade === 'chart_result' ? '图表智能体 · 可视化产出'
+          : f.grade === 'a2a_result' ? (f.source || 'A2A · 远程智能体工件') : '本体图谱 · 结构化事实',
         title: f.title, summary: f.detail, quote: '', stance: 'fact',
         image: f.image || '',
         sql: f.sql || '', dialect: f.dialect || '',
@@ -712,6 +716,7 @@ function gradeLabel(grade) {
   if (grade === 'graph_fact') return '图谱事实'
   if (grade === 'data_fact') return '数据查询'
   if (grade === 'tool_result') return '工具产出'
+  if (grade === 'a2a_result') return 'A2A 工件'
   if (grade === 'model_output') return '模型生成'
   if (grade === 'model_knowledge') return '模拟生成'
   if (grade === 'duty_record') return '值班记录'

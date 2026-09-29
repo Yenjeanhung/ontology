@@ -377,6 +377,22 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     updated_at VARCHAR
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(name);
+
+-- ===== A2A 远端智能体注册表（Agent-to-Agent 横向协作）=====
+
+CREATE TABLE IF NOT EXISTS a2a_agents (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR(64) NOT NULL,
+    base_url VARCHAR(500) NOT NULL DEFAULT '',
+    auth_token VARCHAR(300) NOT NULL DEFAULT '',
+    card_json TEXT NOT NULL DEFAULT '',
+    description VARCHAR(300) NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at VARCHAR,
+    updated_at VARCHAR
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_a2a_agents_name ON a2a_agents(name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_skills_code ON agent_skills(code);
 
 -- ===== 技能分组（全局，任意层级嵌套）=====

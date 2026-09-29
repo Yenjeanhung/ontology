@@ -234,6 +234,79 @@ export async function inspectMcpServers() {
   return res.json()
 }
 
+// ─────────────────────── A2A 注册中心（远端智能体管理） ───────────────────────
+// 与 MCP 的分工：MCP=Agent↔工具（纵向，函数粒度）；A2A=Agent↔Agent
+// （横向，任务粒度）。设计见 doc/智能体/A2A/00-A2A智能体互操作协议设计方案.md。
+
+export async function listA2aAgents() {
+  const res = await fetch(`${API}/api/agent/multi/a2a/agents`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '加载 A2A 智能体列表失败'))
+  }
+  return res.json()
+}
+
+export async function createA2aAgent(data) {
+  const res = await fetch(`${API}/api/agent/multi/a2a/agents`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '新增 A2A 智能体失败'))
+  }
+  return res.json()
+}
+
+/** 更新远端智能体：auth_token 传 null = 不改（编辑留空保持原值）。 */
+export async function updateA2aAgent(agentId, data) {
+  const res = await fetch(`${API}/api/agent/multi/a2a/agents/${encodeURIComponent(agentId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '更新 A2A 智能体失败'))
+  }
+  return res.json()
+}
+
+export async function deleteA2aAgent(agentId) {
+  const res = await fetch(`${API}/api/agent/multi/a2a/agents/${encodeURIComponent(agentId)}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '删除 A2A 智能体失败'))
+  }
+  return res.json()
+}
+
+/** 试连（不落库）：拉取 AgentCard，返回 {ok, card, skills, elapsed_ms, error}，失败也是 200。 */
+export async function testA2aAgent(data) {
+  const res = await fetch(`${API}/api/agent/multi/a2a/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '拉取名片请求失败'))
+  }
+  return res.json()
+}
+
+/** 已启用远端智能体巡检：返回 {agents: [{agent, ok, card, elapsed_ms, error}]}。 */
+export async function inspectA2aAgents() {
+  const res = await fetch(`${API}/api/agent/multi/a2a/inspect`, { method: 'POST' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(apiDetail(body, '状态巡检请求失败'))
+  }
+  return res.json()
+}
+
 /** SSE 读取公共实现：解析 data: 行并逐事件回调。 */
 async function _stream(url, payload, { onEvent, signal } = {}) {
   const res = await fetch(url, {
